@@ -587,39 +587,49 @@ fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
     }
 }
 
-fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
-    var start_paths = std.ArrayListUnmanaged([]const u8).empty;
-    defer start_paths.deinit(allocator);
+/// Global flags collected from the leading-globals scan, before expression
+/// args. Bundled into one struct so `parseArgs` stays small and the scan
+/// helper takes few arguments (Tiger Style inverse-hourglass).
+const GlobalFlags = struct {
+    maxdepth: ?u32 = null,
+    mindepth: u32 = 0,
+    depth_first: bool = false,
+    follow_symlinks: bool = false,
+    follow_cmdline_symlinks: bool = false,
+    xdev: bool = false,
+    xargs_safe: bool = false,
+    sorted: bool = false,
+    extended_regex: bool = false,
+};
 
-    var maxdepth: ?u32 = null;
-    var mindepth: u32 = 0;
-    var depth_first = false;
-    var follow_symlinks = false;
-    var follow_cmdline_symlinks = false;
-    var xdev = false;
-    var xargs_safe = false;
-    var sorted = false;
-    var extended_regex = false;
-
-    // Collect starting paths and global options before expressions
-    var expr_start: usize = 0;
+/// Scan leading global options and starting paths before the expression.
+/// Mutates `flags` and appends discovered paths to `start_paths`; returns the
+/// index of the first expression arg (`expr_start`). Straight-line iteration
+/// moved out of `parseArgs` (push fors down).
+fn parseArgs_collectLeadingGlobals(
+    allocator: Allocator,
+    args: []const []const u8,
+    flags: *GlobalFlags,
+    start_paths: *std.ArrayListUnmanaged([]const u8),
+) !usize { // tiger:allow:usize-arch returns slice index cursor; Zig indexing requires usize
+    var expr_start: usize = 0; // tiger:allow:usize-arch slice index cursor
     while (expr_start < args.len) {
         const arg = args[expr_start];
         if (std.mem.eql(u8, arg, "-L") or std.mem.eql(u8, arg, "-follow")) {
-            follow_symlinks = true;
+            flags.follow_symlinks = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-H")) {
-            follow_cmdline_symlinks = true;
+            flags.follow_cmdline_symlinks = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-P")) {
             // -P: never follow symlinks (default behavior); accept as no-op
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-E")) {
-            extended_regex = true;
+            flags.extended_regex = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-s")) {
             // -s: traverse in alphabetical (sorted) order
-            sorted = true;
+            flags.sorted = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-depth")) {
             // Check if followed by a number: -depth N is an expression primary
@@ -629,16 +639,16 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
                     break;
                 } else |_| {}
             }
-            depth_first = true;
+            flags.depth_first = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-d")) {
-            depth_first = true;
+            flags.depth_first = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-x")) {
-            xdev = true;
+            flags.xdev = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-X")) {
-            xargs_safe = true;
+            flags.xargs_safe = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-f")) {
             expr_start += 1;
@@ -655,20 +665,30 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
             expr_start += 1;
         }
     }
+    assert(expr_start <= args.len);
+    assert(start_paths.items.len <= args.len);
+    return expr_start;
+}
 
-    if (start_paths.items.len == 0) {
-        try start_paths.append(allocator, ".");
-    }
-
-    // Pre-scan for global options within expression args
-    var i: usize = expr_start;
+/// Pre-scan expression args for depth/xdev globals (-maxdepth/-mindepth/-depth/
+/// -d/-xdev/-mount and the readdir-race no-ops), mutating `flags`. Keeps the
+/// error-emitting branches identical to the original inline loop.
+fn parseArgs_prescanDepthGlobals(
+    allocator: Allocator,
+    args: []const []const u8,
+    expr_start: usize, // tiger:allow:usize-arch slice index cursor; Zig indexing requires usize
+    flags: *GlobalFlags,
+    stderr: anytype,
+) !void {
+    assert(expr_start <= args.len);
+    var i: usize = expr_start; // tiger:allow:usize-arch slice index cursor
     while (i < args.len) {
         if (std.mem.eql(u8, args[i], "-maxdepth")) {
             if (i + 1 >= args.len) {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-maxdepth'", .{});
                 return error.MissingArgument;
             }
-            maxdepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
+            flags.maxdepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-maxdepth'", .{args[i + 1]});
                 return error.InvalidExpression;
             };
@@ -678,7 +698,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
                 common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-mindepth'", .{});
                 return error.MissingArgument;
             }
-            mindepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
+            flags.mindepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-mindepth'", .{args[i + 1]});
                 return error.InvalidExpression;
             };
@@ -691,18 +711,18 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
                     i += 2;
                 } else |_| {
                     // -depth without numeric arg: depth-first mode
-                    depth_first = true;
+                    flags.depth_first = true;
                     i += 1;
                 }
             } else {
-                depth_first = true;
+                flags.depth_first = true;
                 i += 1;
             }
         } else if (std.mem.eql(u8, args[i], "-d")) {
-            depth_first = true;
+            flags.depth_first = true;
             i += 1;
         } else if (std.mem.eql(u8, args[i], "-xdev") or std.mem.eql(u8, args[i], "-mount")) {
-            xdev = true;
+            flags.xdev = true;
             i += 1;
         } else if (std.mem.eql(u8, args[i], "-ignore_readdir_race") or
             std.mem.eql(u8, args[i], "-noignore_readdir_race") or
@@ -714,11 +734,30 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
             i += 1;
         }
     }
+    assert(i == args.len);
+    assert(i >= expr_start);
+}
+
+fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
+    var start_paths = std.ArrayListUnmanaged([]const u8).empty;
+    defer start_paths.deinit(allocator);
+
+    var flags = GlobalFlags{};
+
+    // Collect starting paths and global options before expressions.
+    const expr_start = try parseArgs_collectLeadingGlobals(allocator, args, &flags, &start_paths);
+
+    if (start_paths.items.len == 0) {
+        try start_paths.append(allocator, ".");
+    }
+
+    // Pre-scan for global options within expression args.
+    try parseArgs_prescanDepthGlobals(allocator, args, expr_start, &flags, stderr);
 
     // Parse expression tree
     var pos: usize = expr_start;
     var has_action = false;
-    var pctx = ParseContext{ .allocator = allocator, .extended_regex = extended_regex };
+    var pctx = ParseContext{ .allocator = allocator, .extended_regex = flags.extended_regex };
     const expr = parseOr(allocator, args, &pos, &has_action, &pctx) catch |err| {
         if (pctx.error_msg) |msg| {
             common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
@@ -733,13 +772,13 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
 
     // If -delete is used, enable depth-first
     if (exprContainsDelete(final_expr)) {
-        depth_first = true;
+        flags.depth_first = true;
     }
 
     // -follow in expression position also enables symlink following
     for (args[expr_start..]) |a| {
         if (std.mem.eql(u8, a, "-follow")) {
-            follow_symlinks = true;
+            flags.follow_symlinks = true;
             break;
         }
     }
@@ -755,15 +794,15 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     return FindConfig{
         .start_paths = paths_slice,
         .expr = result_expr,
-        .maxdepth = maxdepth,
-        .mindepth = mindepth,
-        .depth_first = depth_first,
-        .follow_symlinks = follow_symlinks,
-        .follow_cmdline_symlinks = follow_cmdline_symlinks,
+        .maxdepth = flags.maxdepth,
+        .mindepth = flags.mindepth,
+        .depth_first = flags.depth_first,
+        .follow_symlinks = flags.follow_symlinks,
+        .follow_cmdline_symlinks = flags.follow_cmdline_symlinks,
         .has_action = has_action,
-        .xdev = xdev,
-        .xargs_safe = xargs_safe,
-        .sorted = sorted,
+        .xdev = flags.xdev,
+        .xargs_safe = flags.xargs_safe,
+        .sorted = flags.sorted,
     };
 }
 
@@ -1054,13 +1093,92 @@ fn parseCloseGroup(allocator: Allocator, state: *ParseState) ExprParseError!void
     try state.val_stack.append(allocator, wrapped);
 }
 
-fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has_action: *bool, pctx: *ParseContext) ExprParseError!*Expression {
-    if (pos.* >= args.len) {
-        return allocExpr(allocator, .true_expr, .{ .none = {} });
+/// Consume exec-style argv after a `-exec`/`-ok`/`-execdir`/`-okdir` predicate
+/// until a `;` terminator (or `+` when `plus_allowed`). Duplicates the argv on
+/// success; sets the missing-arg error and returns null otherwise. Mirrors the
+/// four near-identical inner loops the recursive parser repeated.
+fn parsePrimary_collectExecArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    plus_allowed: bool,
+    is_batch_out: *bool,
+    pctx: *ParseContext,
+) ExprParseError!?[]const []const u8 {
+    assert(pos.* <= args.len);
+    assert(predicate.len > 0);
+    is_batch_out.* = false;
+    var exec_args = std.ArrayListUnmanaged([]const u8).empty;
+    defer exec_args.deinit(allocator);
+
+    while (pos.* < args.len) {
+        if (std.mem.eql(u8, args[pos.*], ";")) {
+            pos.* += 1;
+            break;
+        }
+        if (plus_allowed and std.mem.eql(u8, args[pos.*], "+")) {
+            // Batch mode: {} must be last arg before +
+            is_batch_out.* = true;
+            pos.* += 1;
+            break;
+        }
+        try exec_args.append(allocator, args[pos.*]);
+        pos.* += 1;
+    } else {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
     }
 
-    const arg = args[pos.*];
+    if (exec_args.items.len == 0) {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
+    }
+    return try allocator.dupe([]const u8, exec_args.items);
+}
 
+/// Resolve the Y reference timestamp for a `-newerXY` predicate from `ref_path`.
+/// 'B' uses birth time (falling back to mtime); otherwise the matching a/c/m
+/// field. Sets the not-found error and returns null on a stat failure.
+fn parsePrimary_newerXYRefTime(
+    ref_path: []const u8,
+    y_field: u8,
+    pctx: *ParseContext,
+) ExprParseError!?i64 {
+    assert(y_field != 0);
+    if (y_field == 'B') {
+        return getBirthTime(ref_path) orelse blk: {
+            const ref_stat = doStat(ref_path, false) catch {
+                pctx.setError("'{s}': No such file or directory", .{ref_path});
+                return error.InvalidExpression;
+            };
+            break :blk getMtime(ref_stat);
+        };
+    }
+    const ref_stat = doStat(ref_path, false) catch {
+        pctx.setError("'{s}': No such file or directory", .{ref_path});
+        return error.InvalidExpression;
+    };
+    assert(y_field != 'B');
+    return switch (y_field) {
+        'a' => getAtime(ref_stat),
+        'c' => getCtime(ref_stat),
+        'm' => getMtime(ref_stat),
+        else => getMtime(ref_stat),
+    };
+}
+
+/// Handle global-option and accepted-no-op predicates: -maxdepth/-mindepth,
+/// -depth, -d, -follow, -ignore_readdir_race, -noignore_readdir_race, -noleaf.
+/// Returns null when `arg` is not one of these (fall through to next group).
+fn parsePrimary_globalsAndNoops(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    const entry_pos = pos.*;
     // Skip global options already handled
     if (std.mem.eql(u8, arg, "-maxdepth") or std.mem.eql(u8, arg, "-mindepth")) {
         pos.* += 2;
@@ -1078,49 +1196,50 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
-    if (std.mem.eql(u8, arg, "-d")) {
+    if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "-follow") or
+        std.mem.eql(u8, arg, "-ignore_readdir_race") or
+        std.mem.eql(u8, arg, "-noignore_readdir_race") or
+        std.mem.eql(u8, arg, "-noleaf"))
+    {
+        // -follow in expression position (deprecated GNU/macOS form); the
+        // others are accepted no-ops.
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
-    // -follow in expression position (deprecated GNU/macOS form)
-    if (std.mem.eql(u8, arg, "-follow")) {
-        pos.* += 1;
-        return allocExpr(allocator, .true_expr, .{ .none = {} });
-    }
+    assert(pos.* == entry_pos);
+    return null;
+}
 
+/// Handle name/path/type and pattern/regex/symlink predicates: -name, -iname,
+/// -path/-wholename, -type, -ipath/-iwholename, -regex, -iregex, -ilname,
+/// -lname. Returns null when `arg` is none of these.
+fn parsePrimary_namePathType(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
     if (std.mem.eql(u8, arg, "-name")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-name'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .name, .{ .pattern = pattern });
+        return try parsePrimary_takePattern(allocator, args, pos, "-name", .name, pctx);
     }
-
     if (std.mem.eql(u8, arg, "-iname")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-iname'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .iname, .{ .pattern = pattern });
+        return try parsePrimary_takePattern(allocator, args, pos, "-iname", .iname, pctx);
     }
-
     if (std.mem.eql(u8, arg, "-path") or std.mem.eql(u8, arg, "-wholename")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-path'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .path_match, .{ .pattern = pattern });
+        return try parsePrimary_takePattern(allocator, args, pos, "-path", .path_match, pctx);
     }
-
+    if (std.mem.eql(u8, arg, "-ipath") or std.mem.eql(u8, arg, "-iwholename")) {
+        return try parsePrimary_takePattern(allocator, args, pos, "-ipath", .ipath, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-ilname")) {
+        return try parsePrimary_takePattern(allocator, args, pos, "-ilname", .ilname, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-lname")) {
+        return try parsePrimary_takePattern(allocator, args, pos, "-lname", .lname, pctx);
+    }
     if (std.mem.eql(u8, arg, "-type")) {
         pos.* += 1;
         if (pos.* >= args.len) {
@@ -1134,7 +1253,117 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         return allocExpr(allocator, .file_type, .{ .file_type = ft });
     }
+    if (std.mem.eql(u8, arg, "-regex")) {
+        return try parsePrimary_takeRegex(
+            allocator,
+            args,
+            pos,
+            "-regex",
+            false,
+            .regex_match,
+            pctx,
+        );
+    }
+    if (std.mem.eql(u8, arg, "-iregex")) {
+        return try parsePrimary_takeRegex(
+            allocator,
+            args,
+            pos,
+            "-iregex",
+            true,
+            .iregex_match,
+            pctx,
+        );
+    }
+    return null;
+}
 
+/// Consume the required pattern argument after a string-pattern predicate and
+/// build the node with `tag`. Factors out the identical missing-arg + dupe-free
+/// shape shared by -name/-iname/-path/-ipath/-ilname/-lname.
+fn parsePrimary_takePattern(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    tag: ExprTag,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    assert(predicate.len > 0);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
+    }
+    const pattern = args[pos.*];
+    pos.* += 1;
+    return allocExpr(allocator, tag, .{ .pattern = pattern });
+}
+
+/// Consume the required pattern argument after -regex/-iregex, compile it, and
+/// build the node with `tag`. Factors out the shared shape of both regex forms.
+fn parsePrimary_takeRegex(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    ignore_case: bool,
+    tag: ExprTag,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    assert(predicate.len > 0);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
+    }
+    const pattern = args[pos.*];
+    pos.* += 1;
+    const regex = compileRegex(allocator, pattern, ignore_case, pctx.extended_regex) orelse {
+        pctx.setError("invalid regular expression '{s}'", .{pattern});
+        return error.InvalidExpression;
+    };
+    return allocExpr(allocator, tag, .{ .regex_ptr = regex });
+}
+
+/// Consume the required time argument after a `parseMtime`-style predicate and
+/// build a `.time` node with `tag`. Shared shape for -mtime/-atime/-ctime/
+/// -links/-mmin/-inum/-amin/-cmin/-Bmin/-Btime.
+fn parsePrimary_takeTime(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    tag: ExprTag,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    assert(predicate.len > 0);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
+    }
+    const te = parseMtime(args[pos.*]) catch {
+        pctx.setError("invalid argument '{s}' to '{s}'", .{ args[pos.*], predicate });
+        return error.InvalidExpression;
+    };
+    pos.* += 1;
+    return allocExpr(allocator, tag, .{ .time = te });
+}
+
+/// Handle -size, -empty, and -perm. Returns null when `arg` is none of these.
+fn parsePrimary_sizeEmptyPerm(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
     if (std.mem.eql(u8, arg, "-size")) {
         pos.* += 1;
         if (pos.* >= args.len) {
@@ -1148,42 +1377,10 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         return allocExpr(allocator, .size, .{ .size = sz });
     }
-
     if (std.mem.eql(u8, arg, "-empty")) {
         pos.* += 1;
         return allocExpr(allocator, .empty, .{ .none = {} });
     }
-
-    if (std.mem.eql(u8, arg, "-newer")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-newer'", .{});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-        const ref_stat = doStat(ref_path, true) catch {
-            pctx.setError("cannot stat '{s}'", .{ref_path});
-            return error.StatError;
-        };
-        const ref_mtime = getMtime(ref_stat);
-        return allocExpr(allocator, .newer, .{ .newer_mtime = ref_mtime });
-    }
-
-    if (std.mem.eql(u8, arg, "-mtime")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-mtime'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-mtime'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .mtime, .{ .time = te });
-    }
-
     if (std.mem.eql(u8, arg, "-perm")) {
         pos.* += 1;
         if (pos.* >= args.len) {
@@ -1197,427 +1394,106 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         return allocExpr(allocator, .perm, .{ .perm_expr = perm_val });
     }
+    return null;
+}
 
-    if (std.mem.eql(u8, arg, "-user")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-user'", .{});
-            return error.MissingArgument;
-        }
-        const name_str = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .user, .{ .name_str = name_str });
+/// Handle the day/minute time-comparison predicates: -mtime, -atime, -ctime,
+/// -links, -Btime, -mmin, -inum, -amin, -cmin, -Bmin. Returns null otherwise.
+fn parsePrimary_timeCompare(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
+    if (std.mem.eql(u8, arg, "-mtime")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-mtime", .mtime, pctx);
     }
-
-    if (std.mem.eql(u8, arg, "-group")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-group'", .{});
-            return error.MissingArgument;
-        }
-        const name_str = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .group, .{ .name_str = name_str });
-    }
-
-    if (std.mem.eql(u8, arg, "-print")) {
-        pos.* += 1;
-        has_action.* = true;
-        return allocExpr(allocator, .print, .{ .none = {} });
-    }
-
-    if (std.mem.eql(u8, arg, "-print0")) {
-        pos.* += 1;
-        has_action.* = true;
-        return allocExpr(allocator, .print0, .{ .none = {} });
-    }
-
-    if (std.mem.eql(u8, arg, "-delete")) {
-        pos.* += 1;
-        has_action.* = true;
-        return allocExpr(allocator, .delete, .{ .none = {} });
-    }
-
-    if (std.mem.eql(u8, arg, "-exec")) {
-        pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
-        defer exec_args.deinit(allocator);
-        var is_batch = false;
-
-        while (pos.* < args.len) {
-            if (std.mem.eql(u8, args[pos.*], ";")) {
-                pos.* += 1;
-                break;
-            }
-            if (std.mem.eql(u8, args[pos.*], "+")) {
-                // Batch mode: {} must be last arg before +
-                is_batch = true;
-                pos.* += 1;
-                break;
-            }
-            try exec_args.append(allocator, args[pos.*]);
-            pos.* += 1;
-        } else {
-            pctx.setError("missing argument to '-exec'", .{});
-            return error.MissingArgument;
-        }
-
-        if (exec_args.items.len == 0) {
-            pctx.setError("missing argument to '-exec'", .{});
-            return error.MissingArgument;
-        }
-
-        has_action.* = true;
-        const argv = try allocator.dupe([]const u8, exec_args.items);
-        if (is_batch) {
-            return allocExpr(allocator, .exec_batch, .{ .exec_data = .{ .argv = argv, .batch = true } });
-        }
-        return allocExpr(allocator, .exec_cmd, .{ .exec_data = .{ .argv = argv } });
-    }
-
-    if (std.mem.eql(u8, arg, "-prune")) {
-        pos.* += 1;
-        return allocExpr(allocator, .prune, .{ .none = {} });
-    }
-
     if (std.mem.eql(u8, arg, "-atime")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-atime'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-atime'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .atime, .{ .time = te });
+        return try parsePrimary_takeTime(allocator, args, pos, "-atime", .atime, pctx);
     }
-
     if (std.mem.eql(u8, arg, "-ctime")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-ctime'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-ctime'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .ctime, .{ .time = te });
+        return try parsePrimary_takeTime(allocator, args, pos, "-ctime", .ctime, pctx);
     }
-
     if (std.mem.eql(u8, arg, "-links")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-links'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-links'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .links, .{ .time = te });
+        return try parsePrimary_takeTime(allocator, args, pos, "-links", .links, pctx);
     }
-
-    if (std.mem.eql(u8, arg, "-ok")) {
-        pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
-        defer exec_args.deinit(allocator);
-
-        while (pos.* < args.len) {
-            if (std.mem.eql(u8, args[pos.*], ";")) {
-                pos.* += 1;
-                break;
-            }
-            try exec_args.append(allocator, args[pos.*]);
-            pos.* += 1;
-        } else {
-            pctx.setError("missing argument to '-ok'", .{});
-            return error.MissingArgument;
-        }
-
-        if (exec_args.items.len == 0) {
-            pctx.setError("missing argument to '-ok'", .{});
-            return error.MissingArgument;
-        }
-
-        has_action.* = true;
-        const argv = try allocator.dupe([]const u8, exec_args.items);
-        return allocExpr(allocator, .ok, .{ .exec_data = .{ .argv = argv } });
+    if (std.mem.eql(u8, arg, "-Btime")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-Btime", .btime_stub, pctx);
     }
-
-    if (std.mem.eql(u8, arg, "-xdev") or std.mem.eql(u8, arg, "-mount")) {
-        pos.* += 1;
-        return allocExpr(allocator, .xdev, .{ .none = {} });
+    if (std.mem.eql(u8, arg, "-mmin")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-mmin", .mmin, pctx);
     }
+    if (std.mem.eql(u8, arg, "-inum")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-inum", .inum, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-amin")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-amin", .amin, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-cmin")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-cmin", .cmin, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-Bmin")) {
+        return try parsePrimary_takeTime(allocator, args, pos, "-Bmin", .bmin_stub, pctx);
+    }
+    return null;
+}
 
+/// Consume the required name argument after a name-string predicate and build a
+/// `.name_str` node with `tag`. Shared shape for -user/-group/-fstype/-flags.
+fn parsePrimary_takeNameStr(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    tag: ExprTag,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    assert(predicate.len > 0);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
+    }
+    const name_str = args[pos.*];
+    pos.* += 1;
+    return allocExpr(allocator, tag, .{ .name_str = name_str });
+}
+
+/// Handle owner/ID predicates: -user, -group, -nouser, -nogroup, -gid, -uid,
+/// -fstype, -flags. Returns null when `arg` is none of these.
+fn parsePrimary_ownerAndIds(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
+    if (std.mem.eql(u8, arg, "-user")) {
+        return try parsePrimary_takeNameStr(allocator, args, pos, "-user", .user, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-group")) {
+        return try parsePrimary_takeNameStr(allocator, args, pos, "-group", .group, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-fstype")) {
+        return try parsePrimary_takeNameStr(allocator, args, pos, "-fstype", .fstype, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-flags")) {
+        return try parsePrimary_takeNameStr(allocator, args, pos, "-flags", .flags, pctx);
+    }
     if (std.mem.eql(u8, arg, "-nouser")) {
         pos.* += 1;
         return allocExpr(allocator, .nouser, .{ .none = {} });
     }
-
     if (std.mem.eql(u8, arg, "-nogroup")) {
         pos.* += 1;
         return allocExpr(allocator, .nogroup, .{ .none = {} });
     }
-
-    if (std.mem.eql(u8, arg, "-mmin")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-mmin'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-mmin'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .mmin, .{ .time = te });
-    }
-
-    if (std.mem.eql(u8, arg, "-inum")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-inum'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-inum'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .inum, .{ .time = te });
-    }
-
-    if (std.mem.eql(u8, arg, "-amin")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-amin'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-amin'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .amin, .{ .time = te });
-    }
-
-    if (std.mem.eql(u8, arg, "-cmin")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-cmin'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-cmin'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .cmin, .{ .time = te });
-    }
-
-    if (std.mem.eql(u8, arg, "-anewer")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-anewer'", .{});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-        const ref_stat = doStat(ref_path, true) catch {
-            pctx.setError("cannot stat '{s}'", .{ref_path});
-            return error.StatError;
-        };
-        const ref_mtime = getMtime(ref_stat);
-        return allocExpr(allocator, .anewer, .{ .newer_mtime = ref_mtime });
-    }
-
-    if (std.mem.eql(u8, arg, "-cnewer")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-cnewer'", .{});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-        const ref_stat = doStat(ref_path, true) catch {
-            pctx.setError("cannot stat '{s}'", .{ref_path});
-            return error.StatError;
-        };
-        const ref_mtime = getMtime(ref_stat);
-        return allocExpr(allocator, .cnewer, .{ .newer_mtime = ref_mtime });
-    }
-
-    if (std.mem.eql(u8, arg, "-execdir")) {
-        pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
-        defer exec_args.deinit(allocator);
-        var is_batch = false;
-
-        while (pos.* < args.len) {
-            if (std.mem.eql(u8, args[pos.*], ";")) {
-                pos.* += 1;
-                break;
-            }
-            if (std.mem.eql(u8, args[pos.*], "+")) {
-                is_batch = true;
-                pos.* += 1;
-                break;
-            }
-            try exec_args.append(allocator, args[pos.*]);
-            pos.* += 1;
-        } else {
-            pctx.setError("missing argument to '-execdir'", .{});
-            return error.MissingArgument;
-        }
-
-        if (exec_args.items.len == 0) {
-            pctx.setError("missing argument to '-execdir'", .{});
-            return error.MissingArgument;
-        }
-
-        has_action.* = true;
-        const argv = try allocator.dupe([]const u8, exec_args.items);
-        if (is_batch) {
-            return allocExpr(allocator, .execdir_batch, .{ .exec_data = .{ .argv = argv, .batch = true } });
-        }
-        return allocExpr(allocator, .execdir, .{ .exec_data = .{ .argv = argv } });
-    }
-
-    if (std.mem.eql(u8, arg, "-ls")) {
-        pos.* += 1;
-        has_action.* = true;
-        return allocExpr(allocator, .ls_action, .{ .none = {} });
-    }
-
-    if (std.mem.eql(u8, arg, "-fstype")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-fstype'", .{});
-            return error.MissingArgument;
-        }
-        const fs_type = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .fstype, .{ .name_str = fs_type });
-    }
-
-    if (std.mem.eql(u8, arg, "-flags")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-flags'", .{});
-            return error.MissingArgument;
-        }
-        const flag_str = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .flags, .{ .name_str = flag_str });
-    }
-
-    // -ipath: case-insensitive path matching
-    if (std.mem.eql(u8, arg, "-ipath") or std.mem.eql(u8, arg, "-iwholename")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-ipath'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .ipath, .{ .pattern = pattern });
-    }
-
-    // -regex: regex match on full path
-    if (std.mem.eql(u8, arg, "-regex")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-regex'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        const regex = compileRegex(allocator, pattern, false, pctx.extended_regex) orelse {
-            pctx.setError("invalid regular expression '{s}'", .{pattern});
-            return error.InvalidExpression;
-        };
-        return allocExpr(allocator, .regex_match, .{ .regex_ptr = regex });
-    }
-
-    // -iregex: case-insensitive regex match on full path
-    if (std.mem.eql(u8, arg, "-iregex")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-iregex'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        const regex = compileRegex(allocator, pattern, true, pctx.extended_regex) orelse {
-            pctx.setError("invalid regular expression '{s}'", .{pattern});
-            return error.InvalidExpression;
-        };
-        return allocExpr(allocator, .iregex_match, .{ .regex_ptr = regex });
-    }
-
-    // -Bmin: birth time in minutes
-    if (std.mem.eql(u8, arg, "-Bmin")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-Bmin'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-Bmin'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .bmin_stub, .{ .time = te });
-    }
-
-    // -Bnewer: birth time newer than FILE
-    if (std.mem.eql(u8, arg, "-Bnewer")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-Bnewer'", .{});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-        // Get the birth time of the reference file
-        const ref_btime = getBirthTime(ref_path) orelse {
-            // Fall back to mtime if birth time unavailable
-            const ref_stat = doStat(ref_path, false) catch {
-                pctx.setError("'{s}': No such file or directory", .{ref_path});
-                return error.InvalidExpression;
-            };
-            return allocExpr(allocator, .bnewer_stub, .{ .newer_mtime = getMtime(ref_stat) });
-        };
-        return allocExpr(allocator, .bnewer_stub, .{ .newer_mtime = ref_btime });
-    }
-
-    // -Btime: birth time in days
-    if (std.mem.eql(u8, arg, "-Btime")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-Btime'", .{});
-            return error.MissingArgument;
-        }
-        const te = parseMtime(args[pos.*]) catch {
-            pctx.setError("invalid argument '{s}' to '-Btime'", .{args[pos.*]});
-            return error.InvalidExpression;
-        };
-        pos.* += 1;
-        return allocExpr(allocator, .btime_stub, .{ .time = te });
-    }
-
-    // -acl: has ACL set (macOS stub: always false)
-    if (std.mem.eql(u8, arg, "-acl")) {
-        pos.* += 1;
-        return allocExpr(allocator, .acl_stub, .{ .none = {} });
-    }
-
-    // -gid N: match numeric group ID
     if (std.mem.eql(u8, arg, "-gid")) {
         pos.* += 1;
         if (pos.* >= args.len) {
@@ -1631,169 +1507,6 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         return allocExpr(allocator, .gid_match, .{ .gid_val = gid_val });
     }
-
-    // -ignore_readdir_race: accept as no-op
-    if (std.mem.eql(u8, arg, "-ignore_readdir_race")) {
-        pos.* += 1;
-        return allocExpr(allocator, .true_expr, .{ .none = {} });
-    }
-
-    // -noignore_readdir_race: accept as no-op
-    if (std.mem.eql(u8, arg, "-noignore_readdir_race")) {
-        pos.* += 1;
-        return allocExpr(allocator, .true_expr, .{ .none = {} });
-    }
-
-    // -noleaf: accept as no-op
-    if (std.mem.eql(u8, arg, "-noleaf")) {
-        pos.* += 1;
-        return allocExpr(allocator, .true_expr, .{ .none = {} });
-    }
-
-    // -ilname: case-insensitive symlink target matching
-    if (std.mem.eql(u8, arg, "-ilname")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-ilname'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .ilname, .{ .pattern = pattern });
-    }
-
-    // -lname: match symlink target against pattern
-    if (std.mem.eql(u8, arg, "-lname")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-lname'", .{});
-            return error.MissingArgument;
-        }
-        const pattern = args[pos.*];
-        pos.* += 1;
-        return allocExpr(allocator, .lname, .{ .pattern = pattern });
-    }
-
-    // -mnewer: alias for -newer (modification time newer than FILE)
-    if (std.mem.eql(u8, arg, "-mnewer")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-mnewer'", .{});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-        const ref_stat = doStat(ref_path, true) catch {
-            pctx.setError("cannot stat '{s}'", .{ref_path});
-            return error.StatError;
-        };
-        const ref_mtime = getMtime(ref_stat);
-        return allocExpr(allocator, .newer, .{ .newer_mtime = ref_mtime });
-    }
-
-    // -newerXY: compare timestamps
-    // Matches -newerXY where X,Y are one of: a, B, c, m, t (8 chars total)
-    if (arg.len == 8 and std.mem.startsWith(u8, arg, "-newer")) {
-        const x_field = arg[6];
-        const y_field = arg[7];
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '{s}'", .{arg});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-
-        // Get the Y timestamp from the reference file
-        var ref_time: i64 = 0;
-        if (y_field == 'B') {
-            ref_time = getBirthTime(ref_path) orelse blk: {
-                const ref_stat = doStat(ref_path, false) catch {
-                    pctx.setError("'{s}': No such file or directory", .{ref_path});
-                    return error.InvalidExpression;
-                };
-                break :blk getMtime(ref_stat);
-            };
-        } else {
-            const ref_stat = doStat(ref_path, false) catch {
-                pctx.setError("'{s}': No such file or directory", .{ref_path});
-                return error.InvalidExpression;
-            };
-            ref_time = switch (y_field) {
-                'a' => getAtime(ref_stat),
-                'c' => getCtime(ref_stat),
-                'm' => getMtime(ref_stat),
-                else => getMtime(ref_stat),
-            };
-        }
-
-        return allocExpr(allocator, .newerxy_stub, .{ .newerxy_data = .{
-            .ref_time = ref_time,
-            .x_field = x_field,
-        } });
-    }
-
-    // -okdir: like -execdir but prompts (stub: always false)
-    if (std.mem.eql(u8, arg, "-okdir")) {
-        pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
-        defer exec_args.deinit(allocator);
-
-        while (pos.* < args.len) {
-            if (std.mem.eql(u8, args[pos.*], ";")) {
-                pos.* += 1;
-                break;
-            }
-            try exec_args.append(allocator, args[pos.*]);
-            pos.* += 1;
-        } else {
-            pctx.setError("missing argument to '-okdir'", .{});
-            return error.MissingArgument;
-        }
-
-        if (exec_args.items.len == 0) {
-            pctx.setError("missing argument to '-okdir'", .{});
-            return error.MissingArgument;
-        }
-
-        has_action.* = true;
-        const argv = try allocator.dupe([]const u8, exec_args.items);
-        return allocExpr(allocator, .okdir_stub, .{ .exec_data = .{ .argv = argv } });
-    }
-
-    // -quit: stop processing immediately
-    if (std.mem.eql(u8, arg, "-quit")) {
-        pos.* += 1;
-        has_action.* = true;
-        return allocExpr(allocator, .quit_action, .{ .none = {} });
-    }
-
-    // -samefile: match files with same inode and device as FILE
-    if (std.mem.eql(u8, arg, "-samefile")) {
-        pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-samefile'", .{});
-            return error.MissingArgument;
-        }
-        const ref_path = args[pos.*];
-        pos.* += 1;
-        const ref_stat = doStat(ref_path, true) catch {
-            pctx.setError("cannot stat '{s}'", .{ref_path});
-            return error.StatError;
-        };
-        return allocExpr(allocator, .samefile, .{ .samefile_data = .{
-            .ino = @intCast(ref_stat.ino),
-            .dev = @intCast(ref_stat.dev),
-        } });
-    }
-
-    // -sparse: match sparse files (macOS stub: always false)
-    if (std.mem.eql(u8, arg, "-sparse")) {
-        pos.* += 1;
-        return allocExpr(allocator, .sparse_stub, .{ .none = {} });
-    }
-
-    // -uid N: match numeric user ID
     if (std.mem.eql(u8, arg, "-uid")) {
         pos.* += 1;
         if (pos.* >= args.len) {
@@ -1807,25 +1520,46 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         return allocExpr(allocator, .uid_match, .{ .uid_val = uid_val });
     }
+    return null;
+}
 
-    // -xattr: has extended attributes (macOS stub: always false)
-    if (std.mem.eql(u8, arg, "-xattr")) {
+/// Handle action predicates: -print, -print0, -delete, -ls, -quit, -printf,
+/// -false, -true, -prune, -xdev/-mount. Returns null when `arg` is none.
+fn parsePrimary_actions(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    has_action: *bool,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
+    if (std.mem.eql(u8, arg, "-print")) {
         pos.* += 1;
-        return allocExpr(allocator, .xattr_stub, .{ .none = {} });
+        has_action.* = true;
+        return allocExpr(allocator, .print, .{ .none = {} });
     }
-
-    // -xattrname: has named extended attribute (macOS stub: always false)
-    if (std.mem.eql(u8, arg, "-xattrname")) {
+    if (std.mem.eql(u8, arg, "-print0")) {
         pos.* += 1;
-        if (pos.* >= args.len) {
-            pctx.setError("missing argument to '-xattrname'", .{});
-            return error.MissingArgument;
-        }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .xattrname_stub, .{ .none = {} });
+        has_action.* = true;
+        return allocExpr(allocator, .print0, .{ .none = {} });
     }
-
-    // -printf: formatted output
+    if (std.mem.eql(u8, arg, "-delete")) {
+        pos.* += 1;
+        has_action.* = true;
+        return allocExpr(allocator, .delete, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-ls")) {
+        pos.* += 1;
+        has_action.* = true;
+        return allocExpr(allocator, .ls_action, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-quit")) {
+        pos.* += 1;
+        has_action.* = true;
+        return allocExpr(allocator, .quit_action, .{ .none = {} });
+    }
     if (std.mem.eql(u8, arg, "-printf")) {
         pos.* += 1;
         if (pos.* >= args.len) {
@@ -1837,18 +1571,331 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         has_action.* = true;
         return allocExpr(allocator, .printf_action, .{ .pattern = fmt_str });
     }
-
-    // -false: always evaluates to false
     if (std.mem.eql(u8, arg, "-false")) {
         pos.* += 1;
         return allocExpr(allocator, .false_expr, .{ .none = {} });
     }
-
-    // -true: always evaluates to true
     if (std.mem.eql(u8, arg, "-true")) {
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
+    if (std.mem.eql(u8, arg, "-prune")) {
+        pos.* += 1;
+        return allocExpr(allocator, .prune, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-xdev") or std.mem.eql(u8, arg, "-mount")) {
+        pos.* += 1;
+        return allocExpr(allocator, .xdev, .{ .none = {} });
+    }
+    return null;
+}
+
+/// Collect exec-style argv for one exec-family predicate and build its node.
+/// `plus_allowed` enables `{} +` batch mode; when a batch is collected the node
+/// uses `batch_tag`, otherwise `single_tag` (equal for -ok/-okdir). Sets
+/// `has_action` on success. Shared shape for all four exec-family predicates.
+fn parsePrimary_takeExec(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    plus_allowed: bool,
+    batch_tag: ExprTag,
+    single_tag: ExprTag,
+    has_action: *bool,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    assert(predicate.len > 0);
+    pos.* += 1;
+    var is_batch = false;
+    const argv = try parsePrimary_collectExecArgs(
+        allocator,
+        args,
+        pos,
+        predicate,
+        plus_allowed,
+        &is_batch,
+        pctx,
+    ) orelse unreachable;
+    has_action.* = true;
+    if (is_batch) {
+        return allocExpr(allocator, batch_tag, .{
+            .exec_data = .{ .argv = argv, .batch = true },
+        });
+    }
+    return allocExpr(allocator, single_tag, .{ .exec_data = .{ .argv = argv } });
+}
+
+/// Handle the exec family: -exec, -ok, -execdir, -okdir. The `+` batch
+/// terminator is accepted only by -exec/-execdir. Returns null otherwise.
+fn parsePrimary_execFamily(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    has_action: *bool,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
+    if (std.mem.eql(u8, arg, "-exec")) {
+        return try parsePrimary_takeExec(
+            allocator,
+            args,
+            pos,
+            "-exec",
+            true,
+            .exec_batch,
+            .exec_cmd,
+            has_action,
+            pctx,
+        );
+    }
+    if (std.mem.eql(u8, arg, "-execdir")) {
+        return try parsePrimary_takeExec(
+            allocator,
+            args,
+            pos,
+            "-execdir",
+            true,
+            .execdir_batch,
+            .execdir,
+            has_action,
+            pctx,
+        );
+    }
+    if (std.mem.eql(u8, arg, "-ok")) {
+        return try parsePrimary_takeExec(
+            allocator,
+            args,
+            pos,
+            "-ok",
+            false,
+            .ok,
+            .ok,
+            has_action,
+            pctx,
+        );
+    }
+    if (std.mem.eql(u8, arg, "-okdir")) {
+        return try parsePrimary_takeExec(
+            allocator,
+            args,
+            pos,
+            "-okdir",
+            false,
+            .okdir_stub,
+            .okdir_stub,
+            has_action,
+            pctx,
+        );
+    }
+    return null;
+}
+
+/// Consume the required reference path after a `-newer`/`-anewer`/`-cnewer`/
+/// `-mnewer` predicate, stat it, and build a `.newer_mtime` node with `tag`.
+fn parsePrimary_takeNewerRef(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    predicate: []const u8,
+    tag: ExprTag,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    assert(predicate.len > 0);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{predicate});
+        return error.MissingArgument;
+    }
+    const ref_path = args[pos.*];
+    pos.* += 1;
+    const ref_stat = doStat(ref_path, true) catch {
+        pctx.setError("cannot stat '{s}'", .{ref_path});
+        return error.StatError;
+    };
+    const ref_mtime = getMtime(ref_stat);
+    return allocExpr(allocator, tag, .{ .newer_mtime = ref_mtime });
+}
+
+/// Consume the reference path after `-Bnewer`, resolve its birth time (falling
+/// back to mtime), and build a `.bnewer_stub` node.
+fn parsePrimary_takeBnewer(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '-Bnewer'", .{});
+        return error.MissingArgument;
+    }
+    const ref_path = args[pos.*];
+    pos.* += 1;
+    // Get the birth time of the reference file
+    const ref_btime = getBirthTime(ref_path) orelse {
+        // Fall back to mtime if birth time unavailable
+        const ref_stat = doStat(ref_path, false) catch {
+            pctx.setError("'{s}': No such file or directory", .{ref_path});
+            return error.InvalidExpression;
+        };
+        return allocExpr(allocator, .bnewer_stub, .{ .newer_mtime = getMtime(ref_stat) });
+    };
+    return allocExpr(allocator, .bnewer_stub, .{ .newer_mtime = ref_btime });
+}
+
+/// Consume the reference path after `-samefile`, stat it, and build a
+/// `.samefile` node carrying its (inode, device) pair.
+fn parsePrimary_takeSamefile(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    assert(pos.* < args.len);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '-samefile'", .{});
+        return error.MissingArgument;
+    }
+    const ref_path = args[pos.*];
+    pos.* += 1;
+    const ref_stat = doStat(ref_path, true) catch {
+        pctx.setError("cannot stat '{s}'", .{ref_path});
+        return error.StatError;
+    };
+    return allocExpr(allocator, .samefile, .{ .samefile_data = .{
+        .ino = @intCast(ref_stat.ino),
+        .dev = @intCast(ref_stat.dev),
+    } });
+}
+
+/// Consume the reference path after `-newerXY`, resolve the Y timestamp, and
+/// build a `.newerxy_stub` node carrying the ref time and X field.
+fn parsePrimary_takeNewerXY(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    const x_field = arg[6];
+    const y_field = arg[7];
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{arg});
+        return error.MissingArgument;
+    }
+    const ref_path = args[pos.*];
+    pos.* += 1;
+    const ref_time = try parsePrimary_newerXYRefTime(ref_path, y_field, pctx) orelse return null;
+    return allocExpr(allocator, .newerxy_stub, .{ .newerxy_data = .{
+        .ref_time = ref_time,
+        .x_field = x_field,
+    } });
+}
+
+/// Handle the reference-time family: -newer, -anewer, -cnewer, -mnewer,
+/// -Bnewer, -newerXY, -samefile. Returns null when `arg` is none of these.
+fn parsePrimary_newerFamily(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
+    if (std.mem.eql(u8, arg, "-newer")) {
+        return try parsePrimary_takeNewerRef(allocator, args, pos, "-newer", .newer, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-anewer")) {
+        return try parsePrimary_takeNewerRef(allocator, args, pos, "-anewer", .anewer, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-cnewer")) {
+        return try parsePrimary_takeNewerRef(allocator, args, pos, "-cnewer", .cnewer, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-mnewer")) {
+        // -mnewer: alias for -newer (modification time newer than FILE)
+        return try parsePrimary_takeNewerRef(allocator, args, pos, "-mnewer", .newer, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-Bnewer")) {
+        return try parsePrimary_takeBnewer(allocator, args, pos, pctx);
+    }
+    if (std.mem.eql(u8, arg, "-samefile")) {
+        return try parsePrimary_takeSamefile(allocator, args, pos, pctx);
+    }
+    // -newerXY: compare timestamps. Matches -newerXY where X,Y are one of:
+    // a, B, c, m, t (8 chars total).
+    if (arg.len == 8 and std.mem.startsWith(u8, arg, "-newer")) {
+        return try parsePrimary_takeNewerXY(allocator, args, pos, arg, pctx);
+    }
+    return null;
+}
+
+/// Handle the always-false/stub predicates: -acl, -sparse, -xattr, -xattrname.
+/// Returns null when `arg` is none of these.
+fn parsePrimary_stubs(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    arg: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!?*Expression {
+    assert(pos.* < args.len);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
+    if (std.mem.eql(u8, arg, "-acl")) {
+        pos.* += 1;
+        return allocExpr(allocator, .acl_stub, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-sparse")) {
+        pos.* += 1;
+        return allocExpr(allocator, .sparse_stub, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-xattr")) {
+        pos.* += 1;
+        return allocExpr(allocator, .xattr_stub, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-xattrname")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-xattrname'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .xattrname_stub, .{ .none = {} });
+    }
+    return null;
+}
+
+fn parsePrimary(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    has_action: *bool,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    if (pos.* >= args.len) {
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    const arg = args[pos.*];
+    assert(pos.* < args.len);
+
+    if (try parsePrimary_globalsAndNoops(allocator, args, pos, arg)) |e| return e;
+    if (try parsePrimary_namePathType(allocator, args, pos, arg, pctx)) |e| return e;
+    if (try parsePrimary_sizeEmptyPerm(allocator, args, pos, arg, pctx)) |e| return e;
+    if (try parsePrimary_timeCompare(allocator, args, pos, arg, pctx)) |e| return e;
+    if (try parsePrimary_ownerAndIds(allocator, args, pos, arg, pctx)) |e| return e;
+    if (try parsePrimary_actions(allocator, args, pos, arg, has_action, pctx)) |e| return e;
+    if (try parsePrimary_execFamily(allocator, args, pos, arg, has_action, pctx)) |e| return e;
+    if (try parsePrimary_newerFamily(allocator, args, pos, arg, pctx)) |e| return e;
+    if (try parsePrimary_stubs(allocator, args, pos, arg, pctx)) |e| return e;
 
     pctx.setError("unknown predicate '{s}'", .{arg});
     return error.InvalidExpression;
@@ -2166,6 +2213,502 @@ fn evaluateLeafCtx(
     );
 }
 
+/// Compare a file size against a `-size` predicate. Byte units compare raw
+/// bytes; block-based units convert with ceiling division (matching GNU find).
+fn evaluateLeaf_size(stat_buf: StatInfo, sz: SizeExpr) bool {
+    const file_size: u64 = @intCast(@max(0, stat_buf.size));
+    if (sz.unit == .bytes) {
+        // For 'c' suffix, compare raw bytes directly
+        const target_bytes = sz.value;
+        return switch (sz.cmp) {
+            .exactly => file_size == target_bytes,
+            .greater_than => file_size > target_bytes,
+            .less_than => file_size < target_bytes,
+        };
+    }
+    // For block-based units, convert file size to unit count using ceiling
+    // division, matching GNU find behavior.
+    const unit_size: u64 = switch (sz.unit) {
+        .bytes => unreachable,
+        .words => 2,
+        .blocks => 512,
+        .kilobytes => 1024,
+        .megabytes => 1048576,
+        .gigabytes => 1073741824,
+    };
+    assert(sz.unit != .bytes);
+    assert(unit_size != 0);
+    const file_units = if (file_size == 0) 0 else (file_size + unit_size - 1) / unit_size;
+    return switch (sz.cmp) {
+        .exactly => file_units == sz.value,
+        .greater_than => file_units > sz.value,
+        .less_than => file_units < sz.value,
+    };
+}
+
+/// Compare a timestamp's age in days against a `-mtime`/-atime/-ctime/-Btime
+/// predicate. Ages at or before `now` are clamped to 0 (negative-age files).
+fn evaluateLeaf_ageDays(now: i64, file_time: i64, te: TimeExpr) bool {
+    const age_secs = now - file_time;
+    const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
+    // Negative space: non-positive ages clamp to 0. Positive space: age in days
+    // never exceeds age in seconds.
+    if (age_secs <= 0) assert(age_days == 0);
+    if (age_secs > 0) assert(age_days <= @as(u64, @intCast(age_secs)));
+    return switch (te.cmp) {
+        .exactly => age_days == te.days,
+        .greater_than => age_days > te.days,
+        .less_than => age_days < te.days,
+    };
+}
+
+/// Compare a timestamp's age in minutes against a `-mmin`/-amin/-cmin/-Bmin
+/// predicate. Ages at or before `now` are clamped to 0 (negative-age files).
+fn evaluateLeaf_ageMins(now: i64, file_time: i64, te: TimeExpr) bool {
+    const age_secs = now - file_time;
+    const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
+    // Negative space: non-positive ages clamp to 0. Positive space: age in
+    // minutes never exceeds age in seconds.
+    if (age_secs <= 0) assert(age_mins == 0);
+    if (age_secs > 0) assert(age_mins <= @as(u64, @intCast(age_secs)));
+    return switch (te.cmp) {
+        .exactly => age_mins == te.days,
+        .greater_than => age_mins > te.days,
+        .less_than => age_mins < te.days,
+    };
+}
+
+/// Compare a raw count (-links nlink, -inum inode) against a `te.days` value.
+fn evaluateLeaf_countCompare(value: u64, te: TimeExpr) bool {
+    const result = switch (te.cmp) {
+        .exactly => value == te.days,
+        .greater_than => value > te.days,
+        .less_than => value < te.days,
+    };
+    // Positive/negative space: an exact match implies equality, and a less-than
+    // match implies the value is strictly below the threshold.
+    if (result) {
+        if (te.cmp == .exactly) assert(value == te.days);
+        if (te.cmp == .less_than) assert(value < te.days);
+    }
+    return result;
+}
+
+/// Match a file's permission bits against a `-perm` predicate (exact, at-least,
+/// or any-of comparison over the low 12 mode bits).
+fn evaluateLeaf_perm(stat_buf: StatInfo, pe: PermExpr) bool {
+    const file_mode = @as(u32, @intCast(stat_buf.mode)) & 0o7777;
+    assert(file_mode <= 0o7777);
+    return switch (pe.cmp) {
+        .exact => file_mode == pe.mode,
+        .at_least => (file_mode & pe.mode) == pe.mode,
+        .any_of => if (pe.mode == 0) file_mode == 0 else (file_mode & pe.mode) != 0,
+    };
+}
+
+/// Run a compiled POSIX regex against the full path. Returns false on alloc
+/// failure (preserving the original best-effort behavior).
+fn evaluateLeaf_regex(allocator: Allocator, regex_ptr: *regex_h.regex_t, path: []const u8) bool {
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    const path_z = allocator.dupeZ(u8, path) catch return false;
+    defer allocator.free(path_z);
+    assert(path_z.len == path.len);
+    return regex_h.regexec(regex_ptr, path_z.ptr, 0, null, 0) == 0;
+}
+
+/// Compare a file's birth time age in days against a `-Btime` predicate. Returns
+/// false when birth time is unavailable (Linux, or unsupported filesystem).
+fn evaluateLeaf_btime(now: i64, path: []const u8, te: TimeExpr) bool {
+    assert(now > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    const btime = getBirthTime(path) orelse return false;
+    return evaluateLeaf_ageDays(now, btime, te);
+}
+
+/// Compare a file's birth time age in minutes against a `-Bmin` predicate.
+/// Returns false when birth time is unavailable.
+fn evaluateLeaf_bmin(now: i64, path: []const u8, te: TimeExpr) bool {
+    assert(now > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    const btime = getBirthTime(path) orelse return false;
+    return evaluateLeaf_ageMins(now, btime, te);
+}
+
+/// Compare a file's X timestamp to a stored Y reference time for `-newerXY`.
+/// 'B' uses birth time (false when unavailable); a/c/m use the matching field.
+fn evaluateLeaf_newerxy(stat_buf: StatInfo, path: []const u8, data: NewerXYData) bool {
+    assert(data.x_field != 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    const file_time: i64 = switch (data.x_field) {
+        'a' => getAtime(stat_buf),
+        'c' => getCtime(stat_buf),
+        'm' => getMtime(stat_buf),
+        'B' => getBirthTime(path) orelse return false,
+        else => getMtime(stat_buf),
+    };
+    return file_time > data.ref_time;
+}
+
+/// Match a symlink's target against a glob pattern for `-lname`/-ilname. Returns
+/// false for non-symlinks (only symlinks have a target to match).
+fn evaluateLeaf_lname(
+    io: std.Io,
+    allocator: Allocator,
+    path: []const u8,
+    kind: FileType,
+    pattern: []const u8,
+    insensitive: bool,
+) bool {
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    if (kind != .symlink) return false;
+    assert(kind == .symlink);
+    return matchSymlinkTarget(io, allocator, path, pattern, insensitive);
+}
+
+/// Match a file's (inode, device) pair against a `-samefile` reference.
+fn evaluateLeaf_samefile(stat_buf: StatInfo, sf: SamefileData) bool {
+    const file_ino: u64 = @intCast(stat_buf.ino);
+    const file_dev: i64 = @intCast(stat_buf.dev);
+    const result = file_ino == sf.ino and file_dev == sf.dev;
+    // A match requires both identifiers to coincide (positive and negative).
+    if (result) assert(file_ino == sf.ino);
+    if (result) assert(file_dev == sf.dev);
+    return result;
+}
+
+/// Record a path for a `-exec ... {} +` batch on the batch context. No-op when
+/// no batch context is active. Returns false only on allocation failure.
+fn evaluateLeaf_execBatch(
+    allocator: Allocator,
+    path: []const u8,
+    exec_data: ExecExpr,
+    batch_ctx: ?*BatchContext,
+) bool {
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    assert(exec_data.argv.len > 0);
+    if (batch_ctx) |bc| {
+        bc.exec_template = exec_data.argv;
+        const path_copy = allocator.dupe(u8, path) catch return false;
+        bc.exec_paths.append(allocator, path_copy) catch {
+            allocator.free(path_copy);
+            return false;
+        };
+    }
+    return true;
+}
+
+/// Record a path for a `-execdir ... {} +` batch, capturing the directory on
+/// first use. No-op without a batch context. Returns false on alloc failure.
+fn evaluateLeaf_execdirBatch(
+    allocator: Allocator,
+    path: []const u8,
+    exec_data: ExecExpr,
+    batch_ctx: ?*BatchContext,
+) bool {
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    assert(exec_data.argv.len > 0);
+    if (batch_ctx) |bc| {
+        bc.execdir_template = exec_data.argv;
+        if (bc.execdir_dir == null) {
+            const dir = std.fs.path.dirname(path) orelse ".";
+            bc.execdir_dir = allocator.dupe(u8, dir) catch return false;
+        }
+        const path_copy = allocator.dupe(u8, path) catch return false;
+        bc.execdir_paths.append(allocator, path_copy) catch {
+            allocator.free(path_copy);
+            return false;
+        };
+    }
+    return true;
+}
+
+/// Print `path` followed by a newline for `-print`. Sets `had_error` on a write
+/// failure, matching the original best-effort behavior.
+fn evaluateLeaf_print(stdout: anytype, path: []const u8, had_error: *bool) bool {
+    comptime assert(std.Io.Dir.max_path_bytes > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    stdout.print("{s}\n", .{path}) catch {
+        had_error.* = true;
+    };
+    return true;
+}
+
+/// Print `path` followed by a NUL byte for `-print0`. Sets `had_error` on any
+/// write failure, matching the original best-effort behavior.
+fn evaluateLeaf_print0(stdout: anytype, path: []const u8, had_error: *bool) bool {
+    comptime assert(std.Io.Dir.max_path_bytes > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    stdout.print("{s}", .{path}) catch {
+        had_error.* = true;
+    };
+    stdout.writeByte(0) catch {
+        had_error.* = true;
+    };
+    return true;
+}
+
+/// Handle one `%X` specifier in a `-printf` format string. Sets `had_error` on
+/// any write failure. Unknown specifiers are emitted verbatim as `%X`.
+fn evaluateLeaf_printf_percent(
+    stdout: anytype,
+    spec: u8,
+    path: []const u8,
+    basename: []const u8,
+    stat_buf: StatInfo,
+    had_error: *bool,
+) void {
+    comptime assert(@sizeOf(@TypeOf(spec)) == 1);
+    assert(spec != 0);
+    switch (spec) {
+        'f' => {
+            // basename
+            stdout.writeAll(basename) catch {
+                had_error.* = true;
+            };
+        },
+        'h' => {
+            // dirname
+            const dir = std.fs.path.dirname(path) orelse ".";
+            stdout.writeAll(dir) catch {
+                had_error.* = true;
+            };
+        },
+        'p' => {
+            // full path
+            stdout.writeAll(path) catch {
+                had_error.* = true;
+            };
+        },
+        's' => {
+            // file size in bytes
+            const file_size: u64 = @intCast(@max(0, stat_buf.size));
+            stdout.print("{d}", .{file_size}) catch {
+                had_error.* = true;
+            };
+        },
+        '%' => {
+            stdout.writeByte('%') catch {
+                had_error.* = true;
+            };
+        },
+        else => {
+            // Unknown specifier: print as-is
+            stdout.writeByte('%') catch {
+                had_error.* = true;
+            };
+            stdout.writeByte(spec) catch {
+                had_error.* = true;
+            };
+        },
+    }
+}
+
+/// Handle one `\X` escape in a `-printf` format string. Sets `had_error` on any
+/// write failure. Unknown escapes are emitted verbatim as `\X`.
+fn evaluateLeaf_printf_escape(stdout: anytype, spec: u8, had_error: *bool) void {
+    comptime assert(@sizeOf(@TypeOf(spec)) == 1);
+    assert(spec != 0);
+    switch (spec) {
+        'n' => {
+            stdout.writeByte('\n') catch {
+                had_error.* = true;
+            };
+        },
+        't' => {
+            stdout.writeByte('\t') catch {
+                had_error.* = true;
+            };
+        },
+        '\\' => {
+            stdout.writeByte('\\') catch {
+                had_error.* = true;
+            };
+        },
+        else => {
+            stdout.writeByte('\\') catch {
+                had_error.* = true;
+            };
+            stdout.writeByte(spec) catch {
+                had_error.* = true;
+            };
+        },
+    }
+}
+
+/// Drive a `-printf` format string, dispatching `%X` specifiers and `\X`
+/// escapes to their helpers and copying literal bytes. Sets `had_error` on any
+/// write failure. The bounded loop advances by 1 or 2 each step.
+fn evaluateLeaf_printf(
+    stdout: anytype,
+    fmt: []const u8,
+    path: []const u8,
+    basename: []const u8,
+    stat_buf: StatInfo,
+    had_error: *bool,
+) bool {
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    var i: usize = 0; // tiger:allow:usize-arch slice index cursor
+    while (i < fmt.len) {
+        if (fmt[i] == '%' and i + 1 < fmt.len) {
+            evaluateLeaf_printf_percent(stdout, fmt[i + 1], path, basename, stat_buf, had_error);
+            i += 2;
+        } else if (fmt[i] == '\\' and i + 1 < fmt.len) {
+            evaluateLeaf_printf_escape(stdout, fmt[i + 1], had_error);
+            i += 2;
+        } else {
+            stdout.writeByte(fmt[i]) catch {
+                had_error.* = true;
+            };
+            i += 1;
+        }
+    }
+    assert(i >= fmt.len);
+    return true;
+}
+
+// Evaluate the side-effect-free matcher tags (tests, not actions). Returns the
+// match result, or null when `expr.tag` is an action tag handled elsewhere.
+// Split out of evaluateLeaf so each function stays within the 70-line limit;
+// behavior per tag is byte-identical to the original switch.
+fn evaluateLeaf_match(
+    io: std.Io,
+    expr: *const Expression,
+    path: []const u8,
+    basename: []const u8,
+    stat_buf: StatInfo,
+    kind: FileType,
+    now: i64,
+    depth: u32,
+    allocator: Allocator,
+) ?bool {
+    assert(expr.tag != .and_expr);
+    assert(expr.tag != .not_expr);
+    switch (expr.tag) {
+        .true_expr => return true,
+        .name => return glob.globMatch(expr.data.pattern, basename),
+        .iname => return glob.globMatchInsensitive(expr.data.pattern, basename),
+        .path_match => return glob.globMatch(expr.data.pattern, path),
+        .file_type => return kind == expr.data.file_type,
+        .size => return evaluateLeaf_size(stat_buf, expr.data.size),
+        .empty => {
+            if (kind == .regular) return stat_buf.size == 0;
+            if (kind == .directory) return isDirEmpty(io, path) catch false;
+            return false;
+        },
+        .newer => return getMtime(stat_buf) > expr.data.newer_mtime,
+        .mtime => return evaluateLeaf_ageDays(now, getMtime(stat_buf), expr.data.time),
+        .perm => return evaluateLeaf_perm(stat_buf, expr.data.perm_expr),
+        .user => return matchUser(expr.data.name_str, stat_buf.uid),
+        .group => return matchGroup(expr.data.name_str, stat_buf.gid),
+        .atime => return evaluateLeaf_ageDays(now, getAtime(stat_buf), expr.data.time),
+        .ctime => return evaluateLeaf_ageDays(now, getCtime(stat_buf), expr.data.time),
+        .links => return evaluateLeaf_countCompare(@intCast(stat_buf.nlink), expr.data.time),
+        .mmin => return evaluateLeaf_ageMins(now, getMtime(stat_buf), expr.data.time),
+        .inum => return evaluateLeaf_countCompare(@intCast(stat_buf.ino), expr.data.time),
+        .amin => return evaluateLeaf_ageMins(now, getAtime(stat_buf), expr.data.time),
+        .cmin => return evaluateLeaf_ageMins(now, getCtime(stat_buf), expr.data.time),
+        .anewer => return getAtime(stat_buf) > expr.data.newer_mtime,
+        .cnewer => return getCtime(stat_buf) > expr.data.newer_mtime,
+        .fstype => return matchFstype(allocator, path, expr.data.name_str),
+        .flags => return matchFlags(stat_buf, expr.data.name_str),
+        .xdev => return true,
+        .nouser => return getpwuid(stat_buf.uid) == null,
+        .nogroup => return getgrgid(stat_buf.gid) == null,
+        .false_expr => return false,
+        .ipath => return glob.globMatchInsensitive(expr.data.pattern, path),
+        .regex_match, .iregex_match => return evaluateLeaf_regex(
+            allocator,
+            expr.data.regex_ptr,
+            path,
+        ),
+        .btime_stub => return evaluateLeaf_btime(now, path, expr.data.time),
+        .bmin_stub => return evaluateLeaf_bmin(now, path, expr.data.time),
+        .bnewer_stub => {
+            // -Bnewer REF: file's birth time newer than REF's birth time
+            const file_btime = getBirthTime(path) orelse return false;
+            return file_btime > expr.data.newer_mtime;
+        },
+        .newerxy_stub => return evaluateLeaf_newerxy(stat_buf, path, expr.data.newerxy_data),
+        .acl_stub, .sparse_stub, .xattr_stub, .xattrname_stub => return false,
+        .depth_n => return depth == expr.data.depth_val,
+        .gid_match => return stat_buf.gid == expr.data.gid_val,
+        .uid_match => return stat_buf.uid == expr.data.uid_val,
+        .lname => return evaluateLeaf_lname(io, allocator, path, kind, expr.data.pattern, false),
+        .ilname => return evaluateLeaf_lname(io, allocator, path, kind, expr.data.pattern, true),
+        .samefile => return evaluateLeaf_samefile(stat_buf, expr.data.samefile_data),
+        else => return null,
+    }
+}
+
+// Evaluate the action / side-effecting tags (-print, -exec, -delete, -prune,
+// ...). Carries had_error / pruned / batch_ctx writes exactly as before. The
+// boolean-operator tags are unreachable here (handled by evaluate()'s driver).
+fn evaluateLeaf_action(
+    io: std.Io,
+    expr: *const Expression,
+    path: []const u8,
+    basename: []const u8,
+    stat_buf: StatInfo,
+    kind: FileType,
+    allocator: Allocator,
+    stdout: anytype,
+    stderr: anytype,
+    had_error: *bool,
+    pruned: *bool,
+    batch_ctx: ?*BatchContext,
+) bool {
+    switch (expr.tag) {
+        .execdir => return doExecdir(io, allocator, path, basename, expr.data.exec_data),
+        .ls_action => return doLs(allocator, path, stat_buf, kind, stdout, had_error),
+        // -ok prompts user on /dev/tty; in non-interactive contexts
+        // (pipes, tests) it defaults to deny (return false).
+        .ok => return doOk(allocator, path, expr.data.exec_data, stderr),
+        .print => return evaluateLeaf_print(stdout, path, had_error),
+        .print0 => return evaluateLeaf_print0(stdout, path, had_error),
+        .delete => return doDelete(io, allocator, path, kind, stderr, had_error),
+        .exec_cmd => return doExec(io, allocator, path, expr.data.exec_data),
+        .exec_batch => return evaluateLeaf_execBatch(
+            allocator,
+            path,
+            expr.data.exec_data,
+            batch_ctx,
+        ),
+        .execdir_batch => return evaluateLeaf_execdirBatch(
+            allocator,
+            path,
+            expr.data.exec_data,
+            batch_ctx,
+        ),
+        .prune => {
+            pruned.* = true;
+            return true;
+        },
+        .okdir_stub => {
+            stderr.print("< ? ... > ", .{}) catch {};
+            return false;
+        },
+        .quit_action => {
+            // Signal that we should stop processing. In production this leads
+            // to an immediate exit from main; process.exit matches GNU find.
+            std.process.exit(0);
+        },
+        .printf_action => {
+            return evaluateLeaf_printf(
+                stdout,
+                expr.data.pattern,
+                path,
+                basename,
+                stat_buf,
+                had_error,
+            );
+        },
+        // Boolean operators are driven by evaluate()'s work stack, never here.
+        .and_expr, .or_expr, .not_expr => unreachable,
+        // All matcher tags are resolved by evaluateLeaf_match before we get here.
+        else => unreachable,
+    }
+}
+
 // Evaluate a single leaf (non and/or/not) node of the expression tree. Carries
 // all the order-sensitive side effects (-print, -exec, -delete, -prune, ...)
 // and writes through had_error / pruned / batch_ctx exactly as before; the
@@ -2190,389 +2733,32 @@ fn evaluateLeaf(
     assert(expr.tag != .and_expr);
     assert(expr.tag != .or_expr);
     assert(expr.tag != .not_expr);
-    switch (expr.tag) {
-        .true_expr => return true,
-        .name => return glob.globMatch(expr.data.pattern, basename),
-        .iname => return glob.globMatchInsensitive(expr.data.pattern, basename),
-        .path_match => return glob.globMatch(expr.data.pattern, path),
-        .file_type => return kind == expr.data.file_type,
-        .size => {
-            const sz = expr.data.size;
-            const file_size: u64 = @intCast(@max(0, stat_buf.size));
-            if (sz.unit == .bytes) {
-                // For 'c' suffix, compare raw bytes directly
-                const target_bytes = sz.value;
-                return switch (sz.cmp) {
-                    .exactly => file_size == target_bytes,
-                    .greater_than => file_size > target_bytes,
-                    .less_than => file_size < target_bytes,
-                };
-            } else {
-                // For block-based units, convert file size to unit count
-                // using ceiling division, matching GNU find behavior
-                const unit_size: u64 = switch (sz.unit) {
-                    .bytes => unreachable,
-                    .words => 2,
-                    .blocks => 512,
-                    .kilobytes => 1024,
-                    .megabytes => 1048576,
-                    .gigabytes => 1073741824,
-                };
-                const file_units = if (file_size == 0) 0 else (file_size + unit_size - 1) / unit_size;
-                return switch (sz.cmp) {
-                    .exactly => file_units == sz.value,
-                    .greater_than => file_units > sz.value,
-                    .less_than => file_units < sz.value,
-                };
-            }
-        },
-        .empty => {
-            if (kind == .regular) return stat_buf.size == 0;
-            if (kind == .directory) return isDirEmpty(io, path) catch false;
-            return false;
-        },
-        .newer => {
-            const file_mtime = getMtime(stat_buf);
-            return file_mtime > expr.data.newer_mtime;
-        },
-        .mtime => {
-            const te = expr.data.time;
-            const file_mtime = getMtime(stat_buf);
-            const age_secs = now - file_mtime;
-            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
-            return switch (te.cmp) {
-                .exactly => age_days == te.days,
-                .greater_than => age_days > te.days,
-                .less_than => age_days < te.days,
-            };
-        },
-        .perm => {
-            const file_mode = @as(u32, @intCast(stat_buf.mode)) & 0o7777;
-            const pe = expr.data.perm_expr;
-            return switch (pe.cmp) {
-                .exact => file_mode == pe.mode,
-                .at_least => (file_mode & pe.mode) == pe.mode,
-                .any_of => if (pe.mode == 0) file_mode == 0 else (file_mode & pe.mode) != 0,
-            };
-        },
-        .user => return matchUser(expr.data.name_str, stat_buf.uid),
-        .group => return matchGroup(expr.data.name_str, stat_buf.gid),
-        .atime => {
-            const te = expr.data.time;
-            const file_atime = getAtime(stat_buf);
-            const age_secs = now - file_atime;
-            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
-            return switch (te.cmp) {
-                .exactly => age_days == te.days,
-                .greater_than => age_days > te.days,
-                .less_than => age_days < te.days,
-            };
-        },
-        .ctime => {
-            const te = expr.data.time;
-            const file_ctime = getCtime(stat_buf);
-            const age_secs = now - file_ctime;
-            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
-            return switch (te.cmp) {
-                .exactly => age_days == te.days,
-                .greater_than => age_days > te.days,
-                .less_than => age_days < te.days,
-            };
-        },
-        .links => {
-            const te = expr.data.time;
-            const nlink: u64 = @intCast(stat_buf.nlink);
-            return switch (te.cmp) {
-                .exactly => nlink == te.days,
-                .greater_than => nlink > te.days,
-                .less_than => nlink < te.days,
-            };
-        },
-        .mmin => {
-            const te = expr.data.time;
-            const file_mtime = getMtime(stat_buf);
-            const age_secs = now - file_mtime;
-            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
-            return switch (te.cmp) {
-                .exactly => age_mins == te.days,
-                .greater_than => age_mins > te.days,
-                .less_than => age_mins < te.days,
-            };
-        },
-        .inum => {
-            const te = expr.data.time;
-            const file_ino: u64 = @intCast(stat_buf.ino);
-            return switch (te.cmp) {
-                .exactly => file_ino == te.days,
-                .greater_than => file_ino > te.days,
-                .less_than => file_ino < te.days,
-            };
-        },
-        .amin => {
-            const te = expr.data.time;
-            const file_atime = getAtime(stat_buf);
-            const age_secs = now - file_atime;
-            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
-            return switch (te.cmp) {
-                .exactly => age_mins == te.days,
-                .greater_than => age_mins > te.days,
-                .less_than => age_mins < te.days,
-            };
-        },
-        .cmin => {
-            const te = expr.data.time;
-            const file_ctime = getCtime(stat_buf);
-            const age_secs = now - file_ctime;
-            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
-            return switch (te.cmp) {
-                .exactly => age_mins == te.days,
-                .greater_than => age_mins > te.days,
-                .less_than => age_mins < te.days,
-            };
-        },
-        .anewer => {
-            const file_atime = getAtime(stat_buf);
-            return file_atime > expr.data.newer_mtime;
-        },
-        .cnewer => {
-            const file_ctime = getCtime(stat_buf);
-            return file_ctime > expr.data.newer_mtime;
-        },
-        .execdir => return doExecdir(io, allocator, path, basename, expr.data.exec_data),
-        .ls_action => return doLs(allocator, path, stat_buf, kind, stdout, had_error),
-        .fstype => return matchFstype(allocator, path, expr.data.name_str),
-        .flags => return matchFlags(stat_buf, expr.data.name_str),
-        // -ok prompts user on /dev/tty; in non-interactive contexts
-        // (pipes, tests) it defaults to deny (return false).
-        .ok => return doOk(allocator, path, expr.data.exec_data, stderr),
-        .xdev => return true,
-        .nouser => {
-            return getpwuid(stat_buf.uid) == null;
-        },
-        .nogroup => {
-            return getgrgid(stat_buf.gid) == null;
-        },
-        .print => {
-            stdout.print("{s}\n", .{path}) catch {
-                had_error.* = true;
-            };
-            return true;
-        },
-        .print0 => {
-            stdout.print("{s}", .{path}) catch {
-                had_error.* = true;
-            };
-            stdout.writeByte(0) catch {
-                had_error.* = true;
-            };
-            return true;
-        },
-        .delete => return doDelete(io, allocator, path, kind, stderr, had_error),
-        .exec_cmd => return doExec(io, allocator, path, expr.data.exec_data),
-        .exec_batch => {
-            if (batch_ctx) |bc| {
-                bc.exec_template = expr.data.exec_data.argv;
-                const path_copy = allocator.dupe(u8, path) catch return false;
-                bc.exec_paths.append(allocator, path_copy) catch {
-                    allocator.free(path_copy);
-                    return false;
-                };
-            }
-            return true;
-        },
-        .execdir_batch => {
-            if (batch_ctx) |bc| {
-                bc.execdir_template = expr.data.exec_data.argv;
-                if (bc.execdir_dir == null) {
-                    const dir = std.fs.path.dirname(path) orelse ".";
-                    bc.execdir_dir = allocator.dupe(u8, dir) catch return false;
-                }
-                const path_copy = allocator.dupe(u8, path) catch return false;
-                bc.execdir_paths.append(allocator, path_copy) catch {
-                    allocator.free(path_copy);
-                    return false;
-                };
-            }
-            return true;
-        },
-        // Boolean operators are driven by evaluate()'s work stack, never here.
-        .and_expr, .or_expr, .not_expr => unreachable,
-        .prune => {
-            pruned.* = true;
-            return true;
-        },
-        .false_expr => return false,
-        .ipath => return glob.globMatchInsensitive(expr.data.pattern, path),
-        .regex_match, .iregex_match => {
-            const path_z = allocator.dupeZ(u8, path) catch return false;
-            defer allocator.free(path_z);
-            return regex_h.regexec(expr.data.regex_ptr, path_z.ptr, 0, null, 0) == 0;
-        },
-        .btime_stub => {
-            // -Btime N: birth time in days
-            const te = expr.data.time;
-            const btime = getBirthTime(path) orelse {
-                // Birth time unavailable: fall back to ctime
-                return false;
-            };
-            const age_secs = now - btime;
-            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
-            return switch (te.cmp) {
-                .exactly => age_days == te.days,
-                .greater_than => age_days > te.days,
-                .less_than => age_days < te.days,
-            };
-        },
-        .bmin_stub => {
-            // -Bmin N: birth time in minutes
-            const te = expr.data.time;
-            const btime = getBirthTime(path) orelse {
-                return false;
-            };
-            const age_secs = now - btime;
-            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
-            return switch (te.cmp) {
-                .exactly => age_mins == te.days, // "days" field holds minutes here
-                .greater_than => age_mins > te.days,
-                .less_than => age_mins < te.days,
-            };
-        },
-        .bnewer_stub => {
-            // -Bnewer REF: file's birth time newer than REF's birth time
-            const ref_btime = expr.data.newer_mtime;
-            const file_btime = getBirthTime(path) orelse {
-                return false;
-            };
-            return file_btime > ref_btime;
-        },
-        .newerxy_stub => {
-            // -newerXY REF: compare file's X time to REF's Y time
-            const data = expr.data.newerxy_data;
-            const file_time: i64 = switch (data.x_field) {
-                'a' => getAtime(stat_buf),
-                'c' => getCtime(stat_buf),
-                'm' => getMtime(stat_buf),
-                'B' => getBirthTime(path) orelse return false,
-                else => getMtime(stat_buf),
-            };
-            return file_time > data.ref_time;
-        },
-        .acl_stub => return false,
-        .sparse_stub => return false,
-        .xattr_stub => return false,
-        .xattrname_stub => return false,
-        .depth_n => return depth == expr.data.depth_val,
-        .gid_match => return stat_buf.gid == expr.data.gid_val,
-        .uid_match => return stat_buf.uid == expr.data.uid_val,
-        .lname => {
-            if (kind != .symlink) return false;
-            return matchSymlinkTarget(io, allocator, path, expr.data.pattern, false);
-        },
-        .ilname => {
-            if (kind != .symlink) return false;
-            return matchSymlinkTarget(io, allocator, path, expr.data.pattern, true);
-        },
-        .samefile => {
-            const sf = expr.data.samefile_data;
-            const file_ino: u64 = @intCast(stat_buf.ino);
-            const file_dev: i64 = @intCast(stat_buf.dev);
-            return file_ino == sf.ino and file_dev == sf.dev;
-        },
-        .okdir_stub => {
-            stderr.print("< ? ... > ", .{}) catch {};
-            return false;
-        },
-        .quit_action => {
-            // Signal that we should stop processing.
-            // In production, this leads to an immediate exit from main.
-            // We use process.exit to match GNU find behavior.
-            std.process.exit(0);
-        },
-        .printf_action => {
-            const fmt = expr.data.pattern;
-            var i: usize = 0;
-            while (i < fmt.len) {
-                if (fmt[i] == '%' and i + 1 < fmt.len) {
-                    switch (fmt[i + 1]) {
-                        'f' => {
-                            // basename
-                            stdout.writeAll(basename) catch {
-                                had_error.* = true;
-                            };
-                        },
-                        'h' => {
-                            // dirname
-                            const dir = std.fs.path.dirname(path) orelse ".";
-                            stdout.writeAll(dir) catch {
-                                had_error.* = true;
-                            };
-                        },
-                        'p' => {
-                            // full path
-                            stdout.writeAll(path) catch {
-                                had_error.* = true;
-                            };
-                        },
-                        's' => {
-                            // file size in bytes
-                            const file_size: u64 = @intCast(@max(0, stat_buf.size));
-                            stdout.print("{d}", .{file_size}) catch {
-                                had_error.* = true;
-                            };
-                        },
-                        '%' => {
-                            stdout.writeByte('%') catch {
-                                had_error.* = true;
-                            };
-                        },
-                        else => {
-                            // Unknown specifier: print as-is
-                            stdout.writeByte('%') catch {
-                                had_error.* = true;
-                            };
-                            stdout.writeByte(fmt[i + 1]) catch {
-                                had_error.* = true;
-                            };
-                        },
-                    }
-                    i += 2;
-                } else if (fmt[i] == '\\' and i + 1 < fmt.len) {
-                    switch (fmt[i + 1]) {
-                        'n' => {
-                            stdout.writeByte('\n') catch {
-                                had_error.* = true;
-                            };
-                        },
-                        't' => {
-                            stdout.writeByte('\t') catch {
-                                had_error.* = true;
-                            };
-                        },
-                        '\\' => {
-                            stdout.writeByte('\\') catch {
-                                had_error.* = true;
-                            };
-                        },
-                        else => {
-                            stdout.writeByte('\\') catch {
-                                had_error.* = true;
-                            };
-                            stdout.writeByte(fmt[i + 1]) catch {
-                                had_error.* = true;
-                            };
-                        },
-                    }
-                    i += 2;
-                } else {
-                    stdout.writeByte(fmt[i]) catch {
-                        had_error.* = true;
-                    };
-                    i += 1;
-                }
-            }
-            return true;
-        },
-    }
+    const matched = evaluateLeaf_match(
+        io,
+        expr,
+        path,
+        basename,
+        stat_buf,
+        kind,
+        now,
+        depth,
+        allocator,
+    );
+    if (matched) |result| return result;
+    return evaluateLeaf_action(
+        io,
+        expr,
+        path,
+        basename,
+        stat_buf,
+        kind,
+        allocator,
+        stdout,
+        stderr,
+        had_error,
+        pruned,
+        batch_ctx,
+    );
 }
 
 /// Check if a filename contains characters that are problematic for xargs.
