@@ -380,9 +380,6 @@ pub fn processInput(
     const delim = options.line_delimiter;
     const delimiter_is_newline_or_nul = delim == '\n' or delim == 0;
     std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
-    // Negative and byte modes are mutually exclusive at the option layer.
-    const modes_exclusive = options.negative_count == 0 or options.byte_count == null;
-    std.debug.assert(modes_exclusive); // Not both negative and byte mode.
 
     if (options.negative_count > 0) {
         // Negative count: output all but the last N lines.
