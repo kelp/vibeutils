@@ -13,7 +13,7 @@ on:
 # JS-based actions (setup-zig, etc.) to run on Node 24 regardless of
 # their action.yml-declared runtime.
 env:
-  ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -158,11 +158,26 @@ jobs:
             cp extracted/share/man/man1/* "bottle/vibeutils/${VERSION}/share/man/man1/"
           fi
 
-          # Create bottle tarball and compute SHA
+          # Create bottle tarball
           tar -czf "${BOTTLE_NAME}" -C bottle .
           cp "${BOTTLE_NAME}" "artifacts/${BOTTLE_NAME}"
 
-          BOTTLE_SHA=$(sha256sum "${BOTTLE_NAME}" | awk '{print $1}')
+          # The formula's bottle sha256 must match the asset users actually
+          # download from the release. On a recovery re-run the release already
+          # exists and its bottle asset is immutable; the bottle we just rebuilt
+          # is byte-different (tar/gzip is not reproducible) and will NOT be
+          # re-uploaded, so we must use the published asset's SHA, not the
+          # rebuilt one. On the first run the release has no bottle yet and the
+          # freshly-built bottle is the one that gets uploaded.
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null \
+              | grep -qx "$BOTTLE_NAME"; then
+            gh release download "$TAG" --pattern "$BOTTLE_NAME" --dir published --clobber
+            BOTTLE_SHA=$(sha256sum "published/${BOTTLE_NAME}" | awk '{print $1}')
+            echo "Release exists; using published bottle asset SHA: ${BOTTLE_SHA}"
+          else
+            BOTTLE_SHA=$(sha256sum "${BOTTLE_NAME}" | awk '{print $1}')
+          fi
           echo "sha256=${BOTTLE_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Compute source tarball SHA256 for Homebrew

@@ -9,6 +9,16 @@
   colliding with the already-published, immutable release. The
   draft-cleanup step now only deletes a leftover *draft*, and
   create/publish is skipped when the release already exists.
+- On a release recovery re-run, derive the Homebrew bottle
+  sha256 from the already-published bottle asset rather than a
+  freshly rebuilt one. The bottle tarball is not byte-
+  reproducible, so a rebuilt bottle's hash would not match the
+  immutable asset users download, breaking `brew install`.
+- Opt JS-based actions into Node 24 with
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`, the variable GitHub
+  honors for the Node 20 to 24 cutover, replacing the
+  ineffective `ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION` and
+  silencing the `setup-zig` Node 20 deprecation warning.
 
 ## v0.10.2 — 2026-06-15
 

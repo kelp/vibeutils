@@ -11,7 +11,7 @@ on:
 # JS-based actions (setup-zig, setup-just, etc.) to run on Node 24
 # regardless of their action.yml-declared runtime.
 env:
-  ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
   group: integration-${{ github.ref }}
