@@ -804,8 +804,6 @@ fn runSort_writeOutput(
 ) !?u8 {
     const delimiter_valid = delimiter == '\n' or delimiter == 0;
     std.debug.assert(delimiter_valid);
-    const output_nonempty = opts.output_file == null or opts.output_file.?.len > 0;
-    std.debug.assert(output_nonempty);
 
     if (opts.output_file) |out_path| {
         const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
