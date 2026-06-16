@@ -45,12 +45,15 @@ pub const TimeUnit = enum {
     days,
 
     pub fn toNanos(self: TimeUnit) u64 {
-        return switch (self) {
+        const nanos: u64 = switch (self) {
             .seconds => std.time.ns_per_s,
             .minutes => std.time.ns_per_min,
             .hours => std.time.ns_per_hour,
             .days => std.time.ns_per_day,
         };
+        std.debug.assert(nanos > 0); // Negative: no unit maps to a zero multiplier.
+        std.debug.assert(nanos >= std.time.ns_per_s); // Positive: seconds is the floor.
+        return nanos;
     }
 };
 
@@ -151,6 +154,7 @@ fn parseTimeString_numberToNanos(number_part: []const u8, unit: TimeUnit) !u64 {
 
     // Convert to nanoseconds
     const nanos_per_unit = @as(f64, @floatFromInt(unit.toNanos()));
+    std.debug.assert(nanos_per_unit > 0); // Negative: int->float of >=1e9 stays positive.
     const total_nanos = parsed_value * nanos_per_unit;
 
     // Check for overflow
