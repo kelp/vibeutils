@@ -548,6 +548,7 @@ fn destPathFor(allocator: std.mem.Allocator, source_root: []const u8, dest_root:
 fn handleWalkEntry(allocator: std.mem.Allocator, io: std.Io, entry: common.walker.Entry, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     assert(source.len > 0);
     assert(dest.len > 0);
+    assert(std.mem.startsWith(u8, entry.path, source));
 
     const dest_path = try destPathFor(allocator, source, dest, entry.path);
     defer allocator.free(dest_path);
@@ -670,6 +671,8 @@ fn recoverDescendError(allocator: std.mem.Allocator, io: std.Io, dir_walker: *co
 fn recoverChild(allocator: std.mem.Allocator, io: std.Io, parent_path: []const u8, child_name: []const u8, source: []const u8, dest: []const u8, stderr_writer: anytype, walk_err: anyerror) void {
     assert(parent_path.len > 0);
     assert(child_name.len > 0);
+    assert(source.len > 0);
+    assert(dest.len > 0);
 
     const child_source = std.fmt.allocPrint(allocator, "{s}/{s}", .{ parent_path, child_name }) catch return;
     defer allocator.free(child_source);
@@ -700,6 +703,9 @@ fn recoverChild(allocator: std.mem.Allocator, io: std.Io, parent_path: []const u
 const SafeRenameError = std.Io.Dir.RenameError || error{ InvalidArgument, CrossDevice, PathAlreadyExists };
 
 fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
+    assert(old_path.len > 0);
+    assert(new_path.len > 0);
+
     const old_c = try std.posix.toPosixPath(old_path);
     const new_c = try std.posix.toPosixPath(new_path);
     const rc = std.c.rename(&old_c, &new_c);
@@ -731,6 +737,8 @@ fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
 /// When no_follow_symlink is true, a symlink to a directory is NOT treated
 /// as a directory (the symlink itself is treated as a file target).
 fn isDestDirectory(io: std.Io, path: []const u8, no_follow_symlink: bool) !bool {
+    assert(path.len > 0);
+
     if (no_follow_symlink) {
         // Use lstat to check without following symlinks
         const info = common.file.FileInfo.lstat(path) catch |err| switch (err) {
@@ -751,6 +759,13 @@ fn isDestDirectory(io: std.Io, path: []const u8, no_follow_symlink: bool) !bool 
 
 /// Move file or directory with atomic rename or cross-filesystem copy
 fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype, hinted_overwrite: *bool) !void {
+    // NOTE: source may be "" here. `mv -n "" srcB dst` / `mv -i "" srcB dst`
+    // (non-tty) are valid argv (argparse keeps "" as a positional) and are
+    // handled gracefully below (no-clobber skip / interactive default-no early
+    // return) without ever renaming. So no `assert(source.len > 0)` here; it
+    // would panic a previously-tolerated input. dest is always non-empty.
+    assert(dest.len > 0);
+
     // Check for same file using fstat to compare both inode and device.
     // If source and dest are hardlinks (same inode, different paths),
     // just unlink the source and succeed.
@@ -781,23 +796,16 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
     const dest_exists = if (std.Io.Dir.cwd().access(io, dest, .{})) |_| true else |_| false;
 
     if (dest_exists and options.interactive) {
-        // Only prompt if stdin is a terminal; otherwise default to
-        // "no" (skip the move). Matches GNU mv behavior and prevents
-        // hangs when stdin is not interactive (pipes, tests, etc.).
-        if (std.c.isatty(std.Io.File.stdin().handle) == 0) {
-            return; // Non-interactive stdin: default to no
-        }
-        if (!try common.prompt.promptYesNo(io, stderr_writer, "mv: overwrite '{s}'? ", .{dest})) {
-            return; // User chose not to overwrite
+        if (!try moveFile_confirmInteractive(io, dest, stderr_writer)) {
+            return; // Non-interactive stdin or user declined: skip the move
         }
     }
 
     // Print one-time overwrite hint when destination exists with -f (overwrite succeeds, hint suggests -i)
-    if (options.force and !options.interactive and !options.no_clobber and !hinted_overwrite.*) {
-        if (dest_exists) {
-            common.printHintWithProgram(allocator, stderr_writer, "mv", "use -i for interactive prompts before overwriting", .{});
-            hinted_overwrite.* = true;
-        }
+    if (options.force and !options.interactive and !options.no_clobber and
+        !hinted_overwrite.* and dest_exists)
+    {
+        moveFile_emitOverwriteHint(allocator, dest, stderr_writer, hinted_overwrite);
     }
 
     // Create backup of destination if it exists and backup mode is enabled
@@ -815,6 +823,44 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
         stdout_writer,
         stderr_writer,
     );
+}
+
+/// Decide whether an interactive overwrite should proceed. Returns true to
+/// proceed, false to skip. Only prompt if stdin is a terminal; otherwise
+/// default to "no" (skip). Matches GNU mv behavior and prevents hangs when
+/// stdin is not interactive (pipes, tests, etc.).
+fn moveFile_confirmInteractive(io: std.Io, dest: []const u8, stderr_writer: anytype) !bool {
+    std.debug.assert(dest.len > 0);
+    // Positive space: an isatty decision is being made on the stdin handle.
+    std.debug.assert(std.Io.File.stdin().handle >= 0);
+
+    if (std.c.isatty(std.Io.File.stdin().handle) == 0) {
+        return false; // Non-interactive stdin: default to no
+    }
+    return common.prompt.promptYesNo(io, stderr_writer, "mv: overwrite '{s}'? ", .{dest});
+}
+
+/// Emit the one-time "-f overwrote a destination" hint and mark it emitted.
+/// Caller guards on the not-yet-hinted condition; this helper performs only the
+/// straight-line print and flag set.
+fn moveFile_emitOverwriteHint(
+    allocator: std.mem.Allocator,
+    dest: []const u8,
+    stderr_writer: anytype,
+    hinted_overwrite: *bool,
+) void {
+    std.debug.assert(dest.len > 0);
+    // Negative space: must not be called once the hint has already fired.
+    std.debug.assert(!hinted_overwrite.*);
+
+    common.printHintWithProgram(
+        allocator,
+        stderr_writer,
+        "mv",
+        "use -i for interactive prompts before overwriting",
+        .{},
+    );
+    hinted_overwrite.* = true;
 }
 
 /// Handle the same-file case detected by isSameFile: error on identical paths,
@@ -1042,6 +1088,7 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'\nTry '{s} --help' for more information.", .{ files[0], prog_name });
         return @intFromEnum(common.ExitCode.misuse);
     }
+    assert(files.len >= 2);
 
     // GNU mv uses last-flag-wins for mutually exclusive -f, -i, -n.
     // Scan raw args to determine which appeared last (F38).
