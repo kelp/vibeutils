@@ -98,6 +98,10 @@ pub fn runCat(
     const stdin = &stdin_reader.interface;
 
     var line_state = LineNumberState{};
+    // Postcondition of the literal init: line numbering starts at 1 (positive space).
+    std.debug.assert(line_state.line_number == 1);
+    // Postcondition of the literal init: squeeze tracking starts clean (negative space).
+    std.debug.assert(!line_state.prev_blank);
     // Track errors to continue processing all files (POSIX requirement)
     var has_error = false;
 
@@ -163,10 +167,6 @@ fn runCat_processStdin(
     options: CatOptions,
     state: *LineNumberState,
 ) bool {
-    // Invariant: line numbering starts at 1 and only increases.
-    std.debug.assert(state.line_number >= 1);
-    // Negative space: line numbering never wraps below 1 (no underflow to zero).
-    std.debug.assert(state.line_number != 0);
     processInput(stdin, stdout, options, state) catch |err| {
         common.printErrorWithProgram(
             allocator,
@@ -192,8 +192,6 @@ fn runCat_processFile(
     options: CatOptions,
     state: *LineNumberState,
 ) bool {
-    // Invariant: line numbering starts at 1 and only increases.
-    std.debug.assert(state.line_number >= 1);
     // Negative space: the stdin marker is dispatched elsewhere, never here.
     std.debug.assert(!std.mem.eql(u8, file_path, "-"));
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
@@ -338,6 +336,9 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
             },
             else => |e| return e,
         };
+        // takeDelimiterInclusive returns bytes up to and including '\n', so the
+        // slice always contains the delimiter; guards the len - 1 below from underflow.
+        std.debug.assert(line_with_nl.len >= 1);
         // Strip the trailing newline for processFormattedLineChunk (it adds it back)
         const line = line_with_nl[0 .. line_with_nl.len - 1];
         try processFormattedLineChunk(writer, line, true, options, state, &at_line_start);
@@ -386,6 +387,9 @@ fn processFormattedLineChunk(writer: anytype, chunk: []const u8, has_newline: bo
     if (options.show_tabs or options.show_nonprinting) {
         try writeWithSpecialChars(writer, chunk, options);
     } else if (trailing_cr) {
+        // trailing_cr requires chunk.len > 0 (a conjunct above), so the slice below
+        // is in-bounds and chunk.len - 1 cannot underflow.
+        std.debug.assert(chunk.len >= 1);
         try writer.writeAll(chunk[0 .. chunk.len - 1]);
         try writer.writeAll("^M");
     } else {
