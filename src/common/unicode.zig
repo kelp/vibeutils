@@ -61,6 +61,10 @@ fn calculateUnicodeWidth(str: []const u8) usize {
     var i: usize = 0;
 
     while (i < str.len) {
+        // Loop invariant: the index never reaches or passes the end here,
+        // because the `while` condition guards entry on every iteration.
+        std.debug.assert(i < str.len);
+
         const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch {
             // Invalid UTF-8 sequence - count as width 1 and advance by 1 byte
             width += 1;
@@ -68,11 +72,21 @@ fn calculateUnicodeWidth(str: []const u8) usize {
             continue;
         };
 
+        // utf8ByteSequenceLength only ever succeeds with a length in 1..4;
+        // assert both ends so a future API change cannot silently break the
+        // advance arithmetic below.
+        std.debug.assert(cp_len >= 1);
+        std.debug.assert(cp_len <= 4);
+
         if (i + cp_len > str.len) {
             // Truncated UTF-8 sequence - count as width 1
             width += 1;
             break;
         }
+
+        // The truncation guard above already broke out when the sequence ran
+        // past the end, so a full codepoint fits within the buffer here.
+        std.debug.assert(i + cp_len <= str.len);
 
         const codepoint = std.unicode.utf8Decode(str[i .. i + cp_len]) catch {
             // Invalid UTF-8 sequence - count as width 1
@@ -84,6 +98,16 @@ fn calculateUnicodeWidth(str: []const u8) usize {
         width += codepointWidth(codepoint);
         i += cp_len;
     }
+
+    // Index postcondition: every path advances `i` by at most the bytes it
+    // consumed and never past the end, so the cursor lands within bounds for
+    // empty, all-invalid, truncated, and well-formed input alike.
+    std.debug.assert(i <= str.len);
+
+    // Width postcondition: each codepoint contributes at most its byte length
+    // (width-2 codepoints all encode to >=3 UTF-8 bytes; invalid/truncated
+    // bytes add exactly 1 each), so the total never exceeds the byte count.
+    std.debug.assert(width <= str.len);
 
     return width;
 }
