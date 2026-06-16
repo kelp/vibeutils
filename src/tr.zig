@@ -9,6 +9,7 @@ const common = @import("common");
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const prog_name = "tr";
 
@@ -457,6 +458,107 @@ fn findFillChar(set_str: []const u8) ?u8 {
     return null;
 }
 
+/// Result of building SET1: relocated from runTrWithInput so the parent keeps
+/// ownership of both defers (free raw, free comp) and maps variants to exit
+/// codes. On error the helper prints the identical message and returns the
+/// variant; behavior is byte-for-byte the same as the inline original.
+const RunTrWithInputBuildSet1Result = union(enum) {
+    ok: struct { set1: []u8, raw: []u8, comp: ?[]u8 },
+    set1_invalid,
+    oom,
+};
+
+/// Parse SET1 and, when complementing, build its complement. Straight-line
+/// relocation of the SET1 phase; the single isComplement() check is a
+/// build-this-or-that selection, not control-flow dispatch, so it stays here.
+fn runTrWithInput_buildSet1(
+    allocator: Allocator,
+    set1_str: []const u8,
+    complement: bool,
+    stderr_writer: *std.Io.Writer,
+) RunTrWithInputBuildSet1Result {
+    assert(prog_name.len > 0);
+
+    const raw_set1 = parseSet(allocator, set1_str) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET1", .{});
+        return .set1_invalid;
+    };
+
+    var set1: []u8 = raw_set1;
+    var comp_set1: ?[]u8 = null;
+    if (complement) {
+        comp_set1 = complementSet(allocator, raw_set1) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "out of memory", .{});
+            allocator.free(raw_set1);
+            return .oom;
+        };
+        set1 = comp_set1.?;
+    }
+
+    // Positive space: complement path yields a comp slice; non-complement uses raw.
+    // Negative space (else): a non-complement run never produces a comp slice.
+    if (complement) {
+        assert(comp_set1 != null);
+        assert(set1.ptr == comp_set1.?.ptr);
+    } else {
+        assert(comp_set1 == null);
+        assert(set1.ptr == raw_set1.ptr);
+    }
+
+    return .{ .ok = .{ .set1 = set1, .raw = raw_set1, .comp = comp_set1 } };
+}
+
+/// Result of the SET2 fill expansion: relocated so the parent keeps the single
+/// `set2_allocated` defer covering the freed-and-replaced slice identically.
+const RunTrWithInputExpandSet2FillResult = union(enum) {
+    ok: []u8,
+    oom,
+};
+
+/// Expand SET2 to SET1's length when a [c*] / [c*0] fill repeat is present.
+/// Straight-line relocation of the fill block; returns set2 unchanged when no
+/// fill char applies, or a fresh slice padded with the fill char otherwise.
+fn runTrWithInput_expandSet2Fill(
+    allocator: Allocator,
+    set2: []u8,
+    raw_set2: []const u8,
+    set1_len: usize, // tiger:allow:usize-arch derived from set1.len (slice length is usize)
+    stderr_writer: *std.Io.Writer,
+) RunTrWithInputExpandSet2FillResult {
+    assert(prog_name.len > 0);
+
+    if (findFillChar(raw_set2)) |fill_ch| {
+        if (set2.len < set1_len) {
+            const needed = set1_len - set2.len;
+            // Positive space: the fill path only runs when there is room to pad.
+            assert(needed > 0);
+            assert(set2.len < set1_len);
+            const new_set2 = allocator.alloc(u8, set1_len) catch {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "out of memory",
+                    .{},
+                );
+                return .oom;
+            };
+            @memcpy(new_set2[0..set2.len], set2);
+            @memset(new_set2[set2.len .. set2.len + needed], fill_ch);
+            allocator.free(set2);
+            // Negative space: the result is never shorter than requested.
+            assert(new_set2.len == set1_len);
+            return .{ .ok = new_set2 };
+        }
+    }
+    // No fill expansion: SET2 is returned unchanged. If a fill char was present
+    // we only reach here when SET2 is already at least SET1's length.
+    if (findFillChar(raw_set2) != null) {
+        assert(set2.len >= set1_len);
+    }
+    return .{ .ok = set2 };
+}
+
 /// Internal function for running tr with a specific input reader.
 /// Allows testing with mock input streams.
 fn runTrWithInput(
@@ -473,24 +575,20 @@ fn runTrWithInput(
         return @intFromEnum(common.ExitCode.general_error);
     }
 
-    // Parse SET1
-    const raw_set1 = parseSet(allocator, args.positionals[0]) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET1", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+    // Parse SET1 (and its complement when requested).
+    const set1_built = switch (runTrWithInput_buildSet1(
+        allocator,
+        args.positionals[0],
+        args.isComplement(),
+        stderr_writer,
+    )) {
+        .ok => |built| built,
+        .set1_invalid => return @intFromEnum(common.ExitCode.misuse),
+        .oom => return @intFromEnum(common.ExitCode.general_error),
     };
-    defer allocator.free(raw_set1);
-
-    // Apply complement if requested
-    var set1: []u8 = raw_set1;
-    var comp_set1: ?[]u8 = null;
-    if (args.isComplement()) {
-        comp_set1 = complementSet(allocator, raw_set1) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "out of memory", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        set1 = comp_set1.?;
-    }
-    defer if (comp_set1) |cs| allocator.free(cs);
+    var set1: []u8 = set1_built.set1;
+    defer allocator.free(set1_built.raw);
+    defer if (set1_built.comp) |cs| allocator.free(cs);
 
     // Parse SET2 if provided
     var set2: []u8 = &.{};
@@ -502,22 +600,17 @@ fn runTrWithInput(
         };
         set2_allocated = true;
 
-        // Handle [c*] / [c*0] fill repetition: expand to match SET1 length.
-        // parseSet produced count=0 for these, so the fill char contributed
-        // nothing. Detect the fill char from the raw string and append copies.
-        if (findFillChar(args.positionals[1])) |fill_ch| {
-            if (set2.len < set1.len) {
-                const needed = set1.len - set2.len;
-                const new_set2 = allocator.alloc(u8, set1.len) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-                @memcpy(new_set2[0..set2.len], set2);
-                @memset(new_set2[set2.len .. set2.len + needed], fill_ch);
-                allocator.free(set2);
-                set2 = new_set2;
-            }
-        }
+        // Handle [c*] / [c*0] fill repetition: expand SET2 to match SET1 length.
+        set2 = switch (runTrWithInput_expandSet2Fill(
+            allocator,
+            set2,
+            args.positionals[1],
+            set1.len,
+            stderr_writer,
+        )) {
+            .ok => |expanded| expanded,
+            .oom => return @intFromEnum(common.ExitCode.general_error),
+        };
     }
     defer if (set2_allocated) allocator.free(set2);
 
