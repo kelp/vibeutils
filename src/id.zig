@@ -142,6 +142,10 @@ pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
         .stdout_writer = stdout_writer,
         .stderr_writer = stderr_writer,
     };
+    // The extra-operand guard above already rejected more than one USERNAME.
+    std.debug.assert(parsed.positionals.len <= 1);
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(ctx.delimiter));
 
     // Resolve target user (named user or current process).
     var uid: common.user_group.uid_t = undefined;
@@ -227,10 +231,8 @@ fn runId_checkFlagCombos(
     const mode_count: u8 = @as(u8, @intFromBool(parsed.user)) +
         @as(u8, @intFromBool(parsed.group)) +
         @as(u8, @intFromBool(show_groups));
-    // Positive space: at most all three mode flags can be set.
-    std.debug.assert(mode_count <= 3);
-    // Negative space: -a is never a mode flag here.
-    std.debug.assert(show_groups == parsed.groups);
+    // Negative space: -A (audit) exits in runId before this validator runs.
+    std.debug.assert(!parsed.audit);
     if (mode_count > 1) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
         return @intFromEnum(common.ExitCode.misuse);
@@ -478,11 +480,9 @@ fn runId_printAllGroups(
     const delimiter = ctx.delimiter;
     // Reached only via the -G branch in runId.
     std.debug.assert(parsed.groups);
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
     const group_separator: u8 = if (parsed.zero) 0 else ' ';
-    // Separator tracks -z: NUL when zero, space otherwise. Compare against the
-    // independently derived expected value to avoid a compound assert boolean.
-    const separator_expected: u8 = if (parsed.zero) 0 else ' ';
-    std.debug.assert(group_separator == separator_expected);
 
     // Collect the group list: getgrouplist(3) for a named user, getgroups(2)
     // for the current process. A null result means "no list, print the single
@@ -600,6 +600,8 @@ fn printSingleGroup(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !u8 {
+    // Callers thread ctx.delimiter through, so it is newline or NUL only.
+    std.debug.assert(runId_isTerminator(delimiter));
     if (print_name) {
         const info = common.user_group.getGroupById(target_gid, allocator) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for group ID {d}", .{target_gid});
@@ -637,11 +639,17 @@ fn getGroupsForUser(uid: common.user_group.uid_t, gid: std.c.gid_t, allocator: A
     var ngroups: c_int = 16;
     var attempt: u8 = 0;
     while (attempt < 8) : (attempt += 1) {
+        // ngroups starts at 16 and only ever grows, so it stays positive; this
+        // guards the @intCast used as the allocation element count below.
+        std.debug.assert(ngroups > 0);
         const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch return null;
         var call_ngroups = ngroups;
         const rc = getgrouplist(owned_name.ptr, gid, buf.ptr, &call_ngroups);
         if (rc >= 0) {
             const count: usize = @intCast(call_ngroups);
+            // Success means the list fit, so getgrouplist stored no more groups
+            // than the buffer holds; guards the buf[0..count] slices below.
+            std.debug.assert(count <= buf.len);
             // Shrink to exact size so callers can free the returned slice.
             if (allocator.resize(buf, count)) {
                 return buf[0..count];
@@ -678,6 +686,8 @@ fn printDefaultFormat(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !u8 {
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
     // Print uid=N(name)
     const user_info = common.user_group.getUserById(uid, allocator) catch {
         // Print without name if lookup fails
@@ -700,6 +710,8 @@ fn printDefaultGidAndGroups(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !u8 {
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
     // Print gid=N(name)
     const group_info = common.user_group.getGroupById(gid, allocator) catch {
         try stdout_writer.print(" gid={d}", .{gid});
@@ -737,6 +749,9 @@ fn printDefaultGidAndGroups(
             return @intFromEnum(common.ExitCode.success);
         }
         const count: usize = @intCast(actual);
+        // getgroups never reports more groups than the buffer it was given;
+        // guards the count==buf.len check and the buf[0..count] memcpy below.
+        std.debug.assert(count <= buf.len);
         if (count == buf.len) break :blk buf;
         const exact = allocator.alloc(std.c.gid_t, count) catch {
             allocator.free(buf);
@@ -835,6 +850,9 @@ fn printPrettyGroups(
     }
 
     const count: usize = @intCast(actual);
+    // getgroups never reports more groups than the buffer it was given;
+    // guards the group_list[0..count] slice below.
+    std.debug.assert(count <= group_list.len);
     for (group_list[0..count], 0..) |g, i| {
         const group_gid: common.user_group.gid_t = @intCast(g);
         if (i > 0) try stdout_writer.writeByte(' ');
