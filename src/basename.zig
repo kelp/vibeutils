@@ -86,6 +86,9 @@ pub fn runBasename(allocator: Allocator, io: std.Io, args: []const []const u8, s
         common.printErrorWithProgram(allocator, stderr_writer, "basename", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
+    // The length-0 case returned above, so at least one operand is guaranteed
+    // here; this is the precondition for the positionals[0]/[2] indexing below.
+    std.debug.assert(parsed_args.positionals.len >= 1);
 
     // Process files - -s flag implies -a (multiple) according to GNU basename behavior
     if (parsed_args.multiple or parsed_args.suffix != null) {
@@ -100,6 +103,9 @@ pub fn runBasename(allocator: Allocator, io: std.Io, args: []const []const u8, s
             common.printErrorWithProgram(allocator, stderr_writer, "basename", "extra operand '{s}'", .{parsed_args.positionals[2]});
             return @intFromEnum(common.ExitCode.misuse);
         }
+        // The len > 2 case returned above; combined with len >= 1 this puts the
+        // count in {1,2}, justifying positionals[0] and the guarded [1] access.
+        std.debug.assert(parsed_args.positionals.len <= 2);
 
         const path = parsed_args.positionals[0];
         const maybe_suffix = if (parsed_args.positionals.len > 1) parsed_args.positionals[1] else null;
@@ -149,6 +155,9 @@ fn computeBasename(path: []const u8, maybe_suffix: ?[]const u8) []const u8 {
     if (path.len == 0) {
         return "";
     }
+    // The empty case returned above, so every path below indexes a non-empty
+    // slice (path[end - 1], path[0]) and forms path[0..end].
+    std.debug.assert(path.len >= 1);
 
     // Handle special case for root directory
     if (std.mem.eql(u8, path, "/")) {
@@ -160,6 +169,10 @@ fn computeBasename(path: []const u8, maybe_suffix: ?[]const u8) []const u8 {
     while (end > 1 and path[end - 1] == '/') {
         end -= 1;
     }
+    // The loop only decrements while end > 1, and end starts at path.len (>= 1),
+    // so end stays in [1, path.len]; this bounds the path[0..end] slice below.
+    std.debug.assert(end >= 1);
+    std.debug.assert(end <= path.len);
 
     // If we removed all characters except slashes, return /
     if (end == 1 and path[0] == '/') {
@@ -173,12 +186,18 @@ fn computeBasename(path: []const u8, maybe_suffix: ?[]const u8) []const u8 {
         last_slash + 1
     else
         0;
+    // basename_start is 0 or last_slash + 1 where last_slash indexes into
+    // trimmed_path, so the trimmed_path[basename_start..] slice is in bounds.
+    std.debug.assert(basename_start <= trimmed_path.len);
 
     var result = trimmed_path[basename_start..];
 
     // Remove suffix if present and valid
     if (maybe_suffix) |suffix| {
         if (suffix.len > 0 and std.mem.endsWith(u8, result, suffix) and !std.mem.eql(u8, result, suffix)) {
+            // endsWith being true means suffix is a trailing substring of
+            // result, so result[0 .. result.len - suffix.len] never underflows.
+            std.debug.assert(suffix.len <= result.len);
             result = result[0 .. result.len - suffix.len];
         }
     }
