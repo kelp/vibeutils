@@ -172,6 +172,9 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
         }
         try filtered_args.append(allocator, arg);
     }
+    // Filtering only ever skips args (--backup/--preserve forms), never adds, so
+    // the filtered list can be no longer than the input.
+    assert(args.len >= filtered_args.items.len);
 
     var config = common.argparse.ArgParser.parseOrExit(CpConfig, allocator, filtered_args.items, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(config.positionals);
@@ -198,7 +201,10 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
         }
     }
 
-    // Execute copy operations
+    // Execute copy operations. The `< 2` guard above returned for the 0- and
+    // 1-positional cases, so executeCopyOperations is reached only with a
+    // source and a destination present.
+    assert(config.positionals.len >= 2);
     var hinted_overwrite = false;
     const success = try executeCopyOperations(allocator, io, stdout_writer, stderr_writer, config.positionals, config.runtime(), &hinted_overwrite);
 
@@ -278,6 +284,10 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
 
 /// Execute all copy operations
 fn executeCopyOperations(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
+    // Precondition: run() rejects positionals.len < 2 before calling, so at
+    // least a source and a dest are present (indexing/slicing below relies on
+    // this).
+    assert(args.len >= 2);
     const dest = args[args.len - 1];
 
     // --parents requires destination to be a directory
@@ -433,7 +443,6 @@ fn copySingleFile_precheck(
     options: RuntimeOptions,
 ) CopyPrecheck {
     std.debug.assert(source.len > 0);
-    std.debug.assert(final_dest_path.len > 0);
 
     // Check for same file
     if (common.file_ops.isSameFile(io, source, final_dest_path)) {
@@ -479,9 +488,11 @@ fn copySingleFile_maybePrintOverwriteHint(
     hinted_overwrite: *bool,
 ) void {
     std.debug.assert(source.len > 0);
-    std.debug.assert(final_dest_path.len > 0);
 
     if (!dest_exists) return;
+    // Past the guard the destination exists, so it cannot be the empty operand
+    // (`cp src ''` never exists): final_dest_path is a real, non-empty path.
+    std.debug.assert(final_dest_path.len > 0);
     if (options.interactive) return;
     if (options.force) return;
     if (hinted_overwrite.*) return;
@@ -558,7 +569,6 @@ fn copySingleFile_dispatchByType(
     options: RuntimeOptions,
 ) bool {
     std.debug.assert(source.len > 0);
-    std.debug.assert(final_dest_path.len > 0);
 
     // For regular files, handle hard link and symbolic link modes
     if (source_type == .regular_file or (source_type == .symlink and follow_symlinks)) {
@@ -593,6 +603,11 @@ fn copySingleFile_dispatchByType(
 
 /// Copy a regular file
 fn copyRegularFile(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+    // Forwarded unchanged from copySingleFile_dispatchByType, which already
+    // asserts the source operand is non-empty. The dest operand may be empty
+    // (e.g. `cp src ''`); the OS rejects it on the create/open path below.
+    assert(source_path.len > 0);
+
     // Get source file stats
     const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source_path, common.posixErrorString(err) });
@@ -654,6 +669,10 @@ fn copyRegularFile(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writ
 /// Copy file contents in place, preserving the destination inode.
 /// Opens both files, truncates the destination, and copies data.
 fn copyInPlace(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8) !void {
+    // Sole caller copyRegularFile forwards its own non-empty operands here.
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
     const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, common.posixErrorString(err) });
         return error.SourceNotReadable;
@@ -680,6 +699,12 @@ fn copyInPlace(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, 
 
 /// Copy a symbolic link
 fn copySymlink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+    // source_path is non-empty on both forwarding paths (dispatchByType after a
+    // successful source stat; handleTreeSymlink with a walker entry.path). The
+    // dispatch path's dest_path may be an empty operand (`cp src ''`); the OS
+    // rejects it at symLink below.
+    assert(source_path.len > 0);
+
     // Read the symlink target
     const target = getSymlinkTarget(allocator, io, source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot read link '{s}': {s}", .{ source_path, common.posixErrorString(err) });
@@ -706,6 +731,10 @@ fn copySymlink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, 
 
 /// Create a hard link instead of copying
 fn createHardLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+    // Sole caller dispatchByType forwards a non-empty source (post-stat); the
+    // dest operand may be empty (`cp -l src ''`), rejected by the OS at hardLink.
+    assert(source_path.len > 0);
+
     // Handle force overwrite if needed
     if (fileExists(io, dest_path) and options.force) {
         handleForceOverwrite(io, dest_path) catch {};
@@ -727,6 +756,10 @@ fn createHardLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Write
 
 /// Create a symbolic link instead of copying
 fn createSymbolicLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8) bool {
+    // Sole caller dispatchByType forwards a non-empty source (post-stat); the
+    // dest operand may be empty (`cp -s src ''`), rejected by the OS at symLink.
+    assert(source_path.len > 0);
+
     std.Io.Dir.cwd().symLink(io, source_path, dest_path, .{}) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create symbolic link '{s}' to '{s}': {s}", .{ dest_path, source_path, common.posixErrorString(err) });
         return false;
@@ -779,8 +812,13 @@ fn copyTree(
     dest_path: []const u8,
     options: RuntimeOptions,
 ) bool {
+    // source_path is non-empty (dispatchByType reaches here only after a
+    // successful source stat); dest_path may be an empty operand (`cp -r dir ''`),
+    // rejected by the OS when the walk materializes the root.
     assert(source_path.len > 0);
-    assert(dest_path.len > 0);
+    // The queue bound the walk loop below checks against must be positive for
+    // `task_index < tree_task_max` to be a real bound.
+    comptime assert(tree_task_max > 0);
 
     var tasks: std.ArrayList(TreeTask) = .empty;
     // Task 0 borrows the operand source/dest; follow-tasks (index > 0) own all
@@ -851,8 +889,10 @@ fn copyOneTree(
     options: RuntimeOptions,
     tasks: *std.ArrayList(TreeTask),
 ) bool {
+    // Task 0's source is non-empty (post-stat in copySingleFile) and follow-tasks
+    // own a join()-derived source; task 0's dest may be an empty operand
+    // (`cp -r dir ''`) so only source non-emptiness is invariant here.
     assert(task.source.len > 0);
-    assert(task.dest.len > 0);
 
     var walker = common.walker.Walker.init(allocator, .{
         .order = .both,
@@ -879,6 +919,9 @@ fn copyOneTree(
         state.dest_paths.deinit(allocator);
         state.ancestors.deinit(allocator);
     }
+    // Restate the construction invariant the post-order pop relies on: the
+    // inherited prefix length matches the ancestors just seeded below.
+    assert(state.inherited_len == task.ancestors.len);
     state.ancestors.appendSlice(allocator, task.ancestors) catch {};
 
     var success = true;
@@ -920,7 +963,6 @@ fn handleTreeEntry(
     tasks: *std.ArrayList(TreeTask),
 ) bool {
     assert(entry.path.len > 0);
-    assert(entry.basename.len > 0);
     switch (entry.kind) {
         .directory => return handleTreeDir(
             allocator,
@@ -1013,7 +1055,6 @@ fn treeEntryDest(
     task: TreeTask,
     state: *const TreeWalk,
 ) ?[]u8 {
-    assert(entry.basename.len > 0);
     if (entry.depth == 0) {
         return allocator.dupe(u8, task.dest) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
@@ -1040,8 +1081,9 @@ fn createTreeDir(
     dest: []const u8,
     options: RuntimeOptions,
 ) bool {
+    // dest is the entry's resolved destination; it may be empty when the tree
+    // root inherits an empty dest operand (`cp -r dir ''`). createDir rejects it.
     assert(entry.kind == .directory);
-    assert(dest.len > 0);
     std.Io.Dir.cwd().createDir(io, dest, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
@@ -1103,6 +1145,10 @@ fn handleTreeSymlink(
     tasks: *std.ArrayList(TreeTask),
 ) bool {
     assert(entry.kind == .sym_link);
+    // A symlink is never the walk root (copyTree only roots real directories;
+    // command-line symlink operands are resolved before any tree walk), so it
+    // is always emitted as a child.
+    assert(entry.depth >= 1);
     const follow = switch (options.symlink_mode) {
         .follow_all => true,
         .follow_cmdline => entry.depth == 0,
@@ -1185,6 +1231,10 @@ fn followTreeDirSymlink(
 ) bool {
     assert(entry.kind == .sym_link);
     assert(dest.len > 0);
+    // Sole caller enters this branch only after confirming the dereferenced
+    // target is a directory (the `kind != .directory` early-return guard above),
+    // so enqueuing it as a directory task is justified.
+    assert(target_info.kind == .directory);
     const target = NodeId{ .dev = target_info.dev, .inode = target_info.inode };
     for (state.ancestors.items) |ancestor| {
         if (ancestor.dev == target.dev and ancestor.inode == target.inode) {
@@ -1310,6 +1360,11 @@ fn getFileTypeAtomic(io: std.Io, path: []const u8, no_dereference: bool) !FileTy
 
 /// Resolve the final destination path for a copy operation
 fn resolveFinalDestination(allocator: Allocator, io: std.Io, source: []const u8, dest: []const u8) ![]u8 {
+    // Sole caller copySingleFile reaches here only after stat'ing source, so an
+    // empty source operand has already short-circuited; source is non-empty.
+    // dest may be an empty operand (e.g. `cp src ''`), which the OS rejects below.
+    assert(source.len > 0);
+
     // Check if destination exists and is a directory
     const dest_info = common.file.FileInfo.stat(io, dest) catch |err| switch (err) {
         error.FileNotFound => {
@@ -1337,13 +1392,20 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 
 /// Get the target of a symbolic link
 fn getSymlinkTarget(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    // Sole caller copySymlink forwards its asserted-non-empty source_path.
+    assert(path.len > 0);
     var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.cwd().readLink(io, path, &target_buf);
+    // readLink reports bytes written, never more than the buffer holds; the
+    // slice below depends on this bound.
+    assert(len <= target_buf.len);
     return try allocator.dupe(u8, target_buf[0..len]);
 }
 
 /// Handle force removal of destination file
 fn handleForceOverwrite(io: std.Io, dest_path: []const u8) !void {
+    // All callers forward a non-empty dest_path; deleteFile needs a real path.
+    assert(dest_path.len > 0);
     std.Io.Dir.cwd().deleteFile(io, dest_path) catch |err| switch (err) {
         error.FileNotFound => {}, // Already doesn't exist
         error.IsDir => return err, // Can't remove directory with deleteFile
