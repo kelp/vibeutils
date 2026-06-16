@@ -100,36 +100,90 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
     var has_error = false;
     for (files) |file_path| {
         touchFile(file_path, options, allocator, io) catch |err| {
-            // Map specific errors to user-friendly messages
-            switch (err) {
-                error.InvalidTimestamp => {
-                    if (options.timestamp_str) |ts| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format '{s}'", .{ts});
-                    } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format", .{});
-                    }
-                },
-                error.InvalidDateFormat => {
-                    if (options.date_str) |ds| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format '{s}'", .{ds});
-                    } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format", .{});
-                    }
-                },
-                error.InvalidTimeType => {
-                    if (options.time_arg) |ta| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--time'", .{ta});
-                    } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument for '--time'", .{});
-                    }
-                },
-                else => handleError(allocator, prog_name, file_path, err, stderr_writer),
-            }
+            run_reportTouchError(allocator, prog_name, file_path, err, &options, stderr_writer);
             has_error = true;
         };
     }
 
     return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+}
+
+/// Maps a per-file touch error to a user-friendly message on stderr.
+fn run_reportTouchError(
+    allocator: std.mem.Allocator,
+    prog_name: []const u8,
+    file_path: []const u8,
+    err: anyerror,
+    options: *const TouchOptions,
+    stderr_writer: *std.Io.Writer,
+) void {
+    // An empty file_path ("touch ''") is a legitimate invocation whose error
+    // must be reported, not asserted away. Assert only the invariants we own:
+    // prog_name is our constant and the options struct we built is intact.
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(prog_name.len <= 16);
+
+    // Map specific errors to user-friendly messages
+    switch (err) {
+        error.InvalidTimestamp => {
+            if (options.timestamp_str) |ts| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid date format '{s}'",
+                    .{ts},
+                );
+            } else {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid date format",
+                    .{},
+                );
+            }
+        },
+        error.InvalidDateFormat => {
+            if (options.date_str) |ds| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid date format '{s}'",
+                    .{ds},
+                );
+            } else {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid date format",
+                    .{},
+                );
+            }
+        },
+        error.InvalidTimeType => {
+            if (options.time_arg) |ta| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid argument '{s}' for '--time'",
+                    .{ta},
+                );
+            } else {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid argument for '--time'",
+                    .{},
+                );
+            }
+        },
+        else => handleError(allocator, prog_name, file_path, err, stderr_writer),
+    }
 }
 
 /// Prints the help message using the provided writer.
@@ -314,19 +368,24 @@ fn updateFileTimes(
     }
 }
 
-/// Parses a timestamp string in GNU touch -t format.
-fn parseTimestamp(stamp: []const u8) !c.timespec {
-    var year: u32 = undefined;
-    var month: u32 = undefined;
-    var day: u32 = undefined;
-    var hour: u32 = undefined;
-    var minute: u32 = undefined;
-    var second: u32 = 0;
+/// Result of splitting a -t stamp into its main part and seconds field.
+const ParsedSeconds = struct {
+    main_part: []const u8,
+    second: u32,
+};
+
+/// Splits a -t stamp on the optional dot and parses the seconds field.
+fn parseTimestamp_parseSeconds(stamp: []const u8) !ParsedSeconds {
+    // An empty -t stamp is valid user input: it must flow through to the
+    // length switch and hit error.InvalidTimestamp, not panic. Bound only
+    // what we genuinely rely on (slice indexing fits in u32).
+    std.debug.assert(stamp.len < std.math.maxInt(u32));
 
     // Find the dot position for seconds
     const dot_pos = std.mem.findScalar(u8, stamp, '.');
     const main_part = if (dot_pos) |pos| stamp[0..pos] else stamp;
 
+    var second: u32 = 0;
     // Parse seconds if present
     if (dot_pos) |pos| {
         if (pos + 3 == stamp.len) {
@@ -336,44 +395,38 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
         }
     }
 
-    // Parse main part based on length
-    switch (main_part.len) {
-        12 => {
-            // CCYYMMDDhhmm - full 4-digit year
-            year = try std.fmt.parseInt(u32, main_part[0..4], 10);
-            month = try std.fmt.parseInt(u32, main_part[4..6], 10);
-            day = try std.fmt.parseInt(u32, main_part[6..8], 10);
-            hour = try std.fmt.parseInt(u32, main_part[8..10], 10);
-            minute = try std.fmt.parseInt(u32, main_part[10..12], 10);
-        },
-        10 => {
-            // YYMMDDhhmm
-            const yy = try std.fmt.parseInt(u32, main_part[0..2], 10);
-            // Use POSIX rules: 69-99 -> 1969-1999, 00-68 -> 2000-2068
-            // This handles the Y2K transition period
-            year = if (yy >= 69) 1900 + yy else 2000 + yy;
-            month = try std.fmt.parseInt(u32, main_part[2..4], 10);
-            day = try std.fmt.parseInt(u32, main_part[4..6], 10);
-            hour = try std.fmt.parseInt(u32, main_part[6..8], 10);
-            minute = try std.fmt.parseInt(u32, main_part[8..10], 10);
-        },
-        8 => {
-            // MMDDhhmm - use current year via clock_gettime
-            var ts: c.timespec = undefined;
-            _ = c.clock_gettime(.REALTIME, &ts);
-            const now_ns: i128 = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
-            const epoch_seconds = @as(u64, @intCast(@divFloor(now_ns, std.time.ns_per_s)));
-            const epoch_day = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_seconds) };
-            const year_day = epoch_day.getEpochDay().calculateYearDay();
-            year = @intCast(year_day.year);
+    std.debug.assert(main_part.len <= stamp.len);
+    // The seconds field is parsed from exactly two digits, so it never
+    // exceeds 99 here; range validation against 59 happens later.
+    std.debug.assert(second <= 99);
+    return ParsedSeconds{ .main_part = main_part, .second = second };
+}
 
-            month = try std.fmt.parseInt(u32, main_part[0..2], 10);
-            day = try std.fmt.parseInt(u32, main_part[2..4], 10);
-            hour = try std.fmt.parseInt(u32, main_part[4..6], 10);
-            minute = try std.fmt.parseInt(u32, main_part[6..8], 10);
-        },
-        else => return error.InvalidTimestamp,
-    }
+/// Reads the current year from the realtime clock for the 8-digit -t format.
+fn parseTimestamp_currentYear() u32 {
+    var ts: c.timespec = undefined;
+    _ = c.clock_gettime(.REALTIME, &ts);
+    const now_ns: i128 = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+    std.debug.assert(now_ns >= 0);
+    const epoch_seconds = @as(u64, @intCast(@divFloor(now_ns, std.time.ns_per_s)));
+    const epoch_day = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_seconds) };
+    const year_day = epoch_day.getEpochDay().calculateYearDay();
+    const year: u32 = @intCast(year_day.year);
+    std.debug.assert(year >= 1970);
+    return year;
+}
+
+/// Validates date/time fields and converts them to an epoch timespec.
+fn parseTimestamp_validateAndConvert(
+    year: u32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) !c.timespec {
+    std.debug.assert(second <= std.math.maxInt(u32));
+    std.debug.assert(minute <= std.math.maxInt(u32));
 
     // Validate ranges
     if (month < 1 or month > 12) return error.InvalidTimestamp;
@@ -412,6 +465,53 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
         .sec = @intCast(total_seconds),
         .nsec = 0,
     };
+}
+
+/// Parses a timestamp string in GNU touch -t format.
+fn parseTimestamp(stamp: []const u8) !c.timespec {
+    var year: u32 = undefined;
+    var month: u32 = undefined;
+    var day: u32 = undefined;
+    var hour: u32 = undefined;
+    var minute: u32 = undefined;
+
+    const parsed_seconds = try parseTimestamp_parseSeconds(stamp);
+    const main_part = parsed_seconds.main_part;
+    const second = parsed_seconds.second;
+
+    // Parse main part based on length
+    switch (main_part.len) {
+        12 => {
+            // CCYYMMDDhhmm - full 4-digit year
+            year = try std.fmt.parseInt(u32, main_part[0..4], 10);
+            month = try std.fmt.parseInt(u32, main_part[4..6], 10);
+            day = try std.fmt.parseInt(u32, main_part[6..8], 10);
+            hour = try std.fmt.parseInt(u32, main_part[8..10], 10);
+            minute = try std.fmt.parseInt(u32, main_part[10..12], 10);
+        },
+        10 => {
+            // YYMMDDhhmm
+            const yy = try std.fmt.parseInt(u32, main_part[0..2], 10);
+            // Use POSIX rules: 69-99 -> 1969-1999, 00-68 -> 2000-2068
+            // This handles the Y2K transition period
+            year = if (yy >= 69) 1900 + yy else 2000 + yy;
+            month = try std.fmt.parseInt(u32, main_part[2..4], 10);
+            day = try std.fmt.parseInt(u32, main_part[4..6], 10);
+            hour = try std.fmt.parseInt(u32, main_part[6..8], 10);
+            minute = try std.fmt.parseInt(u32, main_part[8..10], 10);
+        },
+        8 => {
+            // MMDDhhmm - use current year via clock_gettime
+            year = parseTimestamp_currentYear();
+            month = try std.fmt.parseInt(u32, main_part[0..2], 10);
+            day = try std.fmt.parseInt(u32, main_part[2..4], 10);
+            hour = try std.fmt.parseInt(u32, main_part[4..6], 10);
+            minute = try std.fmt.parseInt(u32, main_part[6..8], 10);
+        },
+        else => return error.InvalidTimestamp,
+    }
+
+    return parseTimestamp_validateAndConvert(year, month, day, hour, minute, second);
 }
 
 /// Parse ISO 8601 date/datetime string to a timespec.
