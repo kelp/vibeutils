@@ -105,6 +105,9 @@ pub fn runChmod(
     // With --reference, all args are files; otherwise the first is the mode.
     const mode_str = if (using_reference) "" else positionals[0];
     const files = if (using_reference) positionals else positionals[1..];
+    // checkOperandCount guarantees >= 1 file on both the --reference and the
+    // mode+file paths, so no valid invocation reaches here with zero files.
+    assert(files.len > 0);
 
     const options = buildOptions(parsed_args, parse_args);
 
@@ -182,9 +185,12 @@ fn checkOperandCount(
     using_reference: bool,
     stderr_writer: anytype,
 ) !bool {
-    assert(positionals.len <= std.math.maxInt(usize));
     // With --reference we need at least one file; otherwise a mode plus a file.
     const minimum: usize = if (using_reference) 1 else 2;
+    // minimum is exactly one of {1, 2} from the assignment above; bound it on
+    // both sides so a future edit adding a third operand class fails loudly.
+    assert(minimum >= 1);
+    assert(minimum <= 2);
     if (positionals.len >= minimum) {
         return true;
     }
@@ -202,6 +208,12 @@ fn checkOperandCount(
 fn buildOptions(parsed_args: ChmodArgs, parse_args: []const []const u8) ChmodOptions {
     assert(parse_args.len > 0);
     const symlink_policy = resolveSymlinkFlags(parsed_args, parse_args);
+    // resolveSymlinkFlags returns exactly one of three SymlinkPolicy variants,
+    // so precisely one of the mutually-exclusive option flags below is set:
+    // never all-false, never multiple-true.
+    assert(@intFromBool(symlink_policy == .follow_cmdline) +
+        @intFromBool(symlink_policy == .follow_all) +
+        @intFromBool(symlink_policy == .no_follow) == 1);
     return .{
         .changes_only = parsed_args.changes,
         .quiet = parsed_args.silent,
@@ -634,6 +646,11 @@ fn chmodWalk(
         .max_depth = 1024,
         .max_entries = 1 << 24,
     };
+    // Walker.init requires a positive depth cap; assert the contract at the call
+    // site so a future zero literal here fails loudly before init's own check.
+    assert(config.max_depth > 0);
+    // Likewise Walker.init requires a positive entry cap; mirror that precondition.
+    assert(config.max_entries > 0);
 
     var walker = try common.walker.Walker.init(allocator, config);
     defer walker.deinit(io);
@@ -856,6 +873,9 @@ fn statByPath(path: []const u8) !struct { mode: std.posix.mode_t, kind: std.Io.F
         }
     };
 
+    // Both blk arms mask with 0o7777, so statByPath yields only permission and
+    // special bits (setuid/setgid/sticky), never file-type bits.
+    assert(raw_mode <= 0o7777);
     return .{ .mode = @intCast(raw_mode), .kind = kind };
 }
 
@@ -871,6 +891,9 @@ fn parseMode(mode_str: []const u8) !Mode {
 
     // Try octal first.
     if (common.mode.parseOctal(mode_str)) |octal| {
+        // parseOctal rejects any value above 0o7777, so the success capture is
+        // bounded to the permission/special-bit range fed into Mode.fromOctal.
+        assert(octal <= 0o7777);
         return Mode.fromOctal(octal);
     } else |_| {}
 
@@ -992,6 +1015,10 @@ fn applyModeSpecToFile(
             break :blk new_mode_struct.toOctal();
         },
     };
+    // Every switch arm computes new_mode via Mode.toOctal, whose u3 class fields
+    // plus three special bits cap it at 0o7777; applyModeViaSyscall asserts this
+    // too, so document the precondition before the call.
+    assert(new_mode <= 0o7777);
 
     try applyModeViaSyscall(file_path, new_mode, options.no_dereference);
 
@@ -1056,6 +1083,8 @@ fn chmod(
 
     const mode_str = args[0];
     const files = args[1..];
+    // The guard above rejects args.len < 2, so files = args[1..] is non-empty.
+    assert(files.len > 0);
     const options = ChmodOptions{};
 
     try chmodFiles(io, allocator, mode_str, files, writer, stderr_writer, options);
