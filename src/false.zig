@@ -16,6 +16,11 @@ pub fn runFalse(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     _ = stdout_writer;
     _ = stderr_writer;
 
+    // The sole purpose of `false` is to exit unsuccessfully with status 1.
+    // Guard that the exit code we return is the POSIX failure code, so a
+    // refactor of the ExitCode enum can never silently make `false` succeed.
+    comptime std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
+
     return @intFromEnum(common.ExitCode.general_error);
 }
 
