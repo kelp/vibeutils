@@ -703,9 +703,6 @@ fn recoverChild(allocator: std.mem.Allocator, io: std.Io, parent_path: []const u
 const SafeRenameError = std.Io.Dir.RenameError || error{ InvalidArgument, CrossDevice, PathAlreadyExists };
 
 fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
-    assert(old_path.len > 0);
-    assert(new_path.len > 0);
-
     const old_c = try std.posix.toPosixPath(old_path);
     const new_c = try std.posix.toPosixPath(new_path);
     const rc = std.c.rename(&old_c, &new_c);
@@ -737,8 +734,6 @@ fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
 /// When no_follow_symlink is true, a symlink to a directory is NOT treated
 /// as a directory (the symlink itself is treated as a file target).
 fn isDestDirectory(io: std.Io, path: []const u8, no_follow_symlink: bool) !bool {
-    assert(path.len > 0);
-
     if (no_follow_symlink) {
         // Use lstat to check without following symlinks
         const info = common.file.FileInfo.lstat(path) catch |err| switch (err) {
@@ -763,8 +758,9 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
     // (non-tty) are valid argv (argparse keeps "" as a positional) and are
     // handled gracefully below (no-clobber skip / interactive default-no early
     // return) without ever renaming. So no `assert(source.len > 0)` here; it
-    // would panic a previously-tolerated input. dest is always non-empty.
-    assert(dest.len > 0);
+    // would panic a previously-tolerated input. dest may likewise be "" (e.g.
+    // `mv a ""`): isDestDirectory returns FileNotFound for it, so we reach here
+    // and the empty path surfaces a normal FileNotFound rename error below.
 
     // Check for same file using fstat to compare both inode and device.
     // If source and dest are hardlinks (same inode, different paths),
@@ -974,9 +970,6 @@ fn moveFile_renameOrFallback(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !void {
-    std.debug.assert(source.len > 0);
-    std.debug.assert(dest.len > 0);
-
     // Try atomic rename first (using safeRename to handle EINVAL gracefully)
     safeRename(source, dest) catch |err| switch (err) {
         error.CrossDevice => {
@@ -1183,7 +1176,6 @@ fn run_moveMultipleSources(
 
     // Multiple sources - destination must be a directory
     const dest = files[files.len - 1];
-    std.debug.assert(dest.len > 0);
 
     const dest_is_dir =
         isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
@@ -1251,9 +1243,6 @@ fn run_moveSingleSource(
     stderr_writer: anytype,
     hinted_overwrite: *bool,
 ) !u8 {
-    std.debug.assert(source.len > 0);
-    std.debug.assert(dest.len > 0);
-
     // Check if destination is a directory (respecting -h flag for symlinks)
     const dest_is_dir =
         isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
@@ -1316,9 +1305,6 @@ fn run_moveSingleSource_attempt(
     stderr_writer: anytype,
     hinted_overwrite: *bool,
 ) !u8 {
-    std.debug.assert(source.len > 0);
-    std.debug.assert(dest.len > 0);
-
     moveFile(
         allocator,
         io,
