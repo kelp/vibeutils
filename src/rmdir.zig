@@ -37,9 +37,12 @@ const ParentIterator = struct {
     /// Initialize iterator with a path.
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !ParentIterator {
         const duped = try allocator.dupe(u8, path);
+        // dupe returns a slice of identical length, so the iterator starts at the full path.
+        std.debug.assert(duped.len == path.len);
         return .{
             .allocator = allocator,
             .original = duped,
+            // current and original share the same backing slice at init.
             .current = duped,
         };
     }
@@ -58,6 +61,10 @@ const ParentIterator = struct {
             return null;
         }
 
+        // dirname returns a strictly shorter leading subslice, guaranteeing the walk terminates.
+        std.debug.assert(parent.len < self.current.len);
+        // current only ever shrinks from the original, so the parent stays within it.
+        std.debug.assert(parent.len < self.original.len);
         self.current = parent;
         return parent;
     }
@@ -103,6 +110,8 @@ fn run(
         .ignore_fail_on_non_empty = parsed_args.ignore_fail_on_non_empty,
     };
 
+    // The missing-operand guard above returned for the empty case, so we have at least one.
+    std.debug.assert(directories.len > 0);
     const exit_code = try removeDirectories(allocator, io, directories, stdout_writer, stderr_writer, options);
     return @intFromEnum(exit_code);
 }
@@ -133,11 +142,15 @@ fn printVersion(writer: *std.Io.Writer) !void {
 
 /// Remove directories with proper error handling.
 fn removeDirectories(allocator: std.mem.Allocator, io: std.Io, directories: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmdirOptions) !common.ExitCode {
+    // Callers only invoke this after the missing-operand guard, so there is always work to do.
+    std.debug.assert(directories.len > 0);
     var had_error = false;
 
     for (directories) |dir| {
         // Refuse to remove "." or ".." to avoid EINVAL crash and match GNU behavior
         const base = std.fs.path.basename(dir);
+        // basename returns the final component, always a subslice no longer than dir.
+        std.debug.assert(base.len <= dir.len);
         if (std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
             common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "refusing to remove '.' or '..' component from '{s}'", .{dir});
             had_error = true;
@@ -191,6 +204,10 @@ fn removeDirectoryWithParents(allocator: std.mem.Allocator, io: std.Io, path: []
     // Remove parent directories
     var iter = try ParentIterator.init(allocator, path);
     defer iter.deinit();
+    // Before any next() advances it, the iterator points at the full path.
+    std.debug.assert(iter.current.len == path.len);
+    // init keeps the immutable original snapshot at the full path length too.
+    std.debug.assert(iter.original.len == path.len);
 
     while (iter.next()) |parent| {
         removeSingleDirectory(io, parent, stdout_writer, stderr_writer, options) catch |err| {
