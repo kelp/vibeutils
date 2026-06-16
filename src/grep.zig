@@ -341,7 +341,6 @@ fn parseArgs_shortValue(
 /// Handle no-argument short flags. Returns true when `ch` was applied.
 fn parseArgs_shortFlag(opts: *GrepOptions, ch: u8) bool {
     assert(ch != 0);
-    assert(ch != '-');
     switch (ch) {
         'E' => opts.regex_mode = .extended,
         'F' => opts.regex_mode = .fixed,
@@ -1585,7 +1584,6 @@ fn searchTreeEntry(
     search: *TreeSearch,
 ) void {
     assert(entry.path.len > 0);
-    assert(entry.basename.len > 0);
     switch (entry.kind) {
         .directory => enterDir(io, entry, opts, search),
         .file => searchOneFile(
