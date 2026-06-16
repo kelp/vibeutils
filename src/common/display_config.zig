@@ -53,6 +53,18 @@ pub const DisplayConfig = struct {
         config = resolve_applyStylePreset(config, is_tty);
         config = resolve_applyFeatureOverrides(config);
         config = resolve_applyColorKillSwitches(config);
+
+        // NO_COLOR (any value) is the highest-precedence kill switch and runs
+        // last, so the resolved color must always be off when it is set.
+        if (env.getEnv("NO_COLOR") != null) {
+            std.debug.assert(config.color == .off);
+        }
+        // TERM=dumb forces color off regardless of any earlier step.
+        if (env.getEnv("TERM")) |term| {
+            if (std.mem.eql(u8, term, "dumb")) {
+                std.debug.assert(config.color == .off);
+            }
+        }
         return config;
     }
 
@@ -61,9 +73,6 @@ pub const DisplayConfig = struct {
     /// forces features on through pipes. Returns a new config so the
     /// parent never aliases the underlying fields.
     fn resolve_applyStylePreset(config: DisplayConfig, is_tty: bool) DisplayConfig {
-        std.debug.assert(@intFromEnum(config.color) <= @intFromEnum(ResolvedMode.off));
-        std.debug.assert(@intFromEnum(config.theme) <= @intFromEnum(Theme.none));
-
         var result = config;
         if (env.getEnv("VIBEUTILS_STYLE")) |vibe_style| {
             if (std.mem.eql(u8, vibe_style, "plain")) {
@@ -90,17 +99,20 @@ pub const DisplayConfig = struct {
             }
         }
 
-        std.debug.assert(@intFromEnum(result.color) <= @intFromEnum(ResolvedMode.off));
-        std.debug.assert(@intFromEnum(result.theme) <= @intFromEnum(Theme.none));
+        // Negative space: when VIBEUTILS_STYLE is unset, this helper is a pure
+        // no-op, so every field must equal the input config.
+        if (env.getEnv("VIBEUTILS_STYLE") == null) {
+            std.debug.assert(result.color == config.color);
+            std.debug.assert(result.icons == config.icons);
+            std.debug.assert(result.highlight == config.highlight);
+            std.debug.assert(result.theme == config.theme);
+        }
         return result;
     }
 
     /// Step 3: apply the per-feature VIBEUTILS_* overrides. Each block is
     /// independent and outranks the style preset. Returns a new config.
     fn resolve_applyFeatureOverrides(config: DisplayConfig) DisplayConfig {
-        std.debug.assert(@intFromEnum(config.icons) <= @intFromEnum(ResolvedMode.off));
-        std.debug.assert(@intFromEnum(config.highlight) <= @intFromEnum(ResolvedMode.off));
-
         var result = config;
         if (env.getEnv("VIBEUTILS_COLOR")) |val| {
             if (std.mem.eql(u8, val, "always")) {
@@ -134,8 +146,20 @@ pub const DisplayConfig = struct {
             }
         }
 
-        std.debug.assert(@intFromEnum(result.icons) <= @intFromEnum(ResolvedMode.off));
-        std.debug.assert(@intFromEnum(result.theme) <= @intFromEnum(Theme.none));
+        // Negative space: each override block is gated on its own env var, so
+        // an unset var leaves the corresponding field untouched.
+        if (env.getEnv("VIBEUTILS_COLOR") == null) {
+            std.debug.assert(result.color == config.color);
+        }
+        if (env.getEnv("VIBEUTILS_ICONS") == null) {
+            std.debug.assert(result.icons == config.icons);
+        }
+        if (env.getEnv("VIBEUTILS_HIGHLIGHT") == null) {
+            std.debug.assert(result.highlight == config.highlight);
+        }
+        if (env.getEnv("VIBEUTILS_THEME") == null) {
+            std.debug.assert(result.theme == config.theme);
+        }
         return result;
     }
 
@@ -143,9 +167,6 @@ pub const DisplayConfig = struct {
     /// These kill switches win over all earlier steps. icons, highlight,
     /// and theme are never touched here; returns a new config.
     fn resolve_applyColorKillSwitches(config: DisplayConfig) DisplayConfig {
-        std.debug.assert(@intFromEnum(config.color) <= @intFromEnum(ResolvedMode.off));
-        std.debug.assert(@intFromEnum(config.theme) <= @intFromEnum(Theme.none));
-
         var result = config;
         // Step 4: NO_COLOR forces color off (any value)
         if (env.getEnv("NO_COLOR") != null) {
