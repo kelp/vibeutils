@@ -27,29 +27,8 @@ pub fn runYes(
 ) !u8 {
     _ = io;
     // Parse arguments using common argparse
-    const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                // GNU yes exits 1 for unrecognized options and includes the flag name
-                const bad_flag = findUnknownFlag(args);
-                if (bad_flag) |flag| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option '{s}'", .{flag});
-                } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option", .{});
-                }
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err|
+        return runYes_handleParseError(allocator, stderr_writer, err, args);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help flag
@@ -77,6 +56,80 @@ pub fn runYes(
         }
     };
     defer if (parsed_args.positionals.len > 0) allocator.free(output_str);
+
+    return runYes_outputForever(stdout_writer, output_str);
+}
+
+/// Handles a parse error from the argument parser, emitting the GNU-compatible
+/// diagnostic and returning the matching exit code. Re-returns any error not in
+/// the handled set so behavior is identical to the inline switch it replaced.
+fn runYes_handleParseError(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    err: common.argparse.ArgParser.ParseError,
+    args: []const []const u8,
+) common.argparse.ArgParser.ParseError!u8 {
+    // Positive space: an UnknownFlag failure implies at least one arg was given.
+    if (err == error.UnknownFlag) {
+        std.debug.assert(args.len > 0);
+    }
+    // Negative space: the args slice length is a sane, non-huge count.
+    std.debug.assert(args.len < std.math.maxInt(u32));
+    switch (err) {
+        error.UnknownFlag => {
+            // GNU yes exits 1 for unrecognized options and includes the flag name
+            const bad_flag = findUnknownFlag(args);
+            if (bad_flag) |flag| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "yes",
+                    "unrecognized option '{s}'",
+                    .{flag},
+                );
+            } else {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "yes",
+                    "unrecognized option",
+                    .{},
+                );
+            }
+            return @intFromEnum(common.ExitCode.general_error);
+        },
+        error.MissingValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "yes",
+                "option requires an argument",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "yes",
+                "invalid option value",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        else => return err,
+    }
+}
+
+/// Repeatedly writes `output_str` to `stdout_writer` until a write error occurs.
+/// Mirrors GNU yes: it never returns normally except by exiting success on a
+/// write error (such as BrokenPipe when piping to head). The two `while (true)`
+/// loops are intentional run-forever emitters terminated only by write error.
+fn runYes_outputForever(stdout_writer: *std.Io.Writer, output_str: []const u8) !u8 {
+    // By construction the output line is non-empty and newline-terminated.
+    std.debug.assert(output_str.len > 0);
+    std.debug.assert(output_str[output_str.len - 1] == '\n');
 
     // Create a larger buffer for efficient output
     const buffer_size = 8192;
