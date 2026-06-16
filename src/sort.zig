@@ -90,6 +90,9 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
     var opts = SortOptions{};
     errdefer opts.deinit(allocator);
 
+    std.debug.assert(opts.keys.items.len == 0);
+    std.debug.assert(opts.files.items.len == 0);
+
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -157,7 +160,6 @@ fn parseArgs_parseLongOption(
     stderr_writer: anytype,
 ) !ParseResult {
     std.debug.assert(flag.len > 0);
-    std.debug.assert(!std.mem.startsWith(u8, flag, "--"));
 
     if (parseArgs_parseLongOption_boolFlags(opts, flag)) {
         return .ok;
@@ -169,7 +171,6 @@ fn parseArgs_parseLongOption(
 /// the flag was consumed, false if the caller should try value flags.
 fn parseArgs_parseLongOption_boolFlags(opts: *SortOptions, flag: []const u8) bool {
     std.debug.assert(flag.len > 0);
-    std.debug.assert(!std.mem.startsWith(u8, flag, "--"));
 
     if (std.mem.eql(u8, flag, "help")) {
         opts.help = true;
@@ -232,7 +233,6 @@ fn parseArgs_parseLongOption_valueFlags(
     stderr_writer: anytype,
 ) !ParseResult {
     std.debug.assert(flag.len > 0);
-    std.debug.assert(!std.mem.startsWith(u8, flag, "--"));
 
     if (std.mem.startsWith(u8, flag, "buffer-size=")) {
         const size_str = flag["buffer-size=".len..];
@@ -381,6 +381,7 @@ fn parseArgs_parseShortOptions_valueArg(
 ) ?[]const u8 {
     std.debug.assert(arg.len > 1);
     std.debug.assert(arg_index.* < args.len);
+    std.debug.assert(j < arg.len);
 
     if (j + 1 < arg.len) {
         return arg[j + 1 ..];
@@ -478,6 +479,7 @@ fn parseKeyDef(keydef: []const u8) !KeyDef {
         if (end_result.opts.len > 0) key.has_flags = true;
     }
 
+    std.debug.assert(key.start_field > 0);
     return key;
 }
 
@@ -508,6 +510,7 @@ fn parseFieldSpec(spec: []const u8) !FieldSpec {
     }
 
     // Rest is options
+    std.debug.assert(pos <= spec.len);
     const opts = spec[pos..];
     // Validate option chars
     for (opts) |c| {
@@ -825,6 +828,9 @@ fn runSort_writeOutput(
 /// The file content is kept alive via the buffers list so that line
 /// slices remain valid until the caller frees the buffers.
 fn readLines(allocator: Allocator, io: std.Io, file: std.Io.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8, buffers: *std.ArrayListUnmanaged([]const u8)) !void {
+    const delimiter_valid = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_valid);
+
     var file_buf: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buf);
     const content = file_reader.interface.allocRemaining(allocator, .unlimited) catch |err| switch (err) {
@@ -857,6 +863,7 @@ fn readLines(allocator: Allocator, io: std.Io, file: std.Io.File, lines: *std.Ar
             start = idx + 1;
         }
     }
+    std.debug.assert(start <= content.len);
     if (start < content.len) {
         lines.appendAssumeCapacity(content[start..content.len]);
     }
@@ -912,6 +919,8 @@ fn compareLines(ctx: SortContext, a: []const u8, b: []const u8) bool {
 
 /// Extract the key portion of a line based on a KeyDef
 fn extractKey(line: []const u8, key: KeyDef, separator: ?u8) []const u8 {
+    std.debug.assert(key.start_field > 0);
+
     const fields = splitFields(line, separator);
 
     // Get start position
@@ -947,10 +956,13 @@ fn extractKey(line: []const u8, key: KeyDef, separator: ?u8) []const u8 {
         }
     }
 
+    std.debug.assert(start_byte <= line.len);
     if (start_byte >= line.len) return "";
     end_byte = @min(end_byte, line.len);
+    std.debug.assert(end_byte <= line.len);
     if (start_byte >= end_byte) return "";
 
+    std.debug.assert(start_byte <= end_byte);
     return line[start_byte..end_byte];
 }
 
@@ -961,6 +973,8 @@ const MAX_FIELDS = 256;
 /// Split a line into fields, returning slices into the original line.
 /// Uses a static buffer to avoid allocation.
 fn splitFields(line: []const u8, separator: ?u8) []const []const u8 {
+    comptime std.debug.assert(MAX_FIELDS > 0);
+
     const S = struct {
         threadlocal var fields: [MAX_FIELDS][]const u8 = undefined;
     };
@@ -1005,6 +1019,7 @@ fn splitFields(line: []const u8, separator: ?u8) []const []const u8 {
         }
     }
 
+    std.debug.assert(count <= MAX_FIELDS);
     return S.fields[0..count];
 }
 
@@ -1013,6 +1028,7 @@ fn fieldOffset(line: []const u8, fields: []const []const u8, field_idx: usize) u
     if (field_idx >= fields.len) return line.len;
     const field_ptr = fields[field_idx].ptr;
     const line_ptr = line.ptr;
+    std.debug.assert(@intFromPtr(field_ptr) >= @intFromPtr(line_ptr));
     return @intFromPtr(field_ptr) - @intFromPtr(line_ptr);
 }
 
@@ -1070,12 +1086,15 @@ fn compareWithFlags(a: []const u8, b: []const u8, flags: SortFlags) std.math.Ord
 fn stripLeadingBlanks(s: []const u8) []const u8 {
     var i: usize = 0;
     while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+    std.debug.assert(i <= s.len);
     return s[i..];
 }
 
 /// Case-insensitive comparison
 fn compareCaseInsensitive(a: []const u8, b: []const u8) std.math.Order {
     const min_len = @min(a.len, b.len);
+    std.debug.assert(min_len <= a.len);
+    std.debug.assert(min_len <= b.len);
     for (a[0..min_len], b[0..min_len]) |ac, bc| {
         const al = std.ascii.toLower(ac);
         const bl = std.ascii.toLower(bc);
@@ -1111,6 +1130,8 @@ fn compareDictionary(a: []const u8, b: []const u8, ignore_case: bool) std.math.O
     }
 
     // One or both exhausted
+    std.debug.assert(ai <= a.len);
+    std.debug.assert(bi <= b.len);
     const a_remaining = countDictChars(a[ai..]);
     const b_remaining = countDictChars(b[bi..]);
     return std.math.order(a_remaining, b_remaining);
@@ -1151,6 +1172,8 @@ fn comparePrintable(a: []const u8, b: []const u8, ignore_case: bool) std.math.Or
         bi += 1;
     }
 
+    std.debug.assert(ai <= a.len);
+    std.debug.assert(bi <= b.len);
     const a_remaining = countPrintChars(a[ai..]);
     const b_remaining = countPrintChars(b[bi..]);
     return std.math.order(a_remaining, b_remaining);
@@ -1178,6 +1201,7 @@ fn parseLeadingNumber(s: []const u8) f64 {
     var i: usize = 0;
     // Skip leading whitespace
     while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+    std.debug.assert(i <= s.len);
     if (i >= s.len) return 0;
 
     var negative = false;
@@ -1231,6 +1255,7 @@ fn parseGeneralNumber(s: []const u8) f64 {
     var trimmed = s;
     var i: usize = 0;
     while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t')) : (i += 1) {}
+    std.debug.assert(i <= s.len);
     trimmed = trimmed[i..];
     if (trimmed.len == 0) return std.math.nan(f64);
 
@@ -1245,6 +1270,7 @@ fn parseGeneralNumber(s: []const u8) f64 {
     }
 
     if (end == 0) return std.math.nan(f64);
+    std.debug.assert(end <= trimmed.len);
     return std.fmt.parseFloat(f64, trimmed[0..end]) catch std.math.nan(f64);
 }
 
@@ -1296,6 +1322,7 @@ const HumanParts = struct {
 fn parseHumanParts(s: []const u8) HumanParts {
     var i: usize = 0;
     while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+    std.debug.assert(i <= s.len);
     if (i >= s.len) return .{ .value = 0, .suffix_rank = 0, .negative = false };
 
     var negative = false;
@@ -1339,6 +1366,7 @@ fn parseHumanParts(s: []const u8) HumanParts {
         };
     }
 
+    std.debug.assert(suffix_rank <= 6);
     return .{ .value = result, .suffix_rank = suffix_rank, .negative = negative };
 }
 
@@ -1347,6 +1375,7 @@ fn parseHumanParts(s: []const u8) HumanParts {
 fn parseHumanNumber(s: []const u8) f64 {
     var i: usize = 0;
     while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+    std.debug.assert(i <= s.len);
     if (i >= s.len) return 0;
 
     var negative = false;
@@ -1436,6 +1465,8 @@ fn compareVersion(a: []const u8, b: []const u8) std.math.Order {
     }
 
     // One or both exhausted
+    std.debug.assert(ai <= a.len);
+    std.debug.assert(bi <= b.len);
     return std.math.order(a.len, b.len);
 }
 
@@ -1460,9 +1491,11 @@ fn parseMonthName(s: []const u8) u8 {
     var trimmed = s;
     var i: usize = 0;
     while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t')) : (i += 1) {}
+    std.debug.assert(i <= trimmed.len);
     trimmed = trimmed[i..];
 
     if (trimmed.len < 3) return 0;
+    std.debug.assert(trimmed.len >= 3);
 
     // Get first 3 chars, uppercased
     var abbr: [3]u8 = undefined;
@@ -1500,7 +1533,9 @@ fn parseBufferSize(s: []const u8) ?usize {
     // Find where digits end
     var end: usize = 0;
     while (end < s.len and std.ascii.isDigit(s[end])) : (end += 1) {}
+    std.debug.assert(end <= s.len);
     if (end == 0) return null;
+    std.debug.assert(end > 0);
 
     const num = std.fmt.parseInt(usize, s[0..end], 10) catch return null;
 
@@ -1524,6 +1559,7 @@ fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx:
     // Track current position in each file's lines
     var positions = try allocator.alloc(usize, file_lines.len);
     defer allocator.free(positions);
+    std.debug.assert(positions.len == file_lines.len);
     @memset(positions, 0);
 
     while (true) {
@@ -1557,6 +1593,7 @@ fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx:
 fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const SortOptions, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = stdout_writer;
     if (lines.len <= 1) return @intFromEnum(common.ExitCode.success);
+    std.debug.assert(lines.len > 1);
 
     const ctx = SortContext{
         .opts = opts,
