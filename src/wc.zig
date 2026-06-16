@@ -152,6 +152,11 @@ pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
         opts.bytes = true;
     }
 
+    // Positive space: after defaulting, at least one count is always requested.
+    const any_count_requested = opts.lines or opts.words or opts.bytes or
+        opts.chars or opts.max_line_length;
+    std.debug.assert(any_count_requested);
+
     // Resolve display configuration
     const config = resolveConfig(allocator, opts) catch |err| switch (err) {
         error.InvalidColorMode => {
@@ -229,6 +234,8 @@ fn runWc_countAll(
         try printStats(stdout_writer, total_stats, "total", opts, style_inst);
     }
 
+    // Postcondition: summed char count never exceeds summed byte count.
+    std.debug.assert(total_stats.chars <= total_stats.bytes);
     return if (has_error) @as(u8, 1) else 0;
 }
 
@@ -236,8 +243,6 @@ fn runWc_countAll(
 /// caller: runWc (both the no-positionals path and the "-" pseudo-file path).
 fn runWc_countStdin(io: std.Io, opts: WcOptions) !FileStats {
     var stdin_buffer: [8192]u8 = undefined;
-    std.debug.assert(stdin_buffer.len == 8192); // Positive space: fixed buffer size.
-
     var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
     const stats = try countReader(&stdin_reader.interface, opts);
 
@@ -256,7 +261,6 @@ fn runWc_initStyle(
 ) common.style.Style(*std.Io.Writer) {
     const StyleType = common.style.Style(@TypeOf(stdout_writer));
     var style_inst = StyleType{ .color_mode = .none, .writer = stdout_writer };
-    std.debug.assert(style_inst.color_mode == .none); // Positive space: starts off.
 
     if (config.display.color == .on) {
         const detected = StyleType.ColorMode.detect(allocator) catch .basic;
@@ -324,6 +328,8 @@ fn runWc_processFile(
 
     // Postcondition: a counted file yields chars no greater than its raw byte count.
     std.debug.assert(stats.chars <= stats.bytes);
+    // Postcondition: each line requires a '\n' byte, so lines never exceed bytes.
+    std.debug.assert(stats.lines <= stats.bytes);
     return stats;
 }
 
@@ -340,55 +346,105 @@ fn countReader(reader: *std.Io.Reader, options: WcOptions) !FileStats {
     var utf8_remaining: u3 = 0; // continuation bytes remaining
     var utf8_codepoint: u21 = 0; // accumulated codepoint
 
+    // Precondition: counting starts from a zeroed byte tally (positive space).
+    std.debug.assert(stats.bytes == 0);
+
     while (true) {
         const chunk = reader.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => break,
             else => |e| return e,
         };
 
-        // Process each byte in the chunk
-        for (chunk) |byte| {
-            // Count all bytes exactly
-            stats.bytes += 1;
-
-            // Count newlines (POSIX: this is what defines a "line")
-            if (byte == '\n') {
-                stats.lines += 1;
-                // Track max line length
-                if (current_line_length > stats.max_line_length) {
-                    stats.max_line_length = current_line_length;
-                }
-                current_line_length = 0;
-                utf8_remaining = 0; // reset UTF-8 state on newline
-                in_word = false; // newline breaks words
-            } else if (options.max_line_length) {
-                // Compute display width for -L flag.
-                countReader_advanceLineWidth(
-                    byte,
-                    &current_line_length,
-                    &utf8_remaining,
-                    &utf8_codepoint,
-                );
-            } else {
-                // No -L flag: simple byte count for line length
-                current_line_length += 1;
-            }
-
-            // Count UTF-8 characters (only if -m flag specified)
-            if (options.chars) {
-                // UTF-8 continuation bytes have pattern 10xxxxxx
-                if ((byte & 0b11000000) != 0b10000000) {
-                    stats.chars += 1;
-                }
-            }
-
-            // Word counting logic.
-            countReader_countWord(byte, &in_word, &stats.words);
-        }
+        // Process each byte in the chunk into the running statistics.
+        countReader_processChunk(
+            chunk,
+            options,
+            &stats,
+            &in_word,
+            &current_line_length,
+            &utf8_remaining,
+            &utf8_codepoint,
+        );
 
         // Mark chunk as consumed
         reader.toss(chunk.len);
     }
+
+    // Finalize trailing line length and the default character count.
+    countReader_finalize(options, current_line_length, &stats);
+
+    // Postcondition: chars count non-continuation bytes (a subset), or equals bytes.
+    std.debug.assert(stats.chars <= stats.bytes);
+    // Postcondition: each line is counted on a '\n' byte already added to bytes.
+    std.debug.assert(stats.lines <= stats.bytes);
+    return stats;
+}
+
+/// Process one peeked chunk, folding every byte into the running statistics.
+/// Owns the per-byte classification dispatch (newline / -L width / plain count,
+/// -m char counting, and word boundaries) so countReader keeps only the
+/// streaming scaffold. All mutable decode/count state is passed by pointer so
+/// behavior is byte-identical to the inlined loop.
+fn countReader_processChunk(
+    chunk: []const u8,
+    options: WcOptions,
+    stats: *FileStats,
+    in_word: *bool,
+    current_line_length: *u64,
+    utf8_remaining: *u3,
+    utf8_codepoint: *u21,
+) void {
+    std.debug.assert(utf8_remaining.* <= 3); // State invariant: max continuation count.
+    std.debug.assert(stats.chars <= stats.bytes); // Positive space: invariant on entry.
+
+    // Process each byte in the chunk
+    for (chunk) |byte| {
+        // Count all bytes exactly
+        stats.bytes += 1;
+
+        // Count newlines (POSIX: this is what defines a "line")
+        if (byte == '\n') {
+            stats.lines += 1;
+            // Track max line length
+            if (current_line_length.* > stats.max_line_length) {
+                stats.max_line_length = current_line_length.*;
+            }
+            current_line_length.* = 0;
+            utf8_remaining.* = 0; // reset UTF-8 state on newline
+            in_word.* = false; // newline breaks words
+        } else if (options.max_line_length) {
+            // Compute display width for -L flag.
+            countReader_advanceLineWidth(
+                byte,
+                current_line_length,
+                utf8_remaining,
+                utf8_codepoint,
+            );
+        } else {
+            // No -L flag: simple byte count for line length
+            current_line_length.* += 1;
+        }
+
+        // Count UTF-8 characters (only if -m flag specified)
+        if (options.chars) {
+            // UTF-8 continuation bytes have pattern 10xxxxxx
+            if ((byte & 0b11000000) != 0b10000000) {
+                stats.chars += 1;
+            }
+        }
+
+        // Word counting logic.
+        countReader_countWord(byte, in_word, &stats.words);
+    }
+
+    std.debug.assert(stats.chars <= stats.bytes); // Negative space: never over-count chars.
+}
+
+/// Finalize counting after the stream ends: record the trailing line's length
+/// for files lacking a final newline, then default the character count to the
+/// byte count when -m was not requested. Read-only primitive passed by value.
+fn countReader_finalize(options: WcOptions, current_line_length: u64, stats: *FileStats) void {
+    std.debug.assert(stats.lines <= stats.bytes); // Positive space: invariant on entry.
 
     // Handle final line length (for files not ending with newline)
     if (current_line_length > stats.max_line_length) {
@@ -400,7 +456,7 @@ fn countReader(reader: *std.Io.Reader, options: WcOptions) !FileStats {
         stats.chars = stats.bytes;
     }
 
-    return stats;
+    std.debug.assert(stats.chars <= stats.bytes); // Negative space: chars never exceed bytes.
 }
 
 /// Advance the running display-width of the current line by one byte for the -L
@@ -453,6 +509,9 @@ fn countReader_advanceLineWidth(
             current_line_length.* += 1;
         }
     }
+
+    // Postcondition: no path raises remaining above 3 (max 4-byte sequence).
+    std.debug.assert(utf8_remaining.* <= 3);
 }
 
 /// Update word state for a single byte: a word starts at the first non-whitespace
@@ -481,6 +540,11 @@ fn addStats(total: *FileStats, stats: FileStats) void {
     if (stats.max_line_length > total.max_line_length) {
         total.max_line_length = stats.max_line_length;
     }
+
+    // Postcondition: adding an operand never lowers the accumulated total.
+    std.debug.assert(total.lines >= stats.lines);
+    // Postcondition: max-update keeps total at least the added max_line_length.
+    std.debug.assert(total.max_line_length >= stats.max_line_length);
 }
 
 /// Print statistics for a file
