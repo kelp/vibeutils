@@ -15,6 +15,7 @@ const Allocator = std.mem.Allocator;
 fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -23,6 +24,7 @@ fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
 fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -72,6 +74,9 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []con
     defer allocator.free(resolved_parent);
 
     // Join resolved parent + basename.
+    std.debug.assert(basename.len > 0);
+    std.debug.assert(resolved_parent.len > 0);
+    std.debug.assert(resolved_parent[0] == '/');
     if (std.mem.eql(u8, resolved_parent, "/")) {
         return try std.fmt.allocPrint(allocator, "/{s}", .{basename});
     }
@@ -114,6 +119,8 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
     // Build result: resolved prefix + remaining components (cleaned)
     if (resolved_prefix) |prefix| {
         defer allocator.free(prefix);
+        std.debug.assert(resolved_count > 0);
+        std.debug.assert(resolved_count <= all_components.items.len);
         if (resolved_count == all_components.items.len) {
             return try allocator.dupe(u8, prefix);
         }
@@ -143,6 +150,7 @@ fn canonicalizeMissing_absolutePath(
     else blk: {
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buf);
+        std.debug.assert(cwd_len <= cwd_buf.len);
         const cwd = cwd_buf[0..cwd_len];
         break :blk try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, path });
     };
@@ -192,6 +200,7 @@ fn canonicalizeMissing_buildPrefix(
         pos += comp.len;
     }
 
+    std.debug.assert(pos == prefix.len);
     std.debug.assert(prefix.len > 0);
     std.debug.assert(prefix[0] == '/');
     return prefix;
@@ -212,6 +221,8 @@ fn canonicalizeMissing_resolvePrefix(
 
     var try_count = components.len;
     while (try_count > 0) : (try_count -= 1) {
+        std.debug.assert(try_count > 0);
+        std.debug.assert(try_count <= components.len);
         const prefix = try canonicalizeMissing_buildPrefix(allocator, components[0..try_count]);
         defer allocator.free(prefix);
 
@@ -258,6 +269,8 @@ fn canonicalizeMissing_appendRemaining(
         }
     }
 
+    std.debug.assert(remaining.items.len > 0);
+    std.debug.assert(remaining.items[0] == '/');
     return try allocator.dupe(u8, remaining.items);
 }
 
