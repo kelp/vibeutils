@@ -328,6 +328,7 @@ fn parseArgs_shortValue(
 ) ?[]const u8 {
     assert(arg.len > 1);
     assert(j_ptr.* >= 1);
+    assert(i_ptr.* < args.len);
     const j = j_ptr.*;
     if (j + 1 < arg.len) return arg[j + 1 ..];
     if (i_ptr.* + 1 < args.len) {
@@ -401,6 +402,7 @@ fn parseArgs_shortValued(
 ) !ShortValuedResult {
     assert(arg.len > 1);
     assert(j_ptr.* >= 1);
+    assert(j_ptr.* < arg.len);
     const ch = arg[j_ptr.*];
     switch (ch) {
         'm', 'A', 'B', 'C' => return parseArgs_shortNumeric(
@@ -472,6 +474,7 @@ fn parseArgs_shortNumeric(
     const ch_is_numeric = ch == 'm' or ch == 'A' or ch == 'B' or ch == 'C';
     assert(ch_is_numeric);
     assert(arg.len > 1);
+    assert(j_ptr.* < arg.len);
     const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- '{c}'", .{ch}); // tiger:allow:long-line
         return .consumed_error;
@@ -545,7 +548,9 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
             i += 1;
         }
     }
+    assert(start <= pattern.len);
     parts.append(allocator, pattern[start..]) catch return .{ .pattern = null, .use_ere = false };
+    assert(parts.items.len >= 1);
 
     if (parts.items.len == 1) {
         return .{
@@ -572,6 +577,7 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
 
 /// Compile a single pattern. Returns null on error.
 fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOptions, stderr_writer: *std.Io.Writer) ?CompiledPattern {
+    assert(@intFromEnum(opts.regex_mode) <= @intFromEnum(RegexMode.fixed));
     if (opts.regex_mode == .fixed) {
         if (opts.ignore_case) {
             const lower = toLower(allocator, pattern) catch return null;
@@ -869,6 +875,7 @@ fn printSep(writer: *std.Io.Writer, sep: u8, use_color: bool) void {
 
 /// Print a line with optional color highlighting of the match
 fn printMatchLine(writer: *std.Io.Writer, line: []const u8, match_start: usize, match_end: usize, use_color: bool, terminator: u8) void {
+    assert(match_start <= match_end);
     if (use_color and match_end > match_start and match_end <= line.len) {
         writer.writeAll(line[0..match_start]) catch {};
         writer.print("{s}", .{Color.match_highlight}) catch {};
@@ -923,6 +930,7 @@ fn processFile(
     if (!processFile_splitLines(allocator, content, line_delim, &lines, &line_offsets)) {
         return false;
     }
+    assert(lines.items.len == line_offsets.items.len);
 
     // Context tracking
     var scan = ScanState{};
@@ -986,6 +994,7 @@ fn processFile_handleLine(
     scan: *ScanState,
 ) LineOutcome {
     assert(ctx.line_num >= 1);
+    assert(ctx.line_num <= ctx.lines.len);
     assert(ctx.lines.len == ctx.line_offsets.len);
     const result = matchAnyPattern(patterns, ctx.line, allocator, opts.word_regexp, null);
     const is_match = if (opts.invert_match) !result.matched else result.matched;
@@ -1047,6 +1056,7 @@ fn processFile_emitMatch(
     scan: *ScanState,
 ) void {
     assert(ctx.line_num >= 1);
+    assert(ctx.line_num <= ctx.lines.len);
     assert(result.match_end >= result.match_start);
     const has_context = opts.before_context > 0 or opts.after_context > 0;
 
@@ -1152,6 +1162,7 @@ fn processFile_printBeforeContext(
 ) void {
     assert(opts.before_context > 0);
     assert(line_num >= 1);
+    assert(line_num <= lines.len);
     const ctx_start = if (line_num > opts.before_context) line_num - opts.before_context else 1;
     const already_printed = if (last_printed_ptr.*) |lp| lp + 1 else 0;
     const effective_start = @max(ctx_start, already_printed);
@@ -1200,6 +1211,7 @@ fn processFile_printOnlyMatching(
 ) void {
     assert(opts.only_matching);
     assert(!opts.invert_match);
+    assert(line_num >= 1);
     var search_offset: usize = 0; // tiger:allow:usize-arch line index
     var cur_result = first_result;
     while (cur_result.matched and
@@ -1334,6 +1346,10 @@ fn processFile_printSummary(
 
 /// Print a context line (with - separator instead of :)
 fn printContextLine(writer: *std.Io.Writer, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool, fn_sep: u8, line_term: u8) void {
+    const ctx_sep_ok = fn_sep == 0 or fn_sep == ':';
+    assert(ctx_sep_ok);
+    const ctx_term_ok = line_term == 0 or line_term == '\n';
+    assert(ctx_term_ok);
     if (show_filename) {
         printFilename(writer, filename, use_color);
         printSep(writer, if (fn_sep == 0) @as(u8, 0) else '-', use_color);
@@ -1826,6 +1842,7 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     (runGrep_compilePatterns(allocator, &opts, &compiled, stderr_writer)) orelse {
         return @intFromEnum(common.ExitCode.misuse);
     };
+    assert(compiled.items.len == opts.patterns.items.len);
 
     // Determine color usage
     const use_color = opts.color == .on;
@@ -1884,8 +1901,6 @@ fn runGrep_compilePatterns(
 ///   --with-filename (-H) always shows
 ///   default: show if multiple files or recursive
 fn runGrep_showFilename(opts: *const GrepOptions) bool {
-    assert(@TypeOf(opts.no_filename) == bool);
-    assert(@TypeOf(opts.recursive) == bool);
     return if (opts.no_filename)
         false
     else if (opts.with_filename)
@@ -1912,7 +1927,6 @@ fn runGrep_processOneOperand(
     found_any_ptr: *bool,
     had_error_ptr: *bool,
 ) bool {
-    assert(file_path.len > 0);
     assert(compiled.len > 0);
     if (std.mem.eql(u8, file_path, "-")) {
         const stdin_file = std.Io.File.stdin();
@@ -1991,6 +2005,7 @@ fn toLower(allocator: Allocator, s: []const u8) ![]u8 {
     for (s, 0..) |ch, i| {
         result[i] = std.ascii.toLower(ch);
     }
+    assert(result.len == s.len);
     return result;
 }
 
