@@ -152,6 +152,8 @@ pub const FileInfo = struct {
     pub fn lstat(path: []const u8) !FileInfo {
         var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
         if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+        std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+        std.debug.assert(path.len < buf.len);
         @memcpy(buf[0..path.len], path);
         buf[path.len] = 0;
         const c_path = buf[0..path.len :0];
@@ -223,6 +225,7 @@ pub const FileInfo = struct {
 /// Format file permissions as a string (e.g., -rw-r--r--)
 pub fn formatPermissions(mode: std.posix.mode_t, kind: std.Io.File.Kind, buf: []u8) ![]const u8 {
     if (buf.len < 10) return error.BufferTooSmall;
+    std.debug.assert(buf.len >= 10);
 
     // File type
     buf[0] = switch (kind) {
@@ -253,6 +256,14 @@ pub fn formatPermissions(mode: std.posix.mode_t, kind: std.Io.File.Kind, buf: []
 
     // Handle setuid, setgid, and sticky bits
     const constants = @import("constants.zig");
+    // The execute slots were assigned exactly 'x' or '-' above; the bit
+    // transforms below depend on that to choose between 's'/'S' and 't'/'T'.
+    const owner_exec_valid = buf[3] == 'x' or buf[3] == '-';
+    const group_exec_valid = buf[6] == 'x' or buf[6] == '-';
+    const other_exec_valid = buf[9] == 'x' or buf[9] == '-';
+    std.debug.assert(owner_exec_valid);
+    std.debug.assert(group_exec_valid);
+    std.debug.assert(other_exec_valid);
     if (mode & constants.SETUID_BIT != 0) { // setuid
         buf[3] = if (buf[3] == 'x') 's' else 'S';
     }
@@ -298,6 +309,9 @@ fn currentTimestampSeconds() i64 {
 pub fn currentTimestampNanoseconds() i128 {
     var ts: std.c.timespec = std.mem.zeroes(std.c.timespec);
     if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
+    // POSIX guarantees a successful clock_gettime fills tv_nsec in [0, 1e9).
+    std.debug.assert(ts.nsec >= 0);
+    std.debug.assert(ts.nsec < std.time.ns_per_s);
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
@@ -317,6 +331,9 @@ pub fn formatTime(mtime_ns: i128, buf: []u8) ![]const u8 {
 
     const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
+    // Month enum is Jan=1..Dec=12; bound the index into the 12-element array.
+    std.debug.assert(@intFromEnum(month_day.month) >= 1);
+    std.debug.assert(@intFromEnum(month_day.month) <= 12);
     const month = months[@intFromEnum(month_day.month) - 1];
     const day = month_day.day_index + 1;
     const year = year_day.year;
