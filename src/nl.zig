@@ -730,7 +730,6 @@ fn runNl_numberFile(
     allocator: Allocator,
 ) !void {
     std.debug.assert(opts.width >= 1);
-    std.debug.assert(file_path.len >= 1);
 
     const file = try std.Io.Dir.cwd().openFile(io, file_path, .{});
     defer file.close(io);
