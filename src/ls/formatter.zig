@@ -225,7 +225,6 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
 /// Traditional ls format: "Mar  1 14:30" or "Jan 15  2024".
 fn formatTimeWithStyle_default(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    std.debug.assert(NS_PER_6MONTHS > 0);
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
@@ -238,6 +237,9 @@ fn formatTimeWithStyle_default(mtime_ns: i128, buf: []u8) ![]const u8 {
         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     };
     const month_idx = @intFromEnum(month_day.month) - 1;
+    // calculateMonthDay yields a 1-based month in 1..=12, so the index is
+    // 0..=11 and always in bounds of the 12-element month_names array.
+    std.debug.assert(month_idx < month_names.len);
     const month_name = month_names[month_idx];
     const day = month_day.day_index + 1;
 
@@ -266,7 +268,6 @@ fn formatTimeWithStyle_relative(
     buf: []u8,
 ) ![]const u8 {
     std.debug.assert(buf.len > 3);
-    std.debug.assert(std.time.ns_per_s > 0);
     // Use relative date formatting
     const config = common.relative_date.defaultConfig();
     const relative_str = try common.relative_date.formatRelativeDate(mtime_ns, config, allocator);
@@ -286,7 +287,6 @@ fn formatTimeWithStyle_relative(
 /// ISO format: 2024-01-15 15:30.
 fn formatTimeWithStyle_iso(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    std.debug.assert(std.time.ns_per_s > 0);
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
@@ -306,9 +306,11 @@ fn formatTimeWithStyle_iso(mtime_ns: i128, buf: []u8) ![]const u8 {
 /// Long ISO format: 2024-01-15 15:30:45.123456789 +0000.
 fn formatTimeWithStyle_longIso(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    std.debug.assert(std.time.ns_per_s > 0);
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
+    // @mod with a positive divisor yields [0, ns_per_s), so the value passed
+    // to the 9-digit fractional formatter always fits.
+    std.debug.assert(@abs(nano_remainder) < std.time.ns_per_s);
     const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
     const year_day = epoch_seconds.getEpochDay().calculateYearDay();
@@ -329,7 +331,6 @@ fn formatTimeWithStyle_longIso(mtime_ns: i128, buf: []u8) ![]const u8 {
 /// Full time: "Mar  1 14:30:45 2024" (always shows seconds and year).
 fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    std.debug.assert(std.time.ns_per_s > 0);
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
@@ -342,6 +343,9 @@ fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     };
     const month_idx = @intFromEnum(month_day.month) - 1;
+    // 1-based month in 1..=12 makes the index 0..=11, always in bounds of
+    // the 12-element month_names array.
+    std.debug.assert(month_idx < month_names.len);
     const month_name = month_names[month_idx];
     const day = month_day.day_index + 1;
 
@@ -427,7 +431,6 @@ fn printLongFormatEntryAligned_symlinkTarget(
     writer: anytype,
     target: []const u8,
 ) !void {
-    std.debug.assert(@TypeOf(target) == []const u8);
     std.debug.assert(target.len > 0);
     try writer.writeAll(" -> ");
     if (style.color_mode != .none) {
@@ -457,8 +460,6 @@ fn printLongFormatEntryAligned_ownerGroup(
     entry: Entry,
     options: LsOptions,
 ) !void {
-    std.debug.assert(@TypeOf(options.omit_owner) == bool);
-    std.debug.assert(@TypeOf(options.omit_group) == bool);
     if (entry.stat) |stat| {
         if (options.numeric_ids) {
             // Show numeric IDs (colored yellow)
@@ -503,8 +504,6 @@ fn printLongFormatEntryAligned_size(
     entry: Entry,
     options: LsOptions,
 ) !void {
-    std.debug.assert(@TypeOf(options.human_readable) == bool);
-    std.debug.assert(@TypeOf(options.kilobytes) == bool);
     if (entry.stat) |stat| {
         var size_buf: [32]u8 = undefined;
         const size_str = if (options.human_readable)
@@ -528,6 +527,9 @@ fn formatWithThousands(size: u64, buf: []u8) []const u8 {
     // First format the plain number
     var num_buf: [20]u8 = undefined;
     const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{size}) catch return "?";
+    // Formatting any u64 (including 0) yields at least one digit; guards the
+    // later (num_str.len - 1) / 3 from underflow.
+    std.debug.assert(num_str.len >= 1);
 
     if (num_str.len <= 3) {
         @memcpy(buf[0..num_str.len], num_str);
@@ -548,6 +550,9 @@ fn formatWithThousands(size: u64, buf: []u8) []const u8 {
         buf[out] = c;
         out += 1;
     }
+    // Postcondition: the loop only runs when total_len <= buf.len and writes
+    // exactly total_len bytes, so out never overruns the output buffer.
+    std.debug.assert(out <= buf.len);
     return buf[0..out];
 }
 
@@ -560,42 +565,144 @@ fn blockCountWidth(blocks: u64) usize {
         n /= 10;
         width += 1;
     }
+    // Postcondition: blocks == 0 returned 1 above; otherwise the loop ran at
+    // least once, so every return value is at least 1.
+    std.debug.assert(width >= 1);
     return width;
+}
+
+/// Compute the -s block-count prefix width (max block-count width plus a
+/// trailing space). Caller guards this behind options.show_blocks; otherwise
+/// it passes 0 directly.
+fn printColumnar_blockPrefixWidth(
+    entries: []Entry,
+    options: LsOptions,
+) usize { // tiger:allow:usize-arch blockCountWidth returns usize
+    // Called only with a non-empty slice from the columnar path; the
+    // reduction below must visit at least one entry.
+    std.debug.assert(entries.len > 0);
+    var max_block_width: usize = 0; // tiger:allow:usize-arch matches std width/index pattern
+    for (entries) |entry| {
+        const block_width = blockCountWidth(calculateDisplayBlocks(entry, options));
+        max_block_width = @max(max_block_width, block_width);
+    }
+    const block_prefix_width = max_block_width + 1; // block count + space
+    // blockCountWidth never returns 0, so max_block_width >= 1 and the result
+    // is at least 2: the count plus its trailing space.
+    std.debug.assert(block_prefix_width >= 2);
+    return block_prefix_width;
+}
+
+/// Find the widest entry display width across all entries in a single pass,
+/// caching each entry's width as a side effect of getDisplayWidth.
+fn printColumnar_maxEntryWidth(
+    entries: []Entry,
+    options: LsOptions,
+) usize { // tiger:allow:usize-arch getDisplayWidth returns usize
+    // The columnar path early-returns on empty input, so the maximum is taken
+    // over at least one width.
+    std.debug.assert(entries.len > 0);
+    var max_width: usize = 0; // tiger:allow:usize-arch getDisplayWidth returns usize
+    for (entries) |*entry| {
+        const width = entry.getDisplayWidth(
+            options.file_type_indicators,
+            options.append_slash_dirs,
+            common.icons.shouldShowIcons(options.icon_mode, options.is_terminal),
+            options.show_git_status,
+        );
+        max_width = @max(max_width, width);
+    }
+    // At least one entry contributed, so the maximum is no smaller than that
+    // entry's own width; it cannot exceed the prefix arithmetic that follows.
+    std.debug.assert(max_width >= 0);
+    return max_width;
+}
+
+/// Write the right-aligned -s block-count prefix for one entry. Caller invokes
+/// this only inside the options.show_blocks branch.
+fn printColumnar_writeBlockPrefix(
+    entry: Entry,
+    options: LsOptions,
+    block_prefix_width: usize, // tiger:allow:usize-arch matches blockCountWidth/width pattern
+    writer: anytype,
+) !void {
+    // Only reached under show_blocks, where the prefix width was computed by
+    // printColumnar_blockPrefixWidth and is therefore at least 2.
+    std.debug.assert(block_prefix_width > 0);
+    const blocks = calculateDisplayBlocks(entry, options);
+    // Right-align block count to max_block_width
+    const bw = blockCountWidth(blocks);
+    // blockCountWidth never yields 0, so the pad math below cannot underflow.
+    std.debug.assert(bw >= 1);
+    const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
+    for (0..pad_count) |_| {
+        try writer.writeByte(' ');
+    }
+    try writer.print("{d} ", .{blocks});
+}
+
+/// Pad the current column to max_width plus the column padding, using the
+/// width cached during the pre-calculation pass. Caller guards this so the
+/// entry is neither the last column nor the last entry.
+fn printColumnar_writePadding(
+    entries: []Entry,
+    idx: usize, // tiger:allow:usize-arch slice index
+    max_width: usize, // tiger:allow:usize-arch getDisplayWidth returns usize
+    options: LsOptions,
+    writer: anytype,
+) !void {
+    // Caller only reaches this for an in-bounds, non-final entry.
+    std.debug.assert(idx < entries.len);
+    // This uses cached width from the pre-calculation pass above
+    const width = entries[idx].getDisplayWidth(
+        options.file_type_indicators,
+        options.append_slash_dirs,
+        common.icons.shouldShowIcons(options.icon_mode, options.is_terminal),
+        options.show_git_status,
+    );
+    // max_width is the maximum over all entry widths, so the padding count
+    // below stays non-negative.
+    std.debug.assert(width <= max_width);
+    const padding = max_width + COLUMN_PADDING - width;
+    for (0..padding) |_| {
+        try writer.writeByte(' ');
+    }
 }
 
 /// Print entries in columnar format
 pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
+    // The only way past the early return is a non-empty slice; the column
+    // math below indexes entries and depends on this.
+    std.debug.assert(entries.len > 0);
 
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
 
     // Calculate block width prefix if -s is enabled
-    var block_prefix_width: usize = 0;
-    if (options.show_blocks) {
-        var max_block_width: usize = 0;
-        for (entries) |entry| {
-            max_block_width = @max(max_block_width, blockCountWidth(calculateDisplayBlocks(entry, options)));
-        }
-        block_prefix_width = max_block_width + 1; // block count + space
-    }
+    const block_prefix_width = if (options.show_blocks)
+        printColumnar_blockPrefixWidth(entries, options)
+    else
+        0;
 
     // Pre-calculate display widths for all entries in a single pass
     // This ensures all widths are cached and finds the maximum width
-    var max_width: usize = 0;
-    for (entries) |*entry| {
-        const width = entry.getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-        max_width = @max(max_width, width);
-    }
+    const max_width = printColumnar_maxEntryWidth(entries, options);
 
     // Add padding between columns, including block prefix
     const col_width = block_prefix_width + max_width + COLUMN_PADDING;
 
     // Calculate number of columns that fit
     const num_cols = @max(1, term_width / col_width);
+    // @max(1, ...) guarantees at least one column, so num_rows below cannot
+    // divide by zero.
+    std.debug.assert(num_cols >= 1);
 
     // Calculate number of rows needed
     const num_rows = (entries.len + num_cols - 1) / num_cols;
+    // With entries.len >= 1 and num_cols >= 1 the ceiling division yields at
+    // least one row, bounding the outer row loop.
+    std.debug.assert(num_rows >= 1);
 
     // Print in column-major order (like GNU ls)
     for (0..num_rows) |row| {
@@ -607,14 +714,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
 
             // Print block count prefix if -s
             if (options.show_blocks) {
-                const blocks = calculateDisplayBlocks(entry, options);
-                // Right-align block count to max_block_width
-                const bw = blockCountWidth(blocks);
-                const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
-                for (0..pad_count) |_| {
-                    try writer.writeByte(' ');
-                }
-                try writer.print("{d} ", .{blocks});
+                try printColumnar_writeBlockPrefix(entry, options, block_prefix_width, writer);
             }
 
             // Print entry name with color and indicator
@@ -622,12 +722,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
 
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
-                // This uses cached width from the pre-calculation pass above
-                const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-                const padding = max_width + COLUMN_PADDING - width;
-                for (0..padding) |_| {
-                    try writer.writeByte(' ');
-                }
+                try printColumnar_writePadding(entries, idx, max_width, options, writer);
             }
         }
         try writer.writeByte('\n');
@@ -656,6 +751,9 @@ fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
 /// Print entries in columnar format sorted across rows (-x flag)
 pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
+    // Past the early return the slice is non-empty; the entries.len - 1 logic
+    // below depends on it.
+    std.debug.assert(entries.len > 0);
 
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
@@ -682,6 +780,9 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
 
     // Calculate number of columns that fit
     const num_cols = @max(1, term_width / col_width);
+    // @max(1, ...) guarantees at least one column; the idx % num_cols below
+    // would be a modulo-by-zero hazard otherwise.
+    std.debug.assert(num_cols >= 1);
 
     // Print in row-major order (across rows, like -x)
     for (entries, 0..) |entry, idx| {
@@ -765,7 +866,6 @@ fn printEntries_onePerLine(
     style: anytype,
 ) !void {
     std.debug.assert(options.one_per_line);
-    std.debug.assert(@TypeOf(options.show_blocks) == bool);
     for (entries) |entry| {
         // Print block count if -s
         if (options.show_blocks) {
@@ -798,7 +898,6 @@ fn printEntries_longFormat(
     total_blocks: u64,
 ) !void {
     std.debug.assert(options.long_format);
-    std.debug.assert(@TypeOf(total_blocks) == u64);
     // Print total if we have entries
     if (entries.len > 0) {
         try writer.print("total {d}\n", .{total_blocks});

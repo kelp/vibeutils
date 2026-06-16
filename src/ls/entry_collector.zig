@@ -66,7 +66,6 @@ fn collectFilteredEntries_appendDotEntries(
     entries: *std.ArrayList(Entry),
 ) !void {
     std.debug.assert(entries.items.len == 0);
-    std.debug.assert(@TypeOf(entries.*) == std.ArrayList(Entry));
     const dot = try allocator.dupe(u8, ".");
     errdefer allocator.free(dot);
     try entries.append(allocator, Entry{
@@ -91,7 +90,6 @@ fn collectFilteredEntries_shouldSkip(
     name: []const u8,
 ) bool {
     std.debug.assert(name.len > 0);
-    std.debug.assert(@TypeOf(options.hide_backups) == bool);
     // Apply filtering
     if (!filter.shouldInclude(name)) return true;
 

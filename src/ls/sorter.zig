@@ -97,6 +97,13 @@ fn versionCompare(a: []const u8, b: []const u8) std.math.Order {
             const b_num_start = bi;
             while (ai < a.len and std.ascii.isDigit(a[ai])) ai += 1;
             while (bi < b.len and std.ascii.isDigit(b[bi])) bi += 1;
+            // The leading-zero and digit-count loops only advance the indices,
+            // so each cursor sits at or past where it began. This guards the
+            // unsigned subtractions below (num_len and zeros) from underflow.
+            std.debug.assert(ai >= a_num_start);
+            std.debug.assert(bi >= b_num_start);
+            std.debug.assert(a_num_start >= a_start);
+            std.debug.assert(b_num_start >= b_start);
             const a_num_len = ai - a_num_start;
             const b_num_len = bi - b_num_start;
 

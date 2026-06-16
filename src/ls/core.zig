@@ -13,6 +13,9 @@ const Entry = types.Entry;
 /// Core directory listing logic with cycle detection
 /// Collects, sorts, and prints directory entries
 pub fn listDirectoryImplWithVisited(io: std.Io, dir: std.Io.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_fs_ids: *common.directory.FileSystemIdSet, git_context: ?*types.GitContext) anyerror!void {
+    // Every caller supplies a real directory path: ".", a CLI operand, or a
+    // base_path + entry.name join from the recursive walk. Never empty.
+    std.debug.assert(path.len > 0);
     // Collect and prepare entries
     var entries = try collectAndPrepareEntries(io, allocator, dir, options, git_context, stderr_writer);
     defer entries.deinit(allocator);
@@ -63,6 +66,9 @@ pub fn sortEntriesFromOptions(entries: []Entry, options: LsOptions) void {
 
 /// Print directory listing with header if needed
 pub fn printDirectoryListing(allocator: std.mem.Allocator, entries: []Entry, path: []const u8, writer: anytype, options: LsOptions, style: anytype) !void {
+    // Same path invariant as the caller: the recursive header needs a real
+    // path, and an empty one is never produced upstream.
+    std.debug.assert(path.len > 0);
     // Print directory header for recursive mode
     if (options.recursive) {
         try writer.print("{s}:\n", .{path});

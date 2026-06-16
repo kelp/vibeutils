@@ -201,6 +201,9 @@ fn escapeName(name: []const u8, buf: []u8) []const u8 {
             out += 1;
         }
     }
+    // Postcondition: every branch breaks before writing past buf, and the
+    // largest single write is 4 bytes, so out never overruns the buffer.
+    std.debug.assert(out <= buf.len);
     return buf[0..out];
 }
 
@@ -226,7 +229,6 @@ fn printEntryName_writeGitIndicator(entry: Entry, writer: anytype, style: anytyp
 /// Write the file-type icon (with color) before an entry name.
 fn printEntryName_writeIcon(entry: Entry, writer: anytype, style: anytype) !void {
     std.debug.assert(entry.name.len > 0);
-    std.debug.assert(@TypeOf(entry.kind) == std.Io.File.Kind);
     const theme = common.icons.IconTheme{};
     const icon = common.icons.getIcon(
         &theme,
@@ -256,7 +258,6 @@ fn printEntryName_writeName(
     options: LsOptions,
 ) !void {
     std.debug.assert(entry.name.len > 0);
-    std.debug.assert(@TypeOf(options.escape_non_printable) == bool);
     const color = getFileColor(entry);
     if (style.color_mode != .none) {
         try style.setColor(color);

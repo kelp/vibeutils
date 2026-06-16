@@ -406,8 +406,6 @@ fn lsMain_listOperands(
     allocator: std.mem.Allocator,
     git_context: ?*types.GitContext,
 ) !bool {
-    std.debug.assert(@TypeOf(options.all) == bool);
-    std.debug.assert(@TypeOf(options.directory) == bool);
     var had_error = false;
 
     if (paths.len == 0) {
@@ -433,6 +431,9 @@ fn lsMain_listOperands(
             file_count += 1;
         }
     }
+    // file_count is incremented at most once per path element, so it can
+    // never exceed the number of operands.
+    std.debug.assert(file_count <= paths.len);
 
     // First pass: list file operands (no headers)
     for (paths) |path| {
