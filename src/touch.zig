@@ -87,6 +87,11 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
         .timestamp_str = parsed_args.t,
         .time_arg = parsed_args.time,
     };
+    // prog_name is our 5-char constant "touch", never empty.
+    std.debug.assert(prog_name.len > 0);
+    // -h/--no-dereference always forces -c (no_create), so no_dereference
+    // can never be set without no_create also being set.
+    if (options.no_dereference) std.debug.assert(options.no_create);
 
     // Access positionals
     const files = parsed_args.positionals;
@@ -122,67 +127,118 @@ fn run_reportTouchError(
     // prog_name is our constant and the options struct we built is intact.
     std.debug.assert(prog_name.len > 0);
     std.debug.assert(prog_name.len <= 16);
+    // The options struct built in run() always subsumes no_dereference into
+    // no_create; pairs the same invariant asserted in run() on this path.
+    if (options.no_dereference) std.debug.assert(options.no_create);
 
     // Map specific errors to user-friendly messages
     switch (err) {
-        error.InvalidTimestamp => {
-            if (options.timestamp_str) |ts| {
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    prog_name,
-                    "invalid date format '{s}'",
-                    .{ts},
-                );
-            } else {
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    prog_name,
-                    "invalid date format",
-                    .{},
-                );
-            }
-        },
-        error.InvalidDateFormat => {
-            if (options.date_str) |ds| {
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    prog_name,
-                    "invalid date format '{s}'",
-                    .{ds},
-                );
-            } else {
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    prog_name,
-                    "invalid date format",
-                    .{},
-                );
-            }
-        },
-        error.InvalidTimeType => {
-            if (options.time_arg) |ta| {
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    prog_name,
-                    "invalid argument '{s}' for '--time'",
-                    .{ta},
-                );
-            } else {
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    prog_name,
-                    "invalid argument for '--time'",
-                    .{},
-                );
-            }
-        },
+        error.InvalidTimestamp => run_reportTouchError_invalidTimestamp(
+            allocator,
+            prog_name,
+            options.timestamp_str,
+            stderr_writer,
+        ),
+        error.InvalidDateFormat => run_reportTouchError_invalidDateFormat(
+            allocator,
+            prog_name,
+            options.date_str,
+            stderr_writer,
+        ),
+        error.InvalidTimeType => run_reportTouchError_invalidTimeType(
+            allocator,
+            prog_name,
+            options.time_arg,
+            stderr_writer,
+        ),
         else => handleError(allocator, prog_name, file_path, err, stderr_writer),
+    }
+}
+
+/// Reports an InvalidTimestamp error, naming the timestamp if available.
+fn run_reportTouchError_invalidTimestamp(
+    allocator: std.mem.Allocator,
+    prog_name: []const u8,
+    timestamp_str: ?[]const u8,
+    stderr_writer: *std.Io.Writer,
+) void {
+    // prog_name is our constant; assert positive and negative space invariants.
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(prog_name.len <= 16);
+    if (timestamp_str) |ts| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid date format '{s}'",
+            .{ts},
+        );
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid date format",
+            .{},
+        );
+    }
+}
+
+/// Reports an InvalidDateFormat error, naming the date string if available.
+fn run_reportTouchError_invalidDateFormat(
+    allocator: std.mem.Allocator,
+    prog_name: []const u8,
+    date_str: ?[]const u8,
+    stderr_writer: *std.Io.Writer,
+) void {
+    // prog_name is our constant; assert positive and negative space invariants.
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(prog_name.len <= 16);
+    if (date_str) |ds| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid date format '{s}'",
+            .{ds},
+        );
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid date format",
+            .{},
+        );
+    }
+}
+
+/// Reports an InvalidTimeType error, naming the --time argument if available.
+fn run_reportTouchError_invalidTimeType(
+    allocator: std.mem.Allocator,
+    prog_name: []const u8,
+    time_arg: ?[]const u8,
+    stderr_writer: *std.Io.Writer,
+) void {
+    // prog_name is our constant; assert positive and negative space invariants.
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(prog_name.len <= 16);
+    if (time_arg) |ta| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid argument '{s}' for '--time'",
+            .{ta},
+        );
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid argument for '--time'",
+            .{},
+        );
     }
 }
 
@@ -342,10 +398,15 @@ fn updateFileTimes(
     const dirfd = c.AT.FDCWD;
     // AT_SYMLINK_NOFOLLOW prevents following symbolic links
     const flags: u32 = if (no_dereference) c.AT.SYMLINK_NOFOLLOW else 0;
+    // The no-follow bit is set only when no_dereference is requested.
+    if (!no_dereference) std.debug.assert(flags == 0);
 
     // Allocate path buffer dynamically
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
+    // dupeZ copies path and appends a sentinel excluded from len, so the
+    // duplicated slice length always equals the source length.
+    std.debug.assert(path_z.len == path.len);
     const result = c.utimensat(dirfd, path_z, &actual_times, flags);
     if (result == -1) {
         const err = std.posix.errno(result);
@@ -425,9 +486,6 @@ fn parseTimestamp_validateAndConvert(
     minute: u32,
     second: u32,
 ) !c.timespec {
-    std.debug.assert(second <= std.math.maxInt(u32));
-    std.debug.assert(minute <= std.math.maxInt(u32));
-
     // Validate ranges
     if (month < 1 or month > 12) return error.InvalidTimestamp;
     if (day < 1 or day > 31) return error.InvalidTimestamp;
@@ -453,6 +511,9 @@ fn parseTimestamp_validateAndConvert(
     if (days_since_epoch > max_days) return error.InvalidTimestamp;
 
     const day_seconds = std.math.mul(i64, days_since_epoch, 86400) catch return error.InvalidTimestamp;
+    // days_since_epoch is non-negative (checked above) so its product with
+    // the positive seconds-per-day is non-negative.
+    std.debug.assert(day_seconds >= 0);
     // Convert time components to seconds (3600 = 60 * 60 seconds per hour)
     const time_seconds = @as(i64, hour) * 3600 + @as(i64, minute) * 60 + @as(i64, second);
 
@@ -460,6 +521,9 @@ fn parseTimestamp_validateAndConvert(
     if (day_seconds > std.math.maxInt(i64) - time_seconds) return error.InvalidTimestamp;
 
     const total_seconds = day_seconds + time_seconds;
+    // Both addends are non-negative and the overflow guard above ensures the
+    // sum did not wrap, so the epoch second count is non-negative.
+    std.debug.assert(total_seconds >= 0);
 
     return c.timespec{
         .sec = @intCast(total_seconds),
@@ -522,6 +586,8 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
 fn parseIso8601(date_str: []const u8) !c.timespec {
     // Minimum valid: YYYY-MM-DD (10 chars)
     if (date_str.len < 10) return error.InvalidDateFormat;
+    // Past the guard, the fixed-index slices and reads on [0..10] are safe.
+    std.debug.assert(date_str.len >= 10);
 
     // Parse year, month, day
     if (date_str.len < 4) return error.InvalidDateFormat;
@@ -627,6 +693,10 @@ fn isLeapYear(year: u32) bool {
 /// Returns the number of days in a given month.
 fn getDaysInMonth(year: u32, month: u32) u32 {
     if (month < 1 or month > 12) return 0;
+    // Past the guard, month indexes the 12-element table; month-1 cannot
+    // underflow and stays within bounds.
+    std.debug.assert(month >= 1);
+    std.debug.assert(month <= 12);
 
     var days = days_in_month[month - 1];
     // February in leap years has 29 days
@@ -634,11 +704,18 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
         days = 29;
     }
 
+    // Table values are 28-31; the leap adjustment only ever sets 29.
+    std.debug.assert(days >= 28);
+    std.debug.assert(days <= 31);
     return days;
 }
 
 /// Handles errors by printing appropriate error messages.
 fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: *std.Io.Writer) void {
+    // prog_name flows from run()'s constant "touch"; never empty. path is not
+    // asserted because "touch ''" is a legitimate invocation to report.
+    std.debug.assert(prog_name.len > 0);
+
     // GNU touch format: "touch: cannot touch 'filename': Error message"
     switch (err) {
         error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such file or directory", .{path}),
