@@ -61,6 +61,9 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
     const args = init.minimal.args.toSlice(allocator) catch std.process.exit(1);
+    // The OS always passes argv[0] (the program name), so args has at least
+    // one element; the args[1..] slice below depends on this.
+    std.debug.assert(args.len >= 1);
 
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
@@ -234,6 +237,9 @@ fn runEnv_handleSplitString_mergeAssignments(
         common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
+    // Postcondition: merged holds the original assignments followed by all
+    // split_assignments, so its length is at least split_assignments.len.
+    std.debug.assert(options.assignments.len >= split_assignments.len);
     return null;
 }
 
@@ -317,41 +323,26 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        // After --, everything is command
-        if (past_options) {
-            options.command = args[i..];
-            break;
-        }
-
-        // Check for --
-        if (std.mem.eql(u8, arg, "--")) {
-            past_options = true;
-            continue;
-        }
-
-        // A bare `-` implies -i (clear environment), per GNU coreutils
-        if (std.mem.eql(u8, arg, "-")) {
-            options.ignore_environment = true;
-            continue;
-        }
-
-        // Check for NAME=VALUE assignment or command start
-        if (!past_options and !std.mem.startsWith(u8, arg, "-")) {
-            if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+        // Classify the non-flag token shape; flag dispatch stays below.
+        switch (parseArgs_classifyToken(arg, past_options, seen_assignment)) {
+            .command_tail => {
+                options.command = args[i..];
+                break;
+            },
+            .mark_past_options => {
+                past_options = true;
+                continue;
+            },
+            .set_ignore_env => {
+                options.ignore_environment = true;
+                continue;
+            },
+            .assignment => |eq_pos| {
                 try parseArgs_appendAssignment(allocator, &assignments, arg, eq_pos);
                 seen_assignment = true;
                 continue;
-            }
-            // Not an assignment and not a flag -- it's the command
-            options.command = args[i..];
-            break;
-        }
-
-        // Per POSIX/macOS spec: once a NAME=VALUE has been seen,
-        // subsequent flag-like tokens start the command.
-        if (seen_assignment) {
-            options.command = args[i..];
-            break;
+            },
+            .dispatch_flag => {},
         }
 
         // Long flags
@@ -372,7 +363,64 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
     }
 
     try parseArgs_finalizeOwnership(allocator, &options, &unsets, &assignments);
+    // finalizeOwnership always sets owns_memory; every success return owns its
+    // unsets/assignments slices, which EnvOptions.deinit relies on.
+    std.debug.assert(options.owns_memory);
     return options;
+}
+
+/// Outcome of classifying one token before flag dispatch. The parent loop
+/// owns all state mutation and break/continue control flow.
+const ParseArgsTokenClass = union(enum) {
+    /// This token and everything after it is the command tail.
+    command_tail,
+    /// Token is `--`; mark options ended and continue.
+    mark_past_options,
+    /// Token is a bare `-`; clear the environment and continue.
+    set_ignore_env,
+    /// Token is NAME=VALUE; payload is the `=` index within arg.
+    assignment: usize, // tiger:allow:usize-arch std slice indexing forces usize
+    /// Token is a flag (-x / --x); the parent should dispatch it below.
+    dispatch_flag,
+};
+
+/// Classify a single token's shape, mirroring env's argument grammar. Pure:
+/// performs no mutation, so the parent loop keeps every break/continue and the
+/// past_options/seen_assignment state changes.
+fn parseArgs_classifyToken(
+    arg: []const u8,
+    past_options: bool,
+    seen_assignment: bool,
+) ParseArgsTokenClass {
+    // After --, everything is command.
+    if (past_options) return .command_tail;
+
+    // Check for --.
+    if (std.mem.eql(u8, arg, "--")) return .mark_past_options;
+
+    // A bare `-` implies -i (clear environment), per GNU coreutils.
+    if (std.mem.eql(u8, arg, "-")) return .set_ignore_env;
+
+    // Check for NAME=VALUE assignment or command start.
+    if (!std.mem.startsWith(u8, arg, "-")) {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            // Postcondition for the assignment payload: eq_pos indexes the '='.
+            std.debug.assert(eq_pos < arg.len);
+            std.debug.assert(arg[eq_pos] == '=');
+            return .{ .assignment = eq_pos };
+        }
+        // Not an assignment and not a flag -- it's the command.
+        return .command_tail;
+    }
+
+    // Per POSIX/macOS spec: once a NAME=VALUE has been seen,
+    // subsequent flag-like tokens start the command.
+    if (seen_assignment) return .command_tail;
+
+    // A dispatch_flag result implies a flag token longer than a bare `-`.
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+    return .dispatch_flag;
 }
 
 /// Append a NAME=VALUE assignment parsed from arg, split at eq_pos.
@@ -542,6 +590,9 @@ fn buildEnvMap(allocator: Allocator, options: EnvOptions, parent_environ: *const
         // Copy parent environment
         const keys = parent_environ.keys();
         const vals = parent_environ.values();
+        // keys() and values() are parallel arrays of one entry each, so their
+        // lengths always match; the for loop below iterates them together.
+        std.debug.assert(keys.len == vals.len);
         for (keys, vals) |k, v| {
             try env_map.put(k, v);
         }
@@ -564,6 +615,9 @@ fn buildEnvMap(allocator: Allocator, options: EnvOptions, parent_environ: *const
 fn printEnvironment(writer: *std.Io.Writer, env_map: *const std.process.Environ.Map, null_delimiter: bool) !void {
     const keys = env_map.keys();
     const vals = env_map.values();
+    // keys() and values() are parallel arrays with one value per key, so their
+    // lengths always match; the for loop below iterates them together.
+    std.debug.assert(keys.len == vals.len);
     for (keys, vals) |k, v| {
         try writer.print("{s}={s}", .{ k, v });
         if (null_delimiter) {
@@ -576,6 +630,10 @@ fn printEnvironment(writer: *std.Io.Writer, env_map: *const std.process.Environ.
 
 /// Execute a command with the given environment
 fn execCommand(allocator: Allocator, io: std.Io, command: []const []const u8, env_map: *const std.process.Environ.Map, stderr_writer: *std.Io.Writer) u8 {
+    // Callers reach here only after the empty-command branch returns early, and
+    // command[0] is indexed below for spawn/error messages.
+    std.debug.assert(command.len > 0);
+
     var child = std.process.spawn(io, .{
         .argv = command,
         .environ_map = env_map,
