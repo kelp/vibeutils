@@ -57,58 +57,59 @@ const CutArgs = struct {
     };
 };
 
-/// Parse a range list string like "1,3,5-7" or "-3" or "5-"
-/// Returns a sorted, merged array of Range values.
-/// Caller owns the returned slice.
-fn parseRangeList(allocator: Allocator, list_str: []const u8) ![]Range {
-    var ranges = std.ArrayListUnmanaged(Range).empty;
-    defer ranges.deinit(allocator);
+/// Parse a single non-empty, trimmed range token like "3", "5-7", "-3", or "5-".
+/// Returns one Range; raises error.InvalidRange on malformed input.
+fn parseRangeList_parseToken(token: []const u8) !Range {
+    // Precondition: the caller skips empty tokens before calling this.
+    assert(token.len > 0);
 
-    var iter = std.mem.tokenizeAny(u8, list_str, ", ");
-    while (iter.next()) |token| {
-        const trimmed = std.mem.trim(u8, token, " ");
-        if (trimmed.len == 0) continue;
+    if (std.mem.indexOfScalar(u8, token, '-')) |dash_pos| {
+        const left = std.mem.trim(u8, token[0..dash_pos], " ");
+        const right = std.mem.trim(u8, token[dash_pos + 1 ..], " ");
 
-        if (std.mem.indexOfScalar(u8, trimmed, '-')) |dash_pos| {
-            const left = std.mem.trim(u8, trimmed[0..dash_pos], " ");
-            const right = std.mem.trim(u8, trimmed[dash_pos + 1 ..], " ");
-
-            if (left.len == 0 and right.len == 0) {
-                // Just "-" alone is invalid
-                return error.InvalidRange;
-            }
-
-            const start: usize = if (left.len == 0) 1 else std.fmt.parseInt(usize, left, 10) catch return error.InvalidRange;
-            const end: usize = if (right.len == 0) Range.END else std.fmt.parseInt(usize, right, 10) catch return error.InvalidRange;
-
-            if (start == 0 or (end != Range.END and end == 0)) return error.InvalidRange;
-            if (end != Range.END and start > end) return error.InvalidRange;
-
-            try ranges.append(allocator, .{ .start = start, .end = end });
-        } else {
-            const val = std.fmt.parseInt(usize, trimmed, 10) catch return error.InvalidRange;
-            if (val == 0) return error.InvalidRange;
-            try ranges.append(allocator, .{ .start = val, .end = val });
+        if (left.len == 0 and right.len == 0) {
+            // Just "-" alone is invalid
+            return error.InvalidRange;
         }
+
+        // Range.start/end are usize, so parseInt must use usize to match.
+        const start: usize = if (left.len == 0) 1 else std.fmt.parseInt(usize, left, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
+        const end: usize = if (right.len == 0) Range.END else std.fmt.parseInt(usize, right, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
+
+        if (start == 0 or (end != Range.END and end == 0)) return error.InvalidRange;
+        if (end != Range.END and start > end) return error.InvalidRange;
+
+        // Postconditions: 1-indexed start; the guards above reject a 0 start
+        // and any start > end, so a finite end is never below start.
+        assert(start >= 1);
+        if (end != Range.END) assert(start <= end);
+        return .{ .start = start, .end = end };
+    } else {
+        // Range.start/end are usize, so parseInt must use usize to match.
+        const val = std.fmt.parseInt(usize, token, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
+        if (val == 0) return error.InvalidRange;
+
+        // Postconditions: single-value range is 1-indexed and not an open end.
+        assert(val >= 1);
+        assert(val != Range.END);
+        return .{ .start = val, .end = val };
     }
+}
 
-    if (ranges.items.len == 0) return error.InvalidRange;
+/// Merge a sorted slice of ranges, collapsing overlapping or adjacent ranges.
+/// Caller owns the returned slice.
+fn parseRangeList_mergeSorted(allocator: Allocator, sorted: []const Range) ![]Range {
+    // Preconditions: non-empty input (needed for sorted[0]) and a 1-indexed
+    // start (a 0 start should never reach merge -- parseToken rejected it).
+    assert(sorted.len >= 1);
+    assert(sorted[0].start >= 1);
 
-    // Sort by start position
-    std.mem.sort(Range, ranges.items, {}, struct {
-        fn lessThan(_: void, a: Range, b: Range) bool {
-            if (a.start != b.start) return a.start < b.start;
-            return a.end < b.end;
-        }
-    }.lessThan);
-
-    // Merge overlapping ranges
     var merged = std.ArrayListUnmanaged(Range).empty;
     errdefer merged.deinit(allocator);
 
-    try merged.append(allocator, ranges.items[0]);
+    try merged.append(allocator, sorted[0]);
 
-    for (ranges.items[1..]) |r| {
+    for (sorted[1..]) |r| {
         const last = &merged.items[merged.items.len - 1];
         // Check if r overlaps or is adjacent to last
         if (last.end == Range.END or (r.start <= last.end + 1)) {
@@ -123,11 +124,51 @@ fn parseRangeList(allocator: Allocator, list_str: []const u8) ![]Range {
         }
     }
 
+    // Postconditions on the merged list: positions are 1-indexed (start >= 1),
+    // and every range is well-formed (start <= end). Merge raises only `end`
+    // and never lowers a start, so these hold for every accepted input.
+    assert(merged.items[0].start >= 1);
+    const last_index = merged.items.len - 1;
+    assert(merged.items[last_index].start <= merged.items[last_index].end);
+
     return merged.toOwnedSlice(allocator);
+}
+
+/// Parse a range list string like "1,3,5-7" or "-3" or "5-".
+/// Returns a sorted, merged array of Range values.
+/// Caller owns the returned slice.
+fn parseRangeList(allocator: Allocator, list_str: []const u8) ![]Range {
+    var ranges = std.ArrayListUnmanaged(Range).empty;
+    defer ranges.deinit(allocator);
+
+    var iter = std.mem.tokenizeAny(u8, list_str, ", ");
+    while (iter.next()) |token| {
+        const trimmed = std.mem.trim(u8, token, " ");
+        if (trimmed.len == 0) continue;
+        try ranges.append(allocator, try parseRangeList_parseToken(trimmed));
+    }
+
+    if (ranges.items.len == 0) return error.InvalidRange;
+    // Past the zero-range guard above, at least one range was parsed; this
+    // documents the precondition for the unchecked `ranges.items[0]` index.
+    assert(ranges.items.len >= 1);
+
+    // Sort by start position
+    std.mem.sort(Range, ranges.items, {}, struct {
+        fn lessThan(_: void, a: Range, b: Range) bool {
+            if (a.start != b.start) return a.start < b.start;
+            return a.end < b.end;
+        }
+    }.lessThan);
+
+    return parseRangeList_mergeSorted(allocator, ranges.items);
 }
 
 /// Check if a 1-indexed position is selected by the ranges
 fn isSelected(ranges: []const Range, pos: usize, do_complement: bool) bool {
+    // Positions are 1-indexed by contract; every production caller passes a
+    // 1-based index (byte/char/field counters that start at 1).
+    assert(pos >= 1);
     var selected = false;
     for (ranges) |r| {
         if (pos >= r.start and (r.end == Range.END or pos <= r.end)) {
@@ -174,8 +215,15 @@ fn cutBytesOrChars(
     var i: usize = 0;
     while (i < line.len) {
         const char_len = utf8CharLen(line[i]);
+        // utf8CharLen's postcondition guarantees a length in 1..=4 for any byte.
+        assert(char_len >= 1);
         // Clamp to remaining bytes
         const actual_len = @min(char_len, line.len - i);
+        // The loop guard `i < line.len` makes `line.len - i >= 1`, and
+        // char_len >= 1, so the clamp keeps the slice in bounds and the
+        // step `i += actual_len` makes forward progress (never stalls).
+        assert(i + actual_len <= line.len);
+        assert(actual_len >= 1);
 
         // Check if all bytes of this character are selected
         var all_selected = true;
@@ -218,6 +266,9 @@ fn cutFields(
     var iter = std.mem.splitScalar(u8, line, delimiter);
 
     while (iter.next()) |field| {
+        // field_num starts at 1 and only increments, so it is the 1-based
+        // field index isSelected requires on every iteration.
+        assert(field_num >= 1);
         if (isSelected(ranges, field_num, do_complement)) {
             if (!first_output) {
                 try writer.writeAll(output_delim);
@@ -263,6 +314,9 @@ fn cutFieldsWhitespace(
     var iter = std.mem.tokenizeAny(u8, line, " \t");
 
     while (iter.next()) |field| {
+        // field_num starts at 1 and only increments, so it is the 1-based
+        // field index isSelected requires on every iteration.
+        assert(field_num >= 1);
         if (isSelected(ranges, field_num, do_complement)) {
             if (!first_output) {
                 try writer.writeAll(output_delim);
@@ -542,6 +596,13 @@ fn processFile(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) u8 {
+    // mode is a CutMode resolved upstream to exactly one of three variants;
+    // line_terminator is computed as exactly '\n' or 0 from the CLI.
+    const mode_is_valid = mode == .bytes or mode == .characters or mode == .fields;
+    assert(mode_is_valid);
+    const terminator_is_valid = line_terminator == '\n' or line_terminator == 0;
+    assert(terminator_is_valid);
+
     var read_buf: [8192]u8 = undefined;
     var file_reader = file.reader(io, &read_buf);
     const reader = &file_reader.interface;
@@ -674,6 +735,9 @@ fn readLine(
     allocator: Allocator,
     line_terminator: u8,
 ) !bool {
+    // The only production caller is processFile, which passes exactly '\n' or 0.
+    const terminator_is_valid = line_terminator == '\n' or line_terminator == 0;
+    assert(terminator_is_valid);
     while (true) {
         const chunk = reader.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => return true,
@@ -684,6 +748,9 @@ fn readLine(
 
         // Look for line terminator in chunk
         if (std.mem.indexOfScalar(u8, chunk, line_terminator)) |pos| {
+            // indexOfScalar returns an in-bounds index on a match, so the
+            // `chunk[0..pos]` slice and `toss(pos + 1)` stay in bounds.
+            assert(pos < chunk.len);
             // Append everything before the terminator
             try buf.appendSlice(allocator, chunk[0..pos]);
             reader.toss(pos + 1);
