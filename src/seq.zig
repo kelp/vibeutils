@@ -62,6 +62,8 @@ fn decimalPlaces(s: []const u8) usize {
                 if (s[j] == 'e' or s[j] == 'E') break;
                 count += 1;
             }
+            // Digits counted strictly after the dot cannot exceed the string.
+            std.debug.assert(count <= s.len);
             return count;
         }
     }
@@ -70,6 +72,9 @@ fn decimalPlaces(s: []const u8) usize {
 
 /// Format a float value as an integer string (no decimal point)
 fn formatInteger(buf: []u8, value: f64) ![]const u8 {
+    // @intFromFloat is illegal on NaN/Inf; callers pass finite sequence values.
+    std.debug.assert(!std.math.isNan(value));
+    std.debug.assert(!std.math.isInf(value));
     const int_val = @as(i64, @intFromFloat(value));
     return std.fmt.bufPrint(buf, "{d}", .{int_val});
 }
@@ -84,6 +89,9 @@ fn formatDecimal(buf: []u8, value: f64, precision: usize) ![]const u8 {
 
 /// Format a number with runtime-determined precision
 fn formatWithPrecision(buf: []u8, value: f64, precision: usize) ![]const u8 {
+    // @intFromFloat(abs_val) below is illegal on NaN/Inf; callers pass finite.
+    std.debug.assert(!std.math.isNan(value));
+    std.debug.assert(!std.math.isInf(value));
     if (precision == 0) {
         return formatInteger(buf, value);
     }
@@ -140,6 +148,10 @@ fn formatWithPrecision(buf: []u8, value: f64, precision: usize) ![]const u8 {
 
 /// Append fractional digits with zero-padding to precision width
 fn appendFracDigits(buf: []u8, offset: usize, frac: u64, precision: usize) ![]const u8 {
+    // offset is a prior bufPrint result length into the same buf, so it fits.
+    std.debug.assert(offset <= buf.len);
+    // Reached only past the precision == 0 early exit, so the loop runs once.
+    std.debug.assert(precision >= 1);
     // Write digits in reverse order
     var digits: [32]u8 = undefined;
     var f = frac;
@@ -156,6 +168,10 @@ fn appendFracDigits(buf: []u8, offset: usize, frac: u64, precision: usize) ![]co
 
 /// Fix fractional part to have correct precision (pad with zeros)
 fn padFractional(buf: []u8, formatted: []const u8, precision: usize) []const u8 {
+    // formatted is a prior bufPrint result into the same buf, so it fits.
+    std.debug.assert(formatted.len <= buf.len);
+    // Reached only from the carry branch past precision == 0, so precision > 0.
+    std.debug.assert(precision >= 1);
     // Find the dot
     var dot_pos: usize = 0;
     for (formatted, 0..) |c, i| {
@@ -182,6 +198,8 @@ fn padFractional(buf: []u8, formatted: []const u8, precision: usize) []const u8 
 
 /// Write a single byte to buf[pos], returning error.NoSpaceLeft if buf is full.
 fn writeByteBounded(buf: []u8, pos: *usize, b: u8) !void {
+    // Write cursor never overruns: every advance is gated on the write fitting.
+    std.debug.assert(pos.* <= buf.len);
     if (pos.* >= buf.len) return error.NoSpaceLeft;
     buf[pos.*] = b;
     pos.* += 1;
@@ -189,6 +207,8 @@ fn writeByteBounded(buf: []u8, pos: *usize, b: u8) !void {
 
 /// Write src into buf starting at pos, returning error.NoSpaceLeft if it won't fit.
 fn writeSliceBounded(buf: []u8, pos: *usize, src: []const u8) !void {
+    // Same write-cursor invariant on a second path: pos stays within bounds.
+    std.debug.assert(pos.* <= buf.len);
     if (pos.* + src.len > buf.len) return error.NoSpaceLeft;
     @memcpy(buf[pos.* .. pos.* + src.len], src);
     pos.* += src.len;
@@ -247,6 +267,9 @@ fn formatWithSpec_parseSpec(
             precision = precision * 10 + (fmt_str[j] - '0');
         }
     }
+
+    // j only advances from spec_at + 1, so we are past the '%'.
+    std.debug.assert(j > spec_at);
 
     // Conversion character
     if (j >= fmt_str.len) return null;
@@ -323,6 +346,8 @@ fn formatWithSpec(buf: []u8, value: f64, fmt_str: []const u8) ![]const u8 {
     // Find the format specifier
     var i: usize = 0;
     while (i < fmt_str.len) : (i += 1) {
+        // Loop invariant: the bounded writers keep pos within buf each pass.
+        std.debug.assert(pos <= buf.len);
         if (fmt_str[i] == '%') {
             if (i + 1 < fmt_str.len and fmt_str[i + 1] == '%') {
                 // Literal %%
@@ -364,6 +389,9 @@ fn formatWithSpec(buf: []u8, value: f64, fmt_str: []const u8) ![]const u8 {
 
 /// Format in scientific notation (like %e)
 fn formatScientific(buf: []u8, value: f64) ![]const u8 {
+    // Downstream formatDecimal -> @intFromFloat is illegal on NaN/Inf.
+    std.debug.assert(!std.math.isNan(value));
+    std.debug.assert(!std.math.isInf(value));
     if (value == 0.0) {
         return std.fmt.bufPrint(buf, "0.000000e+00", .{});
     }
@@ -401,6 +429,9 @@ fn formatScientific(buf: []u8, value: f64) ![]const u8 {
 
 /// Format using %g style (remove trailing zeros)
 fn formatGeneral(buf: []u8, value: f64) ![]const u8 {
+    // formatDecimal -> @intFromFloat below is illegal on NaN/Inf.
+    std.debug.assert(!std.math.isNan(value));
+    std.debug.assert(!std.math.isInf(value));
     // For %g, use the shorter of %f and %e, with trailing zeros removed
     // Simple approach: format with high precision, trim trailing zeros
     var tmp_buf: [64]u8 = undefined;
@@ -436,6 +467,9 @@ fn formatGeneral(buf: []u8, value: f64) ![]const u8 {
 
 /// Compute the display width of a number for -w padding
 fn numberWidth(value: f64, use_decimal: bool, precision: usize) usize {
+    // Callers pass first/last operands already proven finite by parse.
+    std.debug.assert(!std.math.isNan(value));
+    std.debug.assert(!std.math.isInf(value));
     var buf: [64]u8 = undefined;
     const formatted = if (use_decimal)
         formatDecimal(&buf, value, precision) catch return 1
@@ -695,6 +729,8 @@ fn run_generateSequence(
 ) !void {
     std.debug.assert(increment != 0.0);
     std.debug.assert(!std.math.isNan(increment));
+    // Finite step: parse rejected Inf, and the drift-bound math needs it.
+    std.debug.assert(!std.math.isInf(increment));
 
     var printed_first = false;
     var current = first;
@@ -816,6 +852,8 @@ fn run(
     _ = io;
     // Pre-process args to handle negative numbers before argparse
     const processed_args = try preprocessArgs(allocator, args);
+    // preprocessArgs only ever inserts a "--", never drops args.
+    std.debug.assert(processed_args.len >= args.len);
     defer {
         // Only free if we allocated new args
         if (processed_args.ptr != args.ptr) {
@@ -874,6 +912,8 @@ fn run(
 
 /// Print a single number with the appropriate formatting
 fn printNumber(writer: *std.Io.Writer, value: f64, all_integers: bool, precision: usize, pad_width: usize, format_str: ?[]const u8) !void {
+    // value is the loop's finite `current`; the formatters @intFromFloat it.
+    std.debug.assert(!std.math.isNan(value));
     var buf: [128]u8 = undefined;
 
     const formatted = if (format_str) |fmt|
@@ -882,6 +922,9 @@ fn printNumber(writer: *std.Io.Writer, value: f64, all_integers: bool, precision
         try formatInteger(&buf, value)
     else
         try formatDecimal(&buf, value, precision);
+
+    // Every formatter emits at least one char; the indexing below relies on it.
+    std.debug.assert(formatted.len >= 1);
 
     // Apply zero-padding for -w
     if (pad_width > 0 and formatted.len < pad_width) {
