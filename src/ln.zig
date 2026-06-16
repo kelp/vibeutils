@@ -84,6 +84,8 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
     // Find common prefix
     var common_prefix_len: usize = 0;
     const min_len = @min(from_parts.items.len, to_parts.items.len);
+    std.debug.assert(min_len <= from_parts.items.len);
+    std.debug.assert(min_len <= to_parts.items.len);
     for (0..min_len) |i| {
         if (std.mem.eql(u8, from_parts.items[i], to_parts.items[i])) {
             common_prefix_len = i + 1;
@@ -97,6 +99,8 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
     errdefer result.deinit(allocator);
 
     // Add ".." for each directory up to common ancestor
+    std.debug.assert(common_prefix_len <= from_parts.items.len);
+    std.debug.assert(common_prefix_len <= to_parts.items.len);
     const dirs_up = from_parts.items.len - common_prefix_len;
     for (0..dirs_up) |_| {
         if (result.items.len > 0) {
@@ -179,6 +183,12 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
         .warn_missing = parsed_args.warn_missing,
         .backup = parsed_args.backup,
     };
+    // -F is a no-op without -s (macOS spec): force_dir implies symbolic, and
+    // force_dir implies force is effectively on. Guarded so each assert is simple.
+    if (options.force_dir) {
+        std.debug.assert(options.symbolic);
+        std.debug.assert(options.force);
+    }
 
     const files = parsed_args.positionals;
 
@@ -249,6 +259,7 @@ const LinkOptions = struct {
 
 /// Handle the fallback case for 2 arguments when directory doesn't exist or isn't a directory
 fn handleTwoArgFallback(allocator: std.mem.Allocator, io: std.Io, files: []const []const u8, options: LinkOptions, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !common.ExitCode {
+    std.debug.assert(files.len >= 2);
     // Special case: 2 args, treat as Form 1 (TARGET LINK_NAME)
     createSingleLink(allocator, io, files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
         // Error already printed by createSingleLink
@@ -267,6 +278,7 @@ fn createLinks(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !common.ExitCode {
+    std.debug.assert(files.len > 0);
     const prog_name = "ln";
     if (options.target_directory) |target_dir| {
         // Form 4: ln -t DIRECTORY TARGET...
@@ -419,7 +431,6 @@ fn createLinks_intoDirectory(
 ) !common.ExitCode {
     std.debug.assert(files.len >= 2);
     const prog_name = "ln";
-    std.debug.assert(prog_name.len > 0);
 
     const directory = files[files.len - 1];
 
@@ -667,7 +678,6 @@ fn createSingleLink_linkExists(
 ) !bool {
     std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
-    std.debug.assert(prog_name.len > 0);
 
     std.Io.Dir.cwd().access(io, link_name, .{}) catch |err| switch (err) {
         error.FileNotFound => {
@@ -705,7 +715,6 @@ fn createSingleLink_promptReplace(
 ) !bool {
     std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
-    std.debug.assert(prog_name.len > 0);
 
     if (test_mode) {
         // Test mode: assume 'no' for interactive prompts
@@ -759,7 +768,6 @@ fn createSingleLink_removeExisting(
 ) !void {
     std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
-    std.debug.assert(prog_name.len > 0);
 
     // Create backup of destination if it exists and backup mode is enabled
     if (link_exists and options.backup) {
@@ -929,6 +937,12 @@ fn createSingleLink_hardLink(
     // -P (physical): flags=0, creates hard link to symlink itself
     // default/-L: AT_SYMLINK_FOLLOW, creates hard link to symlink target
     const flags: c_uint = @intCast(if (options.physical) 0 else AT_SYMLINK_FOLLOW);
+    // flags is fully controlled by -P: exactly one of the two linkat flag states.
+    if (options.physical) {
+        std.debug.assert(flags == 0);
+    } else {
+        std.debug.assert(flags == @as(c_uint, @intCast(AT_SYMLINK_FOLLOW)));
+    }
     const target_z = try allocator.dupeZ(u8, target);
     defer allocator.free(target_z);
     const link_name_z = try allocator.dupeZ(u8, link_name);
