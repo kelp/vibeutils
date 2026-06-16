@@ -111,6 +111,8 @@ fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, sepa
         const bytes_read = reader.readSliceShort(&chunk) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort reads at most chunk.len bytes; guards the slice below.
+        std.debug.assert(bytes_read <= chunk.len);
         if (bytes_read == 0) break;
         try content.appendSlice(allocator, chunk[0..bytes_read]);
     }
@@ -118,6 +120,9 @@ fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, sepa
     if (content.items.len == 0) {
         return @intFromEnum(common.ExitCode.success);
     }
+
+    // The empty-content early return above guarantees a non-empty buffer here.
+    std.debug.assert(content.items.len > 0);
 
     // Split content by separator and reverse
     if (separator.len == 0) {
@@ -153,7 +158,9 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
                 // Just continue; the separator is part of the next record
             }
         }
-        // Remaining content from start to end
+        // Remaining content from start to end.
+        // start is only ever assigned i where i < data.len, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -166,6 +173,8 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
                 start = i + 1;
             }
         }
+        // start is only ever assigned i + 1 where i < data.len, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -177,6 +186,10 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
 
 /// Reverse records delimited by a multi-byte string
 fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const u8, before: bool, writer: *std.Io.Writer) !void {
+    // Caller dispatches the len==0 and len==1 cases to reverseByByteSeparator;
+    // a multi-byte separator is required so the match loop makes progress.
+    std.debug.assert(sep.len >= 2);
+
     var records: std.ArrayListUnmanaged([]const u8) = .empty;
     defer records.deinit(allocator);
 
@@ -196,6 +209,9 @@ fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const
                 pos += 1;
             }
         }
+        // The while guard keeps pos + sep.len <= data.len at every match, and
+        // start is only assigned pos there, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -212,6 +228,9 @@ fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const
                 pos += 1;
             }
         }
+        // The while guard keeps pos + sep.len <= data.len at every match, and
+        // start is only assigned pos + sep.len there, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -228,6 +247,9 @@ fn writeRecordsReversed(records: []const []const u8, writer: *std.Io.Writer) !vo
     var i: usize = records.len;
     while (i > 0) {
         i -= 1;
+        // i starts at records.len and the loop only enters when i > 0, so after
+        // the decrement i is a valid index into records.
+        std.debug.assert(i < records.len);
         try writer.writeAll(records[i]);
     }
 }
