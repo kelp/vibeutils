@@ -269,7 +269,33 @@ Roughly ordered by impact-per-effort:
     (fixes `-xdev` mount-point emission, `-L` loop diagnostic)
   - Carve-out, tracked separately: find's expression
     parser/evaluator recursion (Pratt refactor).
-- ⬜ Phase 3 — function-length splits.
+- ✅ **Phase 3 — function-length splits.** Every function in
+  `src/` now fits Tiger Style's 70-line limit; tree-wide
+  `long-fn` count is 0. 83 functions across 41 files decomposed
+  into named, asserted helpers by faithful extract-method
+  (behavior-preserving). Run as 5 size-ordered waves via the
+  `phase3-fn-split` ultracode workflow (per-utility plan →
+  implement+scoped-verify → prove-teeth → adversarial review);
+  full `zig build test` + `just it` (48 utilities) green after
+  every wave.
+  - Wave 1 (giants ≥200 lines): `find` (parsePrimary 798,
+    evaluateLeaf 388), `dd` (runDd 394), `grep`, `id`, `stat`,
+    `sort`, `df`, `ln`.
+  - Wave 2 (150-199): `ls`, `env`, `date`, `printf`, `tail`,
+    `seq`, `cut`.
+  - Wave 3 (100-149): `mv`, `timeout`, `uniq`, `mktemp`,
+    `chown`, `cp`, `echo`, `wc`, `nl`, `realpath`, `head`, `du`.
+    (`cp` also dropped a non-faithful `backup_suffix.len` assert
+    the split had introduced.)
+  - Wave 4 (71-99): `touch`, `rm`, `tee`, `yes`, `cat`, `tr`,
+    `free`.
+  - Wave 5 (`src/common/`, run serially since every util
+    compiles them): `argparse`, `path`, `style`, `mode`,
+    `icons`, `display_config`, `time`.
+  - Note for Phase 4: many extracted helpers carry placeholder
+    `>=2` asserts that are tautological (e.g. `@TypeOf(x) == u32`,
+    `len >= 0` on a usize). Strengthen these into real
+    invariants during the assertion sweep.
 - ⬜ Phase 4 — assertion sweep.
 - ⬜ Phase 5 — mechanical cleanups.
 - ⬜ Phase 6 — final verification + summary.
