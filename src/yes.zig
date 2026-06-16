@@ -57,6 +57,12 @@ pub fn runYes(
     };
     defer if (parsed_args.positionals.len > 0) allocator.free(output_str);
 
+    // By construction output_str is non-empty: empty positionals -> "y\n",
+    // otherwise join(...) + "\n" which is "\n" even for `yes ''`.
+    std.debug.assert(output_str.len > 0);
+    // Both construction branches terminate the line with a newline.
+    std.debug.assert(output_str[output_str.len - 1] == '\n');
+
     return runYes_outputForever(stdout_writer, output_str);
 }
 
@@ -143,6 +149,9 @@ fn runYes_outputForever(stdout_writer: *std.Io.Writer, output_str: []const u8) !
         }
     }
 
+    // The large-string path returned above, so the line fits the fixed buffer.
+    std.debug.assert(output_str.len <= buffer_size);
+
     var buffer: [buffer_size]u8 = undefined;
 
     // Fill buffer with repeated string
@@ -151,6 +160,11 @@ fn runYes_outputForever(stdout_writer: *std.Io.Writer, output_str: []const u8) !
         @memcpy(buffer[pos..][0..output_str.len], output_str);
         pos += output_str.len;
     }
+
+    // The fill loop ran at least once (len <= buffer.len), so pos is non-empty.
+    std.debug.assert(pos > 0);
+    // Loop invariant on exit: pos never advances past the buffer length.
+    std.debug.assert(pos <= buffer.len);
 
     // Output forever
     while (true) {
