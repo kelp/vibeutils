@@ -93,20 +93,20 @@ fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Get template. When no TEMPLATE arg is given, GNU uses the default
-    // template AND implies --tmpdir (routes to $TMPDIR/tmp).
-    const is_default_template = parsed.positionals.len == 0;
-    const raw_template = if (parsed.positionals.len == 1) parsed.positionals[0] else default_template;
-
-    const explicit_suffix = parsed.suffix orelse "";
-
-    // Find X's in the template. Characters after the last run of X's
-    // are treated as an implicit suffix (GNU mktemp behavior).
-    const xs = findTemplateXs(raw_template);
+    // Resolve the template, explicit suffix, and X run in one straight-line
+    // step. At most one positional remains (the too-many guard ran above).
+    const prep = run_prepareTemplate(&parsed);
 
     // Validate suffix/template separators and X count. Each failing check
     // reports its own diagnostic (unless quiet) and yields general_error.
-    if (run_validate(allocator, stderr_writer, &parsed, raw_template, explicit_suffix, xs)) |code| {
+    if (run_validate(
+        allocator,
+        stderr_writer,
+        &parsed,
+        prep.raw_template,
+        prep.explicit_suffix,
+        prep.xs,
+    )) |code| {
         return code;
     }
 
@@ -116,12 +116,12 @@ fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer
     //   - -t:     prepend $TMPDIR or /tmp.
     //   - User-supplied template (bare or with path): use VERBATIM.
     //     Leading "./", "foo/bar", and "/abs/x" are all preserved.
-    const force_tmpdir = parsed.tmpdir != null or parsed.t or is_default_template;
+    const force_tmpdir = parsed.tmpdir != null or parsed.t or prep.is_default_template;
 
     const full_template = run_buildFullTemplate(
         allocator,
-        raw_template,
-        explicit_suffix,
+        prep.raw_template,
+        prep.explicit_suffix,
         force_tmpdir,
         parsed.tmpdir,
     ) catch |err| {
@@ -139,9 +139,49 @@ fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer
         stderr_writer,
         &parsed,
         full_template,
-        xs,
-        explicit_suffix,
+        prep.xs,
+        prep.explicit_suffix,
     );
+}
+
+/// Bundle of values resolved from the parsed args before path building.
+const TemplatePrep = struct {
+    is_default_template: bool,
+    raw_template: []const u8,
+    explicit_suffix: []const u8,
+    xs: TemplateXs,
+};
+
+/// Resolve the template, explicit suffix, and X run from the parsed args.
+/// When no TEMPLATE arg is given, GNU uses the default template AND implies
+/// --tmpdir (routes to $TMPDIR/tmp). Characters after the last run of X's
+/// are treated as an implicit suffix (GNU mktemp behavior).
+fn run_prepareTemplate(parsed: *const MktempArgs) TemplatePrep {
+    // Precondition: run's too-many-templates guard already ran, so at most
+    // one positional remains here.
+    std.debug.assert(parsed.positionals.len <= 1);
+
+    const is_default_template = parsed.positionals.len == 0;
+    const raw_template = if (parsed.positionals.len == 1)
+        parsed.positionals[0]
+    else
+        default_template;
+    const explicit_suffix = parsed.suffix orelse "";
+    const xs = findTemplateXs(raw_template);
+
+    // The X run is a subsequence of the template, so its count is bounded
+    // by the template length at the producer site.
+    std.debug.assert(xs.x_count <= raw_template.len);
+    // Negative space: the implicit suffix is also a subsequence of the
+    // template, so it cannot exceed its length either.
+    std.debug.assert(xs.implicit_suffix_len <= raw_template.len);
+
+    return .{
+        .is_default_template = is_default_template,
+        .raw_template = raw_template,
+        .explicit_suffix = explicit_suffix,
+        .xs = xs,
+    };
 }
 
 /// Create the temp file/directory from the resolved template and print its
@@ -158,13 +198,12 @@ fn run_emitResult(
     xs: TemplateXs,
     explicit_suffix: []const u8,
 ) !u8 {
+    // Domain precondition: this path is only reached after run_validate
+    // accepted the template, which requires at least three X positions.
+    std.debug.assert(xs.x_count >= 3);
     // total_suffix_len covers both the implicit suffix (chars after the X
     // run) and the explicit --suffix flag, matching run's prior computation.
     const total_suffix_len = xs.implicit_suffix_len + explicit_suffix.len;
-    // Precondition: the resolved template still carries the X run to fill.
-    std.debug.assert(full_template.len >= xs.x_count);
-    // Negative space: the suffix can never exceed the template length.
-    std.debug.assert(total_suffix_len <= full_template.len);
 
     const result_path = generateTemp(
         allocator,
@@ -199,10 +238,11 @@ fn run_validate(
     explicit_suffix: []const u8,
     xs: TemplateXs,
 ) ?u8 {
-    // Precondition: a template is always present (positional or default).
-    std.debug.assert(raw_template.len > 0);
     // Negative space: x_count never exceeds the template it was scanned from.
     std.debug.assert(xs.x_count <= raw_template.len);
+    // The implicit suffix is the run after the X's, also a subsequence of
+    // the template, so it too is bounded by the template length.
+    std.debug.assert(xs.implicit_suffix_len <= raw_template.len);
 
     const quiet = parsed.quiet;
     // Explicit --suffix must not contain a path separator.
@@ -238,9 +278,6 @@ fn run_reportError(
 ) void {
     // Precondition: every call site passes a non-empty format string.
     std.debug.assert(fmt.len > 0);
-    // Negative space: args must be a tuple/struct of format arguments; a
-    // scalar passed by mistake would not type-check as a struct here.
-    std.debug.assert(@typeInfo(@TypeOf(args)) == .@"struct");
     if (!quiet) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, fmt, args);
     }
@@ -353,7 +390,14 @@ fn findTemplateXs(template: []const u8) TemplateXs {
         }
     }
     if (trailing >= 3) {
-        return .{ .x_count = trailing, .implicit_suffix_len = 0 };
+        const result: TemplateXs = .{ .x_count = trailing, .implicit_suffix_len = 0 };
+        // The X run is a subsequence of the template, bounded by its length.
+        std.debug.assert(result.x_count <= template.len);
+        // No implicit suffix on the trailing-X path.
+        std.debug.assert(result.implicit_suffix_len <= template.len);
+        // Combined [XXX][suffix] region fits within the template.
+        std.debug.assert(result.x_count + result.implicit_suffix_len <= template.len);
+        return result;
     }
 
     // Scan for the last run of 3+ consecutive X's
@@ -378,10 +422,17 @@ fn findTemplateXs(template: []const u8) TemplateXs {
         }
     }
 
-    return .{
+    const result: TemplateXs = .{
         .x_count = best_count,
         .implicit_suffix_len = if (best_count > 0) template.len - best_end else 0,
     };
+    // The X run is a subsequence of the template, bounded by its length.
+    std.debug.assert(result.x_count <= template.len);
+    // The implicit suffix (chars after the X run) is also bounded by length.
+    std.debug.assert(result.implicit_suffix_len <= template.len);
+    // The disjoint [XXX][suffix] segments together fit within the template.
+    std.debug.assert(result.x_count + result.implicit_suffix_len <= template.len);
+    return result;
 }
 
 /// Resolve the temporary directory for cases that must route through a tmpdir:
@@ -402,12 +453,18 @@ fn resolveForcedTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8) ![]const u
 /// suffix_len indicates how many bytes at the end are the suffix (after the X's)
 fn generateTemp(allocator: Allocator, io: std.Io, template: []const u8, x_count: usize, suffix_len: usize, is_dir: bool, dry_run: bool) ![]const u8 {
     const max_attempts = 100;
+    // Domain precondition: mktemp requires at least three X positions.
+    std.debug.assert(x_count >= 3);
+    // Compile-time loop bound: the retry loop runs a fixed number of times.
+    comptime std.debug.assert(max_attempts > 0);
     // Layout: [prefix][XXXXXX][suffix]
     const x_end = template.len - suffix_len;
     const x_start = x_end - x_count;
 
     var attempt: usize = 0;
     while (attempt < max_attempts) : (attempt += 1) {
+        // Loop-bound invariant: the guard keeps attempt in [0, max_attempts].
+        std.debug.assert(attempt <= max_attempts);
         // Build the candidate name
         const candidate = try allocator.alloc(u8, template.len);
 
@@ -461,9 +518,14 @@ fn generateTemp(allocator: Allocator, io: std.Io, template: []const u8, x_count:
 
 /// Fill a buffer with random alphanumeric characters
 fn fillRandom(io: std.Io, buf: []u8) void {
+    // Comptime sanity: guards the `byte % alphanumeric.len` against a
+    // division-by-zero if the constant is ever emptied.
+    std.debug.assert(alphanumeric.len > 0);
     var raw: [256]u8 = undefined;
     var offset: usize = 0;
     while (offset < buf.len) {
+        // Loop invariant: offset never overshoots the buffer end.
+        std.debug.assert(offset <= buf.len);
         const n = @min(buf.len - offset, raw.len);
         io.random(raw[0..n]);
         for (raw[0..n], buf[offset..][0..n]) |byte, *b| {
