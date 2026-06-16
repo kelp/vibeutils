@@ -15,7 +15,13 @@ let parsedArgs = args
 if (typeof parsedArgs === 'string') {
   parsedArgs = JSON.parse(parsedArgs)
 }
-const items = Array.isArray(parsedArgs) ? parsedArgs : []
+// args is either an array (run items in parallel, scoped-build isolated) or
+// { serial: true, items: [...] } (run one at a time — required for common/
+// files, which every util compiles, so parallel full builds would contaminate).
+const serialMode = !Array.isArray(parsedArgs) && parsedArgs && parsedArgs.serial === true
+const items = Array.isArray(parsedArgs)
+  ? parsedArgs
+  : (parsedArgs && Array.isArray(parsedArgs.items) ? parsedArgs.items : [])
 if (items.length === 0) {
   log('phase3-fn-split: no items in args; nothing to do')
   return []
@@ -43,10 +49,17 @@ writerStreaming; env is routed via init, not global. DO NOT change any I/O or ar
 pattern — you are ONLY relocating existing logic into helpers. If unsure whether a change
 alters behavior, it does: keep it identical.`
 
-const SCOPED_NOTE = `Scoped build/test command for this util: \`{CMD}\`. This compiles ONLY this
-util + the common module (build.zig scopes via -Dtest-util), so it is safe to run while other
-agents edit other utils. NEVER run a full \`zig build test\` or \`just build\` here — it would
-recompile other utils that may be mid-edit and fail spuriously.`
+function buildNote(item) {
+  if (item.testUtil) {
+    return `Scoped build/test command for this util: \`zig build test -Dtest-util=${item.testUtil}\`. This
+compiles ONLY this util + the common module (build.zig scopes via -Dtest-util), so it is safe to
+run while other agents edit other utils. NEVER run a full \`zig build test\` or \`just build\` here —
+it would recompile other utils that may be mid-edit and fail spuriously.`
+  }
+  return `This is a src/common/ file compiled by EVERY utility, so it cannot be scoped — the correct
+verify command is the full \`zig build test\`. This wave runs serially (one common file at a time),
+so the full build is safe: no other file is being edited concurrently. Use \`zig build test\`.`
+}
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -197,7 +210,7 @@ ${JSON.stringify(plan.functions.map((f) => ({ name: f.name, extraction: f.extrac
 
 ${TIGER}
 
-${SCOPED_NOTE.replace('{CMD}', cmd)}
+${buildNote(item)}
 
 HARD CONSTRAINTS:
 - Edit ONLY the source file(s) listed. NEVER touch any test (embedded \`test "..."\` blocks in the
@@ -288,91 +301,87 @@ Mark approved=true ONLY if there are zero blocker issues. List every issue with 
 location.`
 }
 
-phase('Plan')
-log(`phase3-fn-split: ${items.length} utilities, ${items.reduce((n, i) => n + i.functions.length, 0)} functions to split`)
-
-const results = await pipeline(
-  items,
-
+// One item through all four stages. Used by both the parallel and serial
+// drivers. The serial driver awaits these one at a time so common/ files
+// (compiled by every util) never build against a half-edited sibling.
+async function processItem(item) {
   // Stage 1: plan
-  (item) =>
-    agent(planPrompt(item), { label: `plan:${item.util}`, phase: 'Plan', schema: PLAN_SCHEMA })
-      .then((plan) => ({ item, plan }))
-      .catch(() => null),
+  const plan = await agent(planPrompt(item), { label: `plan:${item.util}`, phase: 'Plan', schema: PLAN_SCHEMA }).catch(() => null)
+  if (!plan) return null
 
   // Stage 2: implement + self-verify, loop up to 3 rounds
-  async (prev) => {
-    if (!prev) return null
-    const { item, plan } = prev
-    let feedback = ''
-    let impl = null
-    for (let round = 0; round < 3; round++) {
-      impl = await agent(implementPrompt(item, plan, feedback), {
-        label: `impl:${item.util}${round ? `#${round + 1}` : ''}`,
-        phase: 'Implement',
-        schema: IMPL_SCHEMA,
-      })
-      if (!impl) return null
-      const ok = impl.scoped_tests_pass && impl.new_violations === 0 && impl.targets_cleared && impl.fmt_clean
-      if (ok) break
-      feedback = `scoped_tests_pass=${impl.scoped_tests_pass} new_violations=${impl.new_violations} ` +
-        `targets_cleared=${impl.targets_cleared} fmt_clean=${impl.fmt_clean}. ${impl.summary}`
-      log(`impl:${item.util} round ${round + 1} not green — retrying`)
-    }
-    return { item, plan, impl }
-  },
+  let feedback = ''
+  let impl = null
+  for (let round = 0; round < 3; round++) {
+    impl = await agent(implementPrompt(item, plan, feedback), {
+      label: `impl:${item.util}${round ? `#${round + 1}` : ''}`,
+      phase: 'Implement',
+      schema: IMPL_SCHEMA,
+    })
+    if (!impl) return null
+    const ok = impl.scoped_tests_pass && impl.new_violations === 0 && impl.targets_cleared && impl.fmt_clean
+    if (ok) break
+    feedback = `scoped_tests_pass=${impl.scoped_tests_pass} new_violations=${impl.new_violations} ` +
+      `targets_cleared=${impl.targets_cleared} fmt_clean=${impl.fmt_clean}. ${impl.summary}`
+    log(`impl:${item.util} round ${round + 1} not green — retrying`)
+  }
 
   // Stage 3: prove teeth (diagnostic, non-blocking)
-  async (prev) => {
-    if (!prev) return null
-    const { item, plan, impl } = prev
-    const teeth = await agent(teethPrompt(item, plan), {
-      label: `teeth:${item.util}`,
-      phase: 'Prove teeth',
-      schema: TEETH_SCHEMA,
-    }).catch(() => null)
-    return { item, plan, impl, teeth }
-  },
+  const teeth = await agent(teethPrompt(item, plan), {
+    label: `teeth:${item.util}`,
+    phase: 'Prove teeth',
+    schema: TEETH_SCHEMA,
+  }).catch(() => null)
 
   // Stage 4: adversarial review + fix loop up to 3 rounds
-  async (prev) => {
-    if (!prev) return null
-    const { item, plan, impl, teeth } = prev
-    let review = null
-    for (let round = 0; round < 3; round++) {
-      review = await agent(reviewPrompt(item, plan), {
-        label: `review:${item.util}${round ? `#${round + 1}` : ''}`,
-        phase: 'Review',
-        schema: REVIEW_SCHEMA,
-      })
-      if (!review) break
-      const blockers = (review.issues || []).filter((i) => i.severity === 'blocker')
-      if (review.approved && blockers.length === 0) break
-      if (round === 2) break
-      const fb = blockers.map((b) => `[${b.location}] ${b.problem}`).join('\n')
-      log(`review:${item.util} round ${round + 1} found ${blockers.length} blocker(s) — fixing`)
-      const fix = await agent(implementPrompt(item, plan, fb), {
-        label: `fix:${item.util}#${round + 1}`,
-        phase: 'Implement',
-        schema: IMPL_SCHEMA,
-      })
-      if (!fix) break
-    }
-    const blockers = review ? (review.issues || []).filter((i) => i.severity === 'blocker') : [{ severity: 'blocker', problem: 'review agent failed' }]
-    return {
-      util: item.util,
-      files: item.files,
-      functions: item.functions.map((f) => f.name),
-      helpers_added: impl ? impl.helpers_added : [],
-      impl_status: impl ? { tests: impl.scoped_tests_pass, new_violations: impl.new_violations, cleared: impl.targets_cleared, fmt: impl.fmt_clean } : null,
-      teeth: teeth ? { confirmed: teeth.per_function.filter((f) => f.teeth_confirmed).map((f) => f.name), toothless: teeth.per_function.filter((f) => !f.teeth_confirmed).map((f) => f.name), restored_clean: teeth.restored_clean, green_after_restore: teeth.scoped_tests_green_after_restore } : null,
-      review: review ? { approved: review.approved, blockers: blockers.length, issues: review.issues } : null,
-      clean: !!(impl && impl.scoped_tests_pass && impl.new_violations === 0 && impl.targets_cleared && impl.fmt_clean && review && review.approved && blockers.length === 0),
-    }
-  },
-)
+  let review = null
+  for (let round = 0; round < 3; round++) {
+    review = await agent(reviewPrompt(item, plan), {
+      label: `review:${item.util}${round ? `#${round + 1}` : ''}`,
+      phase: 'Review',
+      schema: REVIEW_SCHEMA,
+    })
+    if (!review) break
+    const blockers = (review.issues || []).filter((i) => i.severity === 'blocker')
+    if (review.approved && blockers.length === 0) break
+    if (round === 2) break
+    const fb = blockers.map((b) => `[${b.location}] ${b.problem}`).join('\n')
+    log(`review:${item.util} round ${round + 1} found ${blockers.length} blocker(s) — fixing`)
+    const fix = await agent(implementPrompt(item, plan, fb), {
+      label: `fix:${item.util}#${round + 1}`,
+      phase: 'Implement',
+      schema: IMPL_SCHEMA,
+    })
+    if (!fix) break
+  }
 
-const final = results.filter(Boolean)
+  const blockers = review ? (review.issues || []).filter((i) => i.severity === 'blocker') : [{ severity: 'blocker', problem: 'review agent failed' }]
+  return {
+    util: item.util,
+    files: item.files,
+    functions: item.functions.map((f) => f.name),
+    helpers_added: impl ? impl.helpers_added : [],
+    impl_status: impl ? { tests: impl.scoped_tests_pass, new_violations: impl.new_violations, cleared: impl.targets_cleared, fmt: impl.fmt_clean } : null,
+    teeth: teeth ? { confirmed: teeth.per_function.filter((f) => f.teeth_confirmed).map((f) => f.name), toothless: teeth.per_function.filter((f) => !f.teeth_confirmed).map((f) => f.name), restored_clean: teeth.restored_clean, green_after_restore: teeth.scoped_tests_green_after_restore } : null,
+    review: review ? { approved: review.approved, blockers: blockers.length, issues: review.issues } : null,
+    clean: !!(impl && impl.scoped_tests_pass && impl.new_violations === 0 && impl.targets_cleared && impl.fmt_clean && review && review.approved && blockers.length === 0),
+  }
+}
+
+phase('Plan')
+log(`phase3-fn-split: ${items.length} utilities, ${items.reduce((n, i) => n + i.functions.length, 0)} functions to split${serialMode ? ' (serial)' : ''}`)
+
+let final = []
+if (serialMode) {
+  for (let i = 0; i < items.length; i++) {
+    log(`serial ${i + 1}/${items.length}: ${items[i].util}`)
+    const r = await processItem(items[i])
+    if (r) final.push(r)
+  }
+} else {
+  final = (await parallel(items.map((it) => () => processItem(it)))).filter(Boolean)
+}
+
 const clean = final.filter((r) => r.clean)
 log(`phase3-fn-split done: ${clean.length}/${items.length} utilities clean`)
 return final
