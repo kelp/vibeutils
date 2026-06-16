@@ -130,6 +130,9 @@ const FsInfo = struct {
 
 fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOptions, err: ?[]const u8 } {
     var opts = DfOptions{};
+    // Freshly constructed: positionals defaults to empty and is only assigned
+    // its final value at the end via toOwnedSlice from the local list.
+    std.debug.assert(opts.positionals.len == 0);
     opts.display = common.display_config.DisplayConfig.resolve(allocator);
     var err_msg: ?[]const u8 = null;
     var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -252,6 +255,7 @@ fn parseArgs_longOptionValued(
     opts: *DfOptions,
 ) struct { matched: bool, err: ?[]const u8 } {
     std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
     std.debug.assert(i.* < args.len);
     if (std.mem.startsWith(u8, arg, "--block-size=")) {
         const val = arg["--block-size=".len..];
@@ -380,6 +384,9 @@ fn parseArgs_shortOptionValued(
 ) ?[]const u8 {
     std.debug.assert(arg.len > 0);
     std.debug.assert(j.* < arg.len);
+    // The parent only enters the short-option loop with a valid current arg
+    // at index i.*; value-consuming arms advance i.* only after a bounds check.
+    std.debug.assert(i.* < args.len);
     switch (arg[j.*]) {
         't' => {
             var err: ?[]const u8 = null;
@@ -468,6 +475,9 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
     if (actual < 0) return error.SystemResources;
 
     const actual_count: usize = @intCast(actual);
+    // The buffer holds ucount entries; the second getfsstat cannot report more
+    // than fit, so slicing buf[0..actual_count] stays within the allocation.
+    std.debug.assert(actual_count <= ucount);
     var result: std.ArrayListUnmanaged(FsInfo) = .empty;
 
     for (buf[0..actual_count]) |*fs| {
@@ -507,6 +517,8 @@ fn getFilesystemForPath(io: std.Io, allocator: Allocator, path: []const u8) !FsI
 fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
     var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    // Past the guard: path fits, and path_buf has room for the bytes plus NUL.
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
@@ -592,6 +604,9 @@ fn getMountedFilesystemsLinux(io: std.Io, allocator: Allocator) ![]FsInfo {
         // statvfs the mount point
         var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
         if (mount_point_raw.len > std.Io.Dir.max_path_bytes) continue;
+        // Past the guard: the mount point fits, so the copy and the NUL write
+        // at path_buf[mount_point_raw.len] stay in bounds.
+        std.debug.assert(mount_point_raw.len <= std.Io.Dir.max_path_bytes);
         @memcpy(path_buf[0..mount_point_raw.len], mount_point_raw);
         path_buf[mount_point_raw.len] = 0;
         const c_path = path_buf[0..mount_point_raw.len :0];
@@ -697,6 +712,9 @@ fn getFilesystemForPathLinux_matchMount(
             best_len = mnt.len;
         }
     }
+    // best_len only ever takes a matched mnt.len, and startsWith requires
+    // mnt.len <= path.len, so the running best length never exceeds path.len.
+    std.debug.assert(best_len <= path.len);
     std.debug.assert(best_mount.*.len <= path.len);
 }
 
@@ -837,6 +855,9 @@ fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
     if (needle.len > haystack.len) return false;
     var i: usize = 0;
     while (i + needle.len <= haystack.len) : (i += 1) {
+        // Loop guard holds on entry, so the inner read haystack[i + j] for
+        // j in 0..needle.len is always within bounds.
+        std.debug.assert(i + needle.len <= haystack.len);
         var match = true;
         for (0..needle.len) |j| {
             const h = if (haystack[i + j] >= 'A' and haystack[i + j] <= 'Z') haystack[i + j] + 32 else haystack[i + j];
@@ -879,6 +900,9 @@ fn extractDevicePrefix(source: []const u8) []const u8 {
         var i = disk_start + 4; // skip "disk"
         // Skip disk number digits
         while (i < source.len and source[i] >= '0' and source[i] <= '9') : (i += 1) {}
+        // The "disk" match guarantees disk_start + 4 <= source.len, and the
+        // loop only advances while i < source.len, so i never exceeds it.
+        std.debug.assert(i <= source.len);
         // If we hit 's' followed by digits, that's a partition suffix
         if (i < source.len and source[i] == 's') {
             return source[0..i];
@@ -917,6 +941,9 @@ fn groupDarwinVolumes(allocator: Allocator, filesystems: []const FsInfo) ![]FsIn
 
         if (groups.get(key_owned)) |existing_idx| {
             allocator.free(key_owned);
+            // Stored indices always point at a live result element (entries are
+            // appended, never removed), so the index is in bounds.
+            std.debug.assert(existing_idx < result.items.len);
             // Check if current entry is better (shorter mount path or exactly "/")
             const existing = result.items[existing_idx];
             if (std.mem.eql(u8, fs.mount_point, "/") or
@@ -954,6 +981,8 @@ fn formatWithCommas(buf: []u8, value: u64) []const u8 {
         return buf[0..digits.len];
     }
 
+    // Past the <= 3 early return, so the comma path always has > 3 digits.
+    std.debug.assert(digits.len > 3);
     // Calculate output length: digits + number of commas
     const num_commas = @divTrunc(digits.len - 1, 3);
     const out_len = digits.len + num_commas;
@@ -976,6 +1005,9 @@ fn formatWithCommas(buf: []u8, value: u64) []const u8 {
         }
     }
 
+    // The fill consumes exactly out_len positions (digits.len digits plus
+    // num_commas commas), so the right-to-left cursor lands precisely at 0.
+    std.debug.assert(dst == 0);
     return buf[0..out_len];
 }
 
@@ -1010,19 +1042,31 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
 fn calcUsagePercent(used: u64, total: u64) u8 {
     if (total == 0) return 0;
     const pct = @divTrunc(used * 100 + total - 1, total);
-    return @intCast(@min(pct, 100));
+    // Clamp to 100: used may exceed total on root-reserved filesystems, so the
+    // raw percentage is tolerated and the result is capped, never panics.
+    const result: u8 = @intCast(@min(pct, 100));
+    std.debug.assert(result <= 100);
+    return result;
 }
 
 fn formatPercent(buf: []u8, used: u64, total: u64) []const u8 {
     if (total == 0) return "-";
     const pct = calcUsagePercent(used, total);
+    // calcUsagePercent clamps to 100, so the value formatted here is bounded.
+    std.debug.assert(pct <= 100);
     return std.fmt.bufPrint(buf, "{d}%", .{pct}) catch "?";
 }
 
 /// Format a usage bar like [████████░░] 84%
 fn formatUsageBar(buf: []u8, percent: u8) []const u8 {
+    // Every caller passes a calcUsagePercent/@min-clamped value, keeping the
+    // empty = bar_width - filled subtraction below from underflowing.
+    std.debug.assert(percent <= 100);
     const bar_width: u8 = 10;
     const filled: u8 = @intCast(@divTrunc(@as(u16, percent) * bar_width + 99, 100));
+    // percent <= 100 and bar_width == 10 bound filled at 10, so empty does not
+    // underflow.
+    std.debug.assert(filled <= bar_width);
     const empty: u8 = bar_width - filled;
 
     var pos: usize = 0;
@@ -1102,6 +1146,9 @@ fn truncatePath(buf: []u8, path: []const u8, max_width: usize) []const u8 {
     if (max_width <= 3) return path[path.len - max_width ..];
 
     const tail_len = max_width - 3; // room for "..."
+    // On the truncating path the output is buf[0..max_width], so the caller's
+    // buffer must be at least max_width bytes to hold the "..." + tail write.
+    std.debug.assert(max_width <= buf.len);
     const start = path.len - tail_len;
     buf[0] = '.';
     buf[1] = '.';
@@ -1120,6 +1167,8 @@ fn truncatePath(buf: []u8, path: []const u8, max_width: usize) []const u8 {
 /// Otherwise keep tail with "~" prefix.
 fn smartFormatSource(buf: []u8, source: []const u8, max_width: usize) []const u8 {
     const effective_max = @min(max_width, buf.len);
+    // @min keeps the working width within the buffer, bounding every write.
+    std.debug.assert(effective_max <= buf.len);
     if (source.len <= effective_max) return source;
     if (effective_max <= 1) return source[source.len - effective_max ..];
 
@@ -1142,6 +1191,8 @@ fn smartFormatSource(buf: []u8, source: []const u8, max_width: usize) []const u8
 /// path components. Prefix with "~" instead of "...".
 fn smartFormatMount(buf: []u8, mount: []const u8, max_width: usize) []const u8 {
     const effective_max = @min(max_width, buf.len);
+    // @min keeps the working width within the buffer, bounding every write.
+    std.debug.assert(effective_max <= buf.len);
     if (mount.len <= effective_max) return mount;
     if (effective_max <= 1) return mount[mount.len - effective_max ..];
 
@@ -1199,6 +1250,10 @@ fn computeColumnWidths(filesystems: []const FsInfo, opts: DfOptions) ColumnWidth
         var avail_buf: [32]u8 = undefined;
         widths.avail = @max(widths.avail, formatSize(&avail_buf, fs.avail_blocks, fs.block_size, opts).len);
     }
+    // Both default to the 10-char header width and only grow via @max, so the
+    // minimum-width floor is preserved as a postcondition.
+    std.debug.assert(widths.filesystem >= 10);
+    std.debug.assert(widths.mount >= 10);
     return widths;
 }
 
@@ -1218,11 +1273,15 @@ fn capWidthsToTerminal(allocator: Allocator, widths: *ColumnWidths, opts: DfOpti
 
     if (total <= term_width) return;
 
+    // Past the early return, so the subtraction below cannot underflow.
+    std.debug.assert(total > term_width);
     const excess = total - term_width;
     // Shrink filesystem and mount proportionally
     const shrinkable = widths.filesystem + widths.mount;
     if (shrinkable <= 20) return; // Don't shrink below minimums
 
+    // Past the guard, so the proportional division below has a nonzero divisor.
+    std.debug.assert(shrinkable > 20);
     const fs_share = @divTrunc(excess * widths.filesystem, shrinkable);
     const mnt_share = excess -| fs_share;
 
@@ -1267,6 +1326,8 @@ fn clampU8(val: f32) u8 {
 /// 70-85%: yellow -> orange (230,150,50)
 /// 85-100%: orange -> red (220,60,60)
 fn usageGradientRgb(pct: u8) Rgb {
+    // The sole caller clamps block_pct to 100; pct names a usage percentage.
+    std.debug.assert(pct <= 100);
     if (pct <= 70) {
         const t: f32 = @as(f32, @floatFromInt(pct)) / 70.0;
         return .{
@@ -1295,8 +1356,14 @@ fn usageGradientRgb(pct: u8) Rgb {
 /// Each filled block gets individually colored via gradient.
 /// Empty blocks are dim gray.
 fn writeColoredUsageBar(writer: *std.Io.Writer, s: anytype, percent: u8) !void {
+    // Callers pass a calcUsagePercent/@min-clamped value, keeping the
+    // empty = bar_width - filled subtraction below from underflowing.
+    std.debug.assert(percent <= 100);
     const bar_width: u8 = 10;
     const filled: u8 = @intCast(@divTrunc(@as(u16, percent) * bar_width + 99, 100));
+    // percent <= 100 and bar_width == 10 bound filled at 10, so empty does not
+    // underflow.
+    std.debug.assert(filled <= bar_width);
     const empty: u8 = bar_width - filled;
 
     try writer.writeAll("[");
@@ -1454,6 +1521,8 @@ fn printHeader(stdout: *std.Io.Writer, opts: DfOptions) !void {
 
     var size_label_buf: [32]u8 = undefined;
     const size_label = printHeader_sizeLabel(&size_label_buf, opts);
+    // sizeLabel always returns a non-empty label (literal or bufPrint result).
+    std.debug.assert(size_label.len > 0);
     const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
 
     if (opts.display.icons == .on) {
@@ -1595,6 +1664,8 @@ fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, color_mode_in
 
     // Color and full modes: apply color to percent
     const percent = calcUsagePercent(fs.used_blocks, use_total);
+    // calcUsagePercent clamps to 100; emitColored asserts the same bound.
+    std.debug.assert(percent <= 100);
     try printFsRow_emitColored(
         stdout,
         color_mode_int,
@@ -1671,6 +1742,9 @@ fn printFsRow_emitColored(
 ) !void {
     std.debug.assert(percent <= 100);
     std.debug.assert(opts.display.color != .off);
+    // runDf_resolveColorMode only emits ColorMode tags 0..3 (none/basic/
+    // extended/truecolor), so the @enumFromInt below has a valid tag.
+    std.debug.assert(color_mode_int <= 3);
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
 
@@ -1790,6 +1864,8 @@ fn printTotal(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptio
     else
         @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
 
+    // Both branches above yield <= 100 (explicit @min or the 0 branch).
+    std.debug.assert(percent <= 100);
     try printTotal_emitColored(
         stdout,
         color_mode_int,
@@ -1838,6 +1914,9 @@ fn printTotal_emitColored(
 ) !void {
     std.debug.assert(percent <= 100);
     std.debug.assert(pct_str.len > 0);
+    // runDf_resolveColorMode only emits ColorMode tags 0..3, so the
+    // @enumFromInt below has a valid tag.
+    std.debug.assert(color_mode_int <= 3);
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
 
@@ -1894,6 +1973,8 @@ fn printHeaderDynamic(stdout: *std.Io.Writer, opts: DfOptions, widths: ColumnWid
         if (opts.portability) break :blk "1024-blocks";
         break :blk "1K-blocks";
     };
+    // Every branch yields a non-empty label (literal or bufPrint result).
+    std.debug.assert(size_label.len > 0);
     const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
 
     // Icon column spacer (2 chars for icon + space)
@@ -1946,6 +2027,8 @@ fn printFsRowDynamic(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, widths
     const use_total = fs.used_blocks + fs.avail_blocks;
     const pct_str = formatPercent(&pct_buf, fs.used_blocks, use_total);
     const percent = calcUsagePercent(fs.used_blocks, use_total);
+    // calcUsagePercent clamps to 100; both emit helpers assert the same bound.
+    std.debug.assert(percent <= 100);
 
     // Smart-format source and mount
     var src_fmt_buf: [128]u8 = undefined;
@@ -2038,7 +2121,6 @@ fn printFsRowDynamic_emitPlain(
 
 fn printFsRowDynamic_emitIcon(stdout: *std.Io.Writer, s: anytype, fs_class: FsClass) !void {
     std.debug.assert(s.color_mode != .none);
-    std.debug.assert(@TypeOf(fs_class) == FsClass);
     const icon = getFsIcon(fs_class);
     const icon_color = common.icons.getIconColorInfo(icon);
     if (icon_color) |ic| {
@@ -2135,6 +2217,8 @@ fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: 
         break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
     };
     const percent: u8 = if (sum_use_total == 0) 0 else @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
+    // Both branches above yield <= 100 (explicit @min or the 0 branch).
+    std.debug.assert(percent <= 100);
 
     if (s.color_mode == .none) {
         return printTotalDynamic_emitPlain(
@@ -2269,6 +2353,9 @@ pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     }
 
     const color_mode_int = runDf_resolveColorMode(allocator, opts, stdout);
+    // resolveColorMode asserts and only returns ColorMode tags (true max 3),
+    // so the @enumFromInt below has a valid tag.
+    std.debug.assert(color_mode_int <= 4);
 
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
@@ -2481,6 +2568,9 @@ fn runDf_collectFromMounts(
 ) bool {
     std.debug.assert(opts.positionals.len == 0);
     std.debug.assert(all_fs_storage.* == null);
+    // Fresh state on entry: the display slice is only assigned later in this
+    // same function, mirroring the all_fs_storage precondition above.
+    std.debug.assert(display_fs_storage.* == null);
     const all_fs = getMountedFilesystems(io, allocator) catch {
         common.printErrorWithProgram(
             allocator,
