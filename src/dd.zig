@@ -84,8 +84,12 @@ fn parseSingleSize(s: []const u8) !usize {
     // Find where the numeric part ends
     var num_end: usize = 0;
     while (num_end < s.len and s[num_end] >= '0' and s[num_end] <= '9') : (num_end += 1) {}
+    // Loop condition bounds num_end at s.len; the slices below are in range.
+    std.debug.assert(num_end <= s.len);
 
     if (num_end == 0) return error.InvalidValue;
+    // The early return above guarantees at least one digit was consumed.
+    std.debug.assert(num_end > 0);
 
     const num = std.fmt.parseInt(usize, s[0..num_end], 10) catch return error.InvalidValue;
     const suffix = s[num_end..];
@@ -124,10 +128,12 @@ fn parseOperands(args: []const []const u8) !DdConfig {
 
         // Parse operand=value
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            // indexOfScalar returns an index strictly inside arg, so the
+            // value slice arg[eq_pos + 1 ..] stays in bounds.
+            std.debug.assert(eq_pos < arg.len);
             const key = arg[0..eq_pos];
             const value = arg[eq_pos + 1 ..];
             std.debug.assert(key.len <= arg.len);
-            std.debug.assert(@intFromPtr(value.ptr) >= @intFromPtr(key.ptr));
             try parseOperands_applyKeyValue(&config, key, value);
         } else {
             return error.UnknownOperand;
@@ -141,9 +147,6 @@ fn parseOperands(args: []const []const u8) !DdConfig {
 /// Straight-line dispatch over the supported operand keys; mirrors the
 /// behavior of the original inline if/else-if chain exactly.
 fn parseOperands_applyKeyValue(config: *DdConfig, key: []const u8, value: []const u8) !void {
-    std.debug.assert(@intFromPtr(value.ptr) >= @intFromPtr(key.ptr));
-    std.debug.assert(@intFromBool(config.help) <= 1);
-
     if (std.mem.eql(u8, key, "if")) {
         config.input_file = value;
     } else if (std.mem.eql(u8, key, "of")) {
@@ -197,9 +200,6 @@ fn parseOperands_applyKeyValue(config: *DdConfig, key: []const u8, value: []cons
 /// parseOperands_applyKeyValue so both helpers stay well within the
 /// line budget; behavior is identical to the original inline block.
 fn parseOperands_applyKeyValue_status(config: *DdConfig, value: []const u8) !void {
-    std.debug.assert(@intFromBool(config.help) <= 1);
-    std.debug.assert(@intFromBool(config.version) <= 1);
-
     if (std.mem.eql(u8, value, "none")) {
         config.status = .none;
     } else if (std.mem.eql(u8, value, "noxfer")) {
@@ -395,6 +395,9 @@ fn printStats(io: std.Io, stderr: *std.Io.Writer, stats: DdStats, status: Status
     const elapsed_ns = std.Io.Timestamp.now(io, .real).nanoseconds - stats.start_ns;
     const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
     const elapsed_display = if (elapsed_s < 0.0001) 0.0001 else elapsed_s;
+    // Clamped to >= 0.0001 above (covers clock skew), so the rate
+    // division by elapsed_display below can never divide by zero.
+    std.debug.assert(elapsed_display > 0.0);
 
     var size_buf: [128]u8 = undefined;
     const size_str = formatByteCount(&size_buf, stats.bytes_copied);
@@ -479,6 +482,9 @@ fn printVersion(writer: anytype) !void {
 fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
     for (args) |arg| {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            // indexOfScalar found '=' inside arg, so the value slice
+            // arg[eq_pos + 1 ..] is in bounds.
+            std.debug.assert(eq_pos < arg.len);
             const key = arg[0..eq_pos];
             const value = arg[eq_pos + 1 ..];
             if (std.mem.eql(u8, key, "files")) {
@@ -582,9 +588,6 @@ const DdPositions = struct {
 /// requirement for block/unblock. Returns 0 when the config is valid,
 /// or a misuse exit code after printing the matching error message.
 fn runDd_validateConfig(allocator: Allocator, stderr: *std.Io.Writer, config: *const DdConfig) u8 {
-    std.debug.assert(@intFromBool(config.conv_lcase) <= 1);
-    std.debug.assert(@intFromBool(config.conv_block) <= 1);
-
     // lcase and ucase are mutually exclusive
     if (config.conv_lcase and config.conv_ucase) {
         const message = "conv=lcase and conv=ucase are mutually exclusive";
@@ -596,6 +599,8 @@ fn runDd_validateConfig(allocator: Allocator, stderr: *std.Io.Writer, config: *c
     const charset_count = @as(u8, @intFromBool(config.conv_ascii)) +
         @as(u8, @intFromBool(config.conv_ebcdic)) +
         @as(u8, @intFromBool(config.conv_ibm));
+    // Sum of three booleans, so it stays within 0..3 inclusive.
+    std.debug.assert(charset_count <= 3);
     if (charset_count > 1) {
         const message = "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive";
         common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
@@ -640,6 +645,10 @@ fn runDd_allocBuffers(
         common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate output buffer", .{});
         return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
     };
+    // Postcondition: a successful alloc returns a slice of exactly the
+    // requested length, so the buffers match the requested block sizes.
+    std.debug.assert(in_buf.len == ibs);
+    std.debug.assert(out_buf.len == obs);
     return .{ .buffers = .{ .in_buf = in_buf, .out_buf = out_buf } };
 }
 
@@ -652,9 +661,6 @@ fn runDd_openFiles(
     stderr: *std.Io.Writer,
     config: *const DdConfig,
 ) DdOpenResult {
-    std.debug.assert(@intFromBool(config.conv_notrunc) <= 1);
-    std.debug.assert(@intFromBool(config.help) <= 1);
-
     // Open input
     const input_file: std.Io.File = if (config.input_file) |path| blk: {
         break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
@@ -713,6 +719,8 @@ fn runDd_skipInput(
             },
         };
     }
+    // The loop stops at skipped == skip_blocks, or breaks earlier on EOF.
+    std.debug.assert(skipped <= skip_blocks);
     return @intFromEnum(common.ExitCode.success);
 }
 
@@ -750,6 +758,9 @@ fn runDd_seekOutput(
                 return @intFromEnum(common.ExitCode.general_error);
             };
         }
+        // The fallback loop stops at seeked == seek_blocks (or returned
+        // early on write error), so it never overshoots the request.
+        std.debug.assert(seeked <= seek_blocks);
     };
     return @intFromEnum(common.ExitCode.success);
 }
@@ -792,7 +803,6 @@ fn runDd_allocCbs(
     need_cbs: bool,
     cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
 ) DdCbsResult {
-    std.debug.assert(@intFromBool(need_cbs) <= 1);
     std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
 
     if (!need_cbs) return .{ .buffer = null };
@@ -800,6 +810,8 @@ fn runDd_allocCbs(
         common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate cbs buffer", .{});
         return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
     };
+    // Postcondition: a successful alloc returns exactly cbs bytes.
+    std.debug.assert(cbs_buf.len == cbs);
     return .{ .buffer = cbs_buf };
 }
 
@@ -870,7 +882,6 @@ fn runDd_handleReadError(
 /// print the OS error, emit transfer stats, and yield the general-error
 /// exit code. Centralizes the repeated catch arm without changing it.
 fn runDd_writeError(ctx: *const DdWriteCtx, err: anyerror) u8 {
-    std.debug.assert(@intFromBool(ctx.status == .none) <= 1);
     std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
 
     const message = common.posixErrorString(err);
@@ -958,6 +969,9 @@ fn runDd_writeUnblockRecords(
             unblock_pos.* = 0;
         }
     }
+    // Loop invariant: each step advances data_pos by at most the bytes
+    // remaining, so it never runs past the end of the data slice.
+    std.debug.assert(data_pos <= data.len);
     return @intFromEnum(common.ExitCode.success);
 }
 
@@ -974,6 +988,9 @@ fn runDd_writeSimpleBlock(
 ) u8 {
     std.debug.assert(obs != 0);
     std.debug.assert(out_buf.len == obs);
+    // simple_copy is chosen only when bs= forces ibs == obs, so an input
+    // block never exceeds the output buffer it is copied into.
+    std.debug.assert(data.len <= out_buf.len);
 
     if (conv_osync and data.len < obs) {
         // Pad partial block to obs size with NULs
@@ -1030,6 +1047,9 @@ fn runDd_writeBufferedBlock(
             out_pos.* = 0;
         }
     }
+    // Loop invariant: data_pos advances by at most the bytes remaining,
+    // so it never runs past the end of the data slice.
+    std.debug.assert(data_pos <= data.len);
     return @intFromEnum(common.ExitCode.success);
 }
 
@@ -1045,6 +1065,9 @@ fn runDd_flushTails_block(
 ) u8 {
     std.debug.assert(record_buf.len == cbs);
     std.debug.assert(cbs_pos > 0);
+    // writeBlockRecord only ever leaves cbs_pos in 0..cbs, so padding the
+    // tail with record_buf[cbs_pos..] stays in bounds.
+    std.debug.assert(cbs_pos <= cbs);
 
     @memset(record_buf[cbs_pos..], fillchar);
     ctx.output_file.writeStreamingAll(ctx.io, record_buf[0..cbs]) catch |err| {
@@ -1091,6 +1114,9 @@ fn runDd_flushTails_buffer(
 ) u8 {
     std.debug.assert(out_pos > 0);
     std.debug.assert(out_pos <= obs);
+    // out_buf is the obs-sized output buffer, so padding to obs and the
+    // out_buf[0..write_len] write (write_len <= obs) both stay in bounds.
+    std.debug.assert(obs <= out_buf.len);
 
     const write_len = if (conv_osync) blk: {
         // Pad the final block to obs size with NULs
@@ -1160,9 +1186,6 @@ fn runDd_copy(
     stderr: *std.Io.Writer,
     config: *const DdConfig,
 ) u8 {
-    std.debug.assert(@intFromBool(config.conv_block) <= 1);
-    std.debug.assert(@intFromBool(config.conv_unblock) <= 1);
-
     const validate_code = runDd_validateConfig(allocator, stderr, config);
     if (validate_code != @intFromEnum(common.ExitCode.success)) return validate_code;
 
@@ -1173,6 +1196,10 @@ fn runDd_copy(
         common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
+    // The guard above rejected zero block sizes, so both are positive
+    // before the buffers are allocated against them.
+    std.debug.assert(ibs > 0);
+    std.debug.assert(obs > 0);
 
     const bufs = switch (runDd_allocBuffers(allocator, stderr, ibs, obs)) {
         .fatal => |code| return code,
@@ -1238,6 +1265,9 @@ fn runDd_copyLoop(
 ) u8 {
     std.debug.assert(plan.in_buf.len == plan.ibs);
     std.debug.assert(plan.out_buf.len == plan.obs);
+    // runDd_copy gates ibs > 0 before building the plan, so every read
+    // presents a nonempty buffer and the loop makes forward progress.
+    std.debug.assert(plan.ibs > 0);
 
     const in_buf = plan.in_buf;
     const input_file = plan.input_file;
@@ -1336,7 +1366,6 @@ fn runDd_finish(
     positions: *const DdPositions,
 ) u8 {
     std.debug.assert(plan.out_buf.len == plan.obs);
-    std.debug.assert(@intFromBool(plan.simple_copy) <= 1);
 
     // Flush remaining record for conv=block (partial record without newline)
     if (config.conv_block and positions.cbs_pos > 0) {
