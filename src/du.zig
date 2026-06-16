@@ -521,7 +521,6 @@ fn processOperand(
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) u64 {
-    assert(path.len > 0);
     // Resolve the operand itself with the operand-level follow policy so a -P
     // symlink stays a leaf and an -H/-L symlink resolves to its target.
     const follow_operand = shouldFollowAtDepth(config.dereference_mode, 0);
@@ -607,6 +606,42 @@ fn walkDirectoryOperand(
     // the error flag. NotDir under -P is a genuine error and is reported.
     const follow_any = config.dereference_mode != .none;
 
+    return walkDirectoryOperand_drainLoop(
+        allocator,
+        io,
+        path,
+        config,
+        follow_any,
+        &dir_walker,
+        &state,
+        seen_inodes,
+        stdout,
+        style,
+        stderr,
+        has_error,
+    );
+}
+
+/// Consume all entries from dir_walker and accumulate sizes into state,
+/// returning the root subtree total. Extracted from walkDirectoryOperand to
+/// keep the outer function within the 70-line limit.
+fn walkDirectoryOperand_drainLoop(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    config: DuConfig,
+    follow_any: bool,
+    dir_walker: *common.walker.Walker,
+    state: *WalkState,
+    seen_inodes: *std.AutoHashMap(u128, void),
+    stdout: *std.Io.Writer,
+    style: anytype,
+    stderr: *std.Io.Writer,
+    has_error: *bool,
+) u64 {
+    assert(path.len > 0);
+    assert(state.subtree_sizes[0] == 0);
+
     var root_total: u64 = 0;
     while (true) {
         const maybe_entry = dir_walker.next(io) catch |err| switch (err) {
@@ -630,7 +665,22 @@ fn walkDirectoryOperand(
         };
         const entry = maybe_entry orelse break;
         assert(entry.depth < accumulation_stack_len);
-        processWalkEntry(entry, config, &state, seen_inodes, stdout, style, has_error);
+        // A depth-0 non-directory entry means the operand stat'd as a directory
+        // but the walker could not open it as one: either the directory lacks its
+        // own read bit (stat needs only parent +x), or a TOCTOU race replaced it
+        // with a non-directory. The walker emits it as a leaf at depth 0, where
+        // handleLeafEntry's parent-depth (depth - 1) would underflow. Report it
+        // like GNU (cannot read directory ...: <reason>), print 0, and skip the
+        // leaf accounting.
+        if (entry.depth == 0 and entry.kind != .directory) {
+            printDirError(allocator, stderr, path, error.AccessDenied);
+            has_error.* = true;
+            if (shouldPrintAtDepth(0, config)) {
+                printEntry(stdout, style, 0, config, path, true, false);
+            }
+            continue;
+        }
+        processWalkEntry(entry, config, state, seen_inodes, stdout, style, has_error);
         if (entry.depth == 0 and entry.visit == .post) {
             root_total = state.subtree_sizes[0];
         }
@@ -724,8 +774,9 @@ fn handleDirPost(
 
 /// Leaf visit (regular file, symlink not followed, or other non-directory):
 /// stat it, apply hard-link/inode dedup, account its size into the parent
-/// directory's subtree, and print it when -a selects files. Leaves always have
-/// depth >= 1 here because directory operands enter via the walker root.
+/// directory's subtree, and print it when -a selects files. Reaches here only at
+/// depth >= 1: a depth-0 non-directory operand is intercepted in
+/// walkDirectoryOperand (unreadable/raced directory) before dispatch.
 fn handleLeafEntry(
     entry: common.walker.Entry,
     config: DuConfig,
@@ -735,7 +786,6 @@ fn handleLeafEntry(
     style: anytype,
 ) void {
     const depth = entry.depth;
-    assert(depth >= 1);
     assert(depth < accumulation_stack_len);
     const follow = shouldFollowAtDepth(config.dereference_mode, depth);
     const stat_buf = doStat(entry.path, follow) catch return;
