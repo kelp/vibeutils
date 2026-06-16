@@ -858,6 +858,7 @@ const extension_map = [_]ExtensionEntry{
 
 /// Convert string to lowercase using stack buffer
 fn toLowercase(input: []const u8, buffer: []u8) []const u8 {
+    std.debug.assert(buffer.len >= 1);
     const len = @min(input.len, buffer.len - 1);
     for (input[0..len], 0..) |c, i| {
         buffer[i] = std.ascii.toLower(c);
@@ -867,10 +868,12 @@ fn toLowercase(input: []const u8, buffer: []u8) []const u8 {
 
 /// Binary search for extension in sorted map
 fn findExtensionIcon(ext: []const u8, theme: *const IconTheme) ?[]const u8 {
+    std.debug.assert(extension_map.len > 0);
     var left: usize = 0;
     var right: usize = extension_map.len;
 
     while (left < right) {
+        std.debug.assert(right <= extension_map.len);
         const mid = left + (right - left) / 2;
         const cmp = std.mem.order(u8, ext, extension_map[mid].ext);
 
@@ -893,6 +896,7 @@ pub fn getIcon(theme: *const IconTheme, name: []const u8, is_dir: bool, is_link:
 
     // Stack buffer for case conversion
     var lower_buffer: [256]u8 = undefined;
+    std.debug.assert(lower_buffer.len >= 1);
     const lower_name = toLowercase(name, &lower_buffer);
 
     // Special filenames
@@ -906,6 +910,7 @@ pub fn getIcon(theme: *const IconTheme, name: []const u8, is_dir: bool, is_link:
     // Get extension
     const ext_pos = std.mem.lastIndexOf(u8, name, ".");
     if (ext_pos) |pos| {
+        std.debug.assert(pos + 1 <= name.len);
         const ext = name[pos + 1 ..];
         var ext_buffer: [64]u8 = undefined;
         const lower_ext = toLowercase(ext, &ext_buffer);
@@ -954,6 +959,8 @@ pub const IconColorInfo = struct {
 /// Map icon glyph to its brand color across all terminal color modes.
 pub fn getIconColorInfo(icon: []const u8) ?IconColorInfo {
     const theme = IconTheme{};
+    std.debug.assert(theme.file.len > 0);
+    std.debug.assert(theme.unknown.len > 0);
 
     // Probe each category block in original order; first match wins.
     if (getIconColorInfo_languages(icon, &theme)) |info| return info;
