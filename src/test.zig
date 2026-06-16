@@ -63,6 +63,8 @@ const RawStat = struct {
 fn getRawStat(path: []const u8) ?RawStat {
     var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return null;
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(path.len < buf.len);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
@@ -92,6 +94,8 @@ fn getRawStat(path: []const u8) ?RawStat {
 fn isSymlink(path: []const u8) bool {
     var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return false;
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(path.len < buf.len);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
@@ -121,6 +125,8 @@ const FileAccess = struct {
     fn check(path: []const u8, mode: u32) bool {
         var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
         if (path.len > std.Io.Dir.max_path_bytes) return false;
+        std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+        std.debug.assert(path.len < buf.len);
         @memcpy(buf[0..path.len], path);
         buf[path.len] = 0;
         return c.access(buf[0..path.len :0].ptr, @intCast(mode)) == 0;
@@ -204,6 +210,7 @@ const ExpressionParser = struct {
     /// Evaluate negation expressions - apply negation to the next logical unit only
     fn evaluateNegation(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
         if (args.len == 0) return error.InvalidExpression;
+        std.debug.assert(args.len > 0);
 
         // For negation, we need to find what it applies to:
         // If it starts with parentheses, find the matching closing paren
@@ -226,6 +233,7 @@ const ExpressionParser = struct {
             if (depth > 0) {
                 return error.InvalidExpression; // Unmatched parentheses
             }
+            std.debug.assert(depth == 0);
 
             // Evaluate the parenthesized expression
             const paren_expr = args[1 .. i - 1];
@@ -276,6 +284,7 @@ const ExpressionParser = struct {
 
         var i: usize = 0;
         while (i < args.len) {
+            std.debug.assert(i <= args.len);
             if (std.mem.eql(u8, args[i], "(")) {
                 // Find matching closing parenthesis
                 const open = i;
@@ -294,6 +303,7 @@ const ExpressionParser = struct {
                 if (depth > 0) {
                     return error.InvalidExpression; // Unmatched parentheses
                 }
+                std.debug.assert(depth == 0);
 
                 // Recursively evaluate the sub-expression
                 const sub_expr = args[open + 1 .. i - 1];
@@ -323,6 +333,8 @@ const ExpressionParser = struct {
             while (i < args.len) : (i += 1) {
                 if (std.mem.eql(u8, args[i], "-o")) {
                     if (i == 0 or i == args.len - 1) return error.InvalidExpression;
+                    std.debug.assert(i > 0);
+                    std.debug.assert(i < args.len - 1);
                     const left = try self.evaluateLogicalExpression(args[0..i]);
                     const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
                     return left or right;
@@ -336,6 +348,8 @@ const ExpressionParser = struct {
             while (i < args.len) : (i += 1) {
                 if (std.mem.eql(u8, args[i], "-a")) {
                     if (i == 0 or i == args.len - 1) return error.InvalidExpression;
+                    std.debug.assert(i > 0);
+                    std.debug.assert(i < args.len - 1);
                     const left = try self.evaluateLogicalExpression(args[0..i]);
                     const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
                     return left and right;
@@ -372,6 +386,7 @@ const ExpressionParser = struct {
 
 /// Evaluate unary operator against single argument
 fn evaluateUnary(io: std.Io, op: []const u8, arg: []const u8) ParseError!bool {
+    std.debug.assert(op.len > 0);
     if (std.mem.eql(u8, op, "-z")) return arg.len == 0;
     if (std.mem.eql(u8, op, "-n")) return arg.len > 0;
     if (std.mem.eql(u8, op, "-e")) return FileAccess.exists(io, arg);
@@ -402,6 +417,7 @@ fn evaluateUnary(io: std.Io, op: []const u8, arg: []const u8) ParseError!bool {
 
 /// Evaluate binary operator between two operands
 fn evaluateBinary(io: std.Io, left: []const u8, op: []const u8, right: []const u8) ParseError!bool {
+    std.debug.assert(op.len > 0);
     if (std.mem.eql(u8, op, "=")) return std.mem.eql(u8, left, right);
     if (std.mem.eql(u8, op, "!=")) return !std.mem.eql(u8, left, right);
     if (std.mem.eql(u8, op, "-eq")) return NumericComparison.compare(left, right, .eq);
@@ -508,6 +524,7 @@ fn isOlderThan(io: std.Io, path1: []const u8, path2: []const u8) bool {
 /// Check if string is a unary operator (alphabetized)
 fn isUnaryOperator(str: []const u8) bool {
     const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-G", "-h", "-k", "-L", "-n", "-O", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z" };
+    comptime std.debug.assert(unary_ops.len == 21);
 
     for (unary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -518,6 +535,7 @@ fn isUnaryOperator(str: []const u8) bool {
 /// Check if string is a binary operator (alphabetized)
 fn isBinaryOperator(str: []const u8) bool {
     const binary_ops = [_][]const u8{ "!=", "<", "=", ">", "-ef", "-eq", "-ge", "-gt", "-le", "-lt", "-ne", "-nt", "-ot" };
+    comptime std.debug.assert(binary_ops.len == 13);
 
     for (binary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -527,6 +545,7 @@ fn isBinaryOperator(str: []const u8) bool {
 
 /// Evaluate parsed test arguments and return exit code
 fn evaluateTestArgs(allocator: Allocator, io: std.Io, test_args: []const []const u8, stderr_writer: *std.Io.Writer, prog_name: []const u8) !u8 {
+    std.debug.assert(prog_name.len > 0);
     var parser = ExpressionParser.init(allocator, io);
     const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -550,6 +569,8 @@ pub fn runBracketTest(allocator: Allocator, io: std.Io, args: []const []const u8
         common.printErrorWithProgram(allocator, stderr_writer, "[", "missing closing ']'", .{});
         return @intFromEnum(ExitCode.@"error");
     }
+    std.debug.assert(args.len > 0);
+    std.debug.assert(std.mem.eql(u8, args[args.len - 1], "]"));
 
     // Remove closing ']' from arguments
     const test_args = args[0 .. args.len - 1];
@@ -569,8 +590,10 @@ pub fn runTest(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
             common.printErrorWithProgram(allocator, stderr_writer, "test", "missing closing ']'", .{});
             return @intFromEnum(ExitCode.@"error");
         }
+        std.debug.assert(args.len >= 2);
         // Remove '[' and ']' from arguments
         test_args = args[1 .. args.len - 1];
+        std.debug.assert(test_args.len + 2 == args.len);
     }
 
     return evaluateTestArgs(allocator, io, test_args, stderr_writer, "test");
