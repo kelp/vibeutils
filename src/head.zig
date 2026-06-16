@@ -56,9 +56,11 @@ fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![
         }
         if (isObsoleteNumArg(arg)) extra += 1;
     }
+    std.debug.assert(extra <= args.len); // At most one extra slot per arg.
     if (extra == 0) return allocator.dupe([]const u8, args);
 
     const expanded = try allocator.alloc([]const u8, args.len + extra);
+    std.debug.assert(expanded.len == args.len + extra); // Buffer sized from count.
     var i: usize = 0;
     prev_expects_value = false;
     for (args) |arg| {
@@ -77,6 +79,7 @@ fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![
             continue;
         }
         if (isObsoleteNumArg(arg)) {
+            std.debug.assert(arg.len >= 2); // isObsoleteNumArg guarantees -NUM form.
             expanded[i] = "-n";
             i += 1;
             expanded[i] = arg[1..]; // strip leading '-'
@@ -86,6 +89,7 @@ fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![
             i += 1;
         }
     }
+    std.debug.assert(i == expanded.len); // Fill loop wrote every reserved slot.
     return expanded;
 }
 
@@ -188,8 +192,8 @@ fn runHead_parseLineCount(
 ) !ParsedLineCount {
     var line_count: u64 = DEFAULT_LINE_COUNT;
     var negative_count: u64 = 0;
-    const default_holds_before_parse = line_count == DEFAULT_LINE_COUNT or lines_opt != null;
-    std.debug.assert(default_holds_before_parse); // Default holds before parse.
+    // Compile-time coupling: HeadOptions.line_count default literal must match.
+    std.debug.assert(DEFAULT_LINE_COUNT == 10);
     if (lines_opt) |lines_str| {
         if (lines_str.len > 0 and lines_str[0] == '-') {
             // Negative: output all but last N lines
@@ -225,12 +229,11 @@ fn runHead_parseLineCount(
     const counts_mutually_exclusive =
         result.negative_count == 0 or result.line_count == DEFAULT_LINE_COUNT;
     std.debug.assert(counts_mutually_exclusive);
-    // Negative space: a successful parse never leaves both counts at the defaults
-    // unless the input was null or empty.
-    const defaults_untouched =
-        result.line_count == DEFAULT_LINE_COUNT and result.negative_count == 0;
-    const ok_or_defaults_untouched = result.ok or defaults_untouched;
-    std.debug.assert(ok_or_defaults_untouched);
+    // Negative space: the paired form, a non-default explicit line count is only
+    // reachable when the negative count was never touched.
+    const counts_mutually_exclusive_paired =
+        result.line_count == DEFAULT_LINE_COUNT or result.negative_count == 0;
+    std.debug.assert(counts_mutually_exclusive_paired);
     return result;
 }
 
@@ -368,63 +371,34 @@ const HeadOptions = struct {
 /// Process input from a reader and output first lines/bytes to writer.
 /// Streams data without reading the entire input into memory (except for
 /// negative line counts which require buffering the entire input).
-pub fn processInput(reader: *std.Io.Reader, writer: *std.Io.Writer, options: HeadOptions, allocator: ?std.mem.Allocator) !void {
+pub fn processInput(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    options: HeadOptions,
+    allocator: ?std.mem.Allocator,
+) !void {
+    const delim = options.line_delimiter;
+    const delimiter_is_newline_or_nul = delim == '\n' or delim == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+    // Negative and byte modes are mutually exclusive at the option layer.
+    const modes_exclusive = options.negative_count == 0 or options.byte_count == null;
+    std.debug.assert(modes_exclusive); // Not both negative and byte mode.
+
     if (options.negative_count > 0) {
         // Negative count: output all but the last N lines.
         // Must buffer the entire input to know where the last N lines start.
         const alloc = allocator orelse return;
-        const delimiter = options.line_delimiter;
-        var all_lines: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer {
-            for (all_lines.items) |line| alloc.free(line);
-            all_lines.deinit(alloc);
-        }
-        // Read all lines from the reader
-        while (true) {
-            const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
-                error.EndOfStream => {
-                    // Handle remaining partial line (no trailing delimiter)
-                    const remaining = reader.buffered();
-                    if (remaining.len > 0) {
-                        const owned = alloc.dupe(u8, remaining) catch return;
-                        all_lines.append(alloc, owned) catch {
-                            alloc.free(owned);
-                            return;
-                        };
-                        reader.toss(remaining.len);
-                    }
-                    break;
-                },
-                else => |e| return e,
-            };
-            const owned = alloc.dupe(u8, line) catch return;
-            all_lines.append(alloc, owned) catch {
-                alloc.free(owned);
-                return;
-            };
-        }
-        // Output all but the last N lines
-        const total = all_lines.items.len;
-        const to_output = if (total > options.negative_count) total - options.negative_count else 0;
-        for (all_lines.items[0..to_output]) |line| {
-            try writer.writeAll(line);
-        }
+        try processInput_outputAllButLast(
+            reader,
+            writer,
+            options.line_delimiter,
+            options.negative_count,
+            alloc,
+        );
         return;
     }
     if (options.byte_count) |byte_count| {
-        // Byte mode: read chunks and write until byte_count reached
-        var remaining: u64 = byte_count;
-        while (remaining > 0) {
-            // peekGreedy(1) fills the buffer and returns all available bytes
-            const available = reader.peekGreedy(1) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => |e| return e,
-            };
-            const to_write = @min(@as(usize, @intCast(@min(remaining, std.math.maxInt(usize)))), available.len);
-            try writer.writeAll(available[0..to_write]);
-            reader.toss(to_write);
-            remaining -= to_write;
-        }
+        try processInput_outputBytes(reader, writer, byte_count);
     } else {
         // Line mode: output first N lines
         const delimiter = options.line_delimiter;
@@ -440,11 +414,88 @@ pub fn processInput(reader: *std.Io.Reader, writer: *std.Io.Writer, options: Hea
     }
 }
 
+/// Buffer all input lines and emit all but the last `negative_count`.
+/// Only called when negative-count mode is active, so the full input must be
+/// retained before any output can begin.
+fn processInput_outputAllButLast(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    delimiter: u8,
+    negative_count: u64,
+    alloc: std.mem.Allocator,
+) !void {
+    std.debug.assert(negative_count > 0); // Helper only used in negative mode.
+    const delimiter_is_newline_or_nul = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+
+    var all_lines: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (all_lines.items) |line| alloc.free(line);
+        all_lines.deinit(alloc);
+    }
+    // Read all lines from the reader
+    while (true) { // tiger:allow:unbounded-loop EOF-bounded read
+        const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
+            error.EndOfStream => {
+                // Handle remaining partial line (no trailing delimiter)
+                const remaining = reader.buffered();
+                if (remaining.len > 0) {
+                    const owned = alloc.dupe(u8, remaining) catch return;
+                    all_lines.append(alloc, owned) catch {
+                        alloc.free(owned);
+                        return;
+                    };
+                    reader.toss(remaining.len);
+                }
+                break;
+            },
+            else => |e| return e,
+        };
+        const owned = alloc.dupe(u8, line) catch return;
+        all_lines.append(alloc, owned) catch {
+            alloc.free(owned);
+            return;
+        };
+    }
+    // Output all but the last N lines
+    const total = all_lines.items.len;
+    const to_output = if (total > negative_count) total - negative_count else 0;
+    std.debug.assert(to_output <= all_lines.items.len); // Slice bound is in range.
+    for (all_lines.items[0..to_output]) |line| {
+        try writer.writeAll(line);
+    }
+}
+
+/// Stream the first `byte_count` bytes from `reader` to `writer`.
+/// Reads greedily in chunks and stops at EOF or once the count is reached.
+fn processInput_outputBytes(reader: *std.Io.Reader, writer: *std.Io.Writer, byte_count: u64) !void {
+    // Byte mode: read chunks and write until byte_count reached
+    var remaining: u64 = byte_count;
+    while (remaining > 0) {
+        std.debug.assert(remaining <= byte_count); // remaining never exceeds the request.
+        // peekGreedy(1) fills the buffer and returns all available bytes
+        const available = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        const max: u64 = std.math.maxInt(usize); // tiger:allow:usize-arch
+        const capped: usize = @intCast(@min(remaining, max)); // tiger:allow:usize-arch
+        const to_write = @min(capped, available.len);
+        std.debug.assert(to_write <= available.len); // Slice bound is in range.
+        std.debug.assert(to_write <= remaining); // No unsigned underflow below.
+        try writer.writeAll(available[0..to_write]);
+        reader.toss(to_write);
+        remaining -= to_write;
+    }
+}
+
 /// Read one delimiter-terminated line from `reader` and write it to `writer`.
 /// Returns true if a delimiter byte was consumed; false on EOF (no delimiter).
 /// Handles lines longer than the reader's buffer by streaming through in
 /// chunks rather than failing with `error.StreamTooLong`.
 fn streamOneLine(reader: *std.Io.Reader, writer: *std.Io.Writer, delimiter: u8) !bool {
+    const delimiter_is_newline_or_nul = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
     while (true) {
         const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
             error.EndOfStream => {
