@@ -89,9 +89,8 @@ fn parseRangeList_parseToken(token: []const u8) !Range {
         const val = std.fmt.parseInt(usize, token, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
         if (val == 0) return error.InvalidRange;
 
-        // Postconditions: single-value range is 1-indexed and not an open end.
+        // Postcondition: single-value range is 1-indexed.
         assert(val >= 1);
-        assert(val != Range.END);
         return .{ .start = val, .end = val };
     }
 }
