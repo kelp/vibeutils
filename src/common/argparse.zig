@@ -64,6 +64,7 @@ pub const ArgParser = struct {
             if (std.mem.eql(u8, arg, "--")) {
                 // Everything after -- is positional
                 i += 1;
+                std.debug.assert(i <= args.len);
                 try parse_drainPositionals(allocator, &positionals, args, i);
                 break;
             }
@@ -112,7 +113,6 @@ pub const ArgParser = struct {
         start: usize, // tiger:allow:usize-arch slice index into args
     ) ParseError!void {
         std.debug.assert(start <= args.len);
-        std.debug.assert(start >= 0);
 
         var k: usize = start; // tiger:allow:usize-arch slice index into args
         while (k < args.len) : (k += 1) {
@@ -132,6 +132,7 @@ pub const ArgParser = struct {
         i: usize, // tiger:allow:usize-arch slice index into args
     ) ParseError!ValueUsage {
         std.debug.assert(arg.len > 2);
+        std.debug.assert(arg[0] == '-');
         std.debug.assert(arg[1] == '-');
 
         // Long flag: --flag or --flag=value
@@ -139,6 +140,8 @@ pub const ArgParser = struct {
 
         // Check for = separator
         if (std.mem.findScalar(u8, flag_content, '=')) |eq_pos| {
+            std.debug.assert(eq_pos < flag_content.len);
+            std.debug.assert(eq_pos + 1 <= flag_content.len);
             const flag_name = flag_content[0..eq_pos];
             const flag_value = flag_content[eq_pos + 1 ..];
             const next_arg: ?[]const u8 = null;
@@ -170,6 +173,8 @@ pub const ArgParser = struct {
 
         // Check for equals sign for short options too
         if (std.mem.findScalar(u8, arg[1..], '=')) |eq_pos| {
+            std.debug.assert(eq_pos < arg.len - 1);
+            std.debug.assert(2 + eq_pos <= arg.len);
             // Short flag with = syntax: -o=value
             const flag_char = arg[1];
             const flag_value = arg[2 + eq_pos ..];
@@ -203,6 +208,8 @@ pub const ArgParser = struct {
 
         var j: usize = 1; // tiger:allow:usize-arch slice index into arg
         while (j < arg.len) : (j += 1) {
+            std.debug.assert(j >= 1);
+            std.debug.assert(j < arg.len);
             const flag_char = arg[j];
 
             // Check if this is the last char and might have a value
@@ -265,8 +272,6 @@ pub const ArgParser = struct {
         allocator: std.mem.Allocator,
     ) ParseError!void {
         const type_info = @typeInfo(T);
-        std.debug.assert(type_info == .@"struct");
-        std.debug.assert(type_info != .pointer);
 
         // Handle special field types
         inline for (type_info.@"struct".fields) |field| {
