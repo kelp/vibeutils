@@ -394,8 +394,6 @@ fn chmodFiles(
     options: ChmodOptions,
 ) !void {
     assert(files.len > 0);
-    // Exactly one mode source applies: a reference file or a mode string.
-    assert((options.reference_file != null) or (mode_str.len > 0));
 
     const mode_spec = try resolveModeSpec(allocator, mode_str, stderr_writer, options);
 
@@ -440,7 +438,6 @@ fn resolveModeSpec(
         return .{ .reference = Mode.fromOctal(@as(u32, @intCast(ref_stat.mode & 0o7777))) };
     }
 
-    assert(mode_str.len > 0);
     // A mode string is symbolic if it carries letters or operator characters.
     const is_symbolic = blk: {
         for (mode_str) |character| {
@@ -497,7 +494,6 @@ fn chmodOneRecursive(
     stderr_writer: anytype,
     options: ChmodOptions,
 ) bool {
-    assert(file_path.len > 0);
     assert(options.recursive);
 
     const lstat_result = common.file.FileInfo.lstat(file_path) catch |err| {
@@ -558,7 +554,6 @@ fn applyModeToPath(
     stderr_writer: anytype,
     options: ChmodOptions,
 ) bool {
-    assert(file_path.len > 0);
     // A symbolic spec must carry a non-empty mode string to re-parse per file.
     assert(mode_spec != .symbolic or mode_spec.symbolic.len > 0);
     _ = io;
@@ -931,7 +926,6 @@ fn statForChmod(
     file_path: []const u8,
     no_dereference: bool,
 ) !struct { mode: std.posix.mode_t, kind: std.Io.File.Kind } {
-    assert(file_path.len > 0);
     if (no_dereference) {
         const info = common.file.FileInfo.lstat(file_path) catch |err| {
             return switch (err) {
@@ -994,7 +988,6 @@ fn applyModeSpecToFile(
     writer: anytype,
     options: ChmodOptions,
 ) !void {
-    assert(file_path.len > 0);
     assert(mode_spec != .symbolic or mode_spec.symbolic.len > 0);
 
     const stat_result = try statForChmod(file_path, options.no_dereference);
