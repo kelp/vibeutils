@@ -86,6 +86,7 @@ fn runUniq_preprocessAllRepeated(
     std.debug.assert(method_out.* == .off);
 
     try cleaned_args.ensureTotalCapacity(allocator, args.len);
+    std.debug.assert(cleaned_args.capacity >= args.len);
 
     for (args) |arg| {
         if (std.mem.startsWith(u8, arg, "--all-repeated=")) {
@@ -115,6 +116,7 @@ fn runUniq_preprocessAllRepeated(
         }
     }
 
+    std.debug.assert(cleaned_args.items.len == args.len);
     return null;
 }
 
@@ -130,12 +132,12 @@ fn runUniq_dispatchOutput(
     stderr_writer: *std.Io.Writer,
 ) !u8 {
     std.debug.assert(opts.positionals.len <= 2);
-    std.debug.assert(@intFromPtr(reader) != 0);
 
     const has_output = opts.positionals.len >= 2 and !std.mem.eql(u8, opts.positionals[1], "-");
     const output_path = if (has_output) opts.positionals[1] else null;
 
     if (output_path) |out_path| {
+        std.debug.assert(opts.positionals.len >= 2);
         const output_file = std.Io.Dir.cwd().createFile(
             io,
             out_path,
@@ -301,6 +303,7 @@ fn runUniqWithInput(
         opts.all_repeated_method;
 
     const delimiter: u8 = if (opts.zero_terminated) 0 else '\n';
+    std.debug.assert(delimiter < ' ');
 
     var prev_line: ?[]u8 = null;
     defer if (prev_line) |p| allocator.free(p);
@@ -325,6 +328,7 @@ fn runUniqWithInput(
         if (line == null) {
             // End of input: flush last group
             if (prev_line) |prev| {
+                std.debug.assert(count >= 1);
                 try outputLine(out_writer, prev, count, opts, method, delimiter, &has_printed_group);
             }
             break;
@@ -382,6 +386,8 @@ fn readLine(allocator: Allocator, reader: *std.Io.Reader, delimiter: u8) !?[]u8 
 fn linesEqual(a: []const u8, b: []const u8, opts: UniqArgs) bool {
     const a_cmp = getCompareSlice(a, opts);
     const b_cmp = getCompareSlice(b, opts);
+    std.debug.assert(a_cmp.len <= a.len);
+    std.debug.assert(b_cmp.len <= b.len);
 
     if (opts.ignore_case) {
         return std.ascii.eqlIgnoreCase(a_cmp, b_cmp);
@@ -417,6 +423,7 @@ fn getCompareSlice(line: []const u8, opts: UniqArgs) []const u8 {
         pos += skip;
     }
 
+    std.debug.assert(pos <= line.len);
     if (pos >= line.len) return "";
 
     const remaining = line[pos..];
@@ -424,6 +431,7 @@ fn getCompareSlice(line: []const u8, opts: UniqArgs) []const u8 {
     // Limit comparison to check_chars characters
     if (opts.check_chars) |n| {
         const limit = @min(n, @as(u32, @intCast(remaining.len)));
+        std.debug.assert(limit <= remaining.len);
         return remaining[0..limit];
     }
 
@@ -432,6 +440,7 @@ fn getCompareSlice(line: []const u8, opts: UniqArgs) []const u8 {
 
 /// Output a line (or not) according to count/repeated/unique/all_repeated flags.
 fn outputLine(writer: *std.Io.Writer, line: []const u8, count: u64, opts: UniqArgs, method: AllRepeatedMethod, delimiter: u8, has_printed_group: *bool) !void {
+    std.debug.assert(count >= 1);
     // -D / --all-repeated: print all copies of duplicate groups.
     // Since we collapsed them, we print `count` copies.
     if (method != .off) {
