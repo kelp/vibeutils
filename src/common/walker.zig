@@ -249,6 +249,7 @@ pub const Walker = struct {
     /// Returns error.EntryLimitExceeded when config.max_entries is reached.
     pub fn next(self: *Walker, io: std.Io) !?Entry {
         assert(self.stack.items.len <= self.config.max_depth);
+        assert(self.root_cursor <= self.roots.items.len);
         if (self.entries_emitted >= self.config.max_entries) {
             return error.EntryLimitExceeded;
         }
@@ -327,6 +328,7 @@ pub const Walker = struct {
     fn popFrame(self: *Walker, io: std.Io) void {
         assert(self.stack.items.len > 0);
         var frame = self.stack.pop().?;
+        assert(frame.path_len_on_entry <= self.path_buf.items.len);
         freeSortedEntries(self.allocator, &frame);
         self.path_buf.items.len = frame.path_len_on_entry;
         frame.dir.close(io);
@@ -346,6 +348,7 @@ pub const Walker = struct {
     ) !void {
         assert(self.stack.items.len < self.config.max_depth);
         assert(depth <= self.config.max_depth);
+        assert(dir_path_len >= path_len_on_entry);
         var frame = Frame{
             .dir = dir,
             .iterator = dir.iterate(),
@@ -386,6 +389,7 @@ pub const Walker = struct {
     /// Start traversing the next root from the roots queue.
     fn startNextRoot(self: *Walker, io: std.Io) !?Entry {
         assert(self.stack.items.len == 0);
+        assert(self.root_cursor <= self.roots.items.len);
         if (self.root_cursor >= self.roots.items.len) return null;
         const root = self.roots.items[self.root_cursor];
         self.root_cursor += 1;
@@ -395,6 +399,7 @@ pub const Walker = struct {
         const path_len = self.path_buf.items.len;
         const basename = std.fs.path.basename(root.path);
         const bn_start = if (path_len >= basename.len) path_len - basename.len else 0;
+        assert(bn_start <= path_len);
         // Try opening as a directory (follows symlinks if follow_initial=true).
         const dir = std.Io.Dir.cwd().openDir(io, root.path, .{ .iterate = true }) catch {
             // Not a directory (or a symlink to a non-directory with follow_initial).
@@ -422,6 +427,7 @@ pub const Walker = struct {
     ) !?Entry {
         assert(self.stack.items.len == 0);
         assert(dir.handle >= 0);
+        assert(bn_start <= path_len);
         // Cycle detection for the root.
         if (self.config.detect_cycles) {
             if (self.visited) |*v| {
@@ -502,6 +508,7 @@ pub const Walker = struct {
         assert(parent_frame_idx < self.stack.items.len);
         assert(child_depth > 0);
         assert(child_depth < self.config.max_depth);
+        assert(child_path_len > parent_path_len);
         const child_path = self.path_buf.items[0..child_path_len];
         const child_dir = std.Io.Dir.cwd().openDir(io, child_path, .{ .iterate = true }) catch |err| {
             self.path_buf.items.len = parent_path_len;
@@ -555,6 +562,7 @@ pub const Walker = struct {
         assert(frame_idx < self.stack.items.len);
         const frame = &self.stack.items[frame_idx];
         assert(!frame.post_emitted);
+        assert(frame.dir_path_len >= frame.path_len_on_entry);
         if (!frame.pending_post) {
             self.popFrame(io);
             return null;
