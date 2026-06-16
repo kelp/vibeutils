@@ -216,14 +216,7 @@ fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdo
 
         // Enhanced path validation using OpenBSD-style basename checking
         if (!isPathSafeToRemove(file)) {
-            if (file.len == 0) {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
-            } else if (std.mem.eql(u8, file, "/")) {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
-            } else {
-                // Must be a "." or ".." pattern (including complex paths like "/path/to/.")
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "\".\" and \"..\" may not be removed", .{});
-            }
+            removeFiles_reportUnsafePath(allocator, stderr_writer, file);
             any_errors = true;
             continue;
         }
@@ -241,38 +234,16 @@ fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdo
                 any_errors = true;
             },
             error.IsDir => {
-                if (options.recursive) {
-                    removeDirectory(allocator, io, file, stdout_writer, stderr_writer, options) catch |dir_err| {
-                        // The walker driver handles interactive declines
-                        // internally, so any error here is a real failure.
-                        common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(dir_err) });
-                        any_errors = true;
-                    };
-                } else if (options.remove_empty_dirs) {
-                    // -d flag: attempt to remove empty directory (like rmdir)
-                    std.Io.Dir.cwd().deleteDir(io, file) catch |dir_err| {
-                        switch (dir_err) {
-                            error.DirNotEmpty => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{file});
-                                any_errors = true;
-                            },
-                            error.AccessDenied => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
-                                any_errors = true;
-                            },
-                            else => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(dir_err) });
-                                any_errors = true;
-                            },
-                        }
-                    };
-                    if (!any_errors and options.verbose) {
-                        try stdout_writer.print("removed directory '{s}'\n", .{file});
-                    }
-                } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Is a directory", .{file});
-                    any_errors = true;
-                }
+                const dir_error = try removeFiles_handleIsDir(
+                    allocator,
+                    io,
+                    file,
+                    stdout_writer,
+                    stderr_writer,
+                    options,
+                    any_errors,
+                );
+                any_errors = dir_error or any_errors;
             },
             error.InteractiveUserCancelled => {
                 // User declined in interactive mode - this is normal behavior, not an error
@@ -289,6 +260,158 @@ fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdo
     }
 
     return !any_errors;
+}
+
+/// Reports the specific reason an unsafe path was refused by `removeFiles`.
+/// Straight-line message dispatch for the three exhaustive unsafe cases:
+/// empty path, the exact "/" path, and any "." / ".." basename pattern.
+fn removeFiles_reportUnsafePath(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    file: []const u8,
+) void {
+    std.debug.assert(!isPathSafeToRemove(file));
+    var printed = false;
+    if (file.len == 0) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "cannot remove '': No such file or directory",
+            .{},
+        );
+        printed = true;
+    } else if (std.mem.eql(u8, file, "/")) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "it is dangerous to operate recursively on '/'",
+            .{},
+        );
+        printed = true;
+    } else {
+        // Must be a "." or ".." pattern (including complex paths like "/path/to/.")
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "\".\" and \"..\" may not be removed",
+            .{},
+        );
+        printed = true;
+    }
+    // Negative space: every branch must report; we must not fall through silently.
+    std.debug.assert(printed);
+}
+
+/// Handles the `error.IsDir` arm of `removeFiles` for a single directory.
+/// Dispatches on -r / -d / neither and reports per-file removal errors.
+/// Returns whether THIS file errored, so the caller centralizes the
+/// `any_errors` accumulation. `any_errors_so_far` preserves the original
+/// loop-wide gate on the -d verbose message bit-for-bit.
+fn removeFiles_handleIsDir(
+    allocator: Allocator,
+    io: std.Io,
+    file: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+    any_errors_so_far: bool,
+) !bool {
+    std.debug.assert(file.len > 0);
+    std.debug.assert(stdout_writer != stderr_writer);
+    var local_error = false;
+    if (options.recursive) {
+        removeDirectory(
+            allocator,
+            io,
+            file,
+            stdout_writer,
+            stderr_writer,
+            options,
+        ) catch |dir_err| {
+            // The walker driver handles interactive declines
+            // internally, so any error here is a real failure.
+            removeFiles_handleIsDir_reportPosix(allocator, stderr_writer, file, dir_err);
+            local_error = true;
+        };
+    } else if (options.remove_empty_dirs) {
+        // -d flag: attempt to remove empty directory (like rmdir)
+        std.Io.Dir.cwd().deleteDir(io, file) catch |dir_err| {
+            removeFiles_handleIsDir_reportDeleteDir(allocator, stderr_writer, file, dir_err);
+            local_error = true;
+        };
+        if (!any_errors_so_far and !local_error and options.verbose) {
+            try stdout_writer.print("removed directory '{s}'\n", .{file});
+        }
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "cannot remove '{s}': Is a directory",
+            .{file},
+        );
+        local_error = true;
+    }
+    return local_error;
+}
+
+/// Reports a generic POSIX-mapped error for a failed recursive directory
+/// removal, matching the message rm emits for the `-r` failure path.
+fn removeFiles_handleIsDir_reportPosix(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    file: []const u8,
+    dir_err: anyerror,
+) void {
+    std.debug.assert(file.len > 0);
+    // Positive space: the caught value is a real, named error.
+    std.debug.assert(@errorName(dir_err).len > 0);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "rm",
+        "cannot remove '{s}': {s}",
+        .{ file, common.posixErrorString(dir_err) },
+    );
+}
+
+/// Reports the per-case error for a failed `-d` empty-directory removal,
+/// distinguishing not-empty and permission-denied from the generic case.
+fn removeFiles_handleIsDir_reportDeleteDir(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    file: []const u8,
+    dir_err: anyerror,
+) void {
+    std.debug.assert(file.len > 0);
+    // Positive space: the caught value is a real, named error.
+    std.debug.assert(@errorName(dir_err).len > 0);
+    switch (dir_err) {
+        error.DirNotEmpty => common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "cannot remove '{s}': Directory not empty",
+            .{file},
+        ),
+        error.AccessDenied => common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "cannot remove '{s}': Permission denied",
+            .{file},
+        ),
+        else => common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "rm",
+            "cannot remove '{s}': {s}",
+            .{ file, common.posixErrorString(dir_err) },
+        ),
+    }
 }
 
 /// Remove a single file or symlink.
