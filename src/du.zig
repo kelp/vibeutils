@@ -181,6 +181,9 @@ fn parseThreshold(str: []const u8) ?i64 {
         negative = true;
         val_str = str[1..];
     }
+    // val_str is always a suffix of str (equal, or one byte shorter after
+    // stripping a leading sign), so its length never exceeds str.len.
+    assert(val_str.len <= str.len);
 
     const abs_val = parseBlockSize(val_str) orelse {
         // Try pure numeric (possibly negative)
@@ -275,8 +278,6 @@ fn resolveConfig_applyBlockSize(opts: DuOptions, config: *DuConfig) error{Invali
     if (opts.block_size) |bs_str| {
         config.block_size = parseBlockSize(bs_str) orelse return error.InvalidBlockSize;
     }
-
-    assert(config.block_size != 0);
 }
 
 /// Apply an explicit --color WHEN value to the display config, overriding the
@@ -285,10 +286,6 @@ fn resolveConfig_applyColorMode(
     when: []const u8,
     display: *common.display_config.DisplayConfig,
 ) error{InvalidColorMode}!void {
-    // Caller only invokes this for a present --color value, never an empty one.
-    assert(when.len > 0);
-    assert(!std.mem.eql(u8, when, ""));
-
     if (std.mem.eql(u8, when, "always")) {
         display.color = .on;
     } else if (std.mem.eql(u8, when, "auto")) {
@@ -306,10 +303,6 @@ fn resolveConfig_applyIconMode(
     when: []const u8,
     show_icons: *bool,
 ) error{InvalidIconMode}!void {
-    // Caller only invokes this for a present --icons value, never an empty one.
-    assert(when.len > 0);
-    assert(!std.mem.eql(u8, when, ""));
-
     if (std.mem.eql(u8, when, "always")) {
         show_icons.* = true;
     } else if (std.mem.eql(u8, when, "auto")) {
@@ -332,6 +325,9 @@ fn parseBlockSize(str: []const u8) ?u64 {
 }
 
 fn formatHumanReadable(buf: []u8, size_bytes: u64, si: bool) []const u8 {
+    // Every caller passes a [32]u8; 32 bytes is the established minimum that
+    // holds the longest formatted size (e.g. "1023.9P") plus its suffix.
+    assert(buf.len >= 32);
     return format.formatHumanReadable(buf, size_bytes, .{
         .si = si,
         .suffix = if (si) .iec else .short,
@@ -357,6 +353,9 @@ const StatResult = struct {
 fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
     var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    // The early return above eliminated any over-length path, so the @memcpy
+    // into path_buf is within bounds for every path that reaches here.
+    assert(path.len <= std.Io.Dir.max_path_bytes);
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
@@ -370,7 +369,6 @@ fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
 /// Linux `statx` path of doStat: stat `c_path` and decode it into StatResult.
 fn doStat_linux(c_path: [:0]const u8, follow_symlinks: bool) !StatResult {
     assert(c_path.len <= std.Io.Dir.max_path_bytes);
-    assert(c_path[c_path.len] == 0);
 
     const linux = std.os.linux;
     var sx: linux.Statx = undefined;
@@ -411,7 +409,6 @@ fn doStat_linux(c_path: [:0]const u8, follow_symlinks: bool) !StatResult {
 /// POSIX `fstatat` path of doStat: stat `c_path` and decode it into StatResult.
 fn doStat_posix(c_path: [:0]const u8, follow_symlinks: bool) !StatResult {
     assert(c_path.len <= std.Io.Dir.max_path_bytes);
-    assert(c_path[c_path.len] == 0);
 
     var stat_buf: c.Stat = undefined;
     const at_flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
@@ -794,6 +791,9 @@ fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
 }
 
 fn printEntry(writer: *std.Io.Writer, style: anytype, size_bytes: u64, config: DuConfig, path: []const u8, is_dir: bool, is_link: bool) void {
+    // Every call site passes a non-empty path (an operand, a walker entry path,
+    // or the literal "total"); basename/eql below rely on it.
+    assert(path.len > 0);
     // Apply threshold filter
     if (config.threshold) |thresh| {
         const signed_size: i64 = @intCast(size_bytes);
@@ -913,6 +913,9 @@ pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
         &[_][]const u8{"."}
     else
         opts.positionals;
+    // paths is the one-element "." fallback when no operand is given, otherwise
+    // the non-empty positionals; the operand loop always runs at least once.
+    assert(paths.len >= 1);
 
     var has_error = false;
     var grand_total: u64 = 0;
@@ -1071,9 +1074,6 @@ fn runDu_initStyle(
     config: DuConfig,
 ) common.style.Style(*std.Io.Writer) {
     const StyleType = common.style.Style(*std.Io.Writer);
-    // config is fully resolved before styling: block_size never stays zero.
-    assert(config.block_size != 0);
-    assert(config.block_size >= 1);
 
     var style = StyleType{ .color_mode = .none, .writer = stdout };
     if (config.display.color == .on) {
