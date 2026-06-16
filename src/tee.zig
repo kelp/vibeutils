@@ -33,6 +33,8 @@ pub fn main(init: std.process.Init) noreturn {
 
 /// Public entry point that reads from stdin
 pub fn runTee(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    std.debug.assert(stdout_writer != stderr_writer);
+
     // Parse arguments
     const parsed_args = common.argparse.ArgParser.parseOrExit(TeeArgs, allocator, args, "tee", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
@@ -77,42 +79,44 @@ fn runTeeWithInput(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !u8 {
+    std.debug.assert(stdout_writer != stderr_writer);
+
     // Open all output files
     var multi = try MultiWriter.init(allocator, io, stderr_writer, args.positionals, args.append);
     defer multi.deinit(io);
+
+    // MultiWriter.init allocates both parallel arrays with
+    // args.positionals.len, so their lengths track the operand count.
+    std.debug.assert(multi.files.len == args.positionals.len);
+    std.debug.assert(multi.is_stdout.len == args.positionals.len);
 
     var has_error = false;
     var stdout_broken = false;
     var buffer: [8192]u8 = undefined;
 
     while (true) {
-        const bytes_read = reader.readSliceShort(&buffer) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error", .{});
-            has_error = true;
+        // Read one chunk; null means stop (read error sets has_error,
+        // or clean EOF). The two break paths live behind one signal.
+        const data = runTeeWithInput_readChunk(
+            allocator,
+            stderr_writer,
+            reader,
+            &buffer,
+            &has_error,
+        ) orelse break;
+
+        // Write to stdout; helper returns true on the no-`-p`
+        // write-failure path, telling the parent to break here.
+        if (runTeeWithInput_writeChunkToStdout(
+            allocator,
+            stderr_writer,
+            stdout_writer,
+            data,
+            args.diagnose_errors,
+            &has_error,
+            &stdout_broken,
+        )) {
             break;
-        };
-
-        if (bytes_read == 0) {
-            break;
-        }
-
-        const data = buffer[0..bytes_read];
-
-        // Write to stdout unless it is already broken
-        if (!stdout_broken) {
-            stdout_writer.writeAll(data) catch |err| {
-                // Without -p, a broken stdout pipe means exit
-                // (matches GNU default SIGPIPE behavior).
-                if (!args.diagnose_errors) {
-                    has_error = true;
-                    break;
-                }
-                // With -p, mark stdout broken and continue
-                // writing to files.
-                stdout_broken = true;
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
-                has_error = true;
-            };
         }
 
         // Write to each file output
@@ -129,9 +133,7 @@ fn runTeeWithInput(
         );
 
         // Without -p, if stdout broke during file writes, stop
-        if (stdout_broken and !args.diagnose_errors) {
-            break;
-        }
+        if (stdout_broken and !args.diagnose_errors) break;
     }
 
     // Flush stdout: buffered writes (e.g. to /dev/full) only surface
@@ -145,6 +147,86 @@ fn runTeeWithInput(
     runTeeWithInput_flushFiles(allocator, stderr_writer, &multi, args.positionals, &has_error);
 
     return @intFromEnum(if (has_error) common.ExitCode.general_error else common.ExitCode.success);
+}
+
+/// Read one chunk from the input reader into `buffer`.
+///
+/// Returns the filled slice, or null when the parent loop should
+/// stop: a read error (sets has_error and reports a diagnostic) or a
+/// clean EOF (zero-length short read, has_error untouched). Folding
+/// both stop conditions behind one nullable preserves the original
+/// two-`break` behavior while keeping the parent loop a thin driver.
+fn runTeeWithInput_readChunk(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
+    buffer: *[8192]u8,
+    has_error: *bool,
+) ?[]u8 {
+    // Positive space: the read buffer is the fixed 8192-byte scratch
+    // the parent declared. Negative space: it is never empty, so a
+    // short read can always make progress.
+    std.debug.assert(buffer.len == 8192);
+    std.debug.assert(buffer.len > 0);
+
+    const bytes_read = reader.readSliceShort(buffer) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error", .{});
+        has_error.* = true;
+        return null;
+    };
+
+    // readSliceShort fills at most buffer.len; a short read signals EOF.
+    std.debug.assert(bytes_read <= buffer.len);
+
+    if (bytes_read == 0) return null;
+
+    return buffer[0..bytes_read];
+}
+
+/// Write one data chunk to stdout unless stdout is already broken.
+///
+/// The `if (!stdout_broken)` gate is straight-line here (the parent
+/// pushes its other ifs up). Mutates has_error/stdout_broken via
+/// out-params. Returns true only on the no-`-p` write-failure path,
+/// telling the parent to break immediately (matching the original
+/// inline `has_error = true; break;`); returns false otherwise.
+fn runTeeWithInput_writeChunkToStdout(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    stdout_writer: *std.Io.Writer,
+    data: []const u8,
+    diagnose_errors: bool,
+    has_error: *bool,
+    stdout_broken: *bool,
+) bool {
+    std.debug.assert(stdout_writer != stderr_writer);
+    // runTeeWithInput_readChunk returns null on a zero-length read,
+    // so the parent never hands a zero-length chunk to stdout.
+    std.debug.assert(data.len > 0);
+
+    if (!stdout_broken.*) {
+        stdout_writer.writeAll(data) catch |err| {
+            // Without -p, a broken stdout pipe means exit
+            // (matches GNU default SIGPIPE behavior).
+            if (!diagnose_errors) {
+                has_error.* = true;
+                return true;
+            }
+            // With -p, mark stdout broken and continue
+            // writing to files.
+            stdout_broken.* = true;
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "tee",
+                "standard output: {s}",
+                .{common.posixErrorString(err)},
+            );
+            has_error.* = true;
+        };
+    }
+
+    return false;
 }
 
 /// Write one data chunk to every file output target.
@@ -166,6 +248,9 @@ fn runTeeWithInput_writeChunkToFiles(
 ) void {
     std.debug.assert(multi.files.len == positionals.len);
     std.debug.assert(multi.is_stdout.len == positionals.len);
+    // The caller only invokes this after `if (bytes_read == 0) break;`,
+    // so tee never hands a zero-length chunk to file targets.
+    std.debug.assert(data.len > 0);
 
     for (multi.files, multi.is_stdout, positionals) |*file_entry, is_dash, name| {
         if (is_dash) {
@@ -215,7 +300,6 @@ fn runTeeWithInput_flushStdout(
     has_error: *bool,
 ) void {
     std.debug.assert(stdout_writer != stderr_writer);
-    std.debug.assert(@intFromBool(has_error.*) <= 1);
 
     stdout_writer.flush() catch |err| {
         common.printErrorWithProgram(
@@ -278,6 +362,11 @@ const MultiWriter = struct {
         var is_stdout = try allocator.alloc(bool, file_names.len);
         errdefer allocator.free(is_stdout);
 
+        // Both parallel arrays are sized from file_names, including the
+        // empty (no-file) case, before any operand is processed.
+        std.debug.assert(files.len == file_names.len);
+        std.debug.assert(is_stdout.len == file_names.len);
+
         var files_opened: usize = 0;
         errdefer {
             for (files[0..files_opened], is_stdout[0..files_opened]) |*fe, is_dash| {
@@ -310,6 +399,10 @@ const MultiWriter = struct {
             files_opened += 1;
         }
 
+        // Reaching here means the loop completed (errors return early), so
+        // every operand was processed exactly once.
+        std.debug.assert(files_opened == file_names.len);
+
         return MultiWriter{
             .allocator = allocator,
             .files = files,
@@ -318,6 +411,10 @@ const MultiWriter = struct {
     }
 
     pub fn deinit(self: *MultiWriter, io: std.Io) void {
+        // init sizes both parallel arrays identically and nothing resizes
+        // them, so the lockstep iteration below is always in bounds.
+        std.debug.assert(self.files.len == self.is_stdout.len);
+
         for (self.files, self.is_stdout) |*fe, is_dash| {
             if (!is_dash) {
                 fe.writer.interface.flush() catch {};
