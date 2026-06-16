@@ -104,27 +104,17 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     // Convert arguments to internal options
     const options = runChown_buildOptions(parsed_args);
 
-    // Extract owner spec and file list based on whether --reference is used.
-    const owner_spec: []const u8 = if (parsed_args.reference != null) blk: {
-        // With --reference, we only need files (no owner spec)
-        if (positionals.len < 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing file operand", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-        break :blk "";
-    } else blk: {
-        // Without --reference, we need owner spec + files
-        if (positionals.len < 2) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing operand", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-        break :blk positionals[0];
-    };
-
-    const files: []const []const u8 = if (parsed_args.reference != null)
-        positionals
-    else
-        positionals[1..];
+    // Extract owner spec and file list based on whether --reference is used. A
+    // null result means a missing-operand error was already reported; both
+    // missing-operand paths map to the same misuse exit code.
+    const ops = runChown_extractOperands(
+        allocator,
+        positionals,
+        parsed_args.reference != null,
+        stderr_writer,
+    ) orelse return @intFromEnum(common.ExitCode.misuse);
+    const owner_spec = ops.owner_spec;
+    const files = ops.files;
 
     // Reject --preserve-root on '/' and non-numeric specs under -n. A
     // non-null result is the exit code to return after reporting the error.
@@ -154,15 +144,68 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     );
 }
 
+/// Owner spec and file list derived from the positional operands.
+const Operands = struct {
+    owner_spec: []const u8,
+    files: []const []const u8,
+};
+
+/// Extract the owner spec and file list from the positionals, enforcing the
+/// missing-operand guards. With --reference there is no owner spec and at least
+/// one file is required; without it the first positional is the owner spec and
+/// at least two operands are required. Returns null (after reporting the error)
+/// when an operand is missing. Branching stays in the parent, which keeps the
+/// reference-vs-spec decision via the reference_is_set primitive.
+fn runChown_extractOperands(
+    allocator: std.mem.Allocator,
+    positionals: []const []const u8,
+    reference_is_set: bool,
+    stderr_writer: *std.Io.Writer,
+) ?Operands {
+    if (reference_is_set) {
+        // With --reference, we only need files (no owner spec)
+        if (positionals.len < 1) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "chown",
+                "missing file operand",
+                .{},
+            );
+            return null;
+        }
+    } else {
+        // Without --reference, we need owner spec + files
+        if (positionals.len < 2) {
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing operand", .{});
+            return null;
+        }
+    }
+
+    // Past the guards there is always at least one operand to consume.
+    assert(positionals.len >= 1);
+
+    const owner_spec: []const u8 = if (reference_is_set) "" else positionals[0];
+    const files: []const []const u8 = if (reference_is_set) positionals else positionals[1..];
+
+    // Both extraction branches guarantee at least one file operand: the
+    // reference path returns null when positionals.len < 1, the non-reference
+    // path when positionals.len < 2 (so positionals[1..] has >= 1 element).
+    assert(files.len >= 1);
+    // Reference mode and an explicit owner spec are mutually exclusive: the code
+    // forces owner_spec = "" whenever --reference is set, so under reference mode
+    // the spec is always empty. (`chown "" file` is reference-null and exempt.)
+    if (reference_is_set) {
+        assert(owner_spec.len == 0);
+    }
+
+    return Operands{ .owner_spec = owner_spec, .files = files };
+}
+
 /// Build the internal ChownOptions from parsed command-line arguments. Pure
 /// field mapping lifted verbatim from runChown to keep the parent under the
 /// 70-line cap; -f/--quiet collapse to a single silent flag.
 fn runChown_buildOptions(parsed_args: ChownArgs) ChownOptions {
-    // -L/-P and -H/-P are mutually exclusive traverse flags (negative space).
-    const both_traverse_all_and_none = parsed_args.L and parsed_args.P;
-    const both_traverse_cmdline_and_none = parsed_args.H and parsed_args.P;
-    assert(!both_traverse_all_and_none);
-    assert(!both_traverse_cmdline_and_none);
     return ChownOptions{
         .changes = parsed_args.changes,
         .silent = parsed_args.silent or parsed_args.quiet,
@@ -193,12 +236,6 @@ fn runChown_validate(
 ) ?u8 {
     // -n only constrains an explicit spec; reference mode leaves owner_spec empty.
     const numeric_applies = options.numeric_ids and owner_spec.len > 0;
-    // When -n applies there must be a spec to validate (positive space); a
-    // spec under -n is never the empty string (negative space).
-    if (numeric_applies) {
-        assert(owner_spec.len > 0);
-        assert(!(owner_spec.len == 0));
-    }
 
     // --preserve-root: refuse to operate recursively on '/'
     if (options.preserve_root and options.recursive) {
@@ -236,10 +273,12 @@ fn runChown_resolveOwnership(
     // Exactly one source supplies ownership: a reference file XOR an owner spec.
     const has_spec = owner_spec.len > 0;
     const has_reference = options.reference_file != null;
-    const has_some_source = has_spec or has_reference;
     const has_both_sources = has_spec and has_reference;
-    assert(has_some_source); // Positive space: at least one source present.
-    assert(!has_both_sources); // Negative space: never both at once.
+    // runChown forces owner_spec = "" whenever --reference is set, so a spec and
+    // a reference can never both be present (negative space). Note we do NOT
+    // assert at-least-one-source: `chown "" file` is valid and yields neither,
+    // taking the graceful InvalidFormat path below.
+    assert(!has_both_sources);
 
     var ownership: common.user_group.OwnershipSpec = undefined;
     if (options.reference_file) |ref_path| {
@@ -274,6 +313,10 @@ fn runChown_processFiles(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) u8 {
+    // Precondition mirrored from runChown: the operand-count guards there
+    // return misuse before this call when too few positionals are given, so
+    // there is always at least one file to process here.
+    assert(files.len >= 1);
     // The exit code starts at success and only ever moves to general_error.
     assert(@intFromEnum(common.ExitCode.success) == 0);
     assert(@intFromEnum(common.ExitCode.general_error) != 0);
@@ -442,9 +485,6 @@ fn chownSingle(io: std.Io, allocator: std.mem.Allocator, path: []const u8, owner
 /// -L (traverse_all) follows every symlink; -H (traverse_cmdline) follows only
 /// the command-line operand; the default (-P or plain -R) follows none.
 fn symlinkPolicyFromOptions(options: ChownOptions) common.walker.SymlinkPolicy {
-    // -L and -P are mutually exclusive; -L wins over -H if both somehow set.
-    assert(!(options.traverse_all_symlinks and options.no_traverse_symlinks));
-    assert(!(options.traverse_cmdline_symlinks and options.no_traverse_symlinks));
     if (options.traverse_all_symlinks) {
         return .follow_all;
     }
@@ -468,7 +508,10 @@ fn chownWalk(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !void {
-    assert(path.len > 0);
+    // chownWalk is only ever reached through `if (options.recursive)` dispatch
+    // (runChown_processFiles and chownFile), so recursion is code-controlled.
+    // Note: path may legitimately be "" (e.g. `chown -R root ""`), so we do NOT
+    // assert path.len > 0 here.
     assert(options.recursive);
 
     const policy = symlinkPolicyFromOptions(options);
@@ -507,7 +550,6 @@ fn chownWalk(
 /// Used by -P to decide whether to chown the link without descending. A failed
 /// lstat returns false so the walker drives normal error reporting downstream.
 fn operandIsSymlink(path: []const u8) bool {
-    assert(path.len > 0);
     const info = common.file.FileInfo.lstat(path) catch return false;
     return info.kind == .sym_link;
 }
@@ -527,12 +569,9 @@ fn walkAndApply(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !void {
-    assert(path.len > 0);
-
     var had_errors = false;
     while (walk.next(io)) |maybe_entry| {
         const entry = maybe_entry orelse break;
-        assert(entry.path.len > 0);
         chownSingle(io, allocator, entry.path, ownership, options, stdout_writer, stderr_writer) catch |err| {
             handleError(allocator, entry.path, err, options, stderr_writer);
             had_errors = true;
