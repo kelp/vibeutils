@@ -68,6 +68,9 @@ pub fn runEcho(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
         positional_start = i + 1;
     }
 
+    // The slice below depends on this bound; positional_start only ever
+    // becomes i + 1 for a valid index i, so it never exceeds args.len.
+    std.debug.assert(positional_start <= args.len);
     const positionals = args[positional_start..];
 
     const options = EchoOptions{
@@ -228,6 +231,8 @@ fn writeWithEscapes_writeOctalZero(
     // Positive space: the caller only dispatches here on a backslash-zero pair.
     std.debug.assert(i + 1 < s.len);
     std.debug.assert(s[i] == '\\');
+    // The \0NNN arm of the caller's switch routes here exclusively on a '0'.
+    std.debug.assert(s[i + 1] == '0');
     // Octal with \0 prefix: \0NNN (up to 3 octal digits after the 0 introducer)
     var octal_value: u8 = 0;
     var j: usize = 2; // tiger:allow:usize-arch slice index type
@@ -255,6 +260,9 @@ fn writeWithEscapes_writeOctalDigit(
     // Positive space: the caller only dispatches here on a backslash-digit pair.
     std.debug.assert(i + 1 < s.len);
     std.debug.assert(s[i] == '\\');
+    // The '1'...'7' arm of the caller's switch bounds the first octal digit.
+    std.debug.assert(s[i + 1] >= '1');
+    std.debug.assert(s[i + 1] <= '7');
     // Octal sequence: \NNN (up to 3 octal digits, first digit is part of value)
     var octal_value: u8 = 0;
     var j: usize = 1; // tiger:allow:usize-arch slice index type
@@ -278,6 +286,7 @@ fn writeWithEscapes_writeHex(
 ) !usize { // tiger:allow:usize-arch returns slice index
     // Positive space: the caller only dispatches here on a backslash-x pair.
     std.debug.assert(i + 1 < s.len);
+    std.debug.assert(s[i] == '\\');
     std.debug.assert(s[i + 1] == 'x');
     // Hex sequence: \xH or \xHH (1-2 hex digits, GNU compatible)
     var hex_value: u8 = 0;
