@@ -61,11 +61,30 @@ pub fn parseTimeString(time_str: []const u8) !u64 {
     if (time_str.len == 0) {
         return error.InvalidTimeFormat;
     }
+    std.debug.assert(time_str.len > 0); // Positive: control reached here only with non-empty.
 
     // GNU sleep accepts 'inf' and 'infinity' to mean sleep forever.
     if (std.mem.eql(u8, time_str, "inf") or std.mem.eql(u8, time_str, "infinity")) {
         return std.math.maxInt(u64);
     }
+
+    const split = parseTimeString_splitSuffix(time_str);
+    std.debug.assert(split.number_part.len <= time_str.len); // Negative: split never grows input.
+
+    if (split.number_part.len == 0) {
+        return error.InvalidTimeFormat;
+    }
+
+    return parseTimeString_numberToNanos(split.number_part, split.unit);
+}
+
+/// Split the trailing unit suffix (if any) from a non-empty time string.
+/// Returns the number part (suffix removed) and the selected unit; a string
+/// with no recognized suffix keeps the whole input and defaults to seconds.
+fn parseTimeString_splitSuffix(
+    time_str: []const u8,
+) struct { number_part: []const u8, unit: TimeUnit } {
+    std.debug.assert(time_str.len > 0); // Positive precondition the caller guarantees.
 
     // Find the unit suffix (if any)
     var number_part = time_str;
@@ -96,9 +115,20 @@ pub fn parseTimeString(time_str: []const u8) !u64 {
         },
     }
 
-    if (number_part.len == 0) {
-        return error.InvalidTimeFormat;
-    }
+    std.debug.assert(number_part.len <= time_str.len); // Never grow the input.
+    // Negative: we removed at most one char (suffix), never more. Safe from
+    // underflow because the assert above guarantees number_part.len <= time_str.len.
+    std.debug.assert(time_str.len - number_part.len <= 1);
+
+    return .{ .number_part = number_part, .unit = unit };
+}
+
+/// Convert an already-sliced, non-empty number part plus its unit into
+/// nanoseconds. Rejects trailing '.', non-numeric input, NaN/Inf, negatives,
+/// and overflow.
+fn parseTimeString_numberToNanos(number_part: []const u8, unit: TimeUnit) !u64 {
+    std.debug.assert(number_part.len > 0); // Positive: parent guarantees via len==0 check.
+    std.debug.assert(unit.toNanos() > 0); // Negative: no zero-multiplier unit exists.
 
     // Parse the number part (support decimal values)
     // Check for invalid formats like "5." but allow ".5" (GNU compatible)
