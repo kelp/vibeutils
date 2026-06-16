@@ -40,6 +40,10 @@ pub fn utilityMain(
         std.process.exit(1);
     };
 
+    // Every OS-launched process supplies argv[0], so the parsed slice always
+    // has at least one element; the args[1..] slice below depends on this.
+    std.debug.assert(args.len >= 1);
+
     // Set up 8KB buffered writers for stdout and stderr
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
@@ -48,6 +52,10 @@ pub fn utilityMain(
     var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
+
+    // Keep the documented "8KB buffered stdout/stderr" intent in sync: a future
+    // edit must change both buffer sizes together, not just one.
+    std.debug.assert(stdout_buffer.len == stderr_buffer.len);
 
     // Call the run function (skip program name: args[1..])
     const exit_code = runFn(allocator, io, args[1..], stdout, stderr) catch |err| {
@@ -76,6 +84,10 @@ pub fn runWithBufferedIO(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) u8 {
+    // Documented contract: args[0] is the program name; the args[1..] slice
+    // below requires at least that one element.
+    std.debug.assert(args.len >= 1);
+
     // Skip program name (mirrors utilityMain's args[1..] call)
     const exit_code = runFn(allocator, io, args[1..], stdout_writer, stderr_writer) catch |err| {
         stderr_writer.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
