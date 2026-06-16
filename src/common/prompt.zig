@@ -42,6 +42,7 @@ fn persistentStdinReader(io: std.Io) *std.Io.Reader {
     std.debug.assert(stdin_file_reader != null);
     const reader = &stdin_file_reader.?.interface;
     std.debug.assert(reader.buffer.ptr == &stdin_buffer);
+    std.debug.assert(reader.buffer.len == stdin_buffer.len);
     return reader;
 }
 
