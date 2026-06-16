@@ -68,6 +68,10 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
         break :blk try std.fs.path.join(allocator, &.{ cwd_buf[0..cwd_len], path });
     };
     defer allocator.free(abs_path);
+    // abs_path is always a non-empty absolute path: the isAbsolute branch dups
+    // an already-absolute path, the else branch joins onto an absolute cwd.
+    std.debug.assert(abs_path.len > 0);
+    std.debug.assert(abs_path[0] == '/');
 
     // Split into components and resolve . and ..
     var components: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -105,6 +109,8 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
         @memcpy(result[pos .. pos + comp.len], comp);
         pos += comp.len;
     }
+    // The build loop writes exactly total_len bytes, so pos lands on total_len.
+    std.debug.assert(pos == total_len);
 
     return result;
 }
@@ -117,7 +123,6 @@ fn printResolveError(
     name: []const u8,
     err: anyerror,
 ) void {
-    std.debug.assert(name.len > 0);
     // posixErrorString never yields an empty string for a real error.
     const message = common.posixErrorString(err);
     std.debug.assert(message.len > 0);
@@ -140,11 +145,6 @@ fn processPath_resolveTarget(
     opts: *const RealpathArgs,
     stderr_writer: *std.Io.Writer,
 ) !?[]u8 {
-    std.debug.assert(path.len > 0);
-    // At most one of the existing/missing mode flags may be set.
-    const both_modes = opts.canonicalize_existing and opts.canonicalize_missing;
-    std.debug.assert(!both_modes);
-
     if (opts.no_symlinks) {
         return resolveLogical(allocator, io, path) catch |err| {
             if (!opts.quiet) {
@@ -188,10 +188,6 @@ fn processPath_resolveBase(
     opts: *const RealpathArgs,
     stderr_writer: *std.Io.Writer,
 ) !?[]u8 {
-    std.debug.assert(base_dir.len > 0);
-    const both_modes = opts.canonicalize_existing and opts.canonicalize_missing;
-    std.debug.assert(!both_modes);
-
     if (opts.no_symlinks) {
         return resolveLogical(allocator, io, base_dir) catch |err| {
             if (!opts.quiet) {
@@ -264,8 +260,6 @@ fn processPath_makeRelative(
 /// Write the resolved output followed by the line delimiter (NUL or newline).
 fn processPath_writeOutput(stdout_writer: *std.Io.Writer, output: []const u8, zero: bool) !void {
     std.debug.assert(output.len > 0);
-    // Negative-space: output is a real slice, never a dangling/undefined pointer.
-    std.debug.assert(@intFromPtr(output.ptr) != 0);
 
     try stdout_writer.writeAll(output);
     if (zero) {
@@ -288,6 +282,8 @@ fn processPath(
         (try processPath_resolveTarget(allocator, io, path, &opts, stderr_writer)) orelse
         return false;
     defer allocator.free(resolved);
+    // Every resolver branch returns an absolute path; null was excluded above.
+    std.debug.assert(std.fs.path.isAbsolute(resolved));
 
     // Handle --relative-to and --relative-base
     const output = if (opts.relative_to != null or opts.relative_base != null) blk: {
@@ -346,6 +342,10 @@ pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, s
         common.printErrorWithProgram(allocator, stderr_writer, "realpath", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
+
+    // The missing-operand guard above returns before reaching this loop, so at
+    // least one positional remains (it may be empty, but the count is nonzero).
+    std.debug.assert(parsed_args.positionals.len > 0);
 
     var has_error = false;
     for (parsed_args.positionals) |path| {
