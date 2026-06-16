@@ -437,27 +437,108 @@ pub fn printReport(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bo
 // Main entry point
 // ============================================================================
 
-pub fn runFree(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+/// Result of argument parsing: on success `parsed` holds the FreeArgs and
+/// `code` is unused; on failure `parsed` is null and `code` is the exit code.
+const ParseResult = struct {
+    parsed: ?FreeArgs,
+    code: u8,
+};
+
+/// Parse free's arguments, mapping parse errors to exit codes verbatim.
+/// Ownership of `parsed.positionals` is returned to the caller; the helper
+/// frees nothing, matching the original inline error arms.
+fn runFree_parseArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+    stderr_writer: *std.Io.Writer,
+) !ParseResult {
+    // Sanity on the exit-code constants this helper maps onto.
+    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != @intFromEnum(common.ExitCode.success));
+    std.debug.assert(prog_name.len != 0);
+
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             else => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "argument parsing error", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
         }
     };
+    return ParseResult{ .parsed = parsed, .code = @intFromEnum(common.ExitCode.success) };
+}
+
+/// Drive the continuous-display loop. The parent only calls this when an
+/// interval was requested, so the interval is guaranteed positive.
+fn runFree_displayContinuous(
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+    unit: Unit,
+    use_si: bool,
+    show_total: bool,
+    wide: bool,
+    interval: u32,
+    repeat_count: u32,
+) u8 {
+    std.debug.assert(interval != 0);
+    std.debug.assert(@TypeOf(repeat_count) == u32);
+
+    var iterations: u32 = 0;
+    while (repeat_count == 0 or iterations < repeat_count) {
+        const result = displayOnce(
+            io,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+            unit,
+            use_si,
+            show_total,
+            wide,
+        );
+        if (result != 0) return result;
+        stdout_writer.flush() catch {};
+
+        iterations += 1;
+        if (repeat_count > 0 and iterations >= repeat_count) break;
+
+        io.sleep(.fromSeconds(interval), .awake) catch {};
+
+        // Print blank line between iterations
+        stdout_writer.writeAll("\n") catch {};
+    }
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+pub fn runFree(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(@intFromEnum(common.ExitCode.success) == 0);
+
+    const parse_result = try runFree_parseArgs(allocator, args, stderr_writer);
+    if (parse_result.parsed == null) return parse_result.code;
+    const parsed = parse_result.parsed.?;
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -495,22 +576,18 @@ pub fn runFree(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     }
 
     // Continuous mode
-    var iterations: u32 = 0;
-    while (repeat_count == 0 or iterations < repeat_count) {
-        const result = displayOnce(io, stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
-        if (result != 0) return result;
-        stdout_writer.flush() catch {};
-
-        iterations += 1;
-        if (repeat_count > 0 and iterations >= repeat_count) break;
-
-        io.sleep(.fromSeconds(interval), .awake) catch {};
-
-        // Print blank line between iterations
-        stdout_writer.writeAll("\n") catch {};
-    }
-
-    return @intFromEnum(common.ExitCode.success);
+    return runFree_displayContinuous(
+        io,
+        stdout_writer,
+        stderr_writer,
+        allocator,
+        unit,
+        use_si,
+        show_total,
+        wide,
+        interval,
+        repeat_count,
+    );
 }
 
 fn displayOnce(io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
