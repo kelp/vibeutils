@@ -360,7 +360,6 @@ fn createLinks_targetDirectory(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !common.ExitCode {
-    std.debug.assert(target_dir.len > 0);
     std.debug.assert(files.len > 0);
     const prog_name = "ln";
 
@@ -497,7 +496,6 @@ fn createLinks_intoDirectory_resolveDir(
     directory: []const u8,
 ) !enum { proceed, fallback, not_a_directory } {
     std.debug.assert(files.len >= 2);
-    std.debug.assert(directory.len > 0);
 
     // When -n/-h (no_dereference) is set and the destination is a symlink,
     // treat it as a regular file (Form 1), not as a directory to create
@@ -541,8 +539,6 @@ fn createSingleLink(
     stderr_writer: *std.Io.Writer,
     test_mode: bool,
 ) !void {
-    std.debug.assert(target.len > 0);
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     const link_exists = try createSingleLink_linkExists(allocator, io, link_name, stderr_writer);
@@ -624,8 +620,6 @@ fn createSingleLink_createSymlink(
     rel_arena: *std.heap.ArenaAllocator,
     stderr_writer: *std.Io.Writer,
 ) ![]const u8 {
-    std.debug.assert(target.len > 0);
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     var target_path = target;
@@ -676,7 +670,6 @@ fn createSingleLink_linkExists(
     link_name: []const u8,
     stderr_writer: *std.Io.Writer,
 ) !bool {
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     std.Io.Dir.cwd().access(io, link_name, .{}) catch |err| switch (err) {
@@ -713,7 +706,6 @@ fn createSingleLink_promptReplace(
     stderr_writer: *std.Io.Writer,
     test_mode: bool,
 ) !bool {
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     if (test_mode) {
@@ -766,7 +758,6 @@ fn createSingleLink_removeExisting(
     link_exists: bool,
     stderr_writer: *std.Io.Writer,
 ) !void {
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     // Create backup of destination if it exists and backup mode is enabled
@@ -844,8 +835,6 @@ fn createSingleLink_computeRelativeTarget(
     temp_allocator: std.mem.Allocator,
     stderr_writer: *std.Io.Writer,
 ) ![]const u8 {
-    std.debug.assert(target.len > 0);
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     // Compute relative path from link to target
@@ -905,8 +894,6 @@ fn createSingleLink_hardLink(
     options: *const LinkOptions,
     stderr_writer: *std.Io.Writer,
 ) !void {
-    std.debug.assert(target.len > 0);
-    std.debug.assert(link_name.len > 0);
     const prog_name = "ln";
 
     // Create hard link - target must exist
