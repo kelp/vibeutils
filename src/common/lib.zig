@@ -277,7 +277,7 @@ pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, pr
 /// For errors that have no standard POSIX string the raw Zig error name is
 /// returned via `@errorName`.
 pub fn posixErrorString(err: anyerror) []const u8 {
-    return switch (err) {
+    const result = switch (err) {
         error.AccessDenied => "Permission denied",
         error.BadPathName => "Invalid argument",
         error.BrokenPipe => "Broken pipe",
@@ -312,6 +312,12 @@ pub fn posixErrorString(err: anyerror) []const u8 {
         error.WouldBlock => "Resource temporarily unavailable",
         else => @errorName(err),
     };
+    // Postcondition: every switch arm returns a non-empty string literal, and
+    // the else arm returns @errorName(err) whose value is a Zig identifier
+    // (at least one character) for every possible error, so the result is
+    // never empty regardless of which error is passed.
+    std.debug.assert(result.len > 0);
+    return result;
 }
 
 test "common library basics" {
