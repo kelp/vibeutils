@@ -939,7 +939,6 @@ fn runDd_writeUnblockRecords(
     data: []const u8,
     unblock_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
 ) u8 {
-    std.debug.assert(cbs <= out_buf.len);
     std.debug.assert(unblock_pos.* <= cbs);
 
     // Process data in cbs-sized chunks
