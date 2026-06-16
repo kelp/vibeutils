@@ -62,6 +62,9 @@ pub fn runWhoami(
     };
     defer allocator.free(user_info.name);
 
+    // A successful passwd lookup must yield a non-empty username.
+    std.debug.assert(user_info.name.len > 0);
+
     try stdout_writer.print("{s}\n", .{user_info.name});
     return @intFromEnum(common.ExitCode.success);
 }
