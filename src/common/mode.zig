@@ -109,6 +109,24 @@ pub fn parseSymbolic(
 // Internal helpers
 // ============================================================================
 
+/// Result of scanning the who-specifier prefix of a clause.
+const ScanWhoResult = struct {
+    /// Index of the first character after the who-specifier (the operator).
+    cursor: usize, // tiger:allow:usize-arch slice index into clause
+    /// Who bitmask: bit0=user, bit1=group, bit2=other. Always 1..=7.
+    who: u8,
+    /// True when at least one explicit u/g/o/a specifier was present.
+    who_explicit: bool,
+};
+
+/// Result of scanning the permission characters of a clause.
+const ScanPermsResult = union(enum) {
+    /// Accumulated permission bits: 4=r 2=w 1=x 8=s 16=t.
+    perms: u8,
+    /// A permission-copy in perm position was applied; clause is done.
+    copy_done,
+};
+
 /// Apply one symbolic mode clause (e.g. "u+rx", "go=r", "a-s", "g=u") in-place.
 fn applyClause(
     mode: *Mode,
@@ -118,11 +136,51 @@ fn applyClause(
 ) ModeError!void {
     if (clause.len < 2) return ModeError.InvalidMode;
 
+    const scan = try applyClause_scanWho(clause);
+    var i = scan.cursor;
+    const who = scan.who;
+    const who_explicit = scan.who_explicit;
+
+    if (i >= clause.len) return ModeError.InvalidMode;
+    const op = clause[i];
+    i += 1;
+
+    // --- permission copying: "g=u", "o+g", "u-o" ---
+    // Detected when the remaining text is exactly one u/g/o character.
+    if (i < clause.len and clause.len == i + 1) {
+        const ch = clause[i];
+        if (ch == 'u' or ch == 'g' or ch == 'o') {
+            applyCopy(mode, who, ch, op);
+            return;
+        }
+    }
+
+    const perms = switch (try applyClause_scanPerms(mode, clause, i, who, op, base_mode, context)) {
+        .copy_done => return,
+        .perms => |p| p,
+    };
+
+    // POSIX §4.7: when no who-specifier was given and the operator adds or
+    // sets permissions ('+' or '='), apply the complement of the process
+    // umask per-class. For '-' (removal), the umask does not constrain
+    // which bits are cleared.
+    if (!who_explicit and op != '-' and context.umask != 0) {
+        applyClause_applyWithUmask(mode, op, perms, context);
+    } else {
+        applyPerms(mode, who, op, perms);
+    }
+}
+
+/// Scan the leading who-specifier of a clause, stopping at the operator.
+/// Returns the cursor at the operator, the who-bitmask (defaulting to 'a'),
+/// and whether an explicit specifier was present.
+fn applyClause_scanWho(clause: []const u8) ModeError!ScanWhoResult {
+    std.debug.assert(clause.len >= 2);
+
     var i: usize = 0;
     var who: u8 = 0; // bitmask: bit0=user, bit1=group, bit2=other
     var who_explicit = false;
 
-    // --- who-specifier ---
     while (i < clause.len) : (i += 1) {
         switch (clause[i]) {
             'u' => {
@@ -147,21 +205,27 @@ fn applyClause(
     }
     if (who == 0) who = 7; // no specifier → 'a' (all)
 
-    if (i >= clause.len) return ModeError.InvalidMode;
-    const op = clause[i];
-    i += 1;
+    std.debug.assert(who != 0);
+    std.debug.assert(who <= 7);
+    return .{ .cursor = i, .who = who, .who_explicit = who_explicit };
+}
 
-    // --- permission copying: "g=u", "o+g", "u-o" ---
-    // Detected when the remaining text is exactly one u/g/o character.
-    if (i < clause.len and clause.len == i + 1) {
-        const ch = clause[i];
-        if (ch == 'u' or ch == 'g' or ch == 'o') {
-            applyCopy(mode, who, ch, op);
-            return;
-        }
-    }
+/// Scan permission characters starting at `cursor`, accumulating the perm
+/// bitmask. A permission-copy in perm position is applied here and reported
+/// via `.copy_done`; otherwise the accumulated bits are returned via `.perms`.
+fn applyClause_scanPerms(
+    mode: *Mode,
+    clause: []const u8,
+    cursor: usize, // tiger:allow:usize-arch slice index into clause
+    who: u8,
+    op: u8,
+    base_mode: u32,
+    context: ModeContext,
+) ModeError!ScanPermsResult {
+    std.debug.assert(cursor <= clause.len);
+    std.debug.assert(who != 0);
 
-    // --- permission characters ---
+    var i = cursor;
     var perms: u8 = 0; // bits: 4=r 2=w 1=x 8=s 16=t
     while (i < clause.len) : (i += 1) {
         switch (clause[i]) {
@@ -181,7 +245,7 @@ fn applyClause(
             'u', 'g', 'o' => {
                 if (clause.len == i + 1) {
                     applyCopy(mode, who, clause[i], op);
-                    return;
+                    return .copy_done;
                 }
                 return ModeError.InvalidMode;
             },
@@ -189,24 +253,29 @@ fn applyClause(
         }
     }
 
-    // POSIX §4.7: when no who-specifier was given and the operator adds or
-    // sets permissions ('+' or '='), apply the complement of the process
-    // umask per-class. For '-' (removal), the umask does not constrain
-    // which bits are cleared.
-    if (!who_explicit and op != '-' and context.umask != 0) {
-        const u_mask: u3 = @truncate((context.umask >> 6) & 7);
-        const g_mask: u3 = @truncate((context.umask >> 3) & 7);
-        const o_mask: u3 = @truncate(context.umask & 7);
-        // Umask constrains only rwx bits; special bits (s/t) pass through.
-        const basic: u3 = @truncate(perms & 7);
-        const special: u8 = perms & ~@as(u8, 7);
-        // Apply per-class with masked basic bits, then special bits globally.
-        applyPerms(mode, 1, op, (basic & ~u_mask) | special);
-        applyPerms(mode, 2, op, (basic & ~g_mask) | special);
-        applyPerms(mode, 4, op, (basic & ~o_mask) | special);
-    } else {
-        applyPerms(mode, who, op, perms);
-    }
+    std.debug.assert((perms & ~@as(u8, 0b11111)) == 0);
+    return .{ .perms = perms };
+}
+
+/// Apply `perms` for '+'/'=' with the process umask masking the rwx bits
+/// per-class. Special bits (s/t) pass through unmasked. Only reached when no
+/// explicit who-specifier was given and the operator is not '-'.
+fn applyClause_applyWithUmask(mode: *Mode, op: u8, perms: u8, context: ModeContext) void {
+    // Negative space: this helper is never reached for '-' or a zero umask,
+    // matching the parent's `op != '-' and context.umask != 0` branch guard.
+    std.debug.assert(op != '-');
+    std.debug.assert(context.umask != 0);
+
+    const u_mask: u3 = @truncate((context.umask >> 6) & 7);
+    const g_mask: u3 = @truncate((context.umask >> 3) & 7);
+    const o_mask: u3 = @truncate(context.umask & 7);
+    // Umask constrains only rwx bits; special bits (s/t) pass through.
+    const basic: u3 = @truncate(perms & 7);
+    const special: u8 = perms & ~@as(u8, 7);
+    // Apply per-class with masked basic bits, then special bits globally.
+    applyPerms(mode, 1, op, (basic & ~u_mask) | special);
+    applyPerms(mode, 2, op, (basic & ~g_mask) | special);
+    applyPerms(mode, 4, op, (basic & ~o_mask) | special);
 }
 
 /// Apply permission copying between who classes.
