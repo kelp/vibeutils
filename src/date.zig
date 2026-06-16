@@ -107,7 +107,8 @@ fn parseArgs_longOption(
     std.debug.assert(arg.len > 1);
     std.debug.assert(arg[0] == '-');
     std.debug.assert(arg[1] == '-');
-    std.debug.assert(arg.len != 0);
+    std.debug.assert(i.* < args.len);
+    std.debug.assert(args.len > 0);
 
     if (std.mem.eql(u8, arg, "--utc") or std.mem.eql(u8, arg, "--universal")) {
         opts.utc = true;
@@ -281,6 +282,8 @@ fn resolveTimestamp(io: std.Io, opts: DateOptions) TimestampResult {
                     multiplier = @divTrunc(multiplier, 10);
                     if (multiplier == 0) break;
                 }
+                std.debug.assert(ns >= 0);
+                std.debug.assert(ns < std.time.ns_per_s);
                 return .{ .secs = secs, .ns = ns, .err = null };
             } else {
                 const secs = std.fmt.parseInt(i64, epoch_str, 10) catch {
@@ -334,6 +337,8 @@ fn parseIso8601(ds: []const u8) TimestampResult {
     if (day < 1 or day > 31) return err_result;
     std.debug.assert(month >= 1);
     std.debug.assert(month <= 12);
+    std.debug.assert(day >= 1);
+    std.debug.assert(day <= 31);
 
     var hour: i32 = 0;
     var minute: i32 = 0;
@@ -393,6 +398,7 @@ fn parseIso8601_parseTime(
     std.debug.assert(ds.len > 10);
     std.debug.assert(hour.* == 0);
     std.debug.assert(minute.* == 0);
+    std.debug.assert(second.* == 0);
 
     if (ds[10] != 'T' and ds[10] != ' ') return false;
     const time_str = ds[11..];
@@ -493,6 +499,9 @@ fn validatePrecision(opts: DateOptions) ?[]const u8 {
 
 /// Format a timezone offset as +HH:MM (colon-separated)
 fn formatTzOffset(buf: []u8, tm: *const time.c_tm) []const u8 {
+    std.debug.assert(buf.len >= 6);
+    // tm_gmtoff is environment-derived (localtime_r/gmtime_r); any value is valid.
+
     const offset_secs = tm.tm_gmtoff;
     const abs_offset: u64 = if (offset_secs < 0) @intCast(-offset_secs) else @intCast(offset_secs);
     const sign: u8 = if (offset_secs < 0) '-' else '+';
@@ -525,6 +534,7 @@ fn formatDate(
     //            %% (literal %), %n (newline), %t (tab)
     var processed = try std.ArrayList(u8).initCapacity(allocator, format.len);
     defer processed.deinit(allocator);
+    std.debug.assert(format.len <= processed.capacity);
 
     var fi: usize = 0;
     while (fi < format.len) {
@@ -577,7 +587,6 @@ fn formatDate_appendSpecifier(
     std.debug.assert(fi < format.len);
     std.debug.assert(format[fi] == '%');
     std.debug.assert(fi + 1 < format.len);
-    std.debug.assert(format.len > 0);
 
     var tz_buf: [8]u8 = undefined;
     const next = format[fi + 1];
@@ -643,8 +652,7 @@ fn formatDate_appendSpecifier(
 /// strftime bug). Returns the formatted slice (or "+0000" on bufPrint failure).
 fn formatDate_appendSpecifier_tzNumeric(buf: []u8, tm: *const time.c_tm) []const u8 {
     std.debug.assert(buf.len >= 5);
-    std.debug.assert(tm.tm_gmtoff >= -86400);
-    std.debug.assert(tm.tm_gmtoff <= 86400);
+    // tm_gmtoff is environment-derived (localtime_r/gmtime_r); any value is valid.
 
     const offset_secs = tm.tm_gmtoff;
     const abs_offset: u64 = if (offset_secs < 0) @intCast(-offset_secs) else @intCast(offset_secs);
