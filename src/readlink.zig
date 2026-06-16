@@ -92,9 +92,14 @@ pub fn runReadlink(allocator: Allocator, io: std.Io, args: []const []const u8, s
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // The empty-operand case returned above, so the loop below always has work.
+    std.debug.assert(parsed.positionals.len > 0);
+
     const canon_mode = getCanonicalizeMode(parsed);
     const quiet = parsed.quiet or parsed.silent;
     const verbose = parsed.verbose and !quiet;
+    // verbose is `parsed.verbose and !quiet`, so quiet forces verbose off.
+    if (quiet) std.debug.assert(!verbose);
     var has_error = false;
 
     for (parsed.positionals) |path| {
@@ -133,6 +138,8 @@ pub fn runReadlink(allocator: Allocator, io: std.Io, args: []const []const u8, s
 fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    // Bytes written into buf cannot exceed its capacity; guards buf[0..len] below.
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -141,6 +148,8 @@ fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u
 fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    // Bytes written into buf cannot exceed its capacity; guards buf[0..len] below.
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -151,6 +160,8 @@ fn resolveLink(allocator: Allocator, io: std.Io, path: []const u8, mode: Canonic
             // Just read the symlink target, no canonicalization
             var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const len = try std.Io.Dir.cwd().readLink(io, path, &buf);
+            // Bytes written into buf cannot exceed its capacity; guards buf[0..len].
+            std.debug.assert(len <= buf.len);
             return try allocator.dupe(u8, buf[0..len]);
         },
         .canonical_missing_ok => {
@@ -181,6 +192,8 @@ fn resolveCanonicalMissingOk(allocator: Allocator, io: std.Io, path: []const u8)
     // Check if path is a symlink (even a dangling one)
     var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     if (std.Io.Dir.cwd().readLink(io, path, &link_buf)) |link_len| {
+        // Bytes written into link_buf cannot exceed its capacity; guards the slice.
+        std.debug.assert(link_len <= link_buf.len);
         const link_target = link_buf[0..link_len];
         // It's a symlink. Resolve the target path.
         // If target is relative, make it relative to the symlink's directory.
