@@ -41,74 +41,129 @@ pub const DisplayConfig = struct {
         // Step 1: Defaults based on isTty(stdout)
         const is_tty = env.isTty(std.Io.File.stdout().handle);
 
-        var color: ResolvedMode = if (is_tty) .on else .off;
-        var icons: ResolvedMode = if (is_tty) .on else .off;
-        var highlight: ResolvedMode = if (is_tty) .on else .off;
-        var theme: Theme = if (is_tty) .default else .none;
+        var config: DisplayConfig = .{
+            .color = if (is_tty) .on else .off,
+            .icons = if (is_tty) .on else .off,
+            .highlight = if (is_tty) .on else .off,
+            .theme = if (is_tty) .default else .none,
+        };
 
-        // Step 2: Apply VIBEUTILS_STYLE shortcut
-        // Presets set preferences but respect TTY detection.
-        // Only "always" forces features on through pipes.
+        // Ordering preserved: defaults -> style preset -> feature
+        // overrides -> kill switches, so precedence is unchanged.
+        config = resolve_applyStylePreset(config, is_tty);
+        config = resolve_applyFeatureOverrides(config);
+        config = resolve_applyColorKillSwitches(config);
+        return config;
+    }
+
+    /// Step 2: apply the VIBEUTILS_STYLE master preset.
+    /// Presets set preferences but respect TTY detection; only "always"
+    /// forces features on through pipes. Returns a new config so the
+    /// parent never aliases the underlying fields.
+    fn resolve_applyStylePreset(config: DisplayConfig, is_tty: bool) DisplayConfig {
+        std.debug.assert(@intFromEnum(config.color) <= @intFromEnum(ResolvedMode.off));
+        std.debug.assert(@intFromEnum(config.theme) <= @intFromEnum(Theme.none));
+
+        var result = config;
         if (env.getEnv("VIBEUTILS_STYLE")) |vibe_style| {
             if (std.mem.eql(u8, vibe_style, "plain")) {
-                color = .off;
-                icons = .off;
-                highlight = .off;
-                theme = .none;
+                result.color = .off;
+                result.icons = .off;
+                result.highlight = .off;
+                result.theme = .none;
             } else if (std.mem.eql(u8, vibe_style, "color")) {
-                if (is_tty) color = .on;
-                icons = .off;
-                highlight = .off;
+                if (is_tty) result.color = .on;
+                result.icons = .off;
+                result.highlight = .off;
             } else if (std.mem.eql(u8, vibe_style, "full")) {
                 if (is_tty) {
-                    color = .on;
-                    icons = .on;
-                    highlight = .on;
-                    theme = .default;
+                    result.color = .on;
+                    result.icons = .on;
+                    result.highlight = .on;
+                    result.theme = .default;
                 }
             } else if (std.mem.eql(u8, vibe_style, "always")) {
-                color = .on;
-                icons = .on;
-                highlight = .on;
-                theme = .default;
+                result.color = .on;
+                result.icons = .on;
+                result.highlight = .on;
+                result.theme = .default;
             }
         }
 
-        // Step 3: Apply individual overrides
+        std.debug.assert(@intFromEnum(result.color) <= @intFromEnum(ResolvedMode.off));
+        std.debug.assert(@intFromEnum(result.theme) <= @intFromEnum(Theme.none));
+        return result;
+    }
+
+    /// Step 3: apply the per-feature VIBEUTILS_* overrides. Each block is
+    /// independent and outranks the style preset. Returns a new config.
+    fn resolve_applyFeatureOverrides(config: DisplayConfig) DisplayConfig {
+        std.debug.assert(@intFromEnum(config.icons) <= @intFromEnum(ResolvedMode.off));
+        std.debug.assert(@intFromEnum(config.highlight) <= @intFromEnum(ResolvedMode.off));
+
+        var result = config;
         if (env.getEnv("VIBEUTILS_COLOR")) |val| {
-            if (std.mem.eql(u8, val, "always")) color = .on else if (std.mem.eql(u8, val, "never")) color = .off;
+            if (std.mem.eql(u8, val, "always")) {
+                result.color = .on;
+            } else if (std.mem.eql(u8, val, "never")) {
+                result.color = .off;
+            }
         }
 
         if (env.getEnv("VIBEUTILS_ICONS")) |val| {
-            if (std.mem.eql(u8, val, "always")) icons = .on else if (std.mem.eql(u8, val, "never")) icons = .off;
+            if (std.mem.eql(u8, val, "always")) {
+                result.icons = .on;
+            } else if (std.mem.eql(u8, val, "never")) {
+                result.icons = .off;
+            }
         }
 
         if (env.getEnv("VIBEUTILS_HIGHLIGHT")) |val| {
-            if (std.mem.eql(u8, val, "always")) highlight = .on else if (std.mem.eql(u8, val, "never")) highlight = .off;
+            if (std.mem.eql(u8, val, "always")) {
+                result.highlight = .on;
+            } else if (std.mem.eql(u8, val, "never")) {
+                result.highlight = .off;
+            }
         }
 
         if (env.getEnv("VIBEUTILS_THEME")) |val| {
-            if (std.mem.eql(u8, val, "none")) theme = .none else if (std.mem.eql(u8, val, "default")) theme = .default;
+            if (std.mem.eql(u8, val, "none")) {
+                result.theme = .none;
+            } else if (std.mem.eql(u8, val, "default")) {
+                result.theme = .default;
+            }
         }
 
+        std.debug.assert(@intFromEnum(result.icons) <= @intFromEnum(ResolvedMode.off));
+        std.debug.assert(@intFromEnum(result.theme) <= @intFromEnum(Theme.none));
+        return result;
+    }
+
+    /// Steps 4+5: NO_COLOR (any value) and TERM=dumb force color off.
+    /// These kill switches win over all earlier steps. icons, highlight,
+    /// and theme are never touched here; returns a new config.
+    fn resolve_applyColorKillSwitches(config: DisplayConfig) DisplayConfig {
+        std.debug.assert(@intFromEnum(config.color) <= @intFromEnum(ResolvedMode.off));
+        std.debug.assert(@intFromEnum(config.theme) <= @intFromEnum(Theme.none));
+
+        var result = config;
         // Step 4: NO_COLOR forces color off (any value)
         if (env.getEnv("NO_COLOR") != null) {
-            color = .off;
+            result.color = .off;
         }
 
         // Step 5: TERM=dumb forces color off
         if (env.getEnv("TERM")) |term| {
             if (std.mem.eql(u8, term, "dumb")) {
-                color = .off;
+                result.color = .off;
             }
         }
 
-        return .{
-            .color = color,
-            .icons = icons,
-            .highlight = highlight,
-            .theme = theme,
-        };
+        // Negative space: this helper touches only color, never the rest.
+        std.debug.assert(result.icons == config.icons);
+        std.debug.assert(result.highlight == config.highlight);
+        std.debug.assert(result.theme == config.theme);
+        return result;
     }
 };
 
