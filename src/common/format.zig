@@ -22,17 +22,29 @@ pub const SuffixStyle = enum {
 /// below the base (under 1024 or 1000) are shown as plain integers.
 pub fn formatHumanReadable(buf: []u8, bytes: u64, opts: FormatOptions) []const u8 {
     const base: f64 = if (opts.si) 1000.0 else 1024.0;
+    // base is a controlled constant (1000.0 or 1024.0), never user input; base > 1
+    // is what guarantees the division loop below terminates.
+    std.debug.assert(base >= 1000.0);
 
     // Choose suffix table based on style and SI mode
     const suffixes: []const []const u8 = getSuffixes(opts);
+    // getSuffixes always returns a hardcoded 7-element table; the loop bound and
+    // the array accesses below rely on it being non-empty.
+    std.debug.assert(suffixes.len > 0);
 
     var value: f64 = @floatFromInt(bytes);
+    // value starts non-negative (bytes is u64) and only ever gets divided by a
+    // positive base, so it can never go negative or NaN.
+    std.debug.assert(value >= 0.0);
     var unit_idx: usize = 0;
 
     while (value >= base and unit_idx + 1 < suffixes.len) {
         value /= base;
         unit_idx += 1;
     }
+    // unit_idx only advances while unit_idx + 1 < suffixes.len, so it can never
+    // reach suffixes.len; this guards the suffixes[unit_idx] accesses below.
+    std.debug.assert(unit_idx < suffixes.len);
 
     if (unit_idx == 0) {
         return std.fmt.bufPrint(buf, "{d}", .{bytes}) catch "?";
@@ -72,6 +84,9 @@ pub fn parseBlockSize(str: []const u8) ?u64 {
     // Try numeric with suffix
     var num_end: usize = 0;
     while (num_end < str.len and (std.ascii.isDigit(str[num_end]) or str[num_end] == '.')) : (num_end += 1) {}
+    // The scan only advances while num_end < str.len, so on exit num_end is at
+    // most str.len; this bounds the str[0..num_end] and str[num_end..] slices.
+    std.debug.assert(num_end <= str.len);
 
     const base_val: u64 = if (num_end == 0)
         1
@@ -81,6 +96,9 @@ pub fn parseBlockSize(str: []const u8) ?u64 {
     if (num_end >= str.len) return null;
 
     const suffix = str[num_end..];
+    // Reached only after the num_end >= str.len guard above returned, so
+    // num_end < str.len here and the remaining slice is non-empty.
+    std.debug.assert(suffix.len > 0);
     const multiplier: u64 = if (std.mem.eql(u8, suffix, "K") or std.mem.eql(u8, suffix, "k"))
         1024
     else if (std.mem.eql(u8, suffix, "M") or std.mem.eql(u8, suffix, "m"))
@@ -100,6 +118,10 @@ pub fn parseBlockSize(str: []const u8) ?u64 {
     else
         return null;
 
+    // Every branch reaching here assigned multiplier to a hardcoded constant
+    // (1024..1024^4 or 1000..1000^4); the fall-through else returned null. Do
+    // NOT assert base_val >= 1: "0K"/"00K" yield base_val == 0 and are valid.
+    std.debug.assert(multiplier >= 1000);
     return base_val * multiplier;
 }
 
