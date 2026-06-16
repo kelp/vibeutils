@@ -80,6 +80,10 @@ pub const EntryFilter = struct {
     /// Filters out hidden files unless show_hidden or show_all is true.
     /// When skip_dots is true, excludes "." and ".." entries (for -A flag).
     pub fn shouldInclude(self: EntryFilter, name: []const u8) bool {
+        // Precondition: directory entry names from the OS are never empty, and
+        // the code below unconditionally indexes name[0].
+        std.debug.assert(name.len > 0);
+
         // Skip hidden files unless -a or -A is specified
         if (!self.show_all and !self.show_hidden and name[0] == '.') {
             return false;
@@ -160,6 +164,9 @@ pub fn collectSubdirectories(
         }
     }
 
+    // Postcondition: the loop appends at most one subdir per input entry, so
+    // the collected count can never exceed the number of entries.
+    std.debug.assert(subdirs.items.len <= entries.len);
     return subdirs;
 }
 
