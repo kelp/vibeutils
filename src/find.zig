@@ -103,6 +103,7 @@ const SizeExpr = struct {
             .megabytes => 1048576,
             .gigabytes => 1073741824,
         };
+        assert(multiplier >= 1);
         return self.value * multiplier;
     }
 };
@@ -266,6 +267,7 @@ fn parseSize(str: []const u8) !SizeExpr {
     }
 
     if (s.len == 0) return error.InvalidSize;
+    assert(s.len > 0);
 
     // Check for suffix
     var unit: SizeUnit = .blocks; // default
@@ -286,6 +288,7 @@ fn parseSize(str: []const u8) !SizeExpr {
     }
 
     if (num_str.len == 0) return error.InvalidSize;
+    assert(num_str.len > 0);
 
     const value = std.fmt.parseInt(u64, num_str, 10) catch return error.InvalidSize;
 
@@ -315,6 +318,7 @@ fn parseMtime(str: []const u8) !TimeExpr {
     }
 
     if (s.len == 0) return error.InvalidTime;
+    assert(s.len > 0);
 
     const days = std.fmt.parseInt(u64, s, 10) catch return error.InvalidTime;
 
@@ -343,6 +347,7 @@ fn parsePerm(str: []const u8) !PermExpr {
     }
 
     if (s.len == 0) return error.InvalidPerm;
+    assert(s.len > 0);
 
     // Parse octal mode
     var mode: u32 = 0;
@@ -359,6 +364,7 @@ fn parsePerm(str: []const u8) !PermExpr {
 
 fn parseFileType(str: []const u8) !FileType {
     if (str.len != 1) return error.InvalidType;
+    assert(str.len == 1);
     return switch (str[0]) {
         'f' => .regular,
         'd' => .directory,
@@ -398,6 +404,7 @@ const StatInfo = struct {
 fn doStat(path: []const u8, follow_symlinks: bool) !StatInfo {
     var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    assert(path.len <= std.Io.Dir.max_path_bytes);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
@@ -746,10 +753,12 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
 
     // Collect starting paths and global options before expressions.
     const expr_start = try parseArgs_collectLeadingGlobals(allocator, args, &flags, &start_paths);
+    assert(expr_start <= args.len);
 
     if (start_paths.items.len == 0) {
         try start_paths.append(allocator, ".");
     }
+    assert(start_paths.items.len >= 1);
 
     // Pre-scan for global options within expression args.
     try parseArgs_prescanDepthGlobals(allocator, args, expr_start, &flags, stderr);
@@ -1134,6 +1143,7 @@ fn parsePrimary_collectExecArgs(
         pctx.setError("missing argument to '{s}'", .{predicate});
         return error.MissingArgument;
     }
+    assert(exec_args.items.len > 0);
     return try allocator.dupe([]const u8, exec_args.items);
 }
 
@@ -1618,6 +1628,7 @@ fn parsePrimary_takeExec(
         &is_batch,
         pctx,
     ) orelse unreachable;
+    assert(argv.len > 0);
     has_action.* = true;
     if (is_batch) {
         return allocExpr(allocator, batch_tag, .{
@@ -1785,6 +1796,8 @@ fn parsePrimary_takeNewerXY(
     pctx: *ParseContext,
 ) ExprParseError!?*Expression {
     assert(pos.* < args.len);
+    assert(arg.len == 8);
+    assert(std.mem.eql(u8, arg, args[pos.*]));
     const x_field = arg[6];
     const y_field = arg[7];
     pos.* += 1;
@@ -1916,6 +1929,7 @@ const BatchContext = struct {
         _ = stderr;
         if (self.exec_template == null or self.exec_paths.items.len == 0) return true;
         const template = self.exec_template.?;
+        assert(self.exec_paths.items.len > 0);
 
         var argv = std.ArrayListUnmanaged([]const u8).empty;
         defer argv.deinit(allocator);
@@ -1959,6 +1973,7 @@ const BatchContext = struct {
         _ = stderr;
         if (self.execdir_template == null or self.execdir_paths.items.len == 0) return true;
         const template = self.execdir_template.?;
+        assert(self.execdir_paths.items.len > 0);
 
         var argv = std.ArrayListUnmanaged([]const u8).empty;
         defer argv.deinit(allocator);
@@ -2457,7 +2472,6 @@ fn evaluateLeaf_printf_percent(
     stat_buf: StatInfo,
     had_error: *bool,
 ) void {
-    comptime assert(@sizeOf(@TypeOf(spec)) == 1);
     assert(spec != 0);
     switch (spec) {
         'f' => {
@@ -2506,7 +2520,6 @@ fn evaluateLeaf_printf_percent(
 /// Handle one `\X` escape in a `-printf` format string. Sets `had_error` on any
 /// write failure. Unknown escapes are emitted verbatim as `\X`.
 fn evaluateLeaf_printf_escape(stdout: anytype, spec: u8, had_error: *bool) void {
-    comptime assert(@sizeOf(@TypeOf(spec)) == 1);
     assert(spec != 0);
     switch (spec) {
         'n' => {
@@ -2788,6 +2801,7 @@ fn matchUser(name_str: []const u8, uid: c.uid_t) bool {
 
     var buf: [256]u8 = undefined;
     if (name_str.len >= buf.len) return false;
+    assert(name_str.len < buf.len);
     @memcpy(buf[0..name_str.len], name_str);
     buf[name_str.len] = 0;
     const c_name = buf[0..name_str.len :0];
@@ -2806,6 +2820,7 @@ fn matchGroup(name_str: []const u8, gid: c.gid_t) bool {
 
     var buf: [256]u8 = undefined;
     if (name_str.len >= buf.len) return false;
+    assert(name_str.len < buf.len);
     @memcpy(buf[0..name_str.len], name_str);
     buf[name_str.len] = 0;
     const c_name = buf[0..name_str.len :0];
@@ -3055,6 +3070,7 @@ fn matchFstypeDarwin(path: []const u8, expected_type: []const u8) bool {
     // Use statfs to get filesystem type on macOS
     var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.fs.max_path_bytes) return false;
+    assert(path.len <= std.fs.max_path_bytes);
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
@@ -3782,12 +3798,14 @@ pub fn runFind(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     const config = parseArgs(allocator, args, stderr) catch {
         return @intFromEnum(common.ExitCode.general_error);
     };
+    assert(config.start_paths.len > 0);
 
     const now = blk: {
         var _ts: c.timespec = undefined;
         _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
         break :blk _ts.sec;
     };
+    assert(now >= 0);
     var had_error = false;
     var batch_ctx = BatchContext{};
 
