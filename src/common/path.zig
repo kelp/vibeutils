@@ -89,57 +89,27 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
         return try allocator.dupe(u8, buf[0..len]);
     }
 
-    // Get absolute path
-    const abs_path = if (std.fs.path.isAbsolute(path))
-        try allocator.dupe(u8, path)
-    else blk: {
-        var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buf);
-        const cwd = cwd_buf[0..cwd_len];
-        break :blk try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, path });
-    };
+    const abs_path = try canonicalizeMissing_absolutePath(allocator, io, path);
     defer allocator.free(abs_path);
 
     // Collect all components
     var all_components: std.ArrayListUnmanaged([]const u8) = .empty;
     defer all_components.deinit(allocator);
 
-    var it = std.mem.tokenizeScalar(u8, abs_path, '/');
-    while (it.next()) |comp| {
-        try all_components.append(allocator, comp);
-    }
+    try canonicalizeMissing_collectComponents(allocator, abs_path, &all_components);
 
     if (all_components.items.len == 0) {
         return try allocator.dupe(u8, "/");
     }
 
     // Try resolving progressively shorter prefixes
-    var resolved_prefix: ?[]u8 = null;
-    var resolved_count: usize = 0;
-
-    var try_count = all_components.items.len;
-    while (try_count > 0) : (try_count -= 1) {
-        // Build prefix path
-        var prefix_len: usize = 0;
-        for (all_components.items[0..try_count]) |comp| {
-            prefix_len += 1 + comp.len;
-        }
-        const prefix = try allocator.alloc(u8, prefix_len);
-        defer allocator.free(prefix);
-        var pos: usize = 0;
-        for (all_components.items[0..try_count]) |comp| {
-            prefix[pos] = '/';
-            pos += 1;
-            @memcpy(prefix[pos .. pos + comp.len], comp);
-            pos += comp.len;
-        }
-
-        if (realPathDupe(allocator, io, prefix)) |resolved| {
-            resolved_prefix = resolved;
-            resolved_count = try_count;
-            break;
-        } else |_| {}
-    }
+    var resolved_count: usize = 0; // tiger:allow:usize-arch slice index/len into all_components
+    const resolved_prefix = try canonicalizeMissing_resolvePrefix(
+        allocator,
+        io,
+        all_components.items,
+        &resolved_count,
+    );
 
     // Build result: resolved prefix + remaining components (cleaned)
     if (resolved_prefix) |prefix| {
@@ -147,61 +117,191 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
         if (resolved_count == all_components.items.len) {
             return try allocator.dupe(u8, prefix);
         }
-
-        // Append remaining components, resolving . and ..
-        var remaining = std.ArrayListUnmanaged(u8).empty;
-        defer remaining.deinit(allocator);
-        try remaining.appendSlice(allocator, prefix);
-
-        for (all_components.items[resolved_count..]) |comp| {
-            if (std.mem.eql(u8, comp, ".")) {
-                continue;
-            } else if (std.mem.eql(u8, comp, "..")) {
-                if (std.mem.findScalarLast(u8, remaining.items, '/')) |last_slash| {
-                    if (last_slash > 0) {
-                        remaining.shrinkRetainingCapacity(last_slash);
-                    } else {
-                        remaining.shrinkRetainingCapacity(1); // keep just "/"
-                    }
-                }
-            } else {
-                try remaining.append(allocator, '/');
-                try remaining.appendSlice(allocator, comp);
-            }
-        }
-
-        return try allocator.dupe(u8, remaining.items);
+        return try canonicalizeMissing_appendRemaining(
+            allocator,
+            prefix,
+            all_components.items[resolved_count..],
+        );
     } else {
-        // Nothing resolved at all, build cleaned absolute path
-        var result = std.ArrayListUnmanaged(u8).empty;
-        defer result.deinit(allocator);
-
-        var cleaned = std.ArrayListUnmanaged([]const u8).empty;
-        defer cleaned.deinit(allocator);
-
-        for (all_components.items) |comp| {
-            if (std.mem.eql(u8, comp, ".")) {
-                continue;
-            } else if (std.mem.eql(u8, comp, "..")) {
-                if (cleaned.items.len > 0) {
-                    _ = cleaned.pop();
-                }
-            } else {
-                try cleaned.append(allocator, comp);
-            }
-        }
-
-        if (cleaned.items.len == 0) {
-            return try allocator.dupe(u8, "/");
-        }
-
-        for (cleaned.items) |comp| {
-            try result.append(allocator, '/');
-            try result.appendSlice(allocator, comp);
-        }
-
-        return try allocator.dupe(u8, result.items);
+        // Nothing resolved at all, build cleaned absolute path.
+        return try canonicalizeMissing_normalizeLogical(allocator, all_components.items);
     }
+}
+
+/// Return a heap-allocated absolute form of `path`: a dup of `path` when it is
+/// already absolute, otherwise the cwd realpath joined with `path`. The caller
+/// owns the returned slice. Helper for `canonicalizeMissing`.
+fn canonicalizeMissing_absolutePath(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+) ![]u8 {
+    std.debug.assert(path.len > 0);
+
+    const result = if (std.fs.path.isAbsolute(path))
+        try allocator.dupe(u8, path)
+    else blk: {
+        var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buf);
+        const cwd = cwd_buf[0..cwd_len];
+        break :blk try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, path });
+    };
+
+    std.debug.assert(result.len > 0);
+    std.debug.assert(result[0] == '/');
+    return result;
+}
+
+/// Tokenize `abs_path` on '/' and append each component to `list`. The appended
+/// slices borrow into `abs_path`, so `abs_path` must outlive `list`. Helper for
+/// `canonicalizeMissing`.
+fn canonicalizeMissing_collectComponents(
+    allocator: Allocator,
+    abs_path: []const u8,
+    list: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    std.debug.assert(abs_path.len > 0);
+    std.debug.assert(abs_path[0] == '/');
+
+    var it = std.mem.tokenizeScalar(u8, abs_path, '/');
+    while (it.next()) |comp| {
+        try list.append(allocator, comp);
+    }
+}
+
+/// Build the absolute prefix string `/c0/c1/...` from `components` (each
+/// preceded by a '/'). The caller frees the returned buffer. Helper for
+/// `canonicalizeMissing_resolvePrefix`.
+fn canonicalizeMissing_buildPrefix(
+    allocator: Allocator,
+    components: []const []const u8,
+) ![]u8 {
+    std.debug.assert(components.len > 0);
+
+    var prefix_len: usize = 0; // tiger:allow:usize-arch alloc length + slice index
+    for (components) |comp| {
+        std.debug.assert(comp.len > 0);
+        prefix_len += 1 + comp.len;
+    }
+    const prefix = try allocator.alloc(u8, prefix_len);
+    var pos: usize = 0; // tiger:allow:usize-arch slice index into prefix buffer
+    for (components) |comp| {
+        prefix[pos] = '/';
+        pos += 1;
+        @memcpy(prefix[pos .. pos + comp.len], comp);
+        pos += comp.len;
+    }
+
+    std.debug.assert(prefix.len > 0);
+    std.debug.assert(prefix[0] == '/');
+    return prefix;
+}
+
+/// Resolve the longest leading prefix of `components` that exists via realpath,
+/// descending one component at a time. On success writes the resolved component
+/// count to `resolved_count` and returns the heap-allocated resolved path (the
+/// caller frees it); returns null if no prefix resolves. Helper for
+/// `canonicalizeMissing`.
+fn canonicalizeMissing_resolvePrefix(
+    allocator: Allocator,
+    io: std.Io,
+    components: []const []const u8,
+    resolved_count: *usize, // tiger:allow:usize-arch mirrors caller's slice-index counter
+) !?[]u8 {
+    std.debug.assert(components.len > 0);
+
+    var try_count = components.len;
+    while (try_count > 0) : (try_count -= 1) {
+        const prefix = try canonicalizeMissing_buildPrefix(allocator, components[0..try_count]);
+        defer allocator.free(prefix);
+
+        if (realPathDupe(allocator, io, prefix)) |resolved| {
+            resolved_count.* = try_count;
+            std.debug.assert(resolved_count.* > 0);
+            std.debug.assert(resolved_count.* <= components.len);
+            return resolved;
+        } else |_| {}
+    }
+
+    return null;
+}
+
+/// Append `remaining_components` (with '.' skipped and '..' resolved by popping
+/// to the previous '/', clamped so "/" is retained) onto `prefix`, returning a
+/// heap-allocated result the caller frees. Helper for `canonicalizeMissing`.
+fn canonicalizeMissing_appendRemaining(
+    allocator: Allocator,
+    prefix: []const u8,
+    remaining_components: []const []const u8,
+) ![]u8 {
+    std.debug.assert(prefix.len > 0);
+    std.debug.assert(prefix[0] == '/');
+
+    var remaining = std.ArrayListUnmanaged(u8).empty;
+    defer remaining.deinit(allocator);
+    try remaining.appendSlice(allocator, prefix);
+
+    for (remaining_components) |comp| {
+        if (std.mem.eql(u8, comp, ".")) {
+            continue;
+        } else if (std.mem.eql(u8, comp, "..")) {
+            if (std.mem.findScalarLast(u8, remaining.items, '/')) |last_slash| {
+                if (last_slash > 0) {
+                    remaining.shrinkRetainingCapacity(last_slash);
+                } else {
+                    remaining.shrinkRetainingCapacity(1); // keep just "/"
+                }
+            }
+        } else {
+            try remaining.append(allocator, '/');
+            try remaining.appendSlice(allocator, comp);
+        }
+    }
+
+    return try allocator.dupe(u8, remaining.items);
+}
+
+/// Build a cleaned absolute path from `components` logically: '.' skipped, '..'
+/// pops the previous component, returning "/" when everything cancels. Used when
+/// no prefix resolved. The caller frees the result. Helper for
+/// `canonicalizeMissing`.
+fn canonicalizeMissing_normalizeLogical(
+    allocator: Allocator,
+    components: []const []const u8,
+) ![]u8 {
+    std.debug.assert(components.len > 0);
+
+    var result = std.ArrayListUnmanaged(u8).empty;
+    defer result.deinit(allocator);
+
+    var cleaned = std.ArrayListUnmanaged([]const u8).empty;
+    defer cleaned.deinit(allocator);
+
+    for (components) |comp| {
+        if (std.mem.eql(u8, comp, ".")) {
+            continue;
+        } else if (std.mem.eql(u8, comp, "..")) {
+            if (cleaned.items.len > 0) {
+                _ = cleaned.pop();
+            }
+        } else {
+            try cleaned.append(allocator, comp);
+        }
+    }
+
+    if (cleaned.items.len == 0) {
+        return try allocator.dupe(u8, "/");
+    }
+
+    for (cleaned.items) |comp| {
+        try result.append(allocator, '/');
+        try result.appendSlice(allocator, comp);
+    }
+
+    const out = try allocator.dupe(u8, result.items);
+    std.debug.assert(out.len > 0);
+    std.debug.assert(out[0] == '/');
+    return out;
 }
 
 // ============================================================================
