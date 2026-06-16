@@ -77,9 +77,14 @@ pub fn formatRelativeDate(
 
     // Convert to seconds for easier calculations
     const diff_seconds = @divTrunc(diff_ns, std.time.ns_per_s);
+    // The diff_ns < 0 guard above establishes diff_ns >= 0; dividing a
+    // non-negative dividend by a positive divisor stays non-negative.
+    std.debug.assert(diff_seconds >= 0);
 
     // Check if it's too old for relative formatting
     const max_age_seconds = config.max_relative_age_days * TimeConstants.seconds_per_day;
+    // u32 days (>= 0) times the positive seconds_per_day constant is non-negative.
+    std.debug.assert(max_age_seconds >= 0);
     if (diff_seconds > max_age_seconds) {
         return formatAbsoluteDate(timestamp_ns, allocator);
     }
@@ -89,6 +94,9 @@ pub fn formatRelativeDate(
         return try allocator.dupe(u8, Strings.just_now);
     } else if (diff_seconds < TimeConstants.seconds_per_hour) {
         const minutes = @divTrunc(diff_seconds, TimeConstants.seconds_per_minute);
+        // This branch requires diff_seconds >= just_now_threshold (60), so
+        // dividing by seconds_per_minute (60) yields at least 1.
+        std.debug.assert(minutes >= 1);
         if (minutes == 1) {
             return try allocator.dupe(u8, Strings.one_minute_ago);
         } else {
@@ -96,6 +104,9 @@ pub fn formatRelativeDate(
         }
     } else if (diff_seconds < TimeConstants.seconds_per_day) {
         const hours = @divTrunc(diff_seconds, TimeConstants.seconds_per_hour);
+        // This branch requires diff_seconds >= seconds_per_hour (3600), so
+        // dividing by seconds_per_hour yields at least 1.
+        std.debug.assert(hours >= 1);
         if (hours == 1) {
             return try allocator.dupe(u8, Strings.one_hour_ago);
         } else {
@@ -105,6 +116,9 @@ pub fn formatRelativeDate(
         return try allocator.dupe(u8, Strings.yesterday);
     } else if (diff_seconds < TimeConstants.seconds_per_week) {
         const days = @divTrunc(diff_seconds, TimeConstants.seconds_per_day);
+        // Reached only when diff_seconds >= seconds_per_day (86400); the
+        // skippable yesterday branch does not lower diff_seconds.
+        std.debug.assert(days >= 1);
         if (days == 1) {
             return try allocator.dupe(u8, Strings.one_day_ago);
         } else {
@@ -114,6 +128,9 @@ pub fn formatRelativeDate(
         return try allocator.dupe(u8, Strings.last_week);
     } else if (diff_seconds < TimeConstants.seconds_per_month) {
         const weeks = @divTrunc(diff_seconds, TimeConstants.seconds_per_week);
+        // Reached only when diff_seconds >= seconds_per_week (604800); the
+        // skippable last_week branch does not lower diff_seconds.
+        std.debug.assert(weeks >= 1);
         if (weeks == 1) {
             return try allocator.dupe(u8, Strings.one_week_ago);
         } else {
@@ -123,6 +140,9 @@ pub fn formatRelativeDate(
         return try allocator.dupe(u8, Strings.last_month);
     } else if (diff_seconds < TimeConstants.seconds_per_year) {
         const months = @divTrunc(diff_seconds, TimeConstants.seconds_per_month);
+        // Reached only when diff_seconds >= seconds_per_month (2629746); the
+        // skippable last_month branch does not lower diff_seconds.
+        std.debug.assert(months >= 1);
         if (months == 1) {
             return try allocator.dupe(u8, Strings.one_month_ago);
         } else {
@@ -130,6 +150,9 @@ pub fn formatRelativeDate(
         }
     } else {
         const years = @divTrunc(diff_seconds, TimeConstants.seconds_per_year);
+        // Reached only when diff_seconds >= seconds_per_year (31556952), so
+        // dividing by seconds_per_year yields at least 1.
+        std.debug.assert(years >= 1);
         if (years == 1) {
             return try allocator.dupe(u8, Strings.one_year_ago);
         } else {
@@ -157,6 +180,10 @@ pub fn formatAbsoluteDate(timestamp_ns: i128, allocator: std.mem.Allocator) ![]u
         break :blk now_year_day.year;
     };
 
+    // Month enum is 1-based (jan=1..dec=12), so numeric() - 1 is a valid index
+    // into the 12-entry month_names table; guard both bounds before indexing.
+    std.debug.assert(month_day.month.numeric() >= 1);
+    std.debug.assert(month_day.month.numeric() <= Strings.month_names.len);
     const month_name = Strings.month_names[month_day.month.numeric() - 1];
 
     if (year_day.year == current_year) {
