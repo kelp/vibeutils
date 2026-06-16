@@ -174,7 +174,15 @@ jobs:
           echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Delete existing draft release
-        run: gh release delete ${{ steps.version.outputs.tag }} --yes || true
+        # Only remove a leftover *draft* from a previously-failed run. A
+        # published release is immutable and must never be deleted; guarding on
+        # isDraft lets the job be safely re-run to recover later steps (e.g. a
+        # failed Homebrew tap update) without touching the live release.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null)" = "true" ]; then
+            gh release delete "$TAG" --yes
+          fi
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -191,16 +199,22 @@ jobs:
             exit 1
           fi
 
-      - name: Create GitHub release (draft)
-        run: >
-          gh release create ${{ steps.version.outputs.tag }}
-          artifacts/vibeutils-*.tar.gz
-          --draft
-          --title "vibeutils ${{ steps.version.outputs.version }}"
-          --notes-file release-notes.md
-
-      - name: Publish release
-        run: gh release edit ${{ steps.version.outputs.tag }} --draft=false
+      - name: Create and publish GitHub release
+        # Idempotent: skip when the release already exists so the job can be
+        # re-run to recover downstream steps (e.g. the Homebrew tap update)
+        # without colliding with the immutable, already-published release.
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping create/publish (recovery re-run)."
+          else
+            gh release create "$TAG" \
+              artifacts/vibeutils-*.tar.gz \
+              --draft \
+              --title "vibeutils ${{ steps.version.outputs.version }}" \
+              --notes-file release-notes.md
+            gh release edit "$TAG" --draft=false
+          fi
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

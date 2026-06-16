@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Infrastructure
+- Make the release workflow's GitHub-release steps idempotent
+  so the `release` job can be safely re-run to recover a failed
+  downstream step (e.g. the Homebrew tap update) without
+  colliding with the already-published, immutable release. The
+  draft-cleanup step now only deletes a leftover *draft*, and
+  create/publish is skipped when the release already exists.
+
 ## v0.10.2 — 2026-06-15
 
 ### Removed
