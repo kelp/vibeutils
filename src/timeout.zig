@@ -126,6 +126,9 @@ fn extractExitCode(pid: std.c.pid_t, status: c_int) ?u8 {
     }
     // WIFSIGNALED: ((status & 0x7f) + 1) >> 1 > 0
     const sig_val = status & 0x7f;
+    // The 0x7f mask bounds sig_val to [0, 127] for any c_int status, so the
+    // later `sig_val + 128` cannot overflow the returned u8.
+    std.debug.assert(sig_val <= 0x7f);
     if (((sig_val + 1) >> 1) > 0) {
         return @intCast(sig_val + 128);
     }
@@ -158,6 +161,9 @@ fn waitChild(pid: std.c.pid_t) u8 {
 /// Case-insensitive ASCII comparison
 fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
+    // The guard above ensures equal lengths, which the parallel iteration
+    // below relies on.
+    std.debug.assert(a.len == b.len);
     for (a, b) |ac, bc| {
         if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
     }
@@ -224,6 +230,9 @@ fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []con
     var positional_count: usize = 0;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
+        // Reaching DURATION (the first positional) breaks the loop, so no
+        // iteration ever starts with more than one positional counted.
+        std.debug.assert(positional_count <= 1);
         const arg = args[i];
 
         // If we already hit --, pass everything through
@@ -306,6 +315,8 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
         if (parsed.positionals.len == 0) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
         } else {
+            // len < 2 and len != 0 leaves exactly 1, so [0] is in bounds.
+            std.debug.assert(parsed.positionals.len == 1);
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'", .{parsed.positionals[0]});
         }
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "Try 'timeout --help' for more information.", .{});
@@ -338,6 +349,10 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
 
     // Build argv for child process and run the child under the timeout.
     const cmd_args = parsed.positionals[1..];
+    // positionals.len >= 2 (guarded above), so cmd_args is non-empty.
+    std.debug.assert(cmd_args.len > 0);
+    // Every valid signal that survives parsing (named or numeric) is < 64.
+    std.debug.assert(timeout_signal < 64);
     return runTimeout_spawnAndWait(allocator, io, stderr_writer, cmd_args, .{
         .timeout_nanos = timeout_nanos,
         .kill_after_nanos = kill_after_nanos,
@@ -396,6 +411,9 @@ fn runTimeout_spawnAndWait(
     // Wait with timeout using polling approach
     // Poll at intervals until either the child exits or timeout expires
     const poll_interval_ns: u64 = 10 * std.time.ns_per_ms; // 10ms
+    // Compile-time-constant product of positive literals; the pollers require
+    // a positive interval.
+    std.debug.assert(poll_interval_ns > 0);
 
     if (runTimeout_pollUntilTimeout(
         child_pid,
@@ -406,18 +424,15 @@ fn runTimeout_spawnAndWait(
         return exit_code;
     }
 
-    // Timeout expired - send the signal
-    if (options.verbose) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "sending signal {d} to command '{s}'",
-            .{ options.timeout_signal, cmd_args[0] },
-        );
-    }
-
-    sendSignal(child_pid, @intCast(options.timeout_signal), !options.foreground);
+    runTimeout_spawnAndWait_sendTimeoutSignal(
+        allocator,
+        stderr_writer,
+        child_pid,
+        options.timeout_signal,
+        options.foreground,
+        options.verbose,
+        cmd_args[0],
+    );
 
     // If --kill-after is set, wait for that duration then send KILL
     if (options.kill_after_nanos) |ka_nanos| {
@@ -439,6 +454,35 @@ fn runTimeout_spawnAndWait(
     const final_exit = waitChild(child_pid);
 
     return runTimeout_resolveExitCode(final_exit, options.preserve_status, options.timeout_signal);
+}
+
+/// Emit the optional verbose diagnostic and send the timeout signal once the
+/// timeout window has elapsed. Single caller: runTimeout_spawnAndWait.
+fn runTimeout_spawnAndWait_sendTimeoutSignal(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    child_pid: std.c.pid_t,
+    timeout_signal: u8,
+    foreground: bool,
+    verbose: bool,
+    cmd_name: []const u8,
+) void {
+    // A real signal is sent (never a probe), within POSIX range.
+    std.debug.assert(timeout_signal > 0);
+    std.debug.assert(timeout_signal < 64);
+
+    // Timeout expired - send the signal.
+    if (verbose) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "sending signal {d} to command '{s}'",
+            .{ timeout_signal, cmd_name },
+        );
+    }
+
+    sendSignal(child_pid, @intCast(timeout_signal), !foreground);
 }
 
 /// Handle the --kill-after window after the timeout signal was sent.
@@ -507,8 +551,13 @@ fn runTimeout_pollUntilTimeout(
         }
 
         // Sleep for the poll interval, but don't overshoot the timeout
+        // The loop condition guarantees this, so the subtraction can't underflow.
+        std.debug.assert(elapsed_ns < timeout_nanos);
         const remaining = timeout_nanos - elapsed_ns;
         const sleep_time = @min(poll_interval_ns, remaining);
+        // @min keeps sleep_time bounded by remaining, so the accumulation below
+        // never overshoots timeout_nanos.
+        std.debug.assert(sleep_time <= remaining);
         io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
         elapsed_ns += sleep_time;
     }
@@ -538,8 +587,13 @@ fn runTimeout_pollKillAfter(
             return 124;
         }
 
+        // The loop condition guarantees this, so the subtraction can't underflow.
+        std.debug.assert(ka_elapsed < kill_after_nanos);
         const remaining = kill_after_nanos - ka_elapsed;
         const sleep_time = @min(poll_interval_ns, remaining);
+        // @min keeps sleep_time bounded by remaining, so the accumulation below
+        // never overshoots kill_after_nanos.
+        std.debug.assert(sleep_time <= remaining);
         io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
         ka_elapsed += sleep_time;
     }
@@ -565,6 +619,10 @@ fn runTimeout_resolveExitCode(final_exit: u8, preserve_status: bool, timeout_sig
 
 /// Send a signal to a process or process group
 fn sendSignal(pid: std.c.pid_t, sig: c_int, use_process_group: bool) void {
+    // Callers send a real signal (timeout_signal in [1,63] or literal 9),
+    // never signal 0 (a probe) and never out of POSIX range.
+    std.debug.assert(sig > 0);
+    std.debug.assert(sig < 64);
     if (use_process_group) {
         _ = kill(-pid, sig);
     } else {
