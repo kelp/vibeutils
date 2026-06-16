@@ -104,6 +104,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
 fn getCwdAlloc(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try std.process.currentPath(io, &buf);
+    std.debug.assert(n <= buf.len);
+    std.debug.assert(n >= 1);
     return allocator.dupe(u8, buf[0..n]);
 }
 
@@ -114,6 +116,8 @@ pub fn getWorkingDirectory(allocator: std.mem.Allocator, io: std.Io, args: PwdAr
     const use_logical = args.logical and !args.physical;
 
     if (use_logical) {
+        std.debug.assert(args.logical);
+        std.debug.assert(!args.physical);
         // Try to use PWD environment variable in logical mode
         const pwd_env = common.env.getEnv("PWD") orelse {
             // PWD not set, fall back to physical mode
@@ -148,6 +152,8 @@ fn isValidPwd(io: std.Io, pwd_env: []const u8, physical_cwd: []const u8) bool {
     if (pwd_env.len == 0 or pwd_env[0] != '/') {
         return false;
     }
+    std.debug.assert(pwd_env.len > 0);
+    std.debug.assert(pwd_env[0] == '/');
 
     const pwd_info = common.file.FileInfo.stat(io, pwd_env) catch return false;
     const cwd_info = common.file.FileInfo.stat(io, physical_cwd) catch return false;
@@ -155,6 +161,7 @@ fn isValidPwd(io: std.Io, pwd_env: []const u8, physical_cwd: []const u8) bool {
     if (pwd_info.kind != .directory) {
         return false;
     }
+    std.debug.assert(pwd_info.kind == .directory);
 
     return samePathByInodeAndDev(pwd_info, cwd_info);
 }
