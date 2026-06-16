@@ -125,6 +125,8 @@ fn getMemInfoMacOS() !MemInfo {
     var mib = [_]c_int{ c.CTL_HW, c.HW_MEMSIZE };
     const sysctl_ret = c.sysctl(&mib, 2, &mem_size, &size, null, 0);
     if (sysctl_ret != 0) return error.SysctlFailed;
+    // On success, the kernel reports it wrote exactly a u64 for HW_MEMSIZE.
+    std.debug.assert(size == @sizeOf(u64));
 
     // VM statistics via host_statistics64. The count is the buffer size in
     // units of integer_t (natural_t), matching the HOST_VM_INFO64_COUNT macro.
@@ -140,6 +142,9 @@ fn getMemInfoMacOS() !MemInfo {
     if (host_ret != mach.KERN_SUCCESS) return error.HostStatisticsFailed;
 
     const page_size: u64 = @intCast(c.getpagesize());
+    // getpagesize() is a strictly positive power of two; the byte-size
+    // products below are meaningless if it were zero.
+    std.debug.assert(page_size != 0);
     const free_pages: u64 = @intCast(vm_stat.free_count);
     const active_pages: u64 = @intCast(vm_stat.active_count);
     const inactive_pages: u64 = @intCast(vm_stat.inactive_count);
@@ -189,6 +194,8 @@ fn getMemInfoLinux(io: std.Io) !MemInfo {
     var reader_buf: [4096]u8 = undefined;
     var file_reader = file.reader(io, &reader_buf);
     const bytes_read = file_reader.interface.readSliceShort(&buf) catch return error.ReadFailed;
+    // readSliceShort cannot report more bytes than the destination buffer.
+    std.debug.assert(bytes_read <= buf.len);
     const content = buf[0..bytes_read];
 
     var total: u64 = 0;
@@ -247,6 +254,8 @@ fn parseMemInfoLine(line: []const u8, prefix: []const u8) ?u64 {
     // Parse the number (value is in kB)
     var end: usize = 0;
     while (end < rest.len and std.ascii.isDigit(rest[end])) : (end += 1) {}
+    // The loop advances end only while end < rest.len, so it never exceeds it.
+    std.debug.assert(end <= rest.len);
     if (end == 0) return null;
     return std.fmt.parseInt(u64, rest[0..end], 10) catch null;
 }
@@ -322,6 +331,10 @@ fn resolveUnit(args: FreeArgs) Unit {
 /// Scale a byte value to the selected unit
 pub fn scaleValue(bytes: u64, unit: Unit, use_si: bool) u64 {
     const divisor: u64 = if (use_si) 1000 else 1024;
+    // divisor is exactly 1000 (SI) or 1024; the @divTrunc calls below need
+    // it nonzero, and both selections sit at or above the SI base.
+    std.debug.assert(divisor != 0);
+    std.debug.assert(divisor >= 1000);
     return switch (unit) {
         .bytes => bytes,
         .kibi => @divTrunc(bytes, divisor),
@@ -333,6 +346,8 @@ pub fn scaleValue(bytes: u64, unit: Unit, use_si: bool) u64 {
 
 /// Format a human-readable value with appropriate unit suffix
 pub fn formatHumanReadable(buf: []u8, bytes: u64, use_si: bool) []const u8 {
+    // Callers pass a fixed buffer; it must hold at least the shortest output.
+    std.debug.assert(buf.len != 0);
     const format = common.format;
     return format.formatHumanReadable(buf, bytes, .{ .si = use_si, .suffix = .iec });
 }
@@ -366,6 +381,8 @@ fn printValue(writer: *std.Io.Writer, bytes: u64, unit: Unit, use_si: bool) !voi
 
 /// Print a memory row (Mem: or Swap: or Total:)
 fn printMemRow(writer: *std.Io.Writer, label: []const u8, info: MemInfo, unit: Unit, use_si: bool, wide: bool, is_swap: bool) !void {
+    // Every row carries a non-empty label for the left-padded label column.
+    std.debug.assert(label.len != 0);
     try writer.print("{s:<6}", .{label});
 
     if (is_swap) {
@@ -497,10 +514,15 @@ fn runFree_displayContinuous(
     repeat_count: u32,
 ) u8 {
     std.debug.assert(interval != 0);
-    std.debug.assert(@TypeOf(repeat_count) == u32);
 
     var iterations: u32 = 0;
     while (repeat_count == 0 or iterations < repeat_count) {
+        // Bounded-loop invariant: in counted mode the body only runs while
+        // iterations is below the cap; unbounded mode (repeat_count == 0)
+        // admits any iteration count, so the bound is asserted only then.
+        if (repeat_count != 0) {
+            std.debug.assert(iterations <= repeat_count);
+        }
         const result = displayOnce(
             io,
             stdout_writer,
