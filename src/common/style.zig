@@ -98,30 +98,62 @@ pub fn Style(comptime Writer: type) type {
 
         /// Set foreground color
         pub fn setColor(self: Self, color: Color) !void {
+            // SGR foreground codes occupy two disjoint bands: standard
+            // 30..39 and bright 90..97. The Color enum only declares values
+            // in those bands; assert the code lands in one so a future bad
+            // variant cannot leak a malformed escape sequence. Holds for any
+            // valid call, independent of color_mode, so check it up front.
+            std.debug.assert(@intFromEnum(color) >= 30);
+            std.debug.assert(@intFromEnum(color) <= 97);
             if (self.color_mode == .none) return;
             try self.writer.print("\x1b[{d}m", .{@intFromEnum(color)});
         }
 
         /// Set bold text
         pub fn setBold(self: Self) !void {
+            // `none` is the least-capable mode; capability is encoded by
+            // ordinal order, an assumption shared with set256's numeric
+            // guard. Assert that ordering holds so a future enum reorder
+            // that broke the model would trip here, not silently misbehave.
+            std.debug.assert(@intFromEnum(ColorMode.none) == 0);
+            std.debug.assert(@intFromEnum(ColorMode.none) < @intFromEnum(ColorMode.basic));
             if (self.color_mode == .none) return;
             try self.writer.writeAll("\x1b[1m");
         }
 
         /// Set foreground to RGB color (truecolor only, no-op otherwise)
         pub fn setRgb(self: Self, r: u8, g: u8, b: u8) !void {
+            // Truecolor is the richest capability and must outrank the
+            // palette modes; the no-op fallbacks across this file depend on
+            // that ordinal ordering. Assert it as a relationship of
+            // compile-time constants.
+            std.debug.assert(@intFromEnum(ColorMode.truecolor) > @intFromEnum(ColorMode.extended));
+            std.debug.assert(@intFromEnum(ColorMode.truecolor) > @intFromEnum(ColorMode.basic));
             if (self.color_mode != .truecolor) return;
             try self.writer.print("\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
         }
 
         /// Set foreground to 256-color palette (extended+ only, no-op otherwise)
         pub fn set256(self: Self, index: u8) !void {
+            // The numeric guard below treats higher ordinals as richer
+            // capabilities, so the enum must be declared least- to
+            // most-capable. Assert that ordinal ordering: basic < extended
+            // < truecolor. The compiler does not enforce declaration order,
+            // so a reorder would silently break the `< extended` guard.
+            std.debug.assert(@intFromEnum(ColorMode.basic) < @intFromEnum(ColorMode.extended));
+            std.debug.assert(@intFromEnum(ColorMode.extended) < @intFromEnum(ColorMode.truecolor));
             if (@intFromEnum(self.color_mode) < @intFromEnum(ColorMode.extended)) return;
             try self.writer.print("\x1b[38;5;{d}m", .{index});
         }
 
         /// Reset all styling
         pub fn reset(self: Self) !void {
+            // The reset sequence is meaningful only when some style could
+            // have been emitted, i.e. when color is enabled. Mirror the
+            // capability ordering setBold/set256 rely on so all three trip
+            // together if the enum model is ever broken.
+            std.debug.assert(@intFromEnum(ColorMode.none) == 0);
+            std.debug.assert(@intFromEnum(ColorMode.none) < @intFromEnum(ColorMode.truecolor));
             if (self.color_mode == .none) return;
             try self.writer.writeAll("\x1b[0m");
         }
