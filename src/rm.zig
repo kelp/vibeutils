@@ -88,6 +88,7 @@ fn askYesNo(
     kind: PromptKind,
     path: []const u8,
 ) !bool {
+    std.debug.assert(path.len > 0);
     if (test_prompt_override) |answerer| {
         return answerer(kind, path);
     }
@@ -114,6 +115,7 @@ pub fn main(init: std.process.Init) noreturn {
 
 /// Main entry point for the rm command with writer-based interface.
 pub fn runRm(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    std.debug.assert(stdout_writer != stderr_writer);
     // Parse command-line arguments using the common argument parser
     const parsed_args = common.argparse.ArgParser.parseOrExit(RmArgs, allocator, args, "rm", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
@@ -197,6 +199,7 @@ fn printVersion(writer: *std.Io.Writer) !void {
 
 /// Main file removal function that processes a list of files/directories.
 fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !bool {
+    std.debug.assert(stdout_writer != stderr_writer);
     // Handle interactive once mode (-I flag) - but force overrides
     if (!options.force and options.interactive_once and (files.len > 3 or options.recursive)) {
         if (!try common.prompt.promptYesNo(io, stderr_writer, "rm: remove {d} arguments? ", .{files.len})) {
@@ -416,6 +419,8 @@ fn removeFiles_handleIsDir_reportDeleteDir(
 
 /// Remove a single file or symlink.
 fn removeItem(_: Allocator, io: std.Io, file_path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !void {
+    std.debug.assert(file_path.len > 0);
+    std.debug.assert(stdout_writer != stderr_writer);
     // Use lstat so symlinks are examined directly (not their targets).
     // statFile follows symlinks, which misclassifies symlinks-to-directories
     // as directories and incorrectly requires -r.
@@ -464,6 +469,8 @@ fn removeItem(_: Allocator, io: std.Io, file_path: []const u8, stdout_writer: *s
 
 /// Remove a directory recursively with per-entry verbose/interactive support.
 fn removeDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !void {
+    std.debug.assert(dir_path.len > 0);
+    std.debug.assert(options.recursive);
     // For non-verbose, non-interactive mode with force and no -x, use deleteTree as fast path
     if (!options.verbose and !options.interactive and options.force and !options.no_cross_device) {
         std.Io.Dir.cwd().deleteTree(io, dir_path) catch |err| switch (err) {
@@ -586,6 +593,7 @@ fn handleFileError(
     err: anyerror,
 ) !bool {
     std.debug.assert(entry.path.len > 0);
+    std.debug.assert(entry.kind != .directory);
     switch (err) {
         error.InteractiveUserCancelled => {
             // Declined: keep this entry's parent directory.
@@ -624,6 +632,7 @@ fn handleDirectoryPre(
 ) !bool {
     std.debug.assert(entry.kind == .directory);
     std.debug.assert(entry.visit == .pre);
+    std.debug.assert(entry.path.len > 0);
 
     if (options.force or !options.interactive) {
         return false;
@@ -651,6 +660,7 @@ fn handleDirectoryPost(
 ) !bool {
     std.debug.assert(entry.kind == .directory);
     std.debug.assert(entry.visit == .post);
+    std.debug.assert(entry.path.len > 0);
 
     if (directoryHasCancelledChild(cancelled.items, entry.path)) {
         return false;
@@ -740,6 +750,8 @@ fn extractBasename(path: []const u8) []const u8 {
     while (end > 1 and path[end - 1] == '/') {
         end -= 1;
     }
+    std.debug.assert(end >= 1);
+    std.debug.assert(end <= path.len);
 
     // Handle root directory case "/"
     if (end == 1 and path[0] == '/') {
@@ -754,6 +766,7 @@ fn extractBasename(path: []const u8) []const u8 {
         }
     }
 
+    std.debug.assert(start <= end);
     return path[start..end];
 }
 
@@ -768,6 +781,7 @@ fn isRootPath(path: []const u8) bool {
     // Strip trailing slashes and dots to normalize
     var i: usize = path.len;
     while (i > 1) {
+        std.debug.assert(i <= path.len);
         const c = path[i - 1];
         if (c == '/') {
             i -= 1;
@@ -778,6 +792,7 @@ fn isRootPath(path: []const u8) bool {
             break;
         }
     }
+    std.debug.assert(i <= path.len);
 
     // If we stripped everything down to just "/", it's root
     return i <= 1;
@@ -794,6 +809,7 @@ fn isPathSafeToRemove(path: []const u8) bool {
 
     // Extract basename and check if it's "." or ".."
     const basename = extractBasename(path);
+    std.debug.assert(basename.len > 0);
     if (isDotOrDotDot(basename)) return false;
 
     return true;
