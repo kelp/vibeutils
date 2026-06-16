@@ -84,6 +84,10 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: Stat
     var i: usize = 0;
 
     while (i < args.len) : (i += 1) {
+        // Loop invariant: the dispatch index stays within argv. i starts at 0
+        // and every advance (the step, the "--" inner loop, option helpers) is
+        // bounded by args.len, so args[i] below is always in range.
+        std.debug.assert(i <= args.len);
         const arg = args[i];
         if (arg.len == 0) continue;
 
@@ -194,6 +198,10 @@ fn parseArgs_shortOption(
 
     var j: usize = 1; // tiger:allow:usize-arch slice index into arg
     while (j < arg.len) : (j += 1) {
+        // Cluster scanning begins past the leading '-' and never rewinds, and
+        // the guard keeps j addressing a real byte before indexing arg[j].
+        std.debug.assert(j >= 1);
+        std.debug.assert(j < arg.len);
         switch (arg[j]) {
             'L' => opts.dereference = true,
             'f' => opts.file_system = true,
@@ -254,8 +262,11 @@ const StatResult = struct {
 fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
     var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+    // Past the length guard, the copy and sentinel write stay in bounds.
+    std.debug.assert(path.len <= std.fs.max_path_bytes);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
+    std.debug.assert(buf[path.len] == 0);
     const c_path = buf[0..path.len :0];
 
     if (builtin.os.tag == .linux) {
@@ -369,6 +380,9 @@ fn getTimespecNsec(stat_buf: StatResult, comptime which: enum { atime, mtime, ct
 
 /// Format a timestamp as "YYYY-MM-DD HH:MM:SS.NNNNNNNNN +ZZZZ"
 fn formatTimestamp(sec: i64, nsec: i64, fmt_buf: []u8) ![]const u8 {
+    // The fixed-width template needs at least 35 bytes ("YYYY-MM-DD
+    // HH:MM:SS.NNNNNNNNN +ZZZZ"); all callers pass a [64]u8 buffer.
+    std.debug.assert(fmt_buf.len >= 35);
     const time_val: c.time_t = @intCast(sec);
     var tm: time.c_tm = undefined;
     if (time.localtime_r(&time_val, &tm) == null) {
@@ -455,6 +469,17 @@ fn formatPermissions(mode: u32, perm_buf: *[10]u8) []const u8 {
         perm_buf[9] = if (perm_buf[9] == 'x') 't' else 'T';
     }
 
+    // Postconditions: slot 0 always holds a printable type char (never the
+    // undefined sentinel), and the owner-execute slot holds one of its four
+    // possible glyphs. Pairs the "every slot was written" property across two
+    // code paths.
+    std.debug.assert(perm_buf[0] != 0);
+    const owner_exec_valid = switch (perm_buf[3]) {
+        'x', '-', 's', 'S' => true,
+        else => false,
+    };
+    std.debug.assert(owner_exec_valid);
+
     return perm_buf[0..10];
 }
 
@@ -514,7 +539,6 @@ fn expandFormatDirective(
 /// %A: access rights in the human-readable "-rwxr-xr-x" form.
 fn expandFormatDirective_permString(mode: u32, writer: anytype) !void {
     std.debug.assert(mode != 0);
-    std.debug.assert((mode & 0o7777) <= 0o7777);
     var perm_buf: [10]u8 = undefined;
     const perms = formatPermissions(mode, &perm_buf);
     try writer.writeAll(perms);
@@ -522,7 +546,7 @@ fn expandFormatDirective_permString(mode: u32, writer: anytype) !void {
 
 /// %F: the file type, reporting "regular empty file" for a zero-length file.
 fn expandFormatDirective_fileType(stat_buf: StatResult, mode: u32, writer: anytype) !void {
-    std.debug.assert(stat_buf.mode == mode);
+    std.debug.assert((mode & c.S.IFMT) != 0);
     std.debug.assert(mode != 0);
     const size: i64 = @intCast(stat_buf.size);
     if ((mode & c.S.IFMT) == c.S.IFREG and size == 0) {
@@ -539,8 +563,6 @@ fn expandFormatDirective_groupName(
     writer: anytype,
 ) !void {
     const gid: u32 = @intCast(stat_buf.gid);
-    std.debug.assert(gid == stat_buf.gid);
-    std.debug.assert(gid <= std.math.maxInt(u32));
     const group_info = common.user_group.getGroupById(gid, allocator) catch {
         try writer.print("{d}", .{gid});
         return;
@@ -556,8 +578,6 @@ fn expandFormatDirective_userName(
     writer: anytype,
 ) !void {
     const uid: u32 = @intCast(stat_buf.uid);
-    std.debug.assert(uid == stat_buf.uid);
-    std.debug.assert(uid <= std.math.maxInt(u32));
     const user_info = common.user_group.getUserById(uid, allocator) catch {
         try writer.print("{d}", .{uid});
         return;
@@ -568,7 +588,6 @@ fn expandFormatDirective_userName(
 
 /// %W: the birth time as seconds since the epoch, "0" when unknown.
 fn expandFormatDirective_birthEpoch(stat_buf: StatResult, writer: anytype) !void {
-    std.debug.assert(getTimespecSec(stat_buf, .btime) == stat_buf.btim.sec);
     const btime_sec = getTimespecSec(stat_buf, .btime);
     if (btime_sec == 0) {
         try writer.writeAll("0");
@@ -581,7 +600,6 @@ fn expandFormatDirective_birthEpoch(stat_buf: StatResult, writer: anytype) !void
 /// macOS: statfs f_mntonname), or "?" when it cannot be determined.
 fn expandFormatDirective_mountPoint(path: []const u8, writer: anytype) !void {
     std.debug.assert(path.len > 0);
-    std.debug.assert(@intFromPtr(path.ptr) != 0);
     if (builtin.os.tag == .linux) {
         var mount_buf: [1024]u8 = undefined;
         var dev_buf: [1024]u8 = undefined;
@@ -627,6 +645,9 @@ fn expandFormatDirective_quotedName(
             const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
             const n = c.readlink(path_z, &link_buf, link_buf.len);
             if (n > 0) {
+                // readlink(2) never returns more than the buffer size, so the
+                // @intCast slice below stays in bounds.
+                std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
                 const target = link_buf[0..@intCast(n)];
                 try writer.print("'{s}' -> '{s}'", .{ path, target });
             } else {
@@ -653,7 +674,6 @@ fn expandFormatDirective_deviceType(
             .major => (rdev >> 24) & 0xff,
             .minor => rdev & 0xffffff,
         };
-        std.debug.assert(val <= 0xffffff);
         try writer.print("{x}", .{val});
     } else {
         const rdev: u64 = @intCast(stat_buf.rdev);
@@ -661,7 +681,6 @@ fn expandFormatDirective_deviceType(
             .major => (rdev >> 8) & 0xfff,
             .minor => rdev & 0xff,
         };
-        std.debug.assert(val <= 0xfff);
         try writer.print("{x}", .{val});
     }
 }
@@ -669,8 +688,6 @@ fn expandFormatDirective_deviceType(
 /// %w: emit the birth time in human-readable form, or "-" when unknown
 /// (sec == 0) or formatting fails.
 fn expandFormatDirective_birthTime(stat_buf: StatResult, writer: anytype) !void {
-    std.debug.assert(getTimespecSec(stat_buf, .btime) == stat_buf.btim.sec);
-    std.debug.assert(getTimespecNsec(stat_buf, .btime) == stat_buf.btim.nsec);
     const btime_sec = getTimespecSec(stat_buf, .btime);
     if (btime_sec == 0) {
         try writer.writeAll("-");
@@ -692,7 +709,6 @@ fn expandFormatDirective_humanTime(
     comptime which: enum { atime, mtime, ctime },
     writer: anytype,
 ) !void {
-    std.debug.assert(@intFromEnum(which) <= 2);
     const field = comptime switch (which) {
         .atime => .atime,
         .mtime => .mtime,
@@ -700,7 +716,6 @@ fn expandFormatDirective_humanTime(
     };
     const sec = getTimespecSec(stat_buf, field);
     const nsec = getTimespecNsec(stat_buf, field);
-    std.debug.assert(sec == getTimespecSec(stat_buf, field));
     var fmt_buf: [64]u8 = undefined;
     const formatted = formatTimestamp(sec, nsec, &fmt_buf) catch {
         try writer.writeAll("-");
@@ -724,6 +739,10 @@ fn processFormatString(
 ) !void {
     var i: usize = 0;
     while (i < format.len) {
+        // Loop invariant: i never overruns the format string. Every branch
+        // advances i by 1 or 2 (the latter only under i + 1 < format.len), and
+        // the octal-escape inner loop is itself guarded by i < format.len.
+        std.debug.assert(i <= format.len);
         if (format[i] == '%' and i + 1 < format.len) {
             i += 1;
             try expandFormatDirective(allocator, format[i], stat_buf, path, follow_symlinks, writer);
@@ -804,6 +823,9 @@ fn printDefaultFormat_fileLine(
             const path_z: [*:0]const u8 = @ptrCast(&path_buf2);
             const n = c.readlink(path_z, &link_buf, link_buf.len);
             if (n > 0) {
+                // readlink(2) never returns more than the buffer size, so the
+                // @intCast slice below stays in bounds.
+                std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
                 const target = link_buf[0..@intCast(n)];
                 try writer.print("{s} -> {s}\n", .{ path, target });
             } else {
@@ -851,9 +873,6 @@ fn printDefaultFormat_deviceLine(stat_buf: StatResult, writer: anytype) !void {
         dev & 0xffffff
     else
         dev & 0xff;
-    // Masks above bound major/minor to the platform's documented widths.
-    std.debug.assert(dev_major <= 0xffffff);
-    std.debug.assert(dev_minor <= 0xffffff);
     try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
         dev_major,
         dev_minor,
@@ -901,6 +920,10 @@ fn printDefaultFormat_accessLine(
         break :blk group_name_buf[0..group_info.name.len];
     };
 
+    // Both names are either a short decimal-id fallback or a passwd/group name
+    // copied into a 256-byte buffer, so neither slice exceeds its buffer.
+    std.debug.assert(user_name.len <= user_name_buf.len);
+    std.debug.assert(group_name.len <= group_name_buf.len);
     try writer.print("Access: ({o:0>4}/{s})  Uid: ({d: >5}/{s: >8})   Gid: ({d: >5}/{s: >8})\n", .{
         octal_mode,
         perms,
@@ -913,9 +936,6 @@ fn printDefaultFormat_accessLine(
 
 /// Lines 5-8: Access, Modify, Change, and Birth timestamps.
 fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
-    std.debug.assert(getTimespecSec(stat_buf, .atime) == stat_buf.atim.sec);
-    std.debug.assert(getTimespecSec(stat_buf, .mtime) == stat_buf.mtim.sec);
-
     // Line 5: Access time
     {
         var fmt_buf: [64]u8 = undefined;
@@ -1093,6 +1113,11 @@ fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) s
             best_dev = lookupMountInfo_copyDevice(line, dev_buf, best_dev);
         }
     }
+    // best_len is only set from a matched prefix length, never longer than the
+    // (non-empty) path it is a prefix of; best_mount is "/" or a slice copied
+    // under the mount_buf.len guard, so it never exceeds the buffer.
+    std.debug.assert(best_len <= abs_path.len);
+    std.debug.assert(best_mount.len <= mount_buf.len);
     return .{ .mount = best_mount, .dev = best_dev };
 }
 
@@ -1175,8 +1200,11 @@ fn printFileSystemInfo(
 ) !void {
     var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+    // Past the length guard, the copy and sentinel write stay in bounds.
+    std.debug.assert(path.len <= std.fs.max_path_bytes);
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
+    std.debug.assert(path_buf[path.len] == 0);
     const c_path = path_buf[0..path.len :0];
 
     var fs_buf: StatFs = undefined;
@@ -1271,6 +1299,8 @@ pub fn runStat(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
 
     var has_error = false;
 
+    // The empty-positionals case returned above, so the loop has work to do.
+    std.debug.assert(opts.positionals.len > 0);
     for (opts.positionals) |path| {
         if (opts.file_system and opts.format == null and opts.printf_fmt == null) {
             printFileSystemInfo(path, stdout_writer) catch {
