@@ -102,9 +102,11 @@ pub fn colorizeHelp(writer: anytype, help_text: []const u8, help_style: anytype)
 
     var pos: usize = 0;
     while (pos < help_text.len) {
+        std.debug.assert(pos < help_text.len);
         // Find end of current line
         const line_end = std.mem.indexOfScalar(u8, help_text[pos..], '\n');
         const line = if (line_end) |end| help_text[pos .. pos + end] else help_text[pos..];
+        std.debug.assert(line.len <= help_text.len);
 
         try colorizeLine(writer, line, use_glyphs);
 
@@ -121,6 +123,8 @@ pub fn colorizeHelp(writer: anytype, help_text: []const u8, help_style: anytype)
 fn colorizeLine(writer: anytype, line: []const u8, use_glyphs: bool) !void {
     const trimmed = std.mem.trimStart(u8, line, " ");
     const indent_len = line.len - trimmed.len;
+    std.debug.assert(trimmed.len <= line.len);
+    std.debug.assert(indent_len <= line.len);
 
     // Empty or whitespace-only line
     if (trimmed.len == 0) {
@@ -179,6 +183,8 @@ fn colorizeDefaultLine(writer: anytype, line: []const u8) !void {
 
         var end = i;
         while (end < line.len and line[end] != ' ') : (end += 1) {}
+        std.debug.assert(end <= line.len);
+        std.debug.assert(i <= end);
         const token = line[i..end];
 
         if (isUppercasePlaceholder(token)) {
@@ -214,6 +220,7 @@ fn getGlyphForSection(header: []const u8) ?[]const u8 {
 
 /// Colorize a section header line with optional nerd-font glyph.
 fn colorizeSectionHeader(writer: anytype, line: []const u8, use_glyphs: bool) !void {
+    std.debug.assert(line.len >= 2);
     try writer.writeAll(esc_bold);
     try writer.writeAll(esc_bright_blue);
     if (use_glyphs) {
@@ -231,6 +238,8 @@ fn isDdOperandLine(trimmed: []const u8) bool {
     // before it) and there must be at least one char before and after.
     const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse return false;
     if (eq_pos == 0) return false;
+    std.debug.assert(eq_pos < trimmed.len);
+    std.debug.assert(eq_pos > 0);
     // No spaces before the '='
     for (trimmed[0..eq_pos]) |c| {
         if (c == ' ') return false;
@@ -240,6 +249,7 @@ fn isDdOperandLine(trimmed: []const u8) bool {
 
 /// Colorize a Usage/or: line.
 fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8, use_glyphs: bool) !void {
+    std.debug.assert(indent_len <= line.len);
     // Write leading whitespace
     try writer.writeAll(line[0..indent_len]);
 
@@ -248,6 +258,7 @@ fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimm
         @as(usize, 6)
     else
         @as(usize, 3);
+    std.debug.assert(prefix_end <= trimmed.len);
 
     // Add glyph before "Usage:" label
     if (use_glyphs and std.mem.startsWith(u8, trimmed, "Usage:")) {
@@ -304,12 +315,14 @@ fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimm
 
 /// Colorize a flag line (e.g. "  -n, --number    description").
 fn colorizeFlagLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8) !void {
+    std.debug.assert(indent_len <= line.len);
     // Write leading whitespace
     try writer.writeAll(line[0..indent_len]);
 
     // Find where the flag cluster ends: look for a gap of 2+ spaces
     // after the flags start, or end of line.
     const desc_start = findDescriptionStart(trimmed);
+    std.debug.assert(desc_start <= trimmed.len);
     const flag_part = trimmed[0..desc_start];
     const desc_part = trimmed[desc_start..];
 
@@ -324,6 +337,7 @@ fn colorizeFlagLine(writer: anytype, line: []const u8, indent_len: usize, trimme
 fn findDescriptionStart(trimmed: []const u8) usize {
     var i: usize = 0;
     while (i < trimmed.len) {
+        std.debug.assert(i <= trimmed.len);
         if (trimmed[i] == ' ') {
             // Count consecutive spaces
             var space_count: usize = 0;
@@ -331,6 +345,7 @@ fn findDescriptionStart(trimmed: []const u8) usize {
             while (i < trimmed.len and trimmed[i] == ' ') : (i += 1) {
                 space_count += 1;
             }
+            std.debug.assert(space_count >= 1);
             if (space_count >= 2) {
                 return space_start;
             }
@@ -355,10 +370,12 @@ fn colorizeFlagTokens(writer: anytype, flag_part: []const u8) !void {
         // Find end of this token
         var end = i;
         while (end < flag_part.len and flag_part[end] != ' ' and flag_part[end] != ',') : (end += 1) {}
+        std.debug.assert(end <= flag_part.len);
         const token = flag_part[i..end];
 
         // Check for =VALUE within the token
         if (std.mem.indexOfScalar(u8, token, '=')) |eq_pos| {
+            std.debug.assert(eq_pos < token.len);
             // Flag part before '='
             try writer.writeAll(esc_cyan);
             try writer.writeAll(token[0 .. eq_pos + 1]);
@@ -402,6 +419,8 @@ fn colorizeDescriptionTokens(writer: anytype, desc: []const u8) !void {
 
         var end = i;
         while (end < desc.len and desc[end] != ' ') : (end += 1) {}
+        std.debug.assert(end <= desc.len);
+        std.debug.assert(i < end);
         const token = desc[i..end];
 
         if (isUppercasePlaceholder(token)) {
@@ -429,6 +448,7 @@ fn colorizeDescriptionTokens(writer: anytype, desc: []const u8) !void {
 
 /// Colorize a DD-style operand line (e.g. "  if=FILE  description").
 fn colorizeDdLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8) !void {
+    std.debug.assert(indent_len <= line.len);
     try writer.writeAll(line[0..indent_len]);
 
     // Find the operand token (first token containing '=')
@@ -438,6 +458,7 @@ fn colorizeDdLine(writer: anytype, line: []const u8, indent_len: usize, trimmed:
 
     // Find '=' in the operand
     if (std.mem.indexOfScalar(u8, operand_part, '=')) |eq_pos| {
+        std.debug.assert(eq_pos < operand_part.len);
         try writer.writeAll(esc_cyan);
         try writer.writeAll(operand_part[0 .. eq_pos + 1]);
         try writer.writeAll(esc_reset);
@@ -477,6 +498,8 @@ fn isUppercasePlaceholder(token: []const u8) bool {
         end -= 2;
     }
 
+    std.debug.assert(start <= end);
+    std.debug.assert(end <= token.len);
     if (end <= start) return false;
     const inner = token[start..end];
     if (inner.len < 2) return false;
