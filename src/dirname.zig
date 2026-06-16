@@ -66,6 +66,10 @@ pub fn runDirname(allocator: Allocator, io: std.Io, args: []const []const u8, st
 
     const separator: u8 = if (parsed_args.zero) '\x00' else '\n';
 
+    // Empty positionals already returned ExitCode.misuse above, so the
+    // loop never runs on an empty slice.
+    std.debug.assert(parsed_args.positionals.len > 0);
+
     for (parsed_args.positionals) |path| {
         const dirname = extractDirname(path);
         try stdout_writer.print("{s}{c}", .{ dirname, separator });
@@ -89,26 +93,39 @@ fn extractDirname(path: []const u8) []const u8 {
     if (path.len == 0) {
         return ".";
     }
+    // The empty path returned above, so any path reaching here is non-empty.
+    std.debug.assert(path.len >= 1);
 
     var end = path.len;
     while (end > 1 and path[end - 1] == '/') {
         end -= 1;
     }
+    // The loop only decrements end while end > 1, so end stays in [1, path.len].
+    std.debug.assert(end >= 1);
+    std.debug.assert(end <= path.len);
 
     const last_slash = std.mem.findScalarLast(u8, path[0..end], '/');
 
     if (last_slash == null) {
         return ".";
     }
+    // findScalarLast returns an index < end <= path.len; the slice shares
+    // path's base pointer, so the index is valid into path too.
+    std.debug.assert(last_slash.? < path.len);
 
     if (last_slash.? == 0) {
         return "/";
     }
+    // The == 0 case returned above, so the last slash is strictly positive.
+    std.debug.assert(last_slash.? >= 1);
 
     var dirname_end = last_slash.?;
     while (dirname_end > 1 and path[dirname_end - 1] == '/') {
         dirname_end -= 1;
     }
+    // dirname_end starts >= 1 and the loop only decrements while > 1, so the
+    // returned slice path[0..dirname_end] is always non-empty.
+    std.debug.assert(dirname_end >= 1);
 
     return path[0..dirname_end];
 }
