@@ -441,9 +441,13 @@ fn parseArgs_shortOptionValued(
     }
 }
 
-/// Parse a block size string like "1K", "1M", "1G", or a plain number
+/// Parse a block size string like "1K", "1M", "1G", or a plain number.
+/// Reject a zero result (e.g. "0K") so callers never divide by a zero
+/// display block; "0" is already rejected by the shared parser.
 fn parseBlockSize(s: []const u8) ?u64 {
-    return common.format.parseBlockSize(s);
+    const value = common.format.parseBlockSize(s) orelse return null;
+    if (value == 0) return null;
+    return value;
 }
 
 // ============================================================================
@@ -1806,7 +1810,6 @@ fn printTotal_sumBytes(
 // Format one byte total into a display field (human/si/divTrunc/commas),
 // shared by printTotal and printTotalDynamic. Returns a slice into buf.
 fn printTotal_formatField(buf: []u8, bytes: u64, display_block: u64, opts: DfOptions) []const u8 {
-    std.debug.assert(display_block != 0);
     std.debug.assert(buf.len >= 16);
     if (opts.human_readable) return formatHumanReadable(buf, bytes, false);
     if (opts.si) return formatHumanReadable(buf, bytes, true);
