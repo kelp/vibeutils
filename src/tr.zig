@@ -125,6 +125,9 @@ fn parseSet(allocator: Allocator, set_str: []const u8) SetError![]u8 {
 
 /// Parse a backslash escape sequence. Advances i past the escape.
 fn parseEscape(str: []const u8, i: *usize) SetError!u8 {
+    // Precondition: every reachable caller reads str[i.*] before any bound
+    // check, so i.* must index within str.
+    assert(i.* < str.len);
     if (str[i.*] != '\\' or i.* + 1 >= str.len) return error.InvalidEscape;
 
     const next = str[i.* + 1];
@@ -168,6 +171,9 @@ fn parseEscape(str: []const u8, i: *usize) SetError!u8 {
 /// Parse a POSIX character class like [:alpha:].
 /// Returns an allocated slice of matching bytes.
 fn parseCharClass(allocator: Allocator, str: []const u8, i: *usize) SetError![]u8 {
+    // Precondition: the sole caller guards i + 1 < len before calling, so the
+    // str[i.*] read in the next check is always in bounds.
+    assert(i.* < str.len);
     // Must start with [:
     if (i.* + 2 >= str.len or str[i.*] != '[' or str[i.* + 1] != ':')
         return error.InvalidClass;
@@ -249,11 +255,17 @@ fn expandClass(allocator: Allocator, class_name: []const u8) SetError![]u8 {
         return error.InvalidClass;
     }
 
+    // Postcondition: an unrecognized name returns error.InvalidClass above, so
+    // reaching here means a matched branch appended at least one byte.
+    assert(result.items.len > 0);
     return result.toOwnedSlice(allocator);
 }
 
 /// Parse an equivalence class [=c=]. Returns the character.
 fn parseEquivClass(str: []const u8, i: *usize) SetError!u8 {
+    // Precondition: the sole caller guards i + 1 < len before calling, so the
+    // str[i.*] read after the length guard is always in bounds.
+    assert(i.* < str.len);
     // Format: [=c=]
     if (i.* + 4 >= str.len) return error.InvalidClass;
     if (str[i.*] != '[' or str[i.* + 1] != '=') return error.InvalidClass;
@@ -273,6 +285,9 @@ const RepeatResult = struct {
 
 /// Try to parse a repetition [c*n]. Returns null if not a valid repetition.
 fn parseRepeat(str: []const u8, i: *usize) ?RepeatResult {
+    // Precondition: the sole caller guards i + 1 < len before calling, so the
+    // str[i.*] read after the length guard is always in bounds.
+    assert(i.* < str.len);
     // Format: [c*n] or [c*]
     if (i.* + 3 >= str.len) return null;
     if (str[i.*] != '[') return null;
@@ -327,6 +342,9 @@ fn complementSet(allocator: Allocator, set: []const u8) ![]u8 {
         }
     }
 
+    // Postcondition: the complement is a subset of the 256-value byte space, so
+    // it can never exceed 256 entries (domain bound, not a type-width bound).
+    assert(result.items.len <= 256);
     return result.toOwnedSlice(allocator);
 }
 
@@ -345,7 +363,13 @@ fn buildTranslationTable(set1: []const u8, set2: []const u8) [256]u8 {
     // If set2 is shorter, the last character of set2 is used for
     // remaining set1 characters (GNU behavior).
     for (set1, 0..) |s1, idx| {
+        // The set2.len == 0 early return above guarantees a non-empty set2
+        // here, so the set2.len - 1 fallback below cannot underflow.
+        assert(set2.len > 0);
         const s2_idx = if (idx < set2.len) idx else set2.len - 1;
+        // s2_idx is either idx (< set2.len) or set2.len - 1 (< set2.len since
+        // set2.len >= 1), so the set2[s2_idx] index is always valid.
+        assert(s2_idx < set2.len);
         table[s1] = set2[s2_idx];
     }
 
@@ -393,6 +417,9 @@ pub fn runTr(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
     // -d with -s requires SET1 and SET2
     // translate mode requires SET1 and SET2
     // -s alone requires at least SET1
+    // The len == 0 block above returns, so any operand check below safely
+    // indexes positionals[0].
+    assert(parsed.positionals.len > 0);
     if (!parsed.delete and !parsed.squeeze_repeats and parsed.positionals.len < 2) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'\nTwo strings must be given when translating.", .{parsed.positionals[0]});
         return @intFromEnum(common.ExitCode.misuse);
@@ -559,6 +586,59 @@ fn runTrWithInput_expandSet2Fill(
     return .{ .ok = set2 };
 }
 
+/// Result of acquiring SET2: parse the operand, then expand a [c*] / [c*0]
+/// fill repeat to SET1's length. Relocated so the parent keeps the single
+/// `set2_allocated` defer covering the freed-and-replaced slice identically.
+const RunTrWithInputAcquireSet2Result = union(enum) {
+    ok: []u8,
+    set2_invalid,
+    oom,
+};
+
+/// Acquire SET2: parse the operand into a set, then apply [c*] fill expansion
+/// to match SET1's length. Straight-line relocation of the SET2 phase; the
+/// branchy operation-mode dispatch stays in the parent (push ifs up).
+fn runTrWithInput_acquireSet2(
+    allocator: Allocator,
+    set2_str: []const u8,
+    raw_set2: []const u8,
+    set1_len: usize, // tiger:allow:usize-arch derived from set1.len (slice length is usize)
+    stderr_writer: *std.Io.Writer,
+) RunTrWithInputAcquireSet2Result {
+    // Positive space: the two views are the same operand (positionals[1]); the
+    // dedup of parse vs fill-scan relies on this invariant.
+    assert(set2_str.ptr == raw_set2.ptr);
+    // Negative space: this helper never runs with an empty program name.
+    assert(prog_name.len > 0);
+
+    const parsed_set2 = parseSet(allocator, set2_str) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET2", .{});
+        return .set2_invalid;
+    };
+
+    // Handle [c*] / [c*0] fill repetition: expand SET2 to match SET1 length.
+    // On the fill-OOM path expandSet2Fill leaves parsed_set2 unfreed, so we own
+    // it here and must free it before propagating .oom. This matches the
+    // original, where the parent's set2_allocated defer (set true before the
+    // fill call) freed exactly this buffer once. Freeing here keeps that single
+    // free intact.
+    const expanded = switch (runTrWithInput_expandSet2Fill(
+        allocator,
+        parsed_set2,
+        raw_set2,
+        set1_len,
+        stderr_writer,
+    )) {
+        .ok => |e| e,
+        .oom => {
+            allocator.free(parsed_set2);
+            return .oom;
+        },
+    };
+
+    return .{ .ok = expanded };
+}
+
 /// Internal function for running tr with a specific input reader.
 /// Allows testing with mock input streams.
 fn runTrWithInput(
@@ -568,12 +648,18 @@ fn runTrWithInput(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !u8 {
+    // Precondition: callers guard len == 0, and the function unconditionally
+    // reads positionals[0] below, so at least one operand is required.
+    assert(args.positionals.len >= 1);
+
     // Check for extra operands
     const max_positionals: usize = if (args.delete and !args.squeeze_repeats) 1 else 2;
     if (args.positionals.len > max_positionals) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{args.positionals[max_positionals]});
         return @intFromEnum(common.ExitCode.general_error);
     }
+    // Past the extra-operand guard, surplus operands have been rejected.
+    assert(args.positionals.len <= max_positionals);
 
     // Parse SET1 (and its complement when requested).
     const set1_built = switch (runTrWithInput_buildSet1(
@@ -594,23 +680,18 @@ fn runTrWithInput(
     var set2: []u8 = &.{};
     var set2_allocated = false;
     if (args.positionals.len > 1) {
-        set2 = parseSet(allocator, args.positionals[1]) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET2", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        };
-        set2_allocated = true;
-
-        // Handle [c*] / [c*0] fill repetition: expand SET2 to match SET1 length.
-        set2 = switch (runTrWithInput_expandSet2Fill(
+        set2 = switch (runTrWithInput_acquireSet2(
             allocator,
-            set2,
+            args.positionals[1],
             args.positionals[1],
             set1.len,
             stderr_writer,
         )) {
-            .ok => |expanded| expanded,
+            .ok => |s| s,
+            .set2_invalid => return @intFromEnum(common.ExitCode.misuse),
             .oom => return @intFromEnum(common.ExitCode.general_error),
         };
+        set2_allocated = true;
     }
     defer if (set2_allocated) allocator.free(set2);
 
@@ -652,6 +733,9 @@ fn processTranslate(
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort never returns more than the destination length, so the
+        // buffer[0..bytes_read] slice below is always in bounds.
+        assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
 
         for (buffer[0..bytes_read]) |b| {
@@ -680,6 +764,9 @@ fn processTranslateSqueeze(
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort never returns more than the destination length, so the
+        // buffer[0..bytes_read] slice below is always in bounds.
+        assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
 
         for (buffer[0..bytes_read]) |b| {
@@ -711,6 +798,9 @@ fn processDelete(
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort never returns more than the destination length, so the
+        // buffer[0..bytes_read] slice below is always in bounds.
+        assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
 
         for (buffer[0..bytes_read]) |b| {
@@ -741,6 +831,9 @@ fn processDeleteSqueeze(
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort never returns more than the destination length, so the
+        // buffer[0..bytes_read] slice below is always in bounds.
+        assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
 
         for (buffer[0..bytes_read]) |b| {
@@ -776,6 +869,9 @@ fn processSqueeze(
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort never returns more than the destination length, so the
+        // buffer[0..bytes_read] slice below is always in bounds.
+        assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
 
         for (buffer[0..bytes_read]) |b| {
