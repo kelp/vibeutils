@@ -2,71 +2,89 @@ const std = @import("std");
 const builtin = @import("builtin");
 const env = @import("env.zig");
 
+/// Color capability of the terminal.
+///
+/// Defined at file scope (not nested inside the `Style` factory) so the
+/// generic `Style(Writer)` body stays under Tiger Style's 70-line limit.
+/// `Style(Writer).ColorMode` aliases this type, so call sites referencing
+/// `Style(W).ColorMode` and `Style(W).ColorMode.detect` are unchanged. The
+/// file-scope name is `TerminalColorMode` (not `ColorMode`) so the struct's
+/// own `pub const ColorMode` alias does not collide with it inside the
+/// generic body.
+pub const TerminalColorMode = enum {
+    none, // NO_COLOR or dumb terminal
+    basic, // 16 colors
+    extended, // 256 colors
+    truecolor, // 24-bit RGB
+
+    /// Detect color mode from environment
+    pub fn detect(_: std.mem.Allocator) !TerminalColorMode {
+        // Check NO_COLOR standard (just check existence)
+        if (env.getEnv("NO_COLOR") != null) {
+            return .none;
+        }
+
+        // Check TERM
+        if (env.getEnv("TERM")) |term| {
+            if (std.mem.eql(u8, term, "dumb")) return .none;
+            if (std.mem.find(u8, term, "256color") != null) return .extended;
+            if (std.mem.find(u8, term, "truecolor") != null) return .truecolor;
+
+            // Check COLORTERM for true color
+            if (env.getEnv("COLORTERM")) |colorterm| {
+                if (std.mem.eql(u8, colorterm, "truecolor") or
+                    std.mem.eql(u8, colorterm, "24bit"))
+                {
+                    return .truecolor;
+                }
+            }
+
+            return .basic;
+        } else {
+            return .none;
+        }
+    }
+};
+
+/// ANSI color codes.
+///
+/// Defined at file scope for the same reason as `TerminalColorMode`;
+/// `Style(Writer).Color` aliases this type so call sites are unchanged.
+pub const TerminalColor = enum(u8) {
+    black = 30,
+    red = 31,
+    green = 32,
+    yellow = 33,
+    blue = 34,
+    magenta = 35,
+    cyan = 36,
+    white = 37,
+    default = 39,
+
+    // Bright colors
+    bright_black = 90,
+    bright_red = 91,
+    bright_green = 92,
+    bright_yellow = 93,
+    bright_blue = 94,
+    bright_magenta = 95,
+    bright_cyan = 96,
+    bright_white = 97,
+};
+
 /// Terminal capability detection and styling
 pub fn Style(comptime Writer: type) type {
     return struct {
         const Self = @This();
-        /// Color capability of the terminal
-        pub const ColorMode = enum {
-            none, // NO_COLOR or dumb terminal
-            basic, // 16 colors
-            extended, // 256 colors
-            truecolor, // 24-bit RGB
 
-            /// Detect color mode from environment
-            pub fn detect(_: std.mem.Allocator) !ColorMode {
-                // Check NO_COLOR standard (just check existence)
-                if (env.getEnv("NO_COLOR") != null) {
-                    return .none;
-                }
-
-                // Check TERM
-                if (env.getEnv("TERM")) |term| {
-                    if (std.mem.eql(u8, term, "dumb")) return .none;
-                    if (std.mem.find(u8, term, "256color") != null) return .extended;
-                    if (std.mem.find(u8, term, "truecolor") != null) return .truecolor;
-
-                    // Check COLORTERM for true color
-                    if (env.getEnv("COLORTERM")) |colorterm| {
-                        if (std.mem.eql(u8, colorterm, "truecolor") or
-                            std.mem.eql(u8, colorterm, "24bit"))
-                        {
-                            return .truecolor;
-                        }
-                    }
-
-                    return .basic;
-                } else {
-                    return .none;
-                }
-            }
-        };
+        /// Color capability of the terminal (file-scope alias).
+        pub const ColorMode = TerminalColorMode;
 
         color_mode: ColorMode,
         writer: Writer,
 
-        /// ANSI color codes
-        pub const Color = enum(u8) {
-            black = 30,
-            red = 31,
-            green = 32,
-            yellow = 33,
-            blue = 34,
-            magenta = 35,
-            cyan = 36,
-            white = 37,
-            default = 39,
-
-            // Bright colors
-            bright_black = 90,
-            bright_red = 91,
-            bright_green = 92,
-            bright_yellow = 93,
-            bright_blue = 94,
-            bright_magenta = 95,
-            bright_cyan = 96,
-            bright_white = 97,
-        };
+        /// ANSI color codes (file-scope alias).
+        pub const Color = TerminalColor;
 
         /// Initialize with auto-detection
         pub fn init(allocator: std.mem.Allocator, writer: Writer) !Self {
