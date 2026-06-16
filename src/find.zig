@@ -2334,7 +2334,7 @@ fn evaluateLeaf_regex(allocator: Allocator, regex_ptr: *regex_h.regex_t, path: [
 /// Compare a file's birth time age in days against a `-Btime` predicate. Returns
 /// false when birth time is unavailable (Linux, or unsupported filesystem).
 fn evaluateLeaf_btime(now: i64, path: []const u8, te: TimeExpr) bool {
-    assert(now > 0);
+    assert(now >= 0);
     assert(path.len <= std.Io.Dir.max_path_bytes);
     const btime = getBirthTime(path) orelse return false;
     return evaluateLeaf_ageDays(now, btime, te);
@@ -2343,7 +2343,7 @@ fn evaluateLeaf_btime(now: i64, path: []const u8, te: TimeExpr) bool {
 /// Compare a file's birth time age in minutes against a `-Bmin` predicate.
 /// Returns false when birth time is unavailable.
 fn evaluateLeaf_bmin(now: i64, path: []const u8, te: TimeExpr) bool {
-    assert(now > 0);
+    assert(now >= 0);
     assert(path.len <= std.Io.Dir.max_path_bytes);
     const btime = getBirthTime(path) orelse return false;
     return evaluateLeaf_ageMins(now, btime, te);
