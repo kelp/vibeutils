@@ -116,28 +116,17 @@ fn runTeeWithInput(
         }
 
         // Write to each file output
-        for (multi.files, multi.is_stdout, args.positionals) |*file_entry, is_dash, name| {
-            if (is_dash) {
-                // "-" operand means another stdout copy
-                if (!stdout_broken) {
-                    stdout_writer.writeAll(data) catch |err| {
-                        if (!args.diagnose_errors) {
-                            has_error = true;
-                            stdout_broken = true;
-                        } else {
-                            stdout_broken = true;
-                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
-                        }
-                        has_error = true;
-                    };
-                }
-            } else {
-                file_entry.writer.interface.writeAll(data) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, common.posixErrorString(err) });
-                    has_error = true;
-                };
-            }
-        }
+        runTeeWithInput_writeChunkToFiles(
+            allocator,
+            stderr_writer,
+            &multi,
+            args.positionals,
+            data,
+            args.diagnose_errors,
+            stdout_writer,
+            &has_error,
+            &stdout_broken,
+        );
 
         // Without -p, if stdout broke during file writes, stop
         if (stdout_broken and !args.diagnose_errors) {
@@ -149,22 +138,118 @@ fn runTeeWithInput(
     // their underlying error on flush, not on writeAll. GNU tee always
     // reports a diagnostic on stdout failure, even without -p.
     if (!stdout_broken) {
-        stdout_writer.flush() catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
-            has_error = true;
-        };
+        runTeeWithInput_flushStdout(allocator, stderr_writer, stdout_writer, &has_error);
     }
 
     // Flush per-file writers for the same reason.
-    for (multi.files, multi.is_stdout, args.positionals) |*file_entry, is_dash, name| {
+    runTeeWithInput_flushFiles(allocator, stderr_writer, &multi, args.positionals, &has_error);
+
+    return @intFromEnum(if (has_error) common.ExitCode.general_error else common.ExitCode.success);
+}
+
+/// Write one data chunk to every file output target.
+///
+/// A "-" operand is an extra stdout copy; real files get their own
+/// writers. Mutates has_error/stdout_broken via out-params so the
+/// parent loop can decide whether to break. The `for` lives here
+/// (push fors down); the parent keeps its break decisions.
+fn runTeeWithInput_writeChunkToFiles(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    multi: *const MultiWriter,
+    positionals: []const []const u8,
+    data: []const u8,
+    diagnose_errors: bool,
+    stdout_writer: *std.Io.Writer,
+    has_error: *bool,
+    stdout_broken: *bool,
+) void {
+    std.debug.assert(multi.files.len == positionals.len);
+    std.debug.assert(multi.is_stdout.len == positionals.len);
+
+    for (multi.files, multi.is_stdout, positionals) |*file_entry, is_dash, name| {
+        if (is_dash) {
+            // "-" operand means another stdout copy
+            if (!stdout_broken.*) {
+                stdout_writer.writeAll(data) catch |err| {
+                    if (!diagnose_errors) {
+                        has_error.* = true;
+                        stdout_broken.* = true;
+                    } else {
+                        stdout_broken.* = true;
+                        common.printErrorWithProgram(
+                            allocator,
+                            stderr_writer,
+                            "tee",
+                            "standard output: {s}",
+                            .{common.posixErrorString(err)},
+                        );
+                    }
+                    has_error.* = true;
+                };
+            }
+        } else {
+            file_entry.writer.interface.writeAll(data) catch |err| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "tee",
+                    "{s}: {s}",
+                    .{ name, common.posixErrorString(err) },
+                );
+                has_error.* = true;
+            };
+        }
+    }
+}
+
+/// Flush the stdout writer, reporting any deferred error.
+///
+/// Buffered writes (e.g. to /dev/full) only surface their error on
+/// flush. The parent guards this with `if (!stdout_broken)` (push
+/// ifs up), so this helper performs only the straight-line flush.
+fn runTeeWithInput_flushStdout(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    stdout_writer: *std.Io.Writer,
+    has_error: *bool,
+) void {
+    std.debug.assert(stdout_writer != stderr_writer);
+    std.debug.assert(@intFromBool(has_error.*) <= 1);
+
+    stdout_writer.flush() catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tee",
+            "standard output: {s}",
+            .{common.posixErrorString(err)},
+        );
+        has_error.* = true;
+    };
+}
+
+/// Flush every per-file writer, reporting deferred errors.
+///
+/// Same rationale as stdout: buffered writes only surface on flush.
+/// The `for` lives here (push fors down); "-" operands are skipped.
+fn runTeeWithInput_flushFiles(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    multi: *MultiWriter,
+    positionals: []const []const u8,
+    has_error: *bool,
+) void {
+    std.debug.assert(multi.files.len == positionals.len);
+    std.debug.assert(multi.is_stdout.len == positionals.len);
+
+    for (multi.files, multi.is_stdout, positionals) |*file_entry, is_dash, name| {
         if (is_dash) continue;
         file_entry.writer.interface.flush() catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, common.posixErrorString(err) });
-            has_error = true;
+            has_error.* = true;
         };
     }
-
-    return @intFromEnum(if (has_error) common.ExitCode.general_error else common.ExitCode.success);
 }
 
 /// Entry for a file opened by tee
