@@ -399,6 +399,9 @@ fn isSectionDelimiter(line: []const u8, delimiter: [2]u8) ?Section {
     if (line.len == 0 or line.len % 2 != 0 or line.len > 6) return null;
     const pairs = line.len / 2;
     if (pairs < 1 or pairs > 3) return null;
+    std.debug.assert(pairs >= 1);
+    std.debug.assert(pairs <= 3);
+    std.debug.assert(line.len % 2 == 0);
 
     // Verify all pairs match the delimiter
     var j: usize = 0;
@@ -432,8 +435,10 @@ fn formatNumber(buf: []u8, number: i64, format: NumberFormat, width: u32) []cons
     var num_buf: [32]u8 = undefined;
     const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{number}) catch return "";
     const num_len = num_str.len;
+    std.debug.assert(num_str.len >= 1);
 
     if (w > buf.len) return "";
+    std.debug.assert(w <= buf.len);
 
     switch (format) {
         .left => {
@@ -489,8 +494,10 @@ fn formatNumber(buf: []u8, number: i64, format: NumberFormat, width: u32) []cons
 
 /// Write a formatted line number followed by separator and line content
 fn writeNumberedLine(writer: *std.Io.Writer, number: i64, line: []const u8, opts: NlOptions) !void {
+    std.debug.assert(opts.width >= 1);
     var num_buf: [64]u8 = undefined;
     const formatted = formatNumber(&num_buf, number, opts.format, opts.width);
+    std.debug.assert(formatted.len <= num_buf.len);
     try writer.writeAll(formatted);
     try writer.writeAll(opts.separator);
     try writer.writeAll(line);
@@ -499,6 +506,7 @@ fn writeNumberedLine(writer: *std.Io.Writer, number: i64, line: []const u8, opts
 
 /// Write an unnumbered line (spaces for width + separator width, then content)
 fn writeUnnumberedLine(writer: *std.Io.Writer, line: []const u8, opts: NlOptions) !void {
+    std.debug.assert(opts.width >= 1);
     // GNU nl outputs (width + separator length) spaces for unnumbered lines
     const total_pad = opts.width + @as(u32, @intCast(opts.separator.len));
     var pad: u32 = 0;
@@ -536,6 +544,8 @@ fn numberLines(reader: *std.Io.Reader, writer: *std.Io.Writer, opts: NlOptions, 
         };
 
         // Strip trailing newline for processing
+        std.debug.assert(line_with_nl.len >= 1);
+        std.debug.assert(line_with_nl[line_with_nl.len - 1] == '\n');
         const line = line_with_nl[0 .. line_with_nl.len - 1];
         try processLine(writer, line, opts, state, allocator);
     }
