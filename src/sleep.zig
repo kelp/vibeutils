@@ -41,7 +41,11 @@ fn parseTotalTime(args: []const []const u8) !u64 {
             return error.TimeOverflow;
         }
 
+        // The guard above proves the add stays within u64; assert it before
+        // and verify no wrap occurred after.
+        std.debug.assert(total_nanos <= std.math.maxInt(u64) - nanos);
         total_nanos += nanos;
+        std.debug.assert(total_nanos >= nanos);
     }
 
     return total_nanos;
@@ -142,6 +146,10 @@ pub fn runSleep(
     // Sleep for the specified duration
     if (total_nanos > 0) {
         const duration = std.Io.Duration.fromNanoseconds(@intCast(total_nanos));
+        // u64 -> i96 is lossless, so the Duration preserves the source value
+        // and stays strictly positive within this branch.
+        std.debug.assert(duration.nanoseconds == @as(i96, total_nanos));
+        std.debug.assert(duration.nanoseconds > 0);
         std.Io.sleep(io, duration, .awake) catch {};
     }
 
