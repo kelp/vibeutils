@@ -48,6 +48,10 @@ pub const Mode = struct {
         if (self.setuid) result |= 0o4000;
         if (self.setgid) result |= 0o2000;
         if (self.sticky) result |= 0o1000;
+        // Postcondition: u3 rwx fields (max 0o777) plus the three special bits
+        // (0o7000) can never exceed the 12-bit permission range, even though
+        // the u32 return type could hold far larger values.
+        std.debug.assert(result <= 0o7777);
         return result;
     }
 
@@ -140,10 +144,18 @@ fn applyClause(
     var i = scan.cursor;
     const who = scan.who;
     const who_explicit = scan.who_explicit;
+    // scanWho guarantees a valid, non-empty who bitmask (1..7); re-assert at the
+    // consumer to pair the property across the producer/consumer boundary.
+    std.debug.assert(who != 0);
+    std.debug.assert(who <= 7);
 
     if (i >= clause.len) return ModeError.InvalidMode;
     const op = clause[i];
     i += 1;
+    // scanWho only stops at an operator char, so clause[i] here is one of these.
+    // Disjunction: cannot split into separate asserts (that would require all
+    // three at once and always fire).
+    std.debug.assert(op == '+' or op == '-' or op == '='); // tiger:allow:compound-assert
 
     // --- permission copying: "g=u", "o+g", "u-o" ---
     // Detected when the remaining text is exactly one u/g/o character.
@@ -207,6 +219,9 @@ fn applyClause_scanWho(clause: []const u8) ModeError!ScanWhoResult {
 
     std.debug.assert(who != 0);
     std.debug.assert(who <= 7);
+    // Postcondition: the loop guard is `i < clause.len`, so on every exit the
+    // returned cursor is at most clause.len (pairs with scanPerms's precondition).
+    std.debug.assert(i <= clause.len);
     return .{ .cursor = i, .who = who, .who_explicit = who_explicit };
 }
 
@@ -224,6 +239,7 @@ fn applyClause_scanPerms(
 ) ModeError!ScanPermsResult {
     std.debug.assert(cursor <= clause.len);
     std.debug.assert(who != 0);
+    std.debug.assert(who <= 7);
 
     var i = cursor;
     var perms: u8 = 0; // bits: 4=r 2=w 1=x 8=s 16=t
@@ -265,6 +281,9 @@ fn applyClause_applyWithUmask(mode: *Mode, op: u8, perms: u8, context: ModeConte
     // matching the parent's `op != '-' and context.umask != 0` branch guard.
     std.debug.assert(op != '-');
     std.debug.assert(context.umask != 0);
+    // Positive-space companion: the parent excludes '-' from a proven '+/-/='
+    // op, leaving exactly '+' or '='. Disjunction: not splittable.
+    std.debug.assert(op == '+' or op == '='); // tiger:allow:compound-assert
 
     const u_mask: u3 = @truncate((context.umask >> 6) & 7);
     const g_mask: u3 = @truncate((context.umask >> 3) & 7);
@@ -280,6 +299,13 @@ fn applyClause_applyWithUmask(mode: *Mode, op: u8, perms: u8, context: ModeConte
 
 /// Apply permission copying between who classes.
 fn applyCopy(mode: *Mode, who: u8, copy_from: u8, op: u8) void {
+    // who originates from scanWho (1..7); 0 would make this a silent no-op.
+    std.debug.assert(who != 0);
+    std.debug.assert(who <= 7);
+    // op flows unchanged from applyClause's proven '+'/'-'/'=' value.
+    // Disjunction: not splittable.
+    std.debug.assert(op == '+' or op == '-' or op == '='); // tiger:allow:compound-assert
+
     const src: u3 = switch (copy_from) {
         'u' => mode.user,
         'g' => mode.group,
@@ -293,6 +319,9 @@ fn applyCopy(mode: *Mode, who: u8, copy_from: u8, op: u8) void {
 
 /// Apply a basic rwx bit-mask to one permission field (user/group/other).
 inline fn applyBasic(field: *u3, op: u8, bits: u3) void {
+    // op traces back to applyClause's proven '+'/'-'/'=' value; the else->{}
+    // branch below would silently no-op any other char. Disjunction: not splittable.
+    std.debug.assert(op == '+' or op == '-' or op == '='); // tiger:allow:compound-assert
     switch (op) {
         '+' => field.* |= bits,
         '-' => field.* &= ~bits,
@@ -303,6 +332,14 @@ inline fn applyBasic(field: *u3, op: u8, bits: u3) void {
 
 /// Apply a full permission mask (rwx + special bits) to the mode.
 fn applyPerms(mode: *Mode, who: u8, op: u8, perms: u8) void {
+    // who comes from scanWho (1..7) or a literal 1/2/4 from the umask helper;
+    // only bits 0-2 are inspected, so any higher bit is out of contract.
+    std.debug.assert(who != 0);
+    std.debug.assert(who <= 7);
+    // op is the proven '+'/'-'/'=' value forwarded from applyClause.
+    // Disjunction: not splittable.
+    std.debug.assert(op == '+' or op == '-' or op == '='); // tiger:allow:compound-assert
+
     const basic: u3 = @truncate(perms & 7);
 
     if (who & 1 != 0) applyBasic(&mode.user, op, basic);
