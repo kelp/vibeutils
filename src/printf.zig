@@ -57,6 +57,11 @@ pub fn runPrintf(allocator: Allocator, _: std.Io, args: []const []const u8, stdo
         // \c halts all output immediately
         if (halted) break;
 
+        // arg_idx is only ever advanced (never decremented) while consuming
+        // arguments, so after one pass it cannot fall below where it started.
+        // The loop-stop check below relies on this monotonicity.
+        std.debug.assert(arg_idx >= start_arg_idx);
+
         // If no arguments were consumed, or all arguments have been used, stop
         if (arg_idx <= start_arg_idx or arg_idx >= arguments.len) {
             break;
@@ -82,6 +87,8 @@ fn processFormat(
 ) !bool {
     var i: usize = 0;
     while (i < format.len) {
+        // Loop invariant: no branch advances i past the end of the format.
+        std.debug.assert(i <= format.len);
         if (format[i] == '\\') {
             // Escape sequence in format string
             const result = try processEscape(format, i, writer);
@@ -263,6 +270,9 @@ fn processEscape_hex(
         value = value * 16 + digit;
     }
     std.debug.assert(hex_digits <= 2);
+    // j is only ever incremented from value_start, so it cannot fall below it;
+    // pairs the lower bound with the existing upper-bound digit-count check.
+    std.debug.assert(j >= value_start);
 
     if (hex_digits > 0) {
         try writer.writeByte(value);
@@ -298,6 +308,9 @@ fn processSpecifier(
     const arg_idx_entry = arg_idx.*;
 
     var i = pos + 1; // Skip the '%'
+    // The specifier consumes at least the '%', and the parse helpers only ever
+    // advance i, so forward progress in processFormat's loop is guaranteed.
+    std.debug.assert(i > pos);
 
     // Parse flags, then width and precision, accumulating into one spec.
     // A '*' width can flip left_justify when negative, so parseWidth gets a
@@ -608,6 +621,9 @@ fn parseIntArgEx(s: []const u8) IntParseResult {
     var end: usize = 0;
     if (end < s.len and (s[end] == '-' or s[end] == '+')) end += 1;
     while (end < s.len and s[end] >= '0' and s[end] <= '9') : (end += 1) {}
+    // end is only advanced while end < s.len, so the slice s[0..end] below is
+    // always in bounds (holds for empty s, where end stays 0).
+    std.debug.assert(end <= s.len);
     if (end > 0 and !(end == 1 and (s[0] == '-' or s[0] == '+'))) {
         if (std.fmt.parseInt(i64, s[0..end], 10)) |v| {
             return .{ .value = v, .ok = false };
@@ -672,6 +688,8 @@ fn formatString(writer: anytype, s: []const u8, spec: FormatSpec) !void {
         s[0..@min(p, s.len)]
     else
         s;
+    // truncated is either s or a @min-bounded prefix of it, never longer.
+    std.debug.assert(truncated.len <= s.len);
 
     const w = spec.width orelse 0;
     if (truncated.len >= w) {
@@ -858,6 +876,11 @@ fn formatSignedInt(
     _: bool,
     spec: FormatSpec,
 ) !void {
+    // formatUnsignedBuf divides by radix and maps digits 10..radix-1 to a-f, so
+    // the radix must be in [2, 16] for terminating, well-encoded output.
+    std.debug.assert(radix >= 2);
+    std.debug.assert(radix <= 16);
+
     var buf: [128]u8 = undefined;
     const negative = val < 0;
     const abs_val: u64 = if (negative) @intCast(-val) else @intCast(val);
@@ -925,6 +948,11 @@ fn formatSignedInt(
 
 /// Format an unsigned integer with the given radix and spec
 fn formatUnsignedInt(writer: anytype, val: u64, radix: u8, prefix: bool, spec: FormatSpec) !void {
+    // formatUnsignedBuf divides by radix and maps digits 10..radix-1 to a-f, so
+    // the radix must be in [2, 16] for terminating, well-encoded output.
+    std.debug.assert(radix >= 2);
+    std.debug.assert(radix <= 16);
+
     var buf: [128]u8 = undefined;
     var num_buf: [64]u8 = undefined;
     const num_str = formatUnsignedBuf(&num_buf, val, radix, false);
@@ -1012,6 +1040,12 @@ fn formatHex(writer: anytype, val: u64, uppercase: bool, spec: FormatSpec) !void
 
 /// Format an unsigned integer into a buffer. Returns the formatted slice.
 fn formatUnsignedBuf(buf: []u8, val: u64, radix: u8, uppercase: bool) []const u8 {
+    // The loop computes v % radix and v /= radix; radix < 2 would be div-by-zero
+    // or a non-terminating loop. The val==0 branch writes buf[0], so at least one
+    // byte of space is required.
+    std.debug.assert(radix >= 2);
+    std.debug.assert(buf.len >= 1);
+
     if (val == 0) {
         buf[0] = '0';
         return buf[0..1];
@@ -1080,6 +1114,9 @@ fn formatFloat(writer: anytype, val: f64, conv: u8, spec: FormatSpec) !void {
         sign_char = ' ';
     }
 
+    // formatted_start is 1 only when formatted[0] == '-' (so len >= 1), else 0;
+    // the content slice below is therefore always in bounds.
+    std.debug.assert(formatted_start <= formatted.len);
     const content = formatted[formatted_start..];
     const sign_len: usize = if (sign_char != null) 1 else 0;
     const content_len = sign_len + content.len;
@@ -1108,6 +1145,9 @@ fn formatHexFloat(writer: anytype, val: f64, uppercase: bool, spec: FormatSpec) 
 
     // Use Zig's builtin hex float formatter
     const formatted = std.fmt.bufPrint(&buf, "{x}", .{val}) catch "0x0p+0";
+    // formatted is either a slice into buf or the short literal "0x0p+0", so it
+    // fits in buf; this guards the uppercase loop indexing upper_buf by its len.
+    std.debug.assert(formatted.len <= buf.len);
 
     if (uppercase) {
         // Convert to uppercase: 0x -> 0X, a-f -> A-F, p -> P
@@ -1140,6 +1180,9 @@ fn applyFloatPadding(writer: anytype, formatted: []const u8, spec: FormatSpec) !
         } else if (spec.zero_pad) {
             // Insert zeros after sign/prefix
             const prefix_end: usize = if (formatted.len > 1 and (formatted[1] == 'x' or formatted[1] == 'X')) 2 else if (formatted.len > 0 and formatted[0] == '-') 1 else 0;
+            // Each prefix_end value is guarded by the matching length check, so
+            // both slices of formatted below stay in bounds.
+            std.debug.assert(prefix_end <= formatted.len);
             try writer.writeAll(formatted[0..prefix_end]);
             try writePadding(writer, '0', padding);
             try writer.writeAll(formatted[prefix_end..]);
@@ -1167,6 +1210,8 @@ fn formatNonFiniteFloat(buf: []u8, val: f64, uppercase: bool) ![]const u8 {
         (if (uppercase) "-INF" else "-inf")
     else if (uppercase) "INF" else "inf";
     if (buf.len < s.len) return error.NoSpaceLeft;
+    // The early return above rules out buf.len < s.len, so the @memcpy fits.
+    std.debug.assert(s.len <= buf.len);
     @memcpy(buf[0..s.len], s);
     return buf[0..s.len];
 }
@@ -1174,6 +1219,9 @@ fn formatNonFiniteFloat(buf: []u8, val: f64, uppercase: bool) ![]const u8 {
 /// Format a floating-point number in scientific notation (%e/%E).
 fn formatSciFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]const u8 {
     if (!std.math.isFinite(val)) return formatNonFiniteFloat(buf, val, uppercase);
+    // Past the early return val is finite, which the normalization loops below
+    // (while abs_val >= 10.0 / < 1.0) require to terminate.
+    std.debug.assert(std.math.isFinite(val));
     if (val == 0.0) {
         var pos: usize = 0;
         buf[pos] = '0';
@@ -1243,7 +1291,13 @@ fn formatSciFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]con
 /// Trailing zeros are removed from the fractional part.
 fn formatGeneralFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]const u8 {
     if (!std.math.isFinite(val)) return formatNonFiniteFloat(buf, val, uppercase);
+    // Past the early return val is finite, which the normalization loops below
+    // (while tmp >= 10.0 / < 1.0) require to terminate.
+    std.debug.assert(std.math.isFinite(val));
     const prec = if (precision == 0) 1 else precision;
+    // %g always keeps at least one significant digit, so prec is never 0; the
+    // @intCast(prec) comparison and decimal_places math rely on this.
+    std.debug.assert(prec >= 1);
 
     if (val == 0.0) {
         buf[0] = '0';
@@ -1297,6 +1351,8 @@ fn stripTrailingZerosFixed(s: []u8) []const u8 {
         }
     }
     if (dot_pos == null) return s;
+    // dot_pos was set from an index over s, so it is a valid in-bounds position.
+    std.debug.assert(dot_pos.? < s.len);
 
     var end = s.len;
     while (end > dot_pos.? + 1 and s[end - 1] == '0') {
@@ -1320,6 +1376,9 @@ fn stripTrailingZerosSci(s: []u8) []const u8 {
         }
     }
     if (e_pos == null) return s;
+    // e_pos was set from an index over s, so the s[0..e_pos.?] / s[e_pos.?..]
+    // slices below are in bounds.
+    std.debug.assert(e_pos.? < s.len);
 
     // Find the dot
     var dot_pos: ?usize = null;
@@ -1330,6 +1389,9 @@ fn stripTrailingZerosSci(s: []u8) []const u8 {
         }
     }
     if (dot_pos == null) return s;
+    // dot_pos was found only within the prefix before e_pos, so it is strictly
+    // less than e_pos; the strip loop seeded at e_pos relies on this ordering.
+    std.debug.assert(dot_pos.? < e_pos.?);
 
     // Strip zeros between dot and e
     var strip_end = e_pos.?;
