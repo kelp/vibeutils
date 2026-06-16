@@ -66,36 +66,27 @@ fn resolveFlagCombinations(parsed_args: CatArgs) CatOptions {
     };
 }
 
-pub fn runCat(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runCat(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) !u8 {
     // Parse arguments using new parser
-    const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cat", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cat", "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cat", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err|
+        return runCat_mapParseError(allocator, stderr, err);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(allocator, stdout_writer);
+        try printHelp(allocator, stdout);
         return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
     if (parsed_args.version) {
-        try printVersion(stdout_writer);
+        try printVersion(stdout);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -110,41 +101,126 @@ pub fn runCat(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8
     // Track errors to continue processing all files (POSIX requirement)
     var has_error = false;
 
+    // No files specified, read from stdin; otherwise process each in order.
     if (parsed_args.positionals.len == 0) {
-        // No files specified, read from stdin
-        processInput(stdin, stdout_writer, options, &line_state) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{common.posixErrorString(err)});
-            has_error = true;
-        };
+        const failed = runCat_processStdin(allocator, stdin, stdout, stderr, options, &line_state);
+        if (failed) has_error = true;
     } else {
-        // Process each file in order, continuing on errors
         for (parsed_args.positionals) |file_path| {
-            if (std.mem.eql(u8, file_path, "-")) {
-                // "-" means read from stdin
-                processInput(stdin, stdout_writer, options, &line_state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{common.posixErrorString(err)});
-                    has_error = true;
-                };
-            } else {
-                // Open and process regular file
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                    continue; // Continue to next file
-                };
-                defer file.close(io);
-
-                var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.reader(io, &file_buffer);
-                processInput(&file_reader.interface, stdout_writer, options, &line_state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                };
-            }
+            // "-" means read from stdin; everything else is a regular file.
+            const failed = if (std.mem.eql(u8, file_path, "-"))
+                runCat_processStdin(allocator, stdin, stdout, stderr, options, &line_state)
+            else
+                runCat_processFile(allocator, io, file_path, stdout, stderr, options, &line_state);
+            if (failed) has_error = true;
         }
     }
 
     return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+}
+
+/// Maps an argparse error to a misuse exit code, printing the matching GNU-style
+/// diagnostic. Unexpected errors propagate unchanged. Single-caller helper for runCat.
+fn runCat_mapParseError(
+    allocator: std.mem.Allocator,
+    stderr: *std.Io.Writer,
+    err: anyerror,
+) !u8 {
+    // Compile-time sanity: misuse and success are distinct exit codes (positive space).
+    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != @intFromEnum(common.ExitCode.success));
+    // Negative space: the misuse code is never the "no error" sentinel zero.
+    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != 0);
+    switch (err) {
+        error.UnknownFlag => {
+            common.printErrorWithProgram(allocator, stderr, "cat", "unrecognized option", .{});
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.MissingValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                "cat",
+                "option requires an argument",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidValue => {
+            common.printErrorWithProgram(allocator, stderr, "cat", "invalid option value", .{});
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        else => return err,
+    }
+}
+
+/// Streams stdin through processInput, reporting any error to stderr. Returns true
+/// on error (the caller ORs this into has_error). Single-caller helper for runCat.
+fn runCat_processStdin(
+    allocator: std.mem.Allocator,
+    stdin: *std.Io.Reader,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    options: CatOptions,
+    state: *LineNumberState,
+) bool {
+    // Invariant: line numbering starts at 1 and only increases.
+    std.debug.assert(state.line_number >= 1);
+    // Negative space: line numbering never wraps below 1 (no underflow to zero).
+    std.debug.assert(state.line_number != 0);
+    processInput(stdin, stdout, options, state) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "cat",
+            "stdin: {s}",
+            .{common.posixErrorString(err)},
+        );
+        return true;
+    };
+    return false;
+}
+
+/// Opens and streams a regular file through processInput, reporting any error to
+/// stderr. Returns true on error (the caller ORs this into has_error). Single-caller
+/// helper for runCat.
+fn runCat_processFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    options: CatOptions,
+    state: *LineNumberState,
+) bool {
+    // Invariant: line numbering starts at 1 and only increases.
+    std.debug.assert(state.line_number >= 1);
+    // Negative space: the stdin marker is dispatched elsewhere, never here.
+    std.debug.assert(!std.mem.eql(u8, file_path, "-"));
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "cat",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    defer file.close(io);
+
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
+    processInput(&file_reader.interface, stdout, options, state) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "cat",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    return false;
 }
 
 pub fn main(init: std.process.Init) !void {
