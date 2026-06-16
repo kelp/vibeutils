@@ -77,11 +77,13 @@ const FIX_SCHEMA = {
 function buildCmd(item) { return item.testUtil ? `zig build test -Dtest-util=${item.testUtil}` : `zig build test` }
 
 function auditPrompt(item) {
-  return `Adversarially audit the Phase 4 assertions added to \`${item.util}\` (files:
-${item.files.join(', ')}, vibeutils Zig 0.16). READ ONLY.
+  return `Adversarially audit the assertions in \`${item.util}\` (files: ${item.files.join(', ')},
+vibeutils Zig 0.16). READ ONLY.
 
-Run \`git diff HEAD -- ${item.files.join(' ')}\` — HEAD is the pre-Phase-4 baseline, so every ADDED
-\`std.debug.assert(...)\` line in that diff is in scope. (Removed asserts are not your concern.)
+Find every \`std.debug.assert(...)\` in PRODUCTION code in these files (e.g.
+\`grep -n 'std.debug.assert' ${item.files.join(' ')}\` — skip any inside \`test "..."\` blocks). Every
+such assert is in scope (this codebase had ~zero asserts before the Phase 4 sweep, so they are all
+recently added and unproven on untested paths).
 
 ${LENS}
 
