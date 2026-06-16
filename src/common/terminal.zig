@@ -10,6 +10,9 @@ const Dimension = enum {
 
 /// Generic helper function to get terminal dimensions
 fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16 {
+    // Fallback dimensions must be usable (nonzero) column/row counts.
+    std.debug.assert(@import("constants.zig").DEFAULT_TERMINAL_WIDTH > 0);
+    std.debug.assert(@import("constants.zig").DEFAULT_TERMINAL_HEIGHT > 0);
     if (builtin.os.tag == .windows) {
         // TODO: Windows implementation would use GetConsoleScreenBufferInfo
         return switch (dimension) {
