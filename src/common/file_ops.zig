@@ -27,6 +27,11 @@ const assert = std.debug.assert;
 /// Returns success (0) if the operation succeeds, or general_error (1) if it fails
 /// after issuing warnings for platform-specific limitations.
 pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.posix.mode_t, context: ?[]const u8, program_name: []const u8, stderr_writer: anytype) !u8 {
+    // A shared leaf called by cp/mv/chmod/install: an empty program_name would
+    // mislabel the warning diagnostics, never a valid invocation. Matches the
+    // sibling leaves copyFileWithAttributes/preserveDirAttributes in this file.
+    assert(program_name.len > 0);
+
     const handle_type = @TypeOf(handle);
 
     // Get the file descriptor based on handle type
@@ -48,6 +53,10 @@ pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.p
         } else {
             lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Stripped special permissions (Linux fakeroot limitation)", .{});
         }
+        // This branch is entered only when special bits are set; assert that
+        // precondition holds here, since stripping them is the whole reason
+        // this branch exists.
+        assert((mode & 0o7000) != 0);
         break :blk mode & 0o0777; // Keep only regular permissions
     } else mode;
 
@@ -89,6 +98,10 @@ pub fn isRunningInCI() bool {
         "GITLAB_CI",
         "BUILDKITE",
     };
+
+    // Compile-time-constant sanity check: guards a future edit that empties the
+    // list, which would silently make this function always return false.
+    assert(ci_vars.len > 0);
 
     for (ci_vars) |var_name| {
         if (env.getEnv(var_name)) |_| {
@@ -168,6 +181,10 @@ pub const COPY_BUFFER_SIZE = 64 * 1024;
 /// Reads from source_file and writes to dest_file until EOF. Returns
 /// an error if any read or write fails.
 pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.File) !void {
+    // Compile-time-constant sanity check: a zero-size buffer would make every
+    // read return 0 and loop forever on a non-empty source.
+    assert(COPY_BUFFER_SIZE > 0);
+
     var buffer: [COPY_BUFFER_SIZE]u8 = undefined;
     while (true) {
         const buf_slice: []u8 = &buffer;
@@ -175,6 +192,9 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
             error.EndOfStream => break,
             else => return err,
         };
+        // readStreaming's only destination is buffer, so it can never report
+        // more bytes than the buffer holds; bounds the slice below.
+        assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
         try dest_file.writeStreamingAll(io, buffer[0..bytes_read]);
     }
