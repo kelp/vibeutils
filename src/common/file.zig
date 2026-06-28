@@ -51,7 +51,10 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
         .ctime = ctime_ns,
         .kind = kind,
         .inode = stat_buf.ino,
-        .dev = @intCast(stat_buf.dev),
+        // `st_dev` is a signed i32 on macOS; devfs and friends report ids
+        // with the high bit set. Reinterpret the bits rather than range
+        // checking, since a negative i32 would not fit in the u64 field.
+        .dev = @as(u32, @bitCast(stat_buf.dev)),
         .uid = @intCast(stat_buf.uid),
         .gid = @intCast(stat_buf.gid),
         .nlink = @intCast(stat_buf.nlink),
@@ -507,6 +510,23 @@ test "FileInfo.stat basic" {
     try testing.expectEqual(std.Io.File.Kind.file, info.kind);
     try testing.expect(info.mtime > 0);
     try testing.expect(info.ctime > 0);
+}
+
+test "FileInfo.stat handles device id with high bit set" {
+    // Regression: on macOS `st_dev` is a signed i32. Filesystems such as
+    // devfs (/dev) report a dev id with the high bit set, which reads as a
+    // negative i32. `@intCast`ing that negative value into the u64 `dev`
+    // field panics with "integer does not fit in destination type", which
+    // crashed `ls /`. The conversion must reinterpret the bits, not range
+    // check. /dev exists on both macOS (devfs) and Linux (devtmpfs), so this
+    // exercises the conversion on both platforms.
+    const io = testing.io;
+
+    const info = try FileInfo.stat(io, "/dev");
+
+    try testing.expectEqual(std.Io.File.Kind.directory, info.kind);
+    // A populated device id, proving the conversion ran without trapping.
+    try testing.expect(info.dev != 0);
 }
 
 test "formatTime recent file" {

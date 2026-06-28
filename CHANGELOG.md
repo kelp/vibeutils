@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+- **`ls` no longer panics on directories whose device id has the
+  high bit set (e.g. `ls /`).** macOS `stat.st_dev` is a signed
+  `i32`, and filesystems such as devfs (`/dev`) report an id that
+  reads as negative. `statToFileInfo` `@intCast` that value into a
+  `u64` field, which trapped with "integer does not fit in
+  destination type" and aborted the process. The conversion now
+  reinterprets the bits with `@bitCast`.
+
 ### Infrastructure
 - Make the release workflow's GitHub-release steps idempotent
   so the `release` job can be safely re-run to recover a failed
@@ -54,7 +63,6 @@
   few calls `free` needs (`host_statistics64`,
   `mach_host_self`, `vm_statistics64_data_t`). These track
   the stable kernel ABI and are immune to SDK header churn.
->>>>>>> origin/main
 
 ## v0.10.0 — 2026-05-26
 
