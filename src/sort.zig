@@ -497,7 +497,11 @@ fn parseFieldSpec(spec: []const u8) !FieldSpec {
     const field_start = pos;
     while (pos < spec.len and std.ascii.isDigit(spec[pos])) : (pos += 1) {}
     if (pos == field_start) return error.InvalidFieldSpec;
-    const field = std.fmt.parseInt(usize, spec[field_start..pos], 10) catch return error.InvalidFieldSpec;
+    const field = std.fmt.parseInt(
+        usize, // tiger:allow:usize-arch
+        spec[field_start..pos],
+        10,
+    ) catch return error.InvalidFieldSpec;
 
     // Parse optional .C
     var char_pos: usize = 0;
@@ -506,7 +510,11 @@ fn parseFieldSpec(spec: []const u8) !FieldSpec {
         const char_start = pos;
         while (pos < spec.len and std.ascii.isDigit(spec[pos])) : (pos += 1) {}
         if (pos == char_start) return error.InvalidFieldSpec;
-        char_pos = std.fmt.parseInt(usize, spec[char_start..pos], 10) catch return error.InvalidFieldSpec;
+        char_pos = std.fmt.parseInt(
+            usize, // tiger:allow:usize-arch
+            spec[char_start..pos],
+            10,
+        ) catch return error.InvalidFieldSpec;
     }
 
     // Rest is options
@@ -551,7 +559,13 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Public entry point for the sort utility
-pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runSort(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     var opts = (try parseArgs(allocator, args, stderr_writer)) orelse
         return @intFromEnum(common.ExitCode.misuse);
     defer opts.deinit(allocator);
@@ -780,7 +794,13 @@ fn runSort_readAllFiles(
                 try readLines(allocator, io, stdin_file, lines, delimiter, buffers);
             } else {
                 const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
+                    common.printErrorWithProgram(
+                        allocator,
+                        stderr_writer,
+                        prog_name,
+                        "cannot read: {s}: {s}",
+                        .{ file_path, common.posixErrorString(err) },
+                    );
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close(io);
@@ -806,8 +826,18 @@ fn runSort_writeOutput(
     std.debug.assert(delimiter_valid);
 
     if (opts.output_file) |out_path| {
-        const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
+        const out_file = std.Io.Dir.cwd().createFile(
+            io,
+            out_path,
+            .{ .truncate = true },
+        ) catch |err| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "open failed: {s}: {s}",
+                .{ out_path, common.posixErrorString(err) },
+            );
             return @intFromEnum(common.ExitCode.misuse);
         };
         defer out_file.close(io);
@@ -825,13 +855,23 @@ fn runSort_writeOutput(
 /// Read lines from a file into the lines list.
 /// The file content is kept alive via the buffers list so that line
 /// slices remain valid until the caller frees the buffers.
-fn readLines(allocator: Allocator, io: std.Io, file: std.Io.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8, buffers: *std.ArrayListUnmanaged([]const u8)) !void {
+fn readLines(
+    allocator: Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    lines: *std.ArrayListUnmanaged([]const u8),
+    delimiter: u8,
+    buffers: *std.ArrayListUnmanaged([]const u8),
+) !void {
     const delimiter_valid = delimiter == '\n' or delimiter == 0;
     std.debug.assert(delimiter_valid);
 
     var file_buf: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buf);
-    const content = file_reader.interface.allocRemaining(allocator, .unlimited) catch |err| switch (err) {
+    const content = file_reader.interface.allocRemaining(
+        allocator,
+        .unlimited,
+    ) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return,
     };
@@ -1107,7 +1147,7 @@ fn compareDictionary(a: []const u8, b: []const u8, ignore_case: bool) std.math.O
     var ai: usize = 0;
     var bi: usize = 0;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop ends when ai or bi reaches its finite slice end
         // Skip non-dict chars in a
         while (ai < a.len and !isDictChar(a[ai])) : (ai += 1) {}
         // Skip non-dict chars in b
@@ -1152,7 +1192,7 @@ fn comparePrintable(a: []const u8, b: []const u8, ignore_case: bool) std.math.Or
     var ai: usize = 0;
     var bi: usize = 0;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop ends when ai or bi reaches its finite slice end
         while (ai < a.len and !std.ascii.isPrint(a[ai])) : (ai += 1) {}
         while (bi < b.len and !std.ascii.isPrint(b[bi])) : (bi += 1) {}
 
@@ -1260,7 +1300,9 @@ fn parseGeneralNumber(s: []const u8) f64 {
     // Find end of number (digits, sign, dot, e/E)
     var end: usize = 0;
     if (end < trimmed.len and (trimmed[end] == '-' or trimmed[end] == '+')) end += 1;
-    while (end < trimmed.len and (std.ascii.isDigit(trimmed[end]) or trimmed[end] == '.')) : (end += 1) {}
+    while (end < trimmed.len and
+        (std.ascii.isDigit(trimmed[end]) or trimmed[end] == '.')) : (end += 1)
+    {}
     if (end < trimmed.len and (trimmed[end] == 'e' or trimmed[end] == 'E')) {
         end += 1;
         if (end < trimmed.len and (trimmed[end] == '-' or trimmed[end] == '+')) end += 1;
@@ -1550,7 +1592,11 @@ fn parseBufferSize(s: []const u8) ?usize {
 }
 
 /// Merge pre-sorted line lists using a simple merge
-fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx: SortContext) !std.ArrayListUnmanaged([]const u8) {
+fn mergeLines(
+    allocator: Allocator,
+    file_lines: []const []const []const u8,
+    ctx: SortContext,
+) !std.ArrayListUnmanaged([]const u8) {
     var result: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer result.deinit(allocator);
 
@@ -1560,7 +1606,7 @@ fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx:
     std.debug.assert(positions.len == file_lines.len);
     @memset(positions, 0);
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop ends when every file reaches its line count
         // Find the smallest current line across all files
         var min_idx: ?usize = null;
         for (positions, 0..) |pos, file_idx| {
@@ -1588,7 +1634,13 @@ fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx:
 }
 
 /// Check if input is already sorted
-fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const SortOptions, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn checkSorted(
+    allocator: Allocator,
+    lines: []const []const u8,
+    opts: *const SortOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !u8 {
     _ = stdout_writer;
     if (lines.len <= 1) return @intFromEnum(common.ExitCode.success);
     std.debug.assert(lines.len > 1);
@@ -1607,7 +1659,13 @@ fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const Sor
             if (opts.check == .diagnose_first) {
                 // Get the first file name for the message
                 const file_name = if (opts.files.items.len > 0) opts.files.items[0] else "-";
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}:{d}: disorder: {s}", .{ file_name, idx + 2, line });
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "{s}:{d}: disorder: {s}",
+                    .{ file_name, idx + 2, line },
+                );
             }
             return @intFromEnum(common.ExitCode.general_error);
         }
@@ -1618,7 +1676,12 @@ fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const Sor
 }
 
 /// Write sorted lines to output, handling unique filtering
-fn writeLines(writer: anytype, lines: []const []const u8, opts: *const SortOptions, delimiter: u8) !void {
+fn writeLines(
+    writer: anytype,
+    lines: []const []const u8,
+    opts: *const SortOptions,
+    delimiter: u8,
+) !void {
     const delim_slice: [1]u8 = .{delimiter};
 
     if (opts.unique) {
@@ -1713,7 +1776,13 @@ test "sort --help shows help message" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runSort(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runSort(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "Usage: sort") != null);
 }
@@ -1723,7 +1792,13 @@ test "sort --version shows version" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runSort(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runSort(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "sort") != null);
 }
@@ -1736,7 +1811,13 @@ test "sort unknown flag returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runSort(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runSort(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
 }
 
@@ -1745,7 +1826,13 @@ test "sort invalid short flag returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-x"};
-    const result = try runSort(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runSort(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
 }
 

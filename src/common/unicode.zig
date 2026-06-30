@@ -272,7 +272,8 @@ test "displayWidth: control characters" {
     try testing.expectEqual(@as(usize, 0), displayWidth("\x00"));
     try testing.expectEqual(@as(usize, 0), displayWidth("\x1F"));
     try testing.expectEqual(@as(usize, 0), displayWidth("\x7F"));
-    try testing.expectEqual(@as(usize, 10), displayWidth("hello\x00world")); // control chars don't add width
+    // Control chars don't add width.
+    try testing.expectEqual(@as(usize, 10), displayWidth("hello\x00world"));
 }
 
 test "displayWidth: full-width ASCII" {
@@ -308,10 +309,13 @@ test "displayWidth: empty and whitespace" {
 test "displayWidth: real filename examples" {
     // Common filename patterns that might contain Unicode
     try testing.expectEqual(@as(usize, 8), displayWidth("test.txt"));
-    try testing.expectEqual(@as(usize, 12), displayWidth("测试文件.txt")); // 4 CJK × 2 + 4 ASCII = 12
-    try testing.expectEqual(@as(usize, 15), displayWidth("プロジェクト.md")); // 6 katakana × 2 + 3 ASCII = 15
+    // 4 CJK × 2 + 4 ASCII = 12.
+    try testing.expectEqual(@as(usize, 12), displayWidth("测试文件.txt"));
+    // 6 katakana × 2 + 3 ASCII = 15.
+    try testing.expectEqual(@as(usize, 15), displayWidth("プロジェクト.md"));
     try testing.expectEqual(@as(usize, 15), displayWidth("문서-파일명.pdf"));
-    try testing.expectEqual(@as(usize, 18), displayWidth("混合-mixed-名前.js")); // 4 CJK × 2 + 10 ASCII = 18
+    // 4 CJK × 2 + 10 ASCII = 18.
+    try testing.expectEqual(@as(usize, 18), displayWidth("混合-mixed-名前.js"));
 }
 
 test "isAscii helper function" {

@@ -329,7 +329,10 @@ pub fn formatTime(mtime_ns: i128, buf: []u8) ![]const u8 {
     const month_day = year_day.calculateMonthDay();
     const day_seconds = epoch_seconds.getDaySeconds();
 
-    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const months = [_][]const u8{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
 
     // Month enum is Jan=1..Dec=12; bound the index into the 12-element array.
     std.debug.assert(@intFromEnum(month_day.month) >= 1);

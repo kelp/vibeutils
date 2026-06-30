@@ -56,21 +56,46 @@ const ChownArgs = struct {
 
     /// Metadata for argument parsing
     pub const meta = .{
-        .help = .{ .short = 0, .desc = "Display this help and exit" }, // Disable short flag for help
+        // Disable short flag for help.
+        .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .changes = .{ .short = 'c', .desc = "Like verbose but report only when a change is made" },
+        .changes = .{
+            .short = 'c',
+            .desc = "Like verbose but report only when a change is made",
+        },
         .silent = .{ .short = 'f', .desc = "Suppress most error messages" },
         .quiet = .{ .desc = "Suppress most error messages" },
-        .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
-        .no_dereference = .{ .short = 'h', .desc = "Affect symbolic links instead of any referenced file" },
+        .verbose = .{
+            .short = 'v',
+            .desc = "Output a diagnostic for every file processed",
+        },
+        .no_dereference = .{
+            .short = 'h',
+            .desc = "Affect symbolic links instead of any referenced file",
+        },
         .H = .{ .short = 'H', .desc = "Traverse symlinks given on the command line" },
-        .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
+        .L = .{
+            .short = 'L',
+            .desc = "Traverse every symbolic link to a directory encountered",
+        },
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .recursive = .{ .short = 'R', .desc = "Operate on files and directories recursively" },
-        .reference = .{ .desc = "Use RFILE's owner and group rather than specifying values", .value_name = "RFILE" },
-        .numeric_ids = .{ .short = 'n', .desc = "Use numeric IDs only, do not resolve user/group names" },
-        .no_cross_device = .{ .short = 'x', .desc = "Don't cross mount points during recursive operations" },
-        .dereference = .{ .short = 0, .desc = "Affect the referent of each symbolic link (default)" },
+        .reference = .{
+            .desc = "Use RFILE's owner and group rather than specifying values",
+            .value_name = "RFILE",
+        },
+        .numeric_ids = .{
+            .short = 'n',
+            .desc = "Use numeric IDs only, do not resolve user/group names",
+        },
+        .no_cross_device = .{
+            .short = 'x',
+            .desc = "Don't cross mount points during recursive operations",
+        },
+        .dereference = .{
+            .short = 0,
+            .desc = "Affect the referent of each symbolic link (default)",
+        },
         .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially (default)" },
         .preserve_root = .{ .short = 0, .desc = "Fail to operate recursively on '/'" },
     };
@@ -82,9 +107,21 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Main implementation that accepts writers for output
-pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runChown(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse command-line arguments using the common argument parser
-    const parsed_args = common.argparse.ArgParser.parseOrExit(ChownArgs, allocator, args, "chown", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        ChownArgs,
+        allocator,
+        args,
+        "chown",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle information requests (help/version) - these exit immediately
@@ -241,7 +278,14 @@ fn runChown_validate(
     if (options.preserve_root and options.recursive) {
         for (files) |file_path| {
             if (std.mem.eql(u8, file_path, "/")) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chown", "it is dangerous to operate recursively on '/'\nUse --no-preserve-root to override this failsafe.", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chown",
+                    "it is dangerous to operate recursively on '/'\n" ++
+                        "Use --no-preserve-root to override this failsafe.",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.general_error);
             }
         }
@@ -250,7 +294,13 @@ fn runChown_validate(
     // -n: validate that owner spec uses only numeric IDs
     if (numeric_applies) {
         if (!isNumericOwnerSpec(owner_spec)) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid spec: '{s}' (numeric IDs only with -n)", .{owner_spec});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "chown",
+                "invalid spec: '{s}' (numeric IDs only with -n)",
+                .{owner_spec},
+            );
             return @intFromEnum(common.ExitCode.misuse);
         }
     }
@@ -295,7 +345,13 @@ fn runChown_resolveOwnership(
 
     // Warn if the owner spec looks like an octal permission mode
     if (ownership.warn_octal_confusion) {
-        common.printWarningWithProgram(allocator, stderr_writer, "chown", "'{s}' looks like a permission mode; did you mean 'chmod {s}'?", .{ owner_spec, owner_spec });
+        common.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            "chown",
+            "'{s}' looks like a permission mode; did you mean 'chmod {s}'?",
+            .{ owner_spec, owner_spec },
+        );
     }
 
     return ownership;
@@ -324,11 +380,27 @@ fn runChown_processFiles(
     var exit_code: u8 = 0;
     for (files) |file_path| {
         if (options.recursive) {
-            chownWalk(io, file_path, ownership, options, allocator, stdout_writer, stderr_writer) catch {
+            chownWalk(
+                io,
+                file_path,
+                ownership,
+                options,
+                allocator,
+                stdout_writer,
+                stderr_writer,
+            ) catch {
                 exit_code = @intFromEnum(common.ExitCode.general_error);
             };
         } else {
-            chownSingle(io, allocator, file_path, ownership, options, stdout_writer, stderr_writer) catch |err| {
+            chownSingle(
+                io,
+                allocator,
+                file_path,
+                ownership,
+                options,
+                stdout_writer,
+                stderr_writer,
+            ) catch |err| {
                 handleError(allocator, file_path, err, options, stderr_writer);
                 exit_code = @intFromEnum(common.ExitCode.general_error);
             };
@@ -450,7 +522,15 @@ fn chownFile(
 }
 
 /// Change ownership of a single file (non-recursive)
-fn chownSingle(io: std.Io, allocator: std.mem.Allocator, path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+fn chownSingle(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    ownership: common.user_group.OwnershipSpec,
+    options: ChownOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !void {
     _ = stderr_writer; // Parameter for API consistency, errors bubble up to caller
     // Get current ownership for comparison
     const stat_info = if (options.no_dereference)
@@ -572,7 +652,15 @@ fn walkAndApply(
     var had_errors = false;
     while (walk.next(io)) |maybe_entry| {
         const entry = maybe_entry orelse break;
-        chownSingle(io, allocator, entry.path, ownership, options, stdout_writer, stderr_writer) catch |err| {
+        chownSingle(
+            io,
+            allocator,
+            entry.path,
+            ownership,
+            options,
+            stdout_writer,
+            stderr_writer,
+        ) catch |err| {
             handleError(allocator, entry.path, err, options, stderr_writer);
             had_errors = true;
         };
@@ -581,7 +669,13 @@ fn walkAndApply(
         // cycle case is the -L self-link guard the tests exercise; treat any
         // such failure as a non-fatal error so the rest of the walk's output
         // (already emitted) is preserved, matching the old kernel-ELOOP path.
-        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot traverse '{s}': {s}", .{ path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "chown",
+            "cannot traverse '{s}': {s}",
+            .{ path, common.posixErrorString(err) },
+        );
         had_errors = true;
     }
 
@@ -592,7 +686,13 @@ fn walkAndApply(
 
 /// Perform ownership change via system call
 /// Uses chown() or lchown() based on no_dereference option
-fn changeOwnership(allocator: std.mem.Allocator, path: []const u8, uid: common.user_group.uid_t, gid: common.user_group.gid_t, options: ChownOptions) !void {
+fn changeOwnership(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    uid: common.user_group.uid_t,
+    gid: common.user_group.gid_t,
+    options: ChownOptions,
+) !void {
     // Convert path to null-terminated string for system call
     const path_c = try allocator.dupeZ(u8, path);
     defer allocator.free(path_c);
@@ -641,8 +741,18 @@ fn isNumericOwnerSpec(spec: []const u8) bool {
 }
 
 /// Report successful ownership change
-fn reportChange(writer: anytype, path: []const u8, old_uid: common.user_group.uid_t, old_gid: common.user_group.gid_t, new_uid: common.user_group.uid_t, new_gid: common.user_group.gid_t) !void {
-    try writer.print("changed ownership of '{s}' from {d}:{d} to {d}:{d}\n", .{ path, old_uid, old_gid, new_uid, new_gid });
+fn reportChange(
+    writer: anytype,
+    path: []const u8,
+    old_uid: common.user_group.uid_t,
+    old_gid: common.user_group.gid_t,
+    new_uid: common.user_group.uid_t,
+    new_gid: common.user_group.gid_t,
+) !void {
+    try writer.print(
+        "changed ownership of '{s}' from {d}:{d} to {d}:{d}\n",
+        .{ path, old_uid, old_gid, new_uid, new_gid },
+    );
 }
 
 /// Report ownership unchanged
@@ -651,25 +761,75 @@ fn reportNoChange(writer: anytype, path: []const u8) !void {
 }
 
 /// Handle and report errors
-fn handleError(allocator: std.mem.Allocator, path: []const u8, err: anyerror, options: ChownOptions, stderr_writer: anytype) void {
+fn handleError(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    err: anyerror,
+    options: ChownOptions,
+    stderr_writer: anytype,
+) void {
     if (options.silent) return; // Suppress errors in silent mode
 
+    // Reporter captures the fixed allocator/writer/program prefix so each switch
+    // branch only carries the comptime fmt (required by printErrorWithProgram)
+    // and the varying path argument, keeping every branch under the line cap.
+    var reporter = errorReporter(allocator, stderr_writer);
     switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': No such file or directory", .{path}),
-        error.PermissionDenied => common.printErrorWithProgram(allocator, stderr_writer, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
-        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': File name too long", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Invalid argument", .{path}),
-        error.InputOutputError => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Input/output error", .{path}),
-        error.UserNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid user", .{}),
-        error.GroupNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid group", .{}),
-        error.InvalidFormat => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid owner specification", .{}),
-        error.SystemResources => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
-        error.Unexpected => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Unexpected error", .{path}),
-        else => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, common.posixErrorString(err) }),
+        error.FileNotFound => reporter.report(
+            "cannot access '{s}': No such file or directory",
+            .{path},
+        ),
+        error.PermissionDenied => reporter.report(
+            "changing ownership of '{s}': Operation not permitted",
+            .{path},
+        ),
+        error.NotDir => reporter.report("cannot access '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => reporter.report(
+            "cannot access '{s}': Too many levels of symbolic links",
+            .{path},
+        ),
+        error.NameTooLong => reporter.report("cannot access '{s}': File name too long", .{path}),
+        error.ReadOnlyFileSystem => reporter.report(
+            "changing ownership of '{s}': Read-only file system",
+            .{path},
+        ),
+        error.InvalidValue => reporter.report("cannot access '{s}': Invalid argument", .{path}),
+        error.InputOutputError => reporter.report(
+            "cannot access '{s}': Input/output error",
+            .{path},
+        ),
+        error.UserNotFound => reporter.report("invalid user", .{}),
+        error.GroupNotFound => reporter.report("invalid group", .{}),
+        error.InvalidFormat => reporter.report("invalid owner specification", .{}),
+        error.SystemResources => reporter.report(
+            "cannot access '{s}': Cannot allocate memory",
+            .{path},
+        ),
+        error.Unexpected => reporter.report("cannot access '{s}': Unexpected error", .{path}),
+        else => reporter.report(
+            "cannot access '{s}': {s}",
+            .{ path, common.posixErrorString(err) },
+        ),
     }
+}
+
+/// Build an ErrorReporter generic over the concrete writer type so handleError
+/// keeps accepting `anytype` writers without narrowing their type.
+fn errorReporter(allocator: std.mem.Allocator, writer: anytype) ErrorReporter(@TypeOf(writer)) {
+    return .{ .allocator = allocator, .writer = writer };
+}
+
+/// Captures the fixed allocator/writer/program-name prefix shared by every
+/// chown diagnostic so handleError's switch branches stay short.
+fn ErrorReporter(comptime Writer: type) type {
+    return struct {
+        allocator: std.mem.Allocator,
+        writer: Writer,
+
+        fn report(self: *@This(), comptime fmt: []const u8, args: anytype) void {
+            common.printErrorWithProgram(self.allocator, self.writer, "chown", fmt, args);
+        }
+    };
 }
 
 // Tests
@@ -706,7 +866,11 @@ test "privileged: chown basic functionality" {
             const current_uid = common.user_group.getCurrentUserId();
             const current_gid = common.user_group.getCurrentGroupId();
 
-            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}:{d}", .{ current_uid, current_gid });
+            const owner_spec = try std.fmt.allocPrint(
+                inner_allocator,
+                "{d}:{d}",
+                .{ current_uid, current_gid },
+            );
 
             const options = ChownOptions{};
 
@@ -715,7 +879,15 @@ test "privileged: chown basic functionality" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -741,7 +913,15 @@ test "chown with invalid owner specification" {
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
-    try testing.expectError(error.InvalidFormat, chownFile(testing.io, testing.allocator, test_file, "", options, &stdout_aw.writer, &stderr_aw.writer));
+    try testing.expectError(error.InvalidFormat, chownFile(
+        testing.io,
+        testing.allocator,
+        test_file,
+        "",
+        options,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    ));
 }
 
 test "privileged: chown user only specification" {
@@ -777,7 +957,15 @@ test "privileged: chown user only specification" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -815,7 +1003,15 @@ test "privileged: chown group only specification" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -845,9 +1041,17 @@ test "privileged: chown with reference file" {
             const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
-            const ref_path = try std.fmt.allocPrint(inner_allocator, "{s}/reference.txt", .{tmp_path});
+            const ref_path = try std.fmt.allocPrint(
+                inner_allocator,
+                "{s}/reference.txt",
+                .{tmp_path},
+            );
 
-            const target_path = try std.fmt.allocPrint(inner_allocator, "{s}/target.txt", .{tmp_path});
+            const target_path = try std.fmt.allocPrint(
+                inner_allocator,
+                "{s}/target.txt",
+                .{tmp_path},
+            );
 
             const options = ChownOptions{ .reference_file = ref_path };
 
@@ -856,7 +1060,15 @@ test "privileged: chown with reference file" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, target_path, "", options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                target_path,
+                "",
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -872,7 +1084,15 @@ test "chown nonexistent file" {
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
-    try testing.expectError(error.FileNotFound, chownFile(testing.io, testing.allocator, "/nonexistent/file", owner_spec, options, &stdout_aw.writer, &stderr_aw.writer));
+    try testing.expectError(error.FileNotFound, chownFile(
+        testing.io,
+        testing.allocator,
+        "/nonexistent/file",
+        owner_spec,
+        options,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    ));
 }
 
 test "OwnershipSpec parsing" {
@@ -985,7 +1205,15 @@ test "privileged: chownSingle basic operation" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownSingle(testing.io, inner_allocator, test_file, ownership, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownSingle(
+                testing.io,
+                inner_allocator,
+                test_file,
+                ownership,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -1019,7 +1247,11 @@ test "privileged: chown recursive option" {
 
             const current_uid = common.user_group.getCurrentUserId();
             const current_gid = common.user_group.getCurrentGroupId();
-            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}:{d}", .{ current_uid, current_gid });
+            const owner_spec = try std.fmt.allocPrint(
+                inner_allocator,
+                "{d}:{d}",
+                .{ current_uid, current_gid },
+            );
 
             const options = ChownOptions{ .recursive = true };
 
@@ -1028,7 +1260,15 @@ test "privileged: chown recursive option" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_dir, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_dir,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -1066,7 +1306,15 @@ test "privileged: chown with verbose option" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -1104,7 +1352,15 @@ test "privileged: chown with changes option" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -1148,7 +1404,15 @@ test "privileged: chown with no-dereference option" {
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
-            try chownFile(testing.io, inner_allocator, test_link, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_link,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -1165,7 +1429,15 @@ test "chown with silent option suppresses errors" {
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
-    const result = chownFile(testing.io, testing.allocator, "/nonexistent/path", owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+    const result = chownFile(
+        testing.io,
+        testing.allocator,
+        "/nonexistent/path",
+        owner_spec,
+        options,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectError(error.FileNotFound, result);
 }
 
@@ -1202,11 +1474,27 @@ test "privileged: chown traverse options" {
 
             // Test traverse all symlinks
             const options_l = ChownOptions{ .traverse_all_symlinks = true };
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options_l, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options_l,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             // Test no traverse symlinks (default)
             const options_p = ChownOptions{ .no_traverse_symlinks = true };
-            try chownFile(testing.io, inner_allocator, test_file, owner_spec, options_p, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                test_file,
+                owner_spec,
+                options_p,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
         }
     }.testFn);
 }
@@ -1220,7 +1508,15 @@ test "error handling different error types" {
     defer stderr_aw.deinit();
 
     // Test invalid owner specification
-    const result1 = chownFile(testing.io, testing.allocator, "/nonexistent/test", "", options, &stdout_aw.writer, &stderr_aw.writer);
+    const result1 = chownFile(
+        testing.io,
+        testing.allocator,
+        "/nonexistent/test",
+        "",
+        options,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectError(error.InvalidFormat, result1);
 
     // Test nonexistent file (with valid owner spec)
@@ -1228,7 +1524,15 @@ test "error handling different error types" {
     const owner_spec = try std.fmt.allocPrint(testing.allocator, "{d}", .{current_uid});
     defer testing.allocator.free(owner_spec);
 
-    const result2 = chownFile(testing.io, testing.allocator, "/nonexistent/file", owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+    const result2 = chownFile(
+        testing.io,
+        testing.allocator,
+        "/nonexistent/file",
+        owner_spec,
+        options,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectError(error.FileNotFound, result2);
 }
 
@@ -1265,7 +1569,13 @@ test "chown --help flag works via runChown" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: chown") != null);
@@ -1278,7 +1588,13 @@ test "chown --version flag works" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "chown") != null);
@@ -1308,7 +1624,13 @@ test "chown -n flag rejects non-numeric owner spec" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-n", "root", "/tmp/test" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "numeric IDs only") != null);
@@ -1322,7 +1644,13 @@ test "chown -n flag accepts numeric owner spec" {
 
     // Uses a nonexistent file, but the -n validation should pass
     const args = [_][]const u8{ "-n", "1000:100", "/nonexistent/test" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should fail due to nonexistent file, not due to -n validation
     try testing.expect(exit_code != @intFromEnum(common.ExitCode.misuse));
@@ -1335,10 +1663,20 @@ test "chown --preserve-root blocks recursive on /" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--preserve-root", "-R", "1000:1000", "/" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangerous to operate recursively on '/'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dangerous to operate recursively on '/'",
+    ) != null);
 }
 
 test "chown --preserve-root allows non-recursive on /" {
@@ -1349,10 +1687,20 @@ test "chown --preserve-root allows non-recursive on /" {
 
     // Without -R, --preserve-root should not block
     const args = [_][]const u8{ "--preserve-root", "1000:1000", "/" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should fail with permission error, not preserve-root error
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangerous to operate recursively") == null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dangerous to operate recursively",
+    ) == null);
     _ = exit_code;
 }
 
@@ -1363,7 +1711,13 @@ test "chown --dereference flag is accepted" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--dereference", "--help" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1375,7 +1729,13 @@ test "chown --no-preserve-root flag is accepted" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--no-preserve-root", "--help" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1387,7 +1747,13 @@ test "chown -x flag is accepted" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-x", "--help" };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1421,7 +1787,13 @@ test "runChown production path with valid file and owner spec" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ owner_spec, test_file };
-    const exit_code = try runChown(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChown(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1459,7 +1831,11 @@ test "privileged: chown -RP should not follow cmdline symlink to directory" {
 
             const current_uid = common.user_group.getCurrentUserId();
             const current_gid = common.user_group.getCurrentGroupId();
-            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}:{d}", .{ current_uid, current_gid });
+            const owner_spec = try std.fmt.allocPrint(
+                inner_allocator,
+                "{d}:{d}",
+                .{ current_uid, current_gid },
+            );
 
             // -R with -P (no_traverse_symlinks): should NOT follow the symlink
             const options = ChownOptions{
@@ -1473,7 +1849,15 @@ test "privileged: chown -RP should not follow cmdline symlink to directory" {
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownFile(testing.io, inner_allocator, link_path, owner_spec, options, &stdout_aw.writer, &stderr_aw.writer);
+            try chownFile(
+                testing.io,
+                inner_allocator,
+                link_path,
+                owner_spec,
+                options,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             // Verbose output should only mention "link", not "target/file.txt"
             const output = stdout_aw.writer.buffered();
@@ -1531,6 +1915,17 @@ fn characterizationReported(output: []const u8, quoted_path: []const u8) bool {
     return std.mem.find(u8, output, quoted_path) != null;
 }
 
+/// Build a fully-quoted verbose marker '<base><suffix>' for the given path
+/// suffix. Equivalent to allocPrint("'{s}{s}'", .{ base, suffix }); extracted so
+/// the marker-heavy characterization tests stay under the per-function line cap.
+fn characterizationMarker(
+    inner_allocator: std.mem.Allocator,
+    base: []const u8,
+    suffix: []const u8,
+) ![]const u8 {
+    return std.fmt.allocPrint(inner_allocator, "'{s}{s}'", .{ base, suffix });
+}
+
 test "privileged: recursive walk reports a change for every entry in a multi-level tree" {
     // Guards full coverage: -R must chown EVERY entry in the tree, not
     // just the root. The walker rewrite must reproduce full coverage. A
@@ -1572,7 +1967,15 @@ test "privileged: recursive walk reports a change for every entry in a multi-lev
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
             // Every entry in the tree must be reported.
@@ -1630,23 +2033,37 @@ test "privileged: recursive walk processes children before their parent director
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
 
-            const grandchild_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/subdir/grandchild.txt'", .{base});
-            const child_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/child.txt'", .{base});
-            const subdir_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/subdir'", .{base});
-            const root_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root'", .{base});
+            const grandchild_marker =
+                try characterizationMarker(inner_allocator, base, "/root/subdir/grandchild.txt");
+            const child_marker =
+                try characterizationMarker(inner_allocator, base, "/root/child.txt");
+            const subdir_marker = try characterizationMarker(inner_allocator, base, "/root/subdir");
+            const root_marker = try characterizationMarker(inner_allocator, base, "/root");
 
-            const grandchild_pos = std.mem.find(u8, out, grandchild_marker) orelse return error.MissingGrandchildLine;
-            const child_pos = std.mem.find(u8, out, child_marker) orelse return error.MissingChildLine;
+            const grandchild_pos = std.mem.find(u8, out, grandchild_marker) orelse
+                return error.MissingGrandchildLine;
+            const child_pos = std.mem.find(u8, out, child_marker) orelse
+                return error.MissingChildLine;
             // The subdir and root markers are prefixes of their children's
             // paths, so search for the LAST occurrence: the directory's own
             // trailing quote in the marker makes each match the directory's own
             // line, which (under post-order) comes after its children.
-            const subdir_pos = std.mem.lastIndexOf(u8, out, subdir_marker) orelse return error.MissingSubdirLine;
-            const root_pos = std.mem.lastIndexOf(u8, out, root_marker) orelse return error.MissingRootLine;
+            const subdir_pos = std.mem.lastIndexOf(u8, out, subdir_marker) orelse
+                return error.MissingSubdirLine;
+            const root_pos = std.mem.lastIndexOf(u8, out, root_marker) orelse
+                return error.MissingRootLine;
 
             // grandchild before its parent subdir; subdir before root.
             try testing.expect(grandchild_pos < subdir_pos);
@@ -1705,7 +2122,15 @@ test "privileged: -P reports the symlink itself and does not descend into its ta
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
 
@@ -1716,7 +2141,11 @@ test "privileged: -P reports the symlink itself and does not descend into its ta
             // exactly like the -L test reports "'{base}/root/link/reached.txt'".
             // So the through-link form is the only marker that can actually
             // surface a descent regression.
-            const secret_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/link/secret.txt'", .{base});
+            const secret_marker = try std.fmt.allocPrint(
+                inner_allocator,
+                "'{s}/root/link/secret.txt'",
+                .{base},
+            );
 
             // The link itself must be reported.
             try testing.expect(characterizationReported(out, link_marker));
@@ -1771,16 +2200,64 @@ test "privileged: -L follows a symlink-to-directory and reports the target subtr
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
             // Following the link reaches the file behind it via the link path.
             // Anchor on the full quoted path (leading quote + base) so the
             // marker cannot false-match any other reported path.
-            const reached_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/link/reached.txt'", .{base});
+            const reached_marker = try std.fmt.allocPrint(
+                inner_allocator,
+                "'{s}/root/link/reached.txt'",
+                .{base},
+            );
             try testing.expect(characterizationReported(out, reached_marker));
         }
     }.testFn);
+}
+
+/// Build the -H fixture: operand_target/{via_operand.txt, nested_link ->
+/// ../nested_target}, nested_target/via_nested.txt, and operand_link ->
+/// operand_target. Returns the absolute path of the operand symlink. Extracted
+/// from the -H characterization test so its testFn stays under the line cap;
+/// the on-disk layout and names are unchanged. Symlink-creation failures map to
+/// error.SkipZigTest exactly as the inline version did.
+fn setupCmdlineSymlinkFixture(
+    inner_allocator: std.mem.Allocator,
+    tmp_dir: *testing.TmpDir,
+) ![]const u8 {
+    // operand_target/ holds entries reachable only by FOLLOWING the
+    // command-line symlink. nested_target/ holds an entry reachable
+    // only by following a symlink found DURING recursion.
+    try tmp_dir.dir.createDir(testing.io, "operand_target", .default_dir);
+    var operand_target = try tmp_dir.dir.openDir(testing.io, "operand_target", .{});
+    defer operand_target.close(testing.io);
+    (try operand_target.createFile(testing.io, "via_operand.txt", .{})).close(testing.io);
+
+    // A nested symlink inside operand_target pointing at nested_target.
+    try tmp_dir.dir.createDir(testing.io, "nested_target", .default_dir);
+    var nested_target = try tmp_dir.dir.openDir(testing.io, "nested_target", .{});
+    defer nested_target.close(testing.io);
+    (try nested_target.createFile(testing.io, "via_nested.txt", .{})).close(testing.io);
+    operand_target.symLink(testing.io, "../nested_target", "nested_link", .{}) catch
+        return error.SkipZigTest;
+
+    // The command-line operand is itself a symlink to operand_target.
+    tmp_dir.dir.symLink(testing.io, "operand_target", "operand_link", .{}) catch
+        return error.SkipZigTest;
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const base = try characterizationTmpRealpath(inner_allocator, tmp_dir, &path_buf);
+    // Pass the SYMLINK as the operand so depth-0 following is exercised.
+    return std.fmt.allocPrint(inner_allocator, "{s}/operand_link", .{base});
 }
 
 test "privileged: -H follows a command-line symlink but not symlinks found during recursion" {
@@ -1803,28 +2280,8 @@ test "privileged: -H follows a command-line symlink but not symlinks found durin
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
-            // operand_target/ holds entries reachable only by FOLLOWING the
-            // command-line symlink. nested_target/ holds an entry reachable
-            // only by following a symlink found DURING recursion.
-            try tmp_dir.dir.createDir(testing.io, "operand_target", .default_dir);
-            var operand_target = try tmp_dir.dir.openDir(testing.io, "operand_target", .{});
-            defer operand_target.close(testing.io);
-            (try operand_target.createFile(testing.io, "via_operand.txt", .{})).close(testing.io);
-
-            // A nested symlink inside operand_target pointing at nested_target.
-            try tmp_dir.dir.createDir(testing.io, "nested_target", .default_dir);
-            var nested_target = try tmp_dir.dir.openDir(testing.io, "nested_target", .{});
-            defer nested_target.close(testing.io);
-            (try nested_target.createFile(testing.io, "via_nested.txt", .{})).close(testing.io);
-            operand_target.symLink(testing.io, "../nested_target", "nested_link", .{}) catch return error.SkipZigTest;
-
-            // The command-line operand is itself a symlink to operand_target.
-            tmp_dir.dir.symLink(testing.io, "operand_target", "operand_link", .{}) catch return error.SkipZigTest;
-
-            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
             // Pass the SYMLINK as the operand so depth-0 following is exercised.
-            const operand_path = try std.fmt.allocPrint(inner_allocator, "{s}/operand_link", .{base});
+            const operand_path = try setupCmdlineSymlinkFixture(inner_allocator, &tmp_dir);
 
             const ownership = common.user_group.OwnershipSpec{
                 .user = characterization_uid,
@@ -1841,13 +2298,24 @@ test "privileged: -H follows a command-line symlink but not symlinks found durin
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, operand_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                operand_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
 
             // The command-line symlink WAS followed: the file behind it, reached
-            // through the operand path, must be reported.
-            const via_operand_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/operand_link/via_operand.txt'", .{base});
+            // through the operand path, must be reported. operand_path is
+            // '<base>/operand_link', so the marker equals the original
+            // "'{s}/operand_link/via_operand.txt'" built from base.
+            const via_operand_marker =
+                try characterizationMarker(inner_allocator, operand_path, "/via_operand.txt");
             try testing.expect(characterizationReported(out, via_operand_marker));
 
             // The nested symlink found during recursion was NOT descended: the
@@ -1855,7 +2323,11 @@ test "privileged: -H follows a command-line symlink but not symlinks found durin
             // traversal/link name, so a wrongly-descended nested link would
             // surface as '.../operand_link/nested_link/via_nested.txt'; the
             // through-link substring below has teeth against that regression.
-            const via_nested_through_operand = try std.fmt.allocPrint(inner_allocator, "/nested_link/via_nested.txt'", .{});
+            const via_nested_through_operand = try std.fmt.allocPrint(
+                inner_allocator,
+                "/nested_link/via_nested.txt'",
+                .{},
+            );
             try testing.expect(!characterizationReported(out, via_nested_through_operand));
         }
     }.testFn);
@@ -1895,18 +2367,34 @@ test "privileged: -x stays on the same filesystem and still reports same-device 
                 .user = characterization_uid,
                 .group = characterization_gid,
             };
-            const options = ChownOptions{ .recursive = true, .no_cross_device = true, .verbose = true };
+            const options = ChownOptions{
+                .recursive = true,
+                .no_cross_device = true,
+                .verbose = true,
+            };
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
             // The deep same-device leaf must still be reached under -x.
-            const leaf_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/sub/leaf.txt'", .{base});
+            const leaf_marker = try std.fmt.allocPrint(
+                inner_allocator,
+                "'{s}/root/sub/leaf.txt'",
+                .{base},
+            );
             try testing.expect(characterizationReported(out, leaf_marker));
         }
     }.testFn);
@@ -1966,7 +2454,15 @@ test "privileged: deep directory tree completes without stack overflow" {
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
+            try chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            );
 
             const out = stdout_aw.writer.buffered();
             // Reaching the deepest leaf proves the traversal ran to the bottom.
@@ -2023,10 +2519,22 @@ test "privileged: -L with a symlink cycle terminates cleanly instead of looping 
             // Must return (not hang). Per-entry errors from the cycle are
             // tolerated: the current code surfaces ELOOP from the kernel; a
             // future walker surfaces its own cycle stop. Both must terminate.
-            chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer) catch {};
+            chownWalk(
+                testing.io,
+                root_path,
+                ownership,
+                options,
+                inner_allocator,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+            ) catch {};
 
             const out = stdout_aw.writer.buffered();
-            const file_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/f.txt'", .{base});
+            const file_marker = try std.fmt.allocPrint(
+                inner_allocator,
+                "'{s}/root/f.txt'",
+                .{base},
+            );
             try testing.expect(characterizationReported(out, file_marker));
         }
     }.testFn);

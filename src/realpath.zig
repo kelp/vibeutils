@@ -52,7 +52,11 @@ const RealpathArgs = struct {
         .zero = .{ .short = 'z', .desc = "End each output line with NUL, not newline" },
         .quiet = .{ .short = 'q', .desc = "Suppress most error messages" },
         .relative_to = .{ .short = 0, .desc = "Print path relative to DIR", .value_name = "DIR" },
-        .relative_base = .{ .short = 0, .desc = "Print relative if path is under DIR", .value_name = "DIR" },
+        .relative_base = .{
+            .short = 0,
+            .desc = "Print relative if path is under DIR",
+            .value_name = "DIR",
+        },
     };
 };
 
@@ -312,7 +316,13 @@ fn processPath(
 }
 
 /// Main entry point for the realpath utility
-pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runRealpath(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Pre-process args to handle --strip alias for --no-symlinks
     var processed_args: std.ArrayListUnmanaged([]const u8) = .empty;
     defer processed_args.deinit(allocator);
@@ -325,7 +335,13 @@ pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, s
         }
     }
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(RealpathArgs, allocator, processed_args.items, "realpath", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        RealpathArgs,
+        allocator,
+        processed_args.items,
+        "realpath",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -353,7 +369,10 @@ pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, s
         if (!ok) has_error = true;
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
 }
 
 /// Print help message
@@ -400,7 +419,13 @@ test "realpath: help flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -414,7 +439,13 @@ test "realpath: version flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -428,7 +459,13 @@ test "realpath: missing operand" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
@@ -440,7 +477,13 @@ test "realpath: unknown flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
 }
@@ -451,7 +494,13 @@ test "realpath: existing path" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/tmp"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -466,7 +515,13 @@ test "realpath: nonexistent path fails by default when parent missing" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent/path/that/does/not/exist"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
 }
@@ -477,10 +532,20 @@ test "realpath: nonexistent last component succeeds by default" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent_vibeutils_last_component"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "nonexistent_vibeutils_last_component") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_aw.writer.buffered(),
+        "nonexistent_vibeutils_last_component",
+    ) != null);
 }
 
 test "realpath: canonicalize-missing accepts nonexistent paths" {
@@ -489,7 +554,13 @@ test "realpath: canonicalize-missing accepts nonexistent paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/tmp/nonexistent_vibeutils_test_path" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -503,7 +574,13 @@ test "realpath: no-symlinks resolves . and .." {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "/usr/bin/../lib" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/lib\n", stdout_aw.writer.buffered());
@@ -515,7 +592,13 @@ test "realpath: strip alias works" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--strip", "/usr/bin/../lib" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/lib\n", stdout_aw.writer.buffered());
@@ -527,7 +610,13 @@ test "realpath: zero delimiter" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-z", "-s", "/usr/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/bin\x00", stdout_aw.writer.buffered());
@@ -539,7 +628,13 @@ test "realpath: quiet suppresses errors" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-q", "-e", "/nonexistent/path" };
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
@@ -551,7 +646,13 @@ test "realpath: multiple paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "/usr/bin", "/usr/lib" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/bin\n/usr/lib\n", stdout_aw.writer.buffered());
@@ -565,7 +666,13 @@ test "realpath: multiple paths with some failing" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-s", "/usr/bin", "/nonexistent_vibeutils_xyz" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     _ = result;
 }
 
@@ -577,7 +684,13 @@ test "realpath: default mode allows nonexistent last component" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent_vibeutils_test"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/nonexistent_vibeutils_test\n", stdout_aw.writer.buffered());
@@ -648,7 +761,13 @@ test "realpath: relative-to with no-symlinks" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-to=/usr", "/usr/bin/ls" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin/ls\n", stdout_aw.writer.buffered());
@@ -660,7 +779,13 @@ test "realpath: relative-base under base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr/bin/ls" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin/ls\n", stdout_aw.writer.buffered());
@@ -672,7 +797,13 @@ test "realpath: relative-base not under base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/etc/hosts" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/etc/hosts\n", stdout_aw.writer.buffered());
@@ -684,7 +815,13 @@ test "realpath: relative-base path correctly under base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin\n", stdout_aw.writer.buffered());
@@ -696,7 +833,13 @@ test "realpath: relative-base prefix false positive" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr2/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr2/bin\n", stdout_aw.writer.buffered());
@@ -708,7 +851,13 @@ test "realpath: relative-base path equals base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(".\n", stdout_aw.writer.buffered());
@@ -720,7 +869,13 @@ test "realpath: canonicalize-missing .. past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/usr/nonexistent_vibeutils_test/../.." };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
@@ -732,7 +887,13 @@ test "realpath: canonicalize-missing multiple .. past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/usr/nonexistent_vibeutils_test/../../.." };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
@@ -744,7 +905,13 @@ test "realpath: canonicalize-missing deeper path .. past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/usr/bin/nonexistent_vibeutils_test/../../.." };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
@@ -758,10 +925,18 @@ test "realpath: default mode allows missing last component (GNU -E semantics)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp/nonexistent_vibeutils_test_xyz"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "nonexistent_vibeutils_test_xyz") != null);
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "nonexistent_vibeutils_test_xyz") != null,
+    );
 }
 
 test "realpath: default mode fails when intermediate component missing" {
@@ -772,7 +947,13 @@ test "realpath: default mode fails when intermediate component missing" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent_vibeutils_dir/somefile"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(stderr_aw.writer.buffered().len > 0);
@@ -786,7 +967,13 @@ test "realpath: -e flag fails when last component missing (stricter than default
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-e", "/tmp/nonexistent_vibeutils_test_xyz" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
@@ -799,7 +986,13 @@ test "realpath: error message uses POSIX string not Zig @errorName" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-e", "/nonexistent_vibeutils_xyz" };
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     const err_out = stderr_aw.writer.buffered();
@@ -813,7 +1006,13 @@ test "realpath: -e on existing path outputs resolved path" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-e", "/tmp" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -828,7 +1027,13 @@ test "realpath: --relative-to without -s resolves existing paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--relative-to=/usr", "/usr/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin\n", stdout_aw.writer.buffered());
@@ -859,7 +1064,13 @@ test "realpath: default mode resolves canonical path when last component missing
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{nonexistent};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
@@ -871,7 +1082,13 @@ test "realpath: default mode uses canonicalizeMissing (result is canonical not r
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/tmp/e7_vibeutils_realpath_test"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -895,7 +1112,13 @@ test "realpath: default mode dotdot past root is clamped" {
     defer testing.allocator.free(expected);
 
     const args = [_][]const u8{"/../../tmp"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
@@ -916,7 +1139,13 @@ test "realpath: -m dotdot past root is clamped" {
     defer testing.allocator.free(expected);
 
     const args = [_][]const u8{ "-m", "/../../tmp/e7_nonexistent" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());

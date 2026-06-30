@@ -911,7 +911,14 @@ fn run(
 }
 
 /// Print a single number with the appropriate formatting
-fn printNumber(writer: *std.Io.Writer, value: f64, all_integers: bool, precision: usize, pad_width: usize, format_str: ?[]const u8) !void {
+fn printNumber(
+    writer: *std.Io.Writer,
+    value: f64,
+    all_integers: bool,
+    precision: usize, // tiger:allow:usize-arch decimal precision feeds std.fmt
+    pad_width: usize, // tiger:allow:usize-arch -w pad width feeds slice/std.fmt math
+    format_str: ?[]const u8,
+) !void {
     // value is the loop's finite `current`; the formatters @intFromFloat it.
     std.debug.assert(!std.math.isNan(value));
     var buf: [128]u8 = undefined;
@@ -1065,7 +1072,10 @@ test "seq equal width: seq -w 1 10" {
     const args = [_][]const u8{ "-w", "1", "10" };
     const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "seq empty output when direction wrong" {
@@ -1144,7 +1154,9 @@ test "seq error: invalid number" {
     const args = [_][]const u8{"abc"};
     const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid floating point argument") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "invalid floating point argument") != null,
+    );
 }
 
 test "seq error: zero increment" {

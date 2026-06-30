@@ -64,7 +64,8 @@ pub fn promptYesNo(
 
     // Flush to ensure the prompt is visible before reading stdin
     const WriterType = @TypeOf(writer);
-    const ActualType = if (@typeInfo(WriterType) == .pointer) std.meta.Child(WriterType) else WriterType;
+    const is_pointer = @typeInfo(WriterType) == .pointer;
+    const ActualType = if (is_pointer) std.meta.Child(WriterType) else WriterType;
     if (comptime @hasDecl(ActualType, "flush")) {
         writer.flush() catch {};
     }

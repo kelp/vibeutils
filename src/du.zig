@@ -81,29 +81,65 @@ const DuOptions = struct {
         .all = .{ .short = 'a', .desc = "Write counts for all files, not just directories" },
         .bytes = .{ .short = 'b', .desc = "Equivalent to --apparent-size --block-size=1" },
         .total = .{ .short = 'c', .desc = "Produce a grand total" },
-        .max_depth = .{ .short = 'd', .desc = "Print total for directory only if N or fewer levels below", .value_name = "N" },
-        .human_readable = .{ .short = 'h', .desc = "Print sizes in human readable format (1K, 234M, 2G)" },
+        .max_depth = .{
+            .short = 'd',
+            .desc = "Print total for directory only if N or fewer levels below",
+            .value_name = "N",
+        },
+        .human_readable = .{
+            .short = 'h',
+            .desc = "Print sizes in human readable format (1K, 234M, 2G)",
+        },
         .kilobytes = .{ .short = 'k', .desc = "Like --block-size=1K" },
         .gigabytes = .{ .short = 'g', .desc = "Like --block-size=1G" },
         .megabytes = .{ .short = 'm', .desc = "Like --block-size=1M" },
         .dereference = .{ .short = 'L', .desc = "Dereference all symbolic links" },
-        .dereference_args = .{ .short = 'H', .desc = "Dereference only command-line symlink arguments" },
+        .dereference_args = .{
+            .short = 'H',
+            .desc = "Dereference only command-line symlink arguments",
+        },
         .no_dereference = .{ .short = 'P', .desc = "Do not follow symbolic links (default)" },
         .no_follow = .{ .short = 'n', .desc = "Don't follow symbolic links (alias for -P)" },
-        .report_errors = .{ .short = 'r', .desc = "Report errors (default behavior, XPG4 compatibility)" },
+        .report_errors = .{
+            .short = 'r',
+            .desc = "Report errors (default behavior, XPG4 compatibility)",
+        },
         .summarize = .{ .short = 's', .desc = "Display only a total for each argument" },
-        .separate_dirs = .{ .short = 'S', .desc = "For directories do not include size of subdirectories" },
+        .separate_dirs = .{
+            .short = 'S',
+            .desc = "For directories do not include size of subdirectories",
+        },
         .one_file_system = .{ .short = 'x', .desc = "Skip directories on different file systems" },
         .apparent_size = .{ .short = 'A', .desc = "Print apparent sizes rather than disk usage" },
-        .block_size = .{ .short = 'B', .desc = "Scale sizes by SIZE before printing", .value_name = "SIZE" },
+        .block_size = .{
+            .short = 'B',
+            .desc = "Scale sizes by SIZE before printing",
+            .value_name = "SIZE",
+        },
         .count_links = .{ .short = 'l', .desc = "Count sizes many times if hard linked" },
-        .ignore_pattern = .{ .short = 'I', .desc = "Exclude files matching PATTERN (stub)", .value_name = "PATTERN" },
-        .threshold = .{ .short = 't', .desc = "Exclude entries smaller than SIZE, or larger if negative", .value_name = "SIZE" },
+        .ignore_pattern = .{
+            .short = 'I',
+            .desc = "Exclude files matching PATTERN (stub)",
+            .value_name = "PATTERN",
+        },
+        .threshold = .{
+            .short = 't',
+            .desc = "Exclude entries smaller than SIZE, or larger if negative",
+            .value_name = "SIZE",
+        },
         .si = .{ .short = 0, .desc = "Like -h, but use powers of 1000 not 1024" },
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
-        .icons = .{ .short = 0, .desc = "When to show file type icons (valid: always, auto, never)", .value_name = "WHEN" },
+        .color = .{
+            .short = 0,
+            .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'",
+            .value_name = "WHEN",
+        },
+        .icons = .{
+            .short = 0,
+            .desc = "When to show file type icons (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
     };
 };
 
@@ -530,8 +566,12 @@ fn processOperand(
         return 0;
     };
     // A symlink can only persist as a leaf here when the policy does not follow
-    // it; under a follow policy doStat resolved through it to the target.
-    assert(!(stat_buf.is_symlink and follow_operand));
+    // it; under a follow policy doStat resolved through it to the target. The
+    // conjunction is hoisted into a single boolean so the assertion stays a
+    // lone condition (the forbidden state is "symlink AND followed", which is a
+    // NAND, not two independent invariants).
+    const symlink_followed = stat_buf.is_symlink and follow_operand;
+    assert(!symlink_followed);
 
     if (!stat_buf.is_dir) {
         // Leaf operand: always printed (depth 0) regardless of -a; the operand
@@ -643,7 +683,11 @@ fn walkDirectoryOperand_drainLoop(
     assert(state.subtree_sizes[0] == 0);
 
     var root_total: u64 = 0;
-    while (true) {
+    // Drains the bounded walker: each iteration consumes one entry. The walker
+    // is internally bounded (max_depth, max_entries) and self-terminating, so a
+    // numeric cap here would only risk truncating valid output on large trees;
+    // see the annotation below for the exact termination conditions.
+    while (true) { // tiger:allow:unbounded-loop (termination: see comment above)
         const maybe_entry = dir_walker.next(io) catch |err| switch (err) {
             error.DepthLimitExceeded, error.EntryLimitExceeded => {
                 printDirError(allocator, stderr, path, err);
@@ -840,7 +884,15 @@ fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
     return true;
 }
 
-fn printEntry(writer: *std.Io.Writer, style: anytype, size_bytes: u64, config: DuConfig, path: []const u8, is_dir: bool, is_link: bool) void {
+fn printEntry(
+    writer: *std.Io.Writer,
+    style: anytype,
+    size_bytes: u64,
+    config: DuConfig,
+    path: []const u8,
+    is_dir: bool,
+    is_link: bool,
+) void {
     // Every call site passes a non-empty path (an operand, a walker entry path,
     // or the literal "total"); basename/eql below rely on it.
     assert(path.len > 0);
@@ -898,7 +950,12 @@ fn printEntry(writer: *std.Io.Writer, style: anytype, size_bytes: u64, config: D
 // Error message helpers
 // ============================================================================
 
-fn printStatError(allocator: Allocator, stderr: *std.Io.Writer, path: []const u8, err: anyerror) void {
+fn printStatError(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    path: []const u8,
+    err: anyerror,
+) void {
     const msg = switch (err) {
         error.AccessDenied => "Permission denied",
         error.FileNotFound => "No such file or directory",
@@ -907,20 +964,48 @@ fn printStatError(allocator: Allocator, stderr: *std.Io.Writer, path: []const u8
         error.SymLinkLoop => "Too many levels of symbolic links",
         else => "Cannot access",
     };
-    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot access '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        prog_name,
+        "cannot access '{s}': {s}",
+        .{ path, msg },
+    );
 }
 
-fn printDirError(allocator: Allocator, stderr: *std.Io.Writer, path: []const u8, err: anyerror) void {
+fn printDirError(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    path: []const u8,
+    err: anyerror,
+) void {
     const msg = switch (err) {
         error.AccessDenied => "Permission denied",
         error.FileNotFound => "No such file or directory",
         else => "Cannot read directory",
     };
-    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read directory '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        prog_name,
+        "cannot read directory '{s}': {s}",
+        .{ path, msg },
+    );
 }
 
-fn printIterError(allocator: Allocator, stderr: *std.Io.Writer, path: []const u8, err: anyerror) void {
-    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read directory '{s}': {s}", .{ path, common.posixErrorString(err) });
+fn printIterError(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    path: []const u8,
+    err: anyerror,
+) void {
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        prog_name,
+        "cannot read directory '{s}': {s}",
+        .{ path, common.posixErrorString(err) },
+    );
 }
 
 // ============================================================================
@@ -931,7 +1016,13 @@ pub fn main(init: std.process.Init) !void {
     common.utilityMain(init, runDu);
 }
 
-pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+pub fn runDu(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) anyerror!u8 {
     const opts = common.argparse.ArgParser.parse(DuOptions, allocator, args) catch |err|
         return runDu_parseArgsError(allocator, stderr, err);
     defer allocator.free(opts.positionals);
@@ -948,7 +1039,13 @@ pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
 
     // Check for conflicting options: -s and -d cannot be combined
     if (opts.summarize and opts.max_depth != null) {
-        common.printErrorWithProgram(allocator, stderr, prog_name, "cannot both summarize and show each directory's size", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "cannot both summarize and show each directory's size",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -1316,11 +1413,21 @@ test "du --help shows usage" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "Usage: du") != null);
-    try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--human-readable") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_buffer_aw.writer.buffered(),
+        "--human-readable",
+    ) != null);
 }
 
 test "du --version shows version" {
@@ -1329,11 +1436,21 @@ test "du --version shows version" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--version"};
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "du") != null);
-    try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), common.version) != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_buffer_aw.writer.buffered(),
+        common.version,
+    ) != null);
 }
 
 test "du invalid flag exits with code 2" {
@@ -1342,7 +1459,13 @@ test "du invalid flag exits with code 2" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--invalid-flag"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1353,10 +1476,20 @@ test "du nonexistent path exits with code 1" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"/nonexistent/path/xyz"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_buffer_aw.writer.buffered(), "No such file or directory") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_buffer_aw.writer.buffered(),
+        "No such file or directory",
+    ) != null);
 }
 
 test "du -s and -d conflict exits with code 2" {
@@ -1365,7 +1498,13 @@ test "du -s and -d conflict exits with code 2" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-s", "-d", "1" };
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1389,7 +1528,13 @@ test "du on a file reports its size" {
 
     // Use -b for apparent size in bytes
     const args = &[_][]const u8{ "-b", test_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // The output should contain "14" (length of "Hello, world!\n")
@@ -1414,7 +1559,13 @@ test "du on a directory reports size" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have output lines for subdir and the top dir
@@ -1441,7 +1592,13 @@ test "du -s shows only total for argument" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-s", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // With -s, should only have one line of output (the summary)
@@ -1469,7 +1626,13 @@ test "du -c shows grand total" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-c", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain "total" line
@@ -1496,7 +1659,13 @@ test "du -a shows all files" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-a", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // With -a, output should contain individual file names
@@ -1521,7 +1690,13 @@ test "du -h formats human-readable" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-h", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should exist and contain the path
@@ -1546,7 +1721,13 @@ test "du defaults to current directory" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-s", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(stdout_buffer_aw.writer.buffered().len > 0);
@@ -1597,7 +1778,12 @@ test "du shouldPrintAtDepth" {
         .si = false,
         .threshold = null,
         .show_icons = false,
-        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
+        .display = common.display_config.DisplayConfig{
+            .color = .off,
+            .icons = .off,
+            .highlight = .off,
+            .theme = .none,
+        },
     };
     try testing.expect(shouldPrintAtDepth(0, config_no_limit));
     try testing.expect(shouldPrintAtDepth(100, config_no_limit));
@@ -1668,10 +1854,20 @@ test "du --color=invalid exits with code 2" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--color=invalid"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_buffer_aw.writer.buffered(), "invalid argument") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_buffer_aw.writer.buffered(),
+        "invalid argument",
+    ) != null);
 }
 
 // C library functions for environment manipulation in tests
@@ -1738,7 +1934,12 @@ test "printEntry without icons shows clean output" {
         .si = false,
         .threshold = null,
         .show_icons = false,
-        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
+        .display = common.display_config.DisplayConfig{
+            .color = .off,
+            .icons = .off,
+            .highlight = .off,
+            .theme = .none,
+        },
     };
 
     printEntry(&buffer_aw.writer, style, 1024, config, "/tmp/test.txt", false, false);
@@ -1769,7 +1970,12 @@ test "printEntry with icons shows icon glyph" {
         .si = false,
         .threshold = null,
         .show_icons = true,
-        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .on, .highlight = .off, .theme = .none },
+        .display = common.display_config.DisplayConfig{
+            .color = .off,
+            .icons = .on,
+            .highlight = .off,
+            .theme = .none,
+        },
     };
 
     printEntry(&buffer_aw.writer, style, 1024, config, "/tmp/test.txt", false, false);
@@ -1803,7 +2009,12 @@ test "printEntry with directory icon" {
         .si = false,
         .threshold = null,
         .show_icons = true,
-        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .on, .highlight = .off, .theme = .none },
+        .display = common.display_config.DisplayConfig{
+            .color = .off,
+            .icons = .on,
+            .highlight = .off,
+            .theme = .none,
+        },
     };
 
     printEntry(&buffer_aw.writer, style, 4096, config, "/tmp/mydir", true, false);
@@ -1820,7 +2031,13 @@ test "du --help shows icons option" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--icons") != null);
@@ -1836,7 +2053,13 @@ test "du -r flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-r"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
@@ -1860,19 +2083,34 @@ test "du -r produces same output as du" {
     defer stdout_without_r_aw.deinit();
 
     const args_no_r = &[_][]const u8{ "-b", dir_path };
-    const exit_no_r = runDu(testing.allocator, io, args_no_r, &stdout_without_r_aw.writer, common.null_writer);
+    const exit_no_r = runDu(
+        testing.allocator,
+        io,
+        args_no_r,
+        &stdout_without_r_aw.writer,
+        common.null_writer,
+    );
 
     // Run with -r
     var stdout_with_r_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_with_r_aw.deinit();
 
     const args_with_r = &[_][]const u8{ "-r", "-b", dir_path };
-    const exit_with_r = runDu(testing.allocator, io, args_with_r, &stdout_with_r_aw.writer, common.null_writer);
+    const exit_with_r = runDu(
+        testing.allocator,
+        io,
+        args_with_r,
+        &stdout_with_r_aw.writer,
+        common.null_writer,
+    );
 
     // Both should succeed and produce identical output
     try testing.expectEqual(@as(u8, 0), exit_no_r);
     try testing.expectEqual(@as(u8, 0), exit_with_r);
-    try testing.expectEqualStrings(stdout_without_r_aw.writer.buffered(), stdout_with_r_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        stdout_without_r_aw.writer.buffered(),
+        stdout_with_r_aw.writer.buffered(),
+    );
 }
 
 // ============================================================================
@@ -1885,7 +2123,13 @@ test "du -H flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-H"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
@@ -1919,7 +2163,13 @@ test "du -H follows symlinks given as command-line arguments" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-H", "-a", "-b", link_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // The output should include content.txt path (proves we traversed into the dir)
@@ -1995,7 +2245,13 @@ test "du -P flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-P"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
 
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
@@ -2027,7 +2283,13 @@ test "du -P does not follow symlinks" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-P", "-a", "-b", link_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -P should NOT follow the symlink, so file.txt should not appear
@@ -2126,7 +2388,13 @@ test "du -B flag sets block size" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-A", "-B", "1", test_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "14\t") != null);
 }
@@ -2148,7 +2416,13 @@ test "du -g flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-g"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     try testing.expect(exit_code != 2);
 }
 
@@ -2169,7 +2443,13 @@ test "du -m flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-m"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     try testing.expect(exit_code != 2);
 }
 
@@ -2190,7 +2470,13 @@ test "du -I flag is accepted with value" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-I", "*.o" };
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
 }
@@ -2211,16 +2497,31 @@ test "du -I flag does not change output (stub)" {
     // Without -I
     var stdout_without_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_without_aw.deinit();
-    const exit1 = runDu(testing.allocator, io, &[_][]const u8{ "-b", dir_path }, &stdout_without_aw.writer, common.null_writer);
+    const exit1 = runDu(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-b", dir_path },
+        &stdout_without_aw.writer,
+        common.null_writer,
+    );
 
     // With -I (stub, should produce same output)
     var stdout_with_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_with_aw.deinit();
-    const exit2 = runDu(testing.allocator, io, &[_][]const u8{ "-I", "*.o", "-b", dir_path }, &stdout_with_aw.writer, common.null_writer);
+    const exit2 = runDu(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-I", "*.o", "-b", dir_path },
+        &stdout_with_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit1);
     try testing.expectEqual(@as(u8, 0), exit2);
-    try testing.expectEqualStrings(stdout_without_aw.writer.buffered(), stdout_with_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        stdout_without_aw.writer.buffered(),
+        stdout_with_aw.writer.buffered(),
+    );
 }
 
 // ============================================================================
@@ -2233,7 +2534,13 @@ test "du -l flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-l"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     try testing.expect(exit_code != 2);
 }
 
@@ -2254,7 +2561,13 @@ test "du -n flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"-n"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     try testing.expect(exit_code != 2);
 }
 
@@ -2306,7 +2619,13 @@ test "du -t flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-t", "1K" };
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     try testing.expect(exit_code != 2);
 }
 
@@ -2351,7 +2670,13 @@ test "du -t filters entries below threshold" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-t", "50", "-a", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // large.txt (100 bytes) should appear
@@ -2385,7 +2710,13 @@ test "du -t with negative threshold shows entries at or below size" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-t", "-50", "-a", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // tiny.txt (5 bytes) should appear
@@ -2424,7 +2755,13 @@ test "du --si flag is accepted by argparse" {
     defer stderr_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--si"};
-    const exit_code = try runDu(testing.allocator, io, args, common.null_writer, &stderr_buffer_aw.writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        common.null_writer,
+        &stderr_buffer_aw.writer,
+    );
     try testing.expect(exit_code != 2);
 }
 
@@ -2469,7 +2806,13 @@ test "du --si shows SI units in output" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "--si", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should contain the path and use SI units (kB suffix for small dirs)
@@ -2487,12 +2830,30 @@ test "du --help shows new flags" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--apparent-size") != null);
-    try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--block-size") != null);
-    try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--count-links") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_buffer_aw.writer.buffered(),
+        "--apparent-size",
+    ) != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_buffer_aw.writer.buffered(),
+        "--block-size",
+    ) != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_buffer_aw.writer.buffered(),
+        "--count-links",
+    ) != null);
     try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--si") != null);
     try testing.expect(std.mem.find(u8, stdout_buffer_aw.writer.buffered(), "--threshold") != null);
 }
@@ -2563,7 +2924,13 @@ test "du -L does not double-count file reachable via symlink" {
 
     // -L dereferences all symlinks; -b = apparent-size + block-size=1; -s = summary
     const args = &[_][]const u8{ "-L", "-b", "-s", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2601,7 +2968,13 @@ test "du -b directory total equals sum of file apparent sizes (no dir metadata)"
 
     // -b = --apparent-size --block-size=1; -s = summary
     const args = &[_][]const u8{ "-b", "-s", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2648,7 +3021,13 @@ test "du -S shows sum of direct files, not directory inode size" {
     // -S = separate-dirs (don't include subdirectory sizes)
     // -b = apparent-size + block-size=1
     const args = &[_][]const u8{ "-S", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2690,7 +3069,13 @@ test "du -S subdirectory shows sum of its own direct files" {
     defer stdout_buffer_aw.deinit();
 
     const args = &[_][]const u8{ "-S", "-b", dir_path };
-    const exit_code = try runDu(testing.allocator, io, args, &stdout_buffer_aw.writer, common.null_writer);
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_buffer_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2766,12 +3151,20 @@ test "du subtree size accumulates onto the post-order unwind (parent = own + chi
     defer out.deinit();
 
     const args = &[_][]const u8{ "-b", "-s", dir_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     // In apparent-size mode the directory metadata is 0, so the total must be
     // exactly the sum of the two files. A wrong accumulation (drop a child,
     // double-count, etc.) would not yield 35.
-    const total = extractLastLineSize(out.writer.buffered()) orelse return error.TestUnexpectedResult;
+    const total = extractLastLineSize(
+        out.writer.buffered(),
+    ) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(u64, 35), total);
 }
 
@@ -2804,7 +3197,13 @@ test "du multi-level tree rolls descendant sizes into every ancestor" {
     defer out.deinit();
 
     const args = &[_][]const u8{ "-b", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // deep = 7; mid = 5 + 7 = 12; root = 3 + 12 = 15.
@@ -2836,7 +3235,13 @@ test "du -c grand total equals sum across multiple operands" {
     defer out.deinit();
 
     const args = &[_][]const u8{ "-c", "-b", one_path, two_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // The "total" line is the last line and must equal 12 + 8 = 20.
@@ -2863,7 +3268,14 @@ test "du counts a hard-linked file once across the whole walk" {
 
     const link_abs = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{dir_abs});
     defer testing.allocator.free(link_abs);
-    std.Io.Dir.hardLink(std.Io.Dir.cwd(), orig_abs, std.Io.Dir.cwd(), link_abs, io, .{}) catch |err| {
+    std.Io.Dir.hardLink(
+        std.Io.Dir.cwd(),
+        orig_abs,
+        std.Io.Dir.cwd(),
+        link_abs,
+        io,
+        .{},
+    ) catch |err| {
         if (err == error.AccessDenied) return; // skip where hard links are unsupported
         return err;
     };
@@ -2872,10 +3284,18 @@ test "du counts a hard-linked file once across the whole walk" {
     defer out.deinit();
 
     const args = &[_][]const u8{ "-b", "-s", dir_abs };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     // Dedup by (dev,ino): the 40 bytes are counted once, not twice.
-    const total = extractLastLineSize(out.writer.buffered()) orelse return error.TestUnexpectedResult;
+    const total = extractLastLineSize(
+        out.writer.buffered(),
+    ) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(u64, 40), total);
 }
 
@@ -2896,7 +3316,14 @@ test "du -l counts a hard-linked file every time it is encountered" {
 
     const link_abs = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{dir_abs});
     defer testing.allocator.free(link_abs);
-    std.Io.Dir.hardLink(std.Io.Dir.cwd(), orig_abs, std.Io.Dir.cwd(), link_abs, io, .{}) catch |err| {
+    std.Io.Dir.hardLink(
+        std.Io.Dir.cwd(),
+        orig_abs,
+        std.Io.Dir.cwd(),
+        link_abs,
+        io,
+        .{},
+    ) catch |err| {
         if (err == error.AccessDenied) return;
         return err;
     };
@@ -2906,9 +3333,17 @@ test "du -l counts a hard-linked file every time it is encountered" {
 
     // -l disables dedup: both links count, total = 40 + 40 = 80.
     const args = &[_][]const u8{ "-l", "-b", "-s", dir_abs };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
-    const total = extractLastLineSize(out.writer.buffered()) orelse return error.TestUnexpectedResult;
+    const total = extractLastLineSize(
+        out.writer.buffered(),
+    ) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(u64, 80), total);
 }
 
@@ -2936,7 +3371,13 @@ test "du -S directory total excludes subdirectory subtrees but root total still 
     defer out.deinit();
 
     const args = &[_][]const u8{ "-S", "-b", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // With -S the root counts only its direct file (11), NOT the 30-byte
@@ -2979,7 +3420,13 @@ test "du -S in disk-usage mode includes the directory's own block allocation" {
 
     // -S separate-dirs, -B 1 byte-exact, disk-usage mode (NO -b).
     const args = &[_][]const u8{ "-S", "-B", "1", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const printed = extractSizeForExactPath(out.writer.buffered(), root_path) orelse
         return error.TestUnexpectedResult;
@@ -3015,7 +3462,13 @@ test "du -d 1 hides deep entries but still accumulates their sizes upward" {
 
     // --max-depth=1: print root (depth 0) and mid (depth 1); hide deep (depth 2).
     const args = &[_][]const u8{ "-d", "1", "-b", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // deep is a DISPLAY filter only: its line is suppressed...
@@ -3043,14 +3496,26 @@ test "du -a prints every file while default prints only directories" {
     // Default (no -a): individual files are NOT printed.
     var out_default: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out_default.deinit();
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-b", dir_path }, &out_default.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-b", dir_path },
+        &out_default.writer,
+        common.null_writer,
+    ));
     try testing.expect(std.mem.find(u8, out_default.writer.buffered(), "leaf_one.txt") == null);
     try testing.expect(std.mem.find(u8, out_default.writer.buffered(), "leaf_two.txt") == null);
 
     // -a: every file IS printed.
     var out_all: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out_all.deinit();
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-a", "-b", dir_path }, &out_all.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-a", "-b", dir_path },
+        &out_all.writer,
+        common.null_writer,
+    ));
     try testing.expect(std.mem.find(u8, out_all.writer.buffered(), "leaf_one.txt") != null);
     try testing.expect(std.mem.find(u8, out_all.writer.buffered(), "leaf_two.txt") != null);
 }
@@ -3080,7 +3545,13 @@ test "du default (-P) reports symlink size, not its target's subtree" {
     // Default policy (-P): do not follow symlinks. The 1000-byte file is
     // counted exactly once (via real/), never a second time via alias/.
     const args = &[_][]const u8{ "-a", "-b", "-P", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // The target file appears once (under real/), proving alias was not traversed.
@@ -3115,7 +3586,13 @@ test "du -L follows symlinked directory and counts the target subtree" {
     // for dirs; the file is not deduped because it is reached through two
     // distinct directory paths).
     const args = &[_][]const u8{ "-a", "-b", "-L", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     try testing.expectEqual(@as(usize, 2), countLinesWithPath(buf, "inside.txt"));
@@ -3152,7 +3629,13 @@ test "du -H follows an operand symlink but not symlinks discovered during the wa
     // -H follows the operand symlink (so we descend into realtop) but does NOT
     // follow the internal "inner" symlink, so leaf.txt appears exactly once.
     const args = &[_][]const u8{ "-a", "-b", "-H", operand };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // Operand was followed: we reached leaf.txt at all.
@@ -3177,14 +3660,28 @@ test "du -b apparent size differs from default disk usage for a sub-block file" 
     // Apparent size in bytes: exactly 1.
     var out_apparent: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out_apparent.deinit();
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-b", file_path }, &out_apparent.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-b", file_path },
+        &out_apparent.writer,
+        common.null_writer,
+    ));
     try testing.expectEqual(@as(?u64, 1), extractLastLineSize(out_apparent.writer.buffered()));
 
     // Disk usage with --block-size=1: allocated bytes, rounded to >= 512.
     var out_disk: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out_disk.deinit();
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-B", "1", file_path }, &out_disk.writer, common.null_writer));
-    const disk = extractLastLineSize(out_disk.writer.buffered()) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-B", "1", file_path },
+        &out_disk.writer,
+        common.null_writer,
+    ));
+    const disk = extractLastLineSize(
+        out_disk.writer.buffered(),
+    ) orelse return error.TestUnexpectedResult;
     try testing.expect(disk >= 512);
 }
 
@@ -3240,7 +3737,13 @@ test "du emits directory operand in post-order: children printed before their pa
     defer out.deinit();
 
     const args = &[_][]const u8{ "-b", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // The child directory's line: "<size>\t<child_path>\n".
@@ -3296,7 +3799,13 @@ test "du -x stays on one filesystem and fully traverses the single-device tree" 
     defer out.deinit();
 
     const args = &[_][]const u8{ "-x", "-b", root_path };
-    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+    try testing.expectEqual(@as(u8, 0), try runDu(
+        testing.allocator,
+        io,
+        args,
+        &out.writer,
+        common.null_writer,
+    ));
 
     const buf = out.writer.buffered();
     // sub = 6 + 8 = 14 (deep descendant rolled up despite -x).

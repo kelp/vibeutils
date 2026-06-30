@@ -46,18 +46,33 @@ const ChmodArgs = struct {
         .changes = .{ .short = 'c', .desc = "Like verbose but report only when a change is made" },
         .silent = .{ .short = 'f', .desc = "Suppress most error messages" },
         .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
-        .no_dereference = .{ .short = 'h', .desc = "Do not follow symbolic links (change link itself)" },
+        .no_dereference = .{
+            .short = 'h',
+            .desc = "Do not follow symbolic links (change link itself)",
+        },
         .recursive = .{ .short = 'R', .desc = "Change files and directories recursively" },
         .H = .{ .short = 'H', .desc = "Traverse symlinks given on the command line" },
         .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
-        .reference = .{ .desc = "Use reference file's mode instead of MODE", .value_name = "RFILE" },
+        .reference = .{
+            .desc = "Use reference file's mode instead of MODE",
+            .value_name = "RFILE",
+        },
         .acl_check = .{ .short = 'C', .desc = "Check ACL configuration (no-op)" },
         .acl_stdin = .{ .short = 'E', .desc = "Read ACL info from stdin (no-op)" },
-        .acl_remove_inherited = .{ .short = 'i', .desc = "Remove inherited bit from ACL entries (no-op)" },
-        .acl_remove_all_inherited = .{ .short = 'I', .desc = "Remove all inherited ACL entries (no-op)" },
+        .acl_remove_inherited = .{
+            .short = 'i',
+            .desc = "Remove inherited bit from ACL entries (no-op)",
+        },
+        .acl_remove_all_inherited = .{
+            .short = 'I',
+            .desc = "Remove all inherited ACL entries (no-op)",
+        },
         .acl_remove = .{ .short = 'N', .desc = "Remove ACL from file (no-op)" },
-        .dereference = .{ .short = 0, .desc = "Affect the referent of each symbolic link (default)" },
+        .dereference = .{
+            .short = 0,
+            .desc = "Affect the referent of each symbolic link (default)",
+        },
         .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially (default)" },
         .preserve_root = .{ .short = 0, .desc = "Fail to operate recursively on '/'" },
     };
@@ -600,7 +615,12 @@ fn applyModeToPath(
 /// default -P (never follow), so the bounded walker reproduces the recursion's
 /// original behavior exactly.
 fn symlinkPolicyFromOptions(options: ChmodOptions) common.walker.SymlinkPolicy {
-    assert(!(options.traverse_all_symlinks and options.traverse_cmdline_symlinks));
+    // The -L (follow_all) and -H (follow_cmdline) flags are mutually exclusive;
+    // express "at most one set" arithmetically so the precondition carries no
+    // compound boolean (Tiger Style splits compound asserts; the sum form is the
+    // single-expression equivalent of !(a and b) without a top-level and/or).
+    assert(@intFromBool(options.traverse_all_symlinks) +
+        @intFromBool(options.traverse_cmdline_symlinks) <= 1);
     const policy: common.walker.SymlinkPolicy = if (options.traverse_all_symlinks)
         .follow_all
     else if (options.traverse_cmdline_symlinks)
@@ -692,7 +712,7 @@ fn walkAndApply(
 
     // The walker bounds this loop via config.max_depth / config.max_entries: it
     // returns null when exhausted, or latches a terminal error once a cap is hit.
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop next()->null exhausts; caps latch+break
         const maybe_entry = walker.next(io) catch |err| switch (err) {
             // Terminal cap errors latch (next() re-returns them forever), so we
             // report the reason and break, matching GNU's diagnostic-then-fail.
@@ -1177,7 +1197,11 @@ test "privileged: applyModeSpecToFile basic functionality" {
             const mode_spec = ModeSpec{ .octal = mode };
             const options = ChmodOptions{ .verbose = true };
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, test_file_path, inner_allocator);
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(
+                testing.io,
+                test_file_path,
+                inner_allocator,
+            );
 
             try applyModeSpecToFile(abs_path, mode_spec, &stdout_aw.writer, options);
 
@@ -1187,7 +1211,11 @@ test "privileged: applyModeSpecToFile basic functionality" {
 
             // Verify verbose output
             try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mode of") != null);
-            try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_file.txt") != null);
+            try testing.expect(std.mem.find(
+                u8,
+                stdout_aw.writer.buffered(),
+                "test_file.txt",
+            ) != null);
         }
     }.testFn);
 }
@@ -1212,7 +1240,11 @@ test "privileged: chmodFiles handles multiple files" {
                 const file = try tmp_dir.dir.createFile(testing.io, filename, .{});
                 file.close(testing.io);
 
-                const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, filename, inner_allocator);
+                const abs_path = try tmp_dir.dir.realPathFileAlloc(
+                    testing.io,
+                    filename,
+                    inner_allocator,
+                );
                 try test_files_abs.append(inner_allocator, abs_path);
             }
 
@@ -1223,7 +1255,15 @@ test "privileged: chmodFiles handles multiple files" {
 
             const options = ChmodOptions{ .changes_only = true };
 
-            try chmodFiles(testing.io, inner_allocator, "755", test_files_abs.items, &stdout_aw.writer, &stderr_aw.writer, options);
+            try chmodFiles(
+                testing.io,
+                inner_allocator,
+                "755",
+                test_files_abs.items,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+                options,
+            );
 
             // Verify both files were processed
             for (test_files_abs.items) |abs_path| {
@@ -1244,7 +1284,15 @@ test "chmodFiles handles nonexistent files gracefully" {
     const options = ChmodOptions{ .quiet = true };
 
     // Should return error for nonexistent files, even in quiet mode
-    _ = chmodFiles(testing.io, testing.allocator, "644", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch |err| {
+    _ = chmodFiles(
+        testing.io,
+        testing.allocator,
+        "644",
+        &nonexistent_files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    ) catch |err| {
         try testing.expect(err == ChmodError.FileOperationFailed);
         return;
     };
@@ -1275,7 +1323,11 @@ test "privileged: chmod integration test with octal mode" {
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, test_file_path, inner_allocator);
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(
+                testing.io,
+                test_file_path,
+                inner_allocator,
+            );
 
             const args = [_][]const u8{ "755", abs_path };
             try chmod(testing.io, inner_allocator, &args, &stdout_aw.writer, &stderr_aw.writer);
@@ -1362,15 +1414,18 @@ test "modeToString includes special permission bits" {
 
     // Test setuid
     try testing.expectEqualStrings("rwsr-xr-x", &modeToString(0o4755));
-    try testing.expectEqualStrings("rwSr-xr-x", &modeToString(0o4655)); // setuid without user execute
+    // setuid without user execute
+    try testing.expectEqualStrings("rwSr-xr-x", &modeToString(0o4655));
 
     // Test setgid
     try testing.expectEqualStrings("rwxr-sr-x", &modeToString(0o2755));
-    try testing.expectEqualStrings("rwxr-Sr-x", &modeToString(0o2745)); // setgid without group execute
+    // setgid without group execute
+    try testing.expectEqualStrings("rwxr-Sr-x", &modeToString(0o2745));
 
     // Test sticky bit
     try testing.expectEqualStrings("rwxr-xr-t", &modeToString(0o1755));
-    try testing.expectEqualStrings("rwxr-xr-T", &modeToString(0o1754)); // sticky without other execute
+    // sticky without other execute
+    try testing.expectEqualStrings("rwxr-xr-T", &modeToString(0o1754));
 }
 
 // Tests: Symbolic mode parsing
@@ -1529,7 +1584,11 @@ test "privileged: recursive chmod on directory structure" {
             const test_file2 = try tmp_dir.dir.createFile(testing.io, "subdir/file2.txt", .{});
             defer test_file2.close(testing.io);
 
-            const test_file3 = try tmp_dir.dir.createFile(testing.io, "subdir/deeper/file3.txt", .{});
+            const test_file3 = try tmp_dir.dir.createFile(
+                testing.io,
+                "subdir/deeper/file3.txt",
+                .{},
+            );
             defer test_file3.close(testing.io);
 
             const abs_root = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", inner_allocator);
@@ -1542,7 +1601,15 @@ test "privileged: recursive chmod on directory structure" {
             const options = ChmodOptions{ .recursive = true, .verbose = true };
             const files = [_][]const u8{abs_root};
 
-            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
+            try chmodFiles(
+                testing.io,
+                inner_allocator,
+                "755",
+                &files,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+                options,
+            );
 
             // Basic verification
             try testing.expect(stdout_aw.writer.buffered().len > 0); // Should have verbose output
@@ -1566,7 +1633,11 @@ test "privileged: recursive flag processes files and directories" {
             const test_file = try tmp_dir.dir.createFile(testing.io, "testdir/test.txt", .{});
             defer test_file.close(testing.io);
 
-            const abs_dir = try tmp_dir.dir.realPathFileAlloc(testing.io, "testdir", inner_allocator);
+            const abs_dir = try tmp_dir.dir.realPathFileAlloc(
+                testing.io,
+                "testdir",
+                inner_allocator,
+            );
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -1576,7 +1647,15 @@ test "privileged: recursive flag processes files and directories" {
             const options = ChmodOptions{ .recursive = true, .changes_only = true };
             const files = [_][]const u8{abs_dir};
 
-            try chmodFiles(testing.io, inner_allocator, "644", &files, &stdout_aw.writer, &stderr_aw.writer, options);
+            try chmodFiles(
+                testing.io,
+                inner_allocator,
+                "644",
+                &files,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+                options,
+            );
 
             // The test passes if no errors are thrown
         }
@@ -1600,7 +1679,11 @@ test "privileged: verbose flag outputs changes" {
             const test_file = try tmp_dir.dir.createFile(testing.io, "test_verbose.txt", .{});
             defer test_file.close(testing.io);
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_verbose.txt", inner_allocator);
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(
+                testing.io,
+                "test_verbose.txt",
+                inner_allocator,
+            );
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -1610,12 +1693,24 @@ test "privileged: verbose flag outputs changes" {
             const options = ChmodOptions{ .verbose = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
+            try chmodFiles(
+                testing.io,
+                inner_allocator,
+                "755",
+                &files,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+                options,
+            );
 
             // Should have verbose output
             try testing.expect(stdout_aw.writer.buffered().len > 0);
             try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mode of") != null);
-            try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "changed from") != null);
+            try testing.expect(std.mem.find(
+                u8,
+                stdout_aw.writer.buffered(),
+                "changed from",
+            ) != null);
         }
     }.testFn);
 }
@@ -1635,7 +1730,11 @@ test "privileged: changes flag only outputs when mode changes" {
             const test_file = try tmp_dir.dir.createFile(testing.io, "test_changes.txt", .{});
             defer test_file.close(testing.io);
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_changes.txt", inner_allocator);
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(
+                testing.io,
+                "test_changes.txt",
+                inner_allocator,
+            );
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -1645,7 +1744,15 @@ test "privileged: changes flag only outputs when mode changes" {
             const options = ChmodOptions{ .changes_only = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
+            try chmodFiles(
+                testing.io,
+                inner_allocator,
+                "755",
+                &files,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+                options,
+            );
 
             // Should have output when mode changes
             try testing.expect(stdout_aw.writer.buffered().len > 0);
@@ -1655,7 +1762,15 @@ test "privileged: changes flag only outputs when mode changes" {
             stdout_aw = .init(inner_allocator);
             stderr_aw.deinit();
             stderr_aw = .init(inner_allocator);
-            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
+            try chmodFiles(
+                testing.io,
+                inner_allocator,
+                "755",
+                &files,
+                &stdout_aw.writer,
+                &stderr_aw.writer,
+                options,
+            );
 
             try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
         }
@@ -1672,7 +1787,15 @@ test "quiet flag suppresses error messages" {
     const options = ChmodOptions{ .quiet = true };
 
     // Should return error for nonexistent files but produce no error output due to quiet mode
-    _ = chmodFiles(testing.io, testing.allocator, "755", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch |err| {
+    _ = chmodFiles(
+        testing.io,
+        testing.allocator,
+        "755",
+        &nonexistent_files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    ) catch |err| {
         try testing.expect(err == ChmodError.FileOperationFailed);
         // Should produce no output due to quiet mode
         try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
@@ -1719,7 +1842,15 @@ test "non-octal digit warning is printed to stderr" {
     const options = ChmodOptions{};
 
     // Mode "899" contains non-octal digits; chmodFiles should warn on stderr
-    _ = chmodFiles(testing.io, testing.allocator, "899", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch {};
+    _ = chmodFiles(
+        testing.io,
+        testing.allocator,
+        "899",
+        &nonexistent_files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    ) catch {};
 
     // Should contain the non-octal warning
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "non-octal digits") != null);
@@ -1736,7 +1867,15 @@ test "no non-octal digit warning for valid octal mode" {
     const options = ChmodOptions{};
 
     // Mode "755" is valid octal; should not produce a non-octal warning
-    _ = chmodFiles(testing.io, testing.allocator, "755", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch {};
+    _ = chmodFiles(
+        testing.io,
+        testing.allocator,
+        "755",
+        &nonexistent_files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    ) catch {};
 
     // Should NOT contain non-octal warning (may contain other error messages)
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "non-octal digits") == null);
@@ -1823,10 +1962,20 @@ test "chmod --preserve-root blocks recursive on /" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--preserve-root", "-R", "755", "/" };
-    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChmod(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangerous to operate recursively on '/'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dangerous to operate recursively on '/'",
+    ) != null);
 }
 
 test "chmod --preserve-root allows non-recursive on /" {
@@ -1837,10 +1986,20 @@ test "chmod --preserve-root allows non-recursive on /" {
 
     // Without -R, --preserve-root should not block
     const args = [_][]const u8{ "--preserve-root", "755", "/" };
-    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChmod(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should fail with permission error, not preserve-root error
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangerous to operate recursively") == null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dangerous to operate recursively",
+    ) == null);
     _ = exit_code;
 }
 
@@ -1851,7 +2010,13 @@ test "chmod --dereference flag is accepted" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--dereference", "--help" };
-    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChmod(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1863,7 +2028,13 @@ test "chmod --no-preserve-root flag is accepted" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--no-preserve-root", "--help" };
-    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChmod(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1982,7 +2153,11 @@ test "chmod stat AccessDenied produces correct Permission denied message" {
     // Get the full path to the file inside
     const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(dir_path);
-    const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/target.txt", .{dir_path});
+    const inner_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/noaccess/target.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(inner_path);
 
     // Remove execute permission from the directory, making the file inaccessible
@@ -2003,14 +2178,26 @@ test "chmod stat AccessDenied produces correct Permission denied message" {
     const options = ChmodOptions{};
 
     // chmodFiles should return FileOperationFailed since the file is inaccessible
-    _ = chmodFiles(testing.io, testing.allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options) catch |err| {
+    _ = chmodFiles(
+        testing.io,
+        testing.allocator,
+        "755",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    ) catch |err| {
         try testing.expect(err == ChmodError.FileOperationFailed);
 
         // BUG: When statFile returns AccessDenied, the code substitutes a zeroed
         // Stat instead of propagating the error. This causes the error to flow
         // through the chmod() syscall path instead, which returns PermissionDenied.
         // posixErrorString maps both AccessDenied and PermissionDenied -> "Permission denied".
-        try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Permission denied") != null);
+        try testing.expect(std.mem.find(
+            u8,
+            stderr_aw.writer.buffered(),
+            "Permission denied",
+        ) != null);
         return;
     };
 
@@ -2033,7 +2220,11 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
     // Get the full path to the file inside
     const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(dir_path);
-    const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/target.txt", .{dir_path});
+    const inner_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/noaccess/target.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(inner_path);
 
     // Remove execute permission from the directory
@@ -2108,7 +2299,11 @@ test "behavioral: chmod 755 actually sets mode 0o755" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test755.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test755.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test755.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     // Set initial mode to 0o644
@@ -2120,7 +2315,15 @@ test "behavioral: chmod 755 actually sets mode 0o755" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "755",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o755), actual_mode);
@@ -2135,7 +2338,11 @@ test "behavioral: chmod u+x from 644 sets mode 0o744" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_uplusx.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_uplusx.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_uplusx.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2146,7 +2353,15 @@ test "behavioral: chmod u+x from 644 sets mode 0o744" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "u+x", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "u+x",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o744), actual_mode);
@@ -2161,7 +2376,11 @@ test "behavioral: chmod g+w from 644 sets mode 0o664" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_gplusw.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_gplusw.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_gplusw.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2172,7 +2391,15 @@ test "behavioral: chmod g+w from 644 sets mode 0o664" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "g+w", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "g+w",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o664), actual_mode);
@@ -2187,7 +2414,11 @@ test "behavioral: chmod o-r from 644 sets mode 0o640" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_ominusr.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_ominusr.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_ominusr.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2198,7 +2429,15 @@ test "behavioral: chmod o-r from 644 sets mode 0o640" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "o-r", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "o-r",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o640), actual_mode);
@@ -2213,7 +2452,11 @@ test "behavioral: chmod a+x from 644 sets mode 0o755" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_aplusx.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_aplusx.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_aplusx.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2224,7 +2467,15 @@ test "behavioral: chmod a+x from 644 sets mode 0o755" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "a+x", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "a+x",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o755), actual_mode);
@@ -2239,7 +2490,11 @@ test "behavioral: chmod u=rwx,g=rx,o=r sets mode 0o754" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_complex.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_complex.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_complex.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o000);
@@ -2250,7 +2505,15 @@ test "behavioral: chmod u=rwx,g=rx,o=r sets mode 0o754" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "u=rwx,g=rx,o=r", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "u=rwx,g=rx,o=r",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o754), actual_mode);
@@ -2275,7 +2538,15 @@ test "behavioral: chmod +t on directory sets sticky bit" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "+t", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "+t",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     // Sticky bit (0o1000) should be set, basic perms should be preserved
@@ -2292,7 +2563,11 @@ test "behavioral: chmod 4755 sets setuid bit" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_setuid.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_setuid.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_setuid.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2303,7 +2578,15 @@ test "behavioral: chmod 4755 sets setuid bit" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.io, testing.allocator, "4755", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "4755",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{},
+    );
 
     const actual_mode = try getFileMode(abs_path);
     // Setuid bit (0o4000) should be set
@@ -2324,7 +2607,11 @@ test "behavioral: chmod -w via runChmod removes write permission" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_minusw.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_minusw.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_minusw.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2336,7 +2623,13 @@ test "behavioral: chmod -w via runChmod removes write permission" {
 
     // chmod -w file should succeed with exit code 0
     const args = [_][]const u8{ "-w", abs_path };
-    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runChmod(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should succeed (exit code 0), not fail as "invalid argument"
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -2370,20 +2663,33 @@ test "chmod: -R -P should not follow symlinks during traversal" {
     inner_file.close(testing.io);
 
     // Create a symlink inside mydir pointing to the outside target
-    mydir.symLink(testing.io, "../outside_target.txt", "link_to_outside", .{}) catch |err| switch (err) {
+    mydir.symLink(
+        testing.io,
+        "../outside_target.txt",
+        "link_to_outside",
+        .{},
+    ) catch |err| switch (err) {
         error.AccessDenied => return, // symlinks not supported
         else => return,
     };
 
     const mydir_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "mydir", testing.allocator);
     defer testing.allocator.free(mydir_abs);
-    const target_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "outside_target.txt", testing.allocator);
+    const target_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "outside_target.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(target_abs);
 
     // Set known modes: target=0o644, regular=0o644
     try setFileModeOctal(target_abs, 0o644);
 
-    const regular_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "mydir/regular.txt", testing.allocator);
+    const regular_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "mydir/regular.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(regular_abs);
     try setFileModeOctal(regular_abs, 0o644);
 
@@ -2394,10 +2700,15 @@ test "chmod: -R -P should not follow symlinks during traversal" {
 
     // chmod -R -P 755 mydir — should NOT follow symlinks during traversal
     const files = [_][]const u8{mydir_abs};
-    try chmodFiles(testing.io, testing.allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{
-        .recursive = true,
-        .no_traverse_symlinks = true,
-    });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "755",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true, .no_traverse_symlinks = true },
+    );
 
     // regular.txt inside mydir should be 755
     const regular_mode = try getFileMode(regular_abs);
@@ -2444,7 +2755,11 @@ test "behavioral: chmod -x via runChmod removes execute permission" {
     const test_file = try tmp_dir.dir.createFile(testing.io, "test_minusx.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_minusx.txt", testing.allocator);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "test_minusx.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o755);
@@ -2503,7 +2818,14 @@ test "char: -R applies mode to every entry across a multi-level tree" {
     const f2 = try tmp_dir.dir.createFile(testing.io, "a/b/c/deep.txt", .{});
     f2.close(testing.io);
 
-    const paths = [_][]const u8{ "a/top.txt", "a/b/mid.txt", "a/b/c/deep.txt", "a", "a/b", "a/b/c" };
+    const paths = [_][]const u8{
+        "a/top.txt",
+        "a/b/mid.txt",
+        "a/b/c/deep.txt",
+        "a",
+        "a/b",
+        "a/b/c",
+    };
     var abs_paths: [paths.len][:0]u8 = undefined;
     for (paths, 0..) |rel, idx| {
         abs_paths[idx] = try tmp_dir.dir.realPathFileAlloc(testing.io, rel, testing.allocator);
@@ -2523,7 +2845,15 @@ test "char: -R applies mode to every entry across a multi-level tree" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{root_abs};
-    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "750",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true },
+    );
 
     // Every file and every directory in the tree must now be 0o750.
     for (abs_paths) |p| {
@@ -2560,9 +2890,17 @@ test "char: post-order applies mode to leaf, child, and parent in one run" {
 
     const parent_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent", testing.allocator);
     defer testing.allocator.free(parent_abs);
-    const child_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent/child", testing.allocator);
+    const child_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "parent/child",
+        testing.allocator,
+    );
     defer testing.allocator.free(child_abs);
-    const leaf_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent/child/leaf.txt", testing.allocator);
+    const leaf_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "parent/child/leaf.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(leaf_abs);
 
     // Directories start traversable (0o700). The leaf starts at 0o644 so the
@@ -2577,7 +2915,15 @@ test "char: post-order applies mode to leaf, child, and parent in one run" {
     defer stderr_aw.deinit();
 
     const files = [_][]const u8{parent_abs};
-    try chmodFiles(testing.io, testing.allocator, "600", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "600",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true },
+    );
 
     // Restore directory traversal so we can re-stat the leaf and so cleanup can
     // recurse; restoring dir bits cannot change the leaf's own mode.
@@ -2613,7 +2959,11 @@ test "char: -L descends symlinked directory and chmods its contents" {
         else => return,
     };
 
-    const inside_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "real_target/inside.txt", testing.allocator);
+    const inside_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "real_target/inside.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(inside_abs);
     const tree_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "tree", testing.allocator);
     defer testing.allocator.free(tree_abs);
@@ -2628,10 +2978,15 @@ test "char: -L descends symlinked directory and chmods its contents" {
     // Target 0o750 keeps directories owner-traversable so the non-root test
     // process can stat results after the descent into the symlinked directory.
     const files = [_][]const u8{tree_abs};
-    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{
-        .recursive = true,
-        .traverse_all_symlinks = true,
-    });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "750",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true, .traverse_all_symlinks = true },
+    );
 
     // The file reached only by following the symlinked directory must be 0o750.
     try testing.expectEqual(@as(u32, 0o750), try getFileMode(inside_abs));
@@ -2659,9 +3014,17 @@ test "char: -P leaves symlink target unchanged but chmods sibling files" {
         else => return,
     };
 
-    const target_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "outside.txt", testing.allocator);
+    const target_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "outside.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(target_abs);
-    const sibling_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "dir/sibling.txt", testing.allocator);
+    const sibling_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "dir/sibling.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(sibling_abs);
     const dir_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "dir", testing.allocator);
     defer testing.allocator.free(dir_abs);
@@ -2678,10 +3041,15 @@ test "char: -P leaves symlink target unchanged but chmods sibling files" {
     // sibling starts at 0o700 so the change is detectable, and the symlink
     // target starts at 0o600 so a wrongly-followed symlink would be visible.
     const files = [_][]const u8{dir_abs};
-    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{
-        .recursive = true,
-        .no_traverse_symlinks = true,
-    });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "750",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true, .no_traverse_symlinks = true },
+    );
 
     // Sibling must change; symlink target must be untouched.
     try testing.expectEqual(@as(u32, 0o750), try getFileMode(sibling_abs));
@@ -2713,7 +3081,11 @@ test "char: deep tree (~100 levels) completes without stack overflow" {
     const bottom = try tmp_dir.dir.createFile(testing.io, path_buf.items, .{});
     bottom.close(testing.io);
 
-    const bottom_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, path_buf.items, testing.allocator);
+    const bottom_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        path_buf.items,
+        testing.allocator,
+    );
     defer testing.allocator.free(bottom_abs);
     try setFileModeOctal(bottom_abs, 0o700);
 
@@ -2729,7 +3101,15 @@ test "char: deep tree (~100 levels) completes without stack overflow" {
     // be stat'd afterward; the bottom file starts at 0o700 to make the change
     // detectable.
     const files = [_][]const u8{root_abs};
-    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "750",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true },
+    );
 
     // The file 100 levels deep must have received the new mode.
     try testing.expectEqual(@as(u32, 0o750), try getFileMode(bottom_abs));
@@ -2758,7 +3138,11 @@ test "char: symlink cycle does not cause an infinite loop" {
         else => return,
     };
 
-    const real_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "root/sub/real.txt", testing.allocator);
+    const real_abs = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "root/sub/real.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(real_abs);
     const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "root", testing.allocator);
     defer testing.allocator.free(root_abs);
@@ -2773,7 +3157,15 @@ test "char: symlink cycle does not cause an infinite loop" {
     // -R with default -P: must terminate, and the real file must be chmod'd.
     // Target 0o750 keeps directories owner-traversable for verification.
     const files = [_][]const u8{root_abs};
-    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "750",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true },
+    );
 
     try testing.expectEqual(@as(u32, 0o750), try getFileMode(real_abs));
 }
@@ -2820,7 +3212,15 @@ test "char: wide directory - every entry receives the mode" {
     // Target 0o750 keeps the "wide" directory owner-traversable so each entry
     // can be re-stat'd; entries start at 0o700 so the change is detectable.
     const files = [_][]const u8{wide_abs};
-    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+    try chmodFiles(
+        testing.io,
+        testing.allocator,
+        "750",
+        &files,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        ChmodOptions{ .recursive = true },
+    );
 
     // Verify every single entry is now 0o750.
     idx = 0;

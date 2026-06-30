@@ -153,30 +153,85 @@ pub fn main(init: std.process.Init) !void {
     common.utilityMain(init, run);
 }
 
-/// Run cp with provided writers for output
-fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
-    const prog_name = "cp";
-
-    // Pre-filter args: strip --backup[=TYPE] and --preserve[=ATTRS]
-    // before argparse because they are bool fields that optionally
-    // accept a =VALUE suffix. Argparse returns TooManyValues for
-    // bool fields with =VALUE. resolveConflicts handles setting
-    // these flags from the original unfiltered args.
+/// Pre-filter args: strip --backup[=TYPE] and --preserve[=ATTRS] before
+/// argparse because they are bool fields that optionally accept a =VALUE
+/// suffix. Argparse returns TooManyValues for bool fields with =VALUE.
+/// resolveConflicts handles setting these flags from the original unfiltered
+/// args. The caller owns the returned list and must deinit it.
+fn filterPreserveBackupArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+) !std.ArrayList([]const u8) {
     var filtered_args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
-    defer filtered_args.deinit(allocator);
+    errdefer filtered_args.deinit(allocator);
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--backup") or std.mem.startsWith(u8, arg, "--backup=")) {
+        if (std.mem.eql(u8, arg, "--backup") or
+            std.mem.startsWith(u8, arg, "--backup="))
+        {
             continue;
-        } else if (std.mem.eql(u8, arg, "--preserve") or std.mem.startsWith(u8, arg, "--preserve=")) {
+        } else if (std.mem.eql(u8, arg, "--preserve") or
+            std.mem.startsWith(u8, arg, "--preserve="))
+        {
             continue;
         }
         try filtered_args.append(allocator, arg);
     }
+    return filtered_args;
+}
+
+/// Validate that at least a source and destination operand are present.
+/// Returns the misuse exit code (after printing the diagnostic) when fewer
+/// than two positionals are given, or null when the count is valid.
+fn validateOperandCount(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    prog_name: []const u8,
+    positionals: []const []const u8,
+) ?u8 {
+    if (positionals.len >= 2) return null;
+    if (positionals.len == 0) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing file operand",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "missing destination file operand after '{s}'",
+        .{positionals[0]},
+    );
+    return @intFromEnum(common.ExitCode.misuse);
+}
+
+/// Run cp with provided writers for output
+fn run(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    const prog_name = "cp";
+
+    var filtered_args = try filterPreserveBackupArgs(allocator, args);
+    defer filtered_args.deinit(allocator);
     // Filtering only ever skips args (--backup/--preserve forms), never adds, so
     // the filtered list can be no longer than the input.
     assert(args.len >= filtered_args.items.len);
 
-    var config = common.argparse.ArgParser.parseOrExit(CpConfig, allocator, filtered_args.items, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    var config = common.argparse.ArgParser.parseOrExit(
+        CpConfig,
+        allocator,
+        filtered_args.items,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(config.positionals);
 
     resolveConflicts(&config, args);
@@ -191,14 +246,8 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
     }
 
     // Validate argument count
-    if (config.positionals.len < 2) {
-        if (config.positionals.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{config.positionals[0]});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
+    if (validateOperandCount(allocator, stderr_writer, prog_name, config.positionals)) |code| {
+        return code;
     }
 
     // Execute copy operations. The `< 2` guard above returned for the 0- and
@@ -206,9 +255,20 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
     // source and a destination present.
     assert(config.positionals.len >= 2);
     var hinted_overwrite = false;
-    const success = try executeCopyOperations(allocator, io, stdout_writer, stderr_writer, config.positionals, config.runtime(), &hinted_overwrite);
+    const success = try executeCopyOperations(
+        allocator,
+        io,
+        stdout_writer,
+        stderr_writer,
+        config.positionals,
+        config.runtime(),
+        &hinted_overwrite,
+    );
 
-    return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
+    return if (success)
+        @intFromEnum(common.ExitCode.success)
+    else
+        @intFromEnum(common.ExitCode.general_error);
 }
 
 /// Resolve POSIX "last flag wins" for mutually exclusive options.
@@ -229,10 +289,14 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
                 config.no_dereference = true;
                 config.H = false;
                 config.L = false;
-            } else if (std.mem.eql(u8, arg, "--backup") or std.mem.startsWith(u8, arg, "--backup=")) {
+            } else if (std.mem.eql(u8, arg, "--backup") or
+                std.mem.startsWith(u8, arg, "--backup="))
+            {
                 // --backup or --backup=TYPE: enable backup mode
                 config.backup = true;
-            } else if (std.mem.eql(u8, arg, "--preserve") or std.mem.startsWith(u8, arg, "--preserve=")) {
+            } else if (std.mem.eql(u8, arg, "--preserve") or
+                std.mem.startsWith(u8, arg, "--preserve="))
+            {
                 // --preserve or --preserve=ATTRS: enable preserve mode
                 config.preserve = true;
             }
@@ -283,73 +347,150 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
 }
 
 /// Execute all copy operations
-fn executeCopyOperations(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
+fn executeCopyOperations(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    args: []const []const u8,
+    options: RuntimeOptions,
+    hinted_overwrite: *bool,
+) !bool {
     // Precondition: run() rejects positionals.len < 2 before calling, so at
     // least a source and a dest are present (indexing/slicing below relies on
     // this).
     assert(args.len >= 2);
     const dest = args[args.len - 1];
 
-    // --parents requires destination to be a directory
+    // --parents requires destination to be a directory.
     if (options.parents) {
-        const dest_type = getFileTypeAtomic(io, dest, false) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
-            return false;
-        };
-        if (dest_type != .directory) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
-            return false;
-        }
+        if (!requireDestDirectory(allocator, io, stderr_writer, dest)) return false;
     }
 
-    // If multiple sources, destination must be a directory
+    // If multiple sources, destination must be a directory.
     if (args.len > 2) {
-        const dest_type = getFileTypeAtomic(io, dest, false) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
-            return false;
-        };
-
-        if (dest_type != .directory) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
-            return false;
-        }
+        if (!requireDestDirectory(allocator, io, stderr_writer, dest)) return false;
     }
 
     var success = true;
 
     // Process each source
     for (args[0 .. args.len - 1]) |source| {
-        if (options.parents) {
-            // --parents: construct dest path preserving full source path
-            const parents_dest = std.fs.path.join(allocator, &.{ dest, source }) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot construct path: {s}", .{common.posixErrorString(err)});
-                success = false;
-                continue;
-            };
-            defer allocator.free(parents_dest);
-
-            // Create intermediate directories
-            if (std.fs.path.dirname(parents_dest)) |parent_dir| {
-                std.Io.Dir.cwd().createDirPath(io, parent_dir) catch |err| switch (err) {
-                    error.PathAlreadyExists => {},
-                    else => {
-                        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ parent_dir, common.posixErrorString(err) });
-                        success = false;
-                        continue;
-                    },
-                };
-            }
-
-            // Copy source directly to the constructed destination path
-            const result = copySingleFile(allocator, io, stdout_writer, stderr_writer, source, parents_dest, options, hinted_overwrite, true) catch false;
-            if (!result) success = false;
-        } else {
-            const result = copySingleFile(allocator, io, stdout_writer, stderr_writer, source, dest, options, hinted_overwrite, true) catch false;
-            if (!result) success = false;
-        }
+        const result = executeCopyOperations_copyOne(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            source,
+            dest,
+            options,
+            hinted_overwrite,
+        );
+        if (!result) success = false;
     }
 
     return success;
+}
+
+/// Verify the destination exists and is a directory, printing the GNU
+/// "target is not a directory" diagnostic and returning false otherwise.
+fn requireDestDirectory(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    dest: []const u8,
+) bool {
+    const dest_type = getFileTypeAtomic(io, dest, false) catch {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "target '{s}' is not a directory",
+            .{dest},
+        );
+        return false;
+    };
+    if (dest_type != .directory) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "target '{s}' is not a directory",
+            .{dest},
+        );
+        return false;
+    }
+    return true;
+}
+
+/// Copy one source operand to the destination, handling --parents path
+/// construction. Returns true on success, false after reporting an error.
+fn executeCopyOperations_copyOne(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    dest: []const u8,
+    options: RuntimeOptions,
+    hinted_overwrite: *bool,
+) bool {
+    if (!options.parents) {
+        return copySingleFile(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            source,
+            dest,
+            options,
+            hinted_overwrite,
+            true,
+        ) catch false;
+    }
+
+    // --parents: construct dest path preserving full source path
+    const parents_dest = std.fs.path.join(allocator, &.{ dest, source }) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot construct path: {s}",
+            .{common.posixErrorString(err)},
+        );
+        return false;
+    };
+    defer allocator.free(parents_dest);
+
+    // Create intermediate directories
+    if (std.fs.path.dirname(parents_dest)) |parent_dir| {
+        std.Io.Dir.cwd().createDirPath(io, parent_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "cp",
+                    "cannot create directory '{s}': {s}",
+                    .{ parent_dir, common.posixErrorString(err) },
+                );
+                return false;
+            },
+        };
+    }
+
+    // Copy source directly to the constructed destination path
+    return copySingleFile(
+        allocator,
+        io,
+        stdout_writer,
+        stderr_writer,
+        source,
+        parents_dest,
+        options,
+        hinted_overwrite,
+        true,
+    ) catch false;
 }
 
 /// Outcome of the pre-copy guard checks: proceed with the copy, skip it
@@ -357,7 +498,17 @@ fn executeCopyOperations(allocator: Allocator, io: std.Io, stdout_writer: *std.I
 const CopyPrecheck = enum { proceed, skip, fail };
 
 /// Copy a single file or directory
-fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool, is_toplevel: bool) !bool {
+fn copySingleFile(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    dest: []const u8,
+    options: RuntimeOptions,
+    hinted_overwrite: *bool,
+    is_toplevel: bool,
+) !bool {
     // Determine whether to follow symlinks based on mode and position
     const follow_symlinks = switch (options.symlink_mode) {
         .follow_all => true,
@@ -365,32 +516,30 @@ fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Write
         .follow_none => false,
     };
 
-    // Get source file type
-    const source_type = getFileTypeAtomic(io, source, !follow_symlinks) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source, common.posixErrorString(err) });
-        return false;
-    };
-
-    // Resolve final destination path
-    const final_dest_path = resolveFinalDestination(allocator, io, source, dest) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error resolving destination: {s}", .{common.posixErrorString(err)});
-        return false;
-    };
+    // Look up the source type and resolve the destination path. On failure the
+    // diagnostic is already printed; null means abort with a false result.
+    const resolved = copySingleFile_resolve(
+        allocator,
+        io,
+        stderr_writer,
+        source,
+        dest,
+        follow_symlinks,
+    ) orelse return false;
+    const source_type = resolved.source_type;
+    const final_dest_path = resolved.final_dest_path;
     defer allocator.free(final_dest_path);
 
-    const dest_exists = fileExists(io, final_dest_path);
-
-    const precheck = copySingleFile_precheck(
+    switch (copySingleFile_precheck(
         allocator,
         io,
         stderr_writer,
         source,
         final_dest_path,
         source_type,
-        dest_exists,
+        resolved.dest_exists,
         options,
-    );
-    switch (precheck) {
+    )) {
         .proceed => {},
         .skip => return true,
         .fail => return false,
@@ -401,11 +550,89 @@ fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Write
         stderr_writer,
         source,
         final_dest_path,
-        dest_exists,
+        resolved.dest_exists,
         options,
         hinted_overwrite,
     );
 
+    return copySingleFile_finishCopy(
+        allocator,
+        io,
+        stdout_writer,
+        stderr_writer,
+        source,
+        final_dest_path,
+        source_type,
+        follow_symlinks,
+        resolved.dest_exists,
+        options,
+    );
+}
+
+/// Source type plus the allocated final destination path produced by
+/// copySingleFile_resolve. The caller owns and must free final_dest_path.
+const CopyResolved = struct {
+    source_type: FileType,
+    final_dest_path: []u8,
+    dest_exists: bool,
+};
+
+/// Stat the source for its type, resolve the final destination path, and probe
+/// whether it already exists. Prints the relevant diagnostic and returns null
+/// on failure; the caller treats null as a false copy result. On success the
+/// caller owns final_dest_path.
+fn copySingleFile_resolve(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    dest: []const u8,
+    follow_symlinks: bool,
+) ?CopyResolved {
+    const source_type = getFileTypeAtomic(io, source, !follow_symlinks) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot stat '{s}': {s}",
+            .{ source, common.posixErrorString(err) },
+        );
+        return null;
+    };
+
+    const final_dest_path = resolveFinalDestination(allocator, io, source, dest) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "error resolving destination: {s}",
+            .{common.posixErrorString(err)},
+        );
+        return null;
+    };
+
+    return CopyResolved{
+        .source_type = source_type,
+        .final_dest_path = final_dest_path,
+        .dest_exists = fileExists(io, final_dest_path),
+    };
+}
+
+/// Create the backup (if requested), print the verbose line, then dispatch the
+/// copy by source type. Split out of copySingleFile to keep it under the line
+/// limit; behavior is identical to the inline tail it replaced.
+fn copySingleFile_finishCopy(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    final_dest_path: []const u8,
+    source_type: FileType,
+    follow_symlinks: bool,
+    dest_exists: bool,
+    options: RuntimeOptions,
+) bool {
     if (options.backup and dest_exists) {
         if (!copySingleFile_createBackup(allocator, io, stderr_writer, final_dest_path, options)) {
             return false;
@@ -446,7 +673,13 @@ fn copySingleFile_precheck(
 
     // Check for same file
     if (common.file_ops.isSameFile(io, source, final_dest_path)) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' and '{s}' are the same file", .{ source, final_dest_path });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "'{s}' and '{s}' are the same file",
+            .{ source, final_dest_path },
+        );
         return .fail;
     }
 
@@ -457,7 +690,13 @@ fn copySingleFile_precheck(
 
     // Validate operation
     if (source_type == .directory and !options.recursive) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{source});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "'{s}' is a directory (use -r to copy recursively)",
+            .{source},
+        );
         return .fail;
     }
 
@@ -466,7 +705,12 @@ fn copySingleFile_precheck(
         const should_proceed = if (builtin.is_test)
             false
         else
-            common.prompt.promptYesNo(io, stderr_writer, "cp: overwrite '{s}'? ", .{final_dest_path}) catch false;
+            common.prompt.promptYesNo(
+                io,
+                stderr_writer,
+                "cp: overwrite '{s}'? ",
+                .{final_dest_path},
+            ) catch false;
         if (!should_proceed) {
             return .skip; // User cancelled, not an error
         }
@@ -582,12 +826,27 @@ fn copySingleFile_dispatchByType(
 
     // Execute the copy based on source type
     return switch (source_type) {
-        .regular_file => copyRegularFile(allocator, io, stderr_writer, source, final_dest_path, options),
+        .regular_file => copyRegularFile(
+            allocator,
+            io,
+            stderr_writer,
+            source,
+            final_dest_path,
+            options,
+        ),
         .symlink => if (!follow_symlinks)
             copySymlink(allocator, io, stderr_writer, source, final_dest_path, options)
         else
             copyRegularFile(allocator, io, stderr_writer, source, final_dest_path, options),
-        .directory => copyTree(allocator, io, stdout_writer, stderr_writer, source, final_dest_path, options),
+        .directory => copyTree(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            source,
+            final_dest_path,
+            options,
+        ),
         .special => blk: {
             common.printErrorWithProgram(
                 allocator,
@@ -602,7 +861,14 @@ fn copySingleFile_dispatchByType(
 }
 
 /// Copy a regular file
-fn copyRegularFile(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+fn copyRegularFile(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+) bool {
     // Forwarded unchanged from copySingleFile_dispatchByType, which already
     // asserts the source operand is non-empty. The dest operand may be empty
     // (e.g. `cp src ''`); the OS rejects it on the create/open path below.
@@ -610,95 +876,205 @@ fn copyRegularFile(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writ
 
     // Get source file stats
     const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot stat '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
+        );
         return false;
     };
 
-    // Handle force overwrite if needed.
-    // GNU spec: "if an existing destination file cannot be opened, remove it
-    // and try again."  Only unlink when the file cannot be opened for writing;
-    // this preserves hard links to writable destinations.
-    var dest_unlinked = false;
-    if (fileExists(io, dest_path) and options.force) {
-        if (std.Io.Dir.cwd().openFile(io, dest_path, .{ .mode = .write_only })) |f| {
-            // Destination is writable — no need to unlink
-            f.close(io);
-        } else |_| {
-            // Cannot open for writing — unlink and retry
-            handleForceOverwrite(io, dest_path) catch |e| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot remove '{s}': {s}", .{ dest_path, common.posixErrorString(e) });
-                return false;
-            };
-            dest_unlinked = true;
-        }
-    }
+    // Handle force overwrite if needed; null signals the unlink failed and the
+    // error was already reported.
+    const dest_unlinked = copyRegularFile_forceUnlink(
+        allocator,
+        io,
+        stderr_writer,
+        dest_path,
+        options,
+    ) orelse return false;
 
     if (options.preserve) {
-        common.file_ops.copyFileWithAttributes(allocator, io, stderr_writer, "cp", source_path, dest_path, source_info) catch {
+        common.file_ops.copyFileWithAttributes(
+            allocator,
+            io,
+            stderr_writer,
+            "cp",
+            source_path,
+            dest_path,
+            source_info,
+        ) catch {
             return false;
         };
-    } else if (!dest_unlinked and fileExists(io, dest_path)) {
+        return true;
+    }
+    if (!dest_unlinked and fileExists(io, dest_path)) {
         // Destination exists and was not unlinked: overwrite in place to
         // preserve the inode (and thus hard links).
         copyInPlace(allocator, io, stderr_writer, source_path, dest_path) catch {
             return false;
         };
-    } else {
-        // Simple copy: open source, create dest, copy contents
-        const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, common.posixErrorString(err) });
-            return false;
-        };
-        defer source_file.close(io);
-
-        const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
-            return false;
-        };
-        defer dest_file.close(io);
-
-        common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot copy '{s}' to '{s}': {s}", .{ source_path, dest_path, common.posixErrorString(err) });
-            return false;
-        };
+        return true;
     }
+    return copyRegularFile_simpleCopy(allocator, io, stderr_writer, source_path, dest_path);
+}
 
+/// Apply the GNU force-overwrite rule before copying a regular file: "if an
+/// existing destination file cannot be opened, remove it and try again." Only
+/// unlink when the file cannot be opened for writing; this preserves hard links
+/// to writable destinations. Returns whether the destination was unlinked, or
+/// null when the unlink failed (error already reported).
+fn copyRegularFile_forceUnlink(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+) ?bool {
+    if (!(fileExists(io, dest_path) and options.force)) return false;
+    if (std.Io.Dir.cwd().openFile(io, dest_path, .{ .mode = .write_only })) |f| {
+        // Destination is writable — no need to unlink
+        f.close(io);
+        return false;
+    } else |_| {
+        // Cannot open for writing — unlink and retry
+        handleForceOverwrite(io, dest_path) catch |e| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cp",
+                "cannot remove '{s}': {s}",
+                .{ dest_path, common.posixErrorString(e) },
+            );
+            return null;
+        };
+        return true;
+    }
+}
+
+/// Simple copy path for a regular file: open the source, create the
+/// destination, and copy the contents. Returns false after reporting the first
+/// failure. Split out of copyRegularFile to keep it under the line limit.
+fn copyRegularFile_simpleCopy(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+) bool {
+    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot open '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
+        );
+        return false;
+    };
+    defer source_file.close(io);
+
+    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{}) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot create '{s}': {s}",
+            .{ dest_path, common.posixErrorString(err) },
+        );
+        return false;
+    };
+    defer dest_file.close(io);
+
+    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot copy '{s}' to '{s}': {s}",
+            .{ source_path, dest_path, common.posixErrorString(err) },
+        );
+        return false;
+    };
     return true;
 }
 
 /// Copy file contents in place, preserving the destination inode.
 /// Opens both files, truncates the destination, and copies data.
-fn copyInPlace(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8) !void {
+fn copyInPlace(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+) !void {
     // Sole caller copyRegularFile forwards its own non-empty operands here.
     assert(source_path.len > 0);
     assert(dest_path.len > 0);
 
     const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot open '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
+        );
         return error.SourceNotReadable;
     };
     defer source_file.close(io);
 
-    const dest_file = std.Io.Dir.cwd().openFile(io, dest_path, .{ .mode = .write_only }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}' for writing: {s}", .{ dest_path, common.posixErrorString(err) });
+    const dest_file = std.Io.Dir.cwd().openFile(
+        io,
+        dest_path,
+        .{ .mode = .write_only },
+    ) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot open '{s}' for writing: {s}",
+            .{ dest_path, common.posixErrorString(err) },
+        );
         return error.DestinationNotWritable;
     };
     defer dest_file.close(io);
 
     // Truncate to zero before writing new content
     dest_file.setLength(io, 0) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot truncate '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot truncate '{s}': {s}",
+            .{ dest_path, common.posixErrorString(err) },
+        );
         return error.DestinationNotWritable;
     };
 
     common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error copying '{s}' to '{s}': {s}", .{ source_path, dest_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "error copying '{s}' to '{s}': {s}",
+            .{ source_path, dest_path, common.posixErrorString(err) },
+        );
         return error.SourceNotReadable;
     };
 }
 
 /// Copy a symbolic link
-fn copySymlink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+fn copySymlink(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+) bool {
     // source_path is non-empty on both forwarding paths (dispatchByType after a
     // successful source stat; handleTreeSymlink with a walker entry.path). The
     // dispatch path's dest_path may be an empty operand (`cp src ''`); the OS
@@ -707,7 +1083,13 @@ fn copySymlink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, 
 
     // Read the symlink target
     const target = getSymlinkTarget(allocator, io, source_path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot read link '{s}': {s}", .{ source_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot read link '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
+        );
         return false;
     };
     defer allocator.free(target);
@@ -715,14 +1097,26 @@ fn copySymlink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, 
     // Handle force overwrite if needed
     if (fileExists(io, dest_path) and options.force) {
         handleForceOverwrite(io, dest_path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot remove '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cp",
+                "cannot remove '{s}': {s}",
+                .{ dest_path, common.posixErrorString(err) },
+            );
             return false;
         };
     }
 
     // Create the symlink
     std.Io.Dir.cwd().symLink(io, target, dest_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create symlink '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot create symlink '{s}': {s}",
+            .{ dest_path, common.posixErrorString(err) },
+        );
         return false;
     };
 
@@ -730,7 +1124,14 @@ fn copySymlink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, 
 }
 
 /// Create a hard link instead of copying
-fn createHardLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+fn createHardLink(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+) bool {
     // Sole caller dispatchByType forwards a non-empty source (post-stat); the
     // dest operand may be empty (`cp -l src ''`), rejected by the OS at hardLink.
     assert(source_path.len > 0);
@@ -748,20 +1149,38 @@ fn createHardLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Write
         io,
         .{},
     ) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create hard link '{s}' to '{s}': {s}", .{ dest_path, source_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot create hard link '{s}' to '{s}': {s}",
+            .{ dest_path, source_path, common.posixErrorString(err) },
+        );
         return false;
     };
     return true;
 }
 
 /// Create a symbolic link instead of copying
-fn createSymbolicLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8) bool {
+fn createSymbolicLink(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+) bool {
     // Sole caller dispatchByType forwards a non-empty source (post-stat); the
     // dest operand may be empty (`cp -s src ''`), rejected by the OS at symLink.
     assert(source_path.len > 0);
 
     std.Io.Dir.cwd().symLink(io, source_path, dest_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create symbolic link '{s}' to '{s}': {s}", .{ dest_path, source_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot create symbolic link '{s}' to '{s}': {s}",
+            .{ dest_path, source_path, common.posixErrorString(err) },
+        );
         return false;
     };
     return true;
@@ -925,7 +1344,7 @@ fn copyOneTree(
     state.ancestors.appendSlice(allocator, task.ancestors) catch {};
 
     var success = true;
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop bounded walker; exhausts at null
         const maybe_entry = walker.next(io) catch |err| {
             reportTreeWalkError(allocator, io, stderr_writer, task.source, &state, err);
             success = false;
@@ -1087,7 +1506,13 @@ fn createTreeDir(
     std.Io.Dir.cwd().createDir(io, dest, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ dest, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cp",
+                "cannot create directory '{s}': {s}",
+                .{ dest, common.posixErrorString(err) },
+            );
             return false;
         },
     };
@@ -1112,7 +1537,13 @@ fn preserveTreeDir(
     assert(source_path.len > 0);
     assert(dest_path.len > 0);
     const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
-        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}' for preservation: {s}", .{ source_path, common.posixErrorString(err) });
+        common.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot stat '{s}' for preservation: {s}",
+            .{ source_path, common.posixErrorString(err) },
+        );
         return true;
     };
     // The post-order timing and path-based chmod rationale lives in the shared
@@ -1163,7 +1594,13 @@ fn handleTreeSymlink(
     }
     // Dereference the link to discover the real target kind.
     const target_info = common.file.FileInfo.stat(io, entry.path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ entry.path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot stat '{s}': {s}",
+            .{ entry.path, common.posixErrorString(err) },
+        );
         return false;
     };
     if (target_info.kind != .directory) {
@@ -1238,12 +1675,24 @@ fn followTreeDirSymlink(
     const target = NodeId{ .dev = target_info.dev, .inode = target_info.inode };
     for (state.ancestors.items) |ancestor| {
         if (ancestor.dev == target.dev and ancestor.inode == target.inode) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot copy cyclic symbolic link '{s}'", .{entry.path});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cp",
+                "cannot copy cyclic symbolic link '{s}'",
+                .{entry.path},
+            );
             return false;
         }
     }
     if (tasks.items.len >= tree_task_max) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "too many symbolic links following '{s}'", .{entry.path});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "too many symbolic links following '{s}'",
+            .{entry.path},
+        );
         return false;
     }
     // The followed link becomes the dest directory's content root. Verbose line
@@ -1252,6 +1701,21 @@ fn followTreeDirSymlink(
         stdout_writer.print("'{s}' -> '{s}'\n", .{ entry.path, dest }) catch {};
     }
     _ = io;
+    return enqueueDirSymlinkTask(allocator, entry, dest, target, state, tasks);
+}
+
+/// Append a new copy task for a followed directory symlink. Duplicates the
+/// source/dest paths and inherits the current ancestor chain plus this link's
+/// target so deeper cycles through it are also refused. Returns false (freeing
+/// any partial allocations) on allocation failure.
+fn enqueueDirSymlinkTask(
+    allocator: Allocator,
+    entry: common.walker.Entry,
+    dest: []const u8,
+    target: NodeId,
+    state: *TreeWalk,
+    tasks: *std.ArrayList(TreeTask),
+) bool {
     const source_copy = allocator.dupe(u8, entry.path) catch return false;
     const dest_copy = allocator.dupe(u8, dest) catch {
         allocator.free(source_copy);
@@ -1305,7 +1769,13 @@ fn reportTreeWalkError(
     const failing = findUnreadableTreeChild(allocator, io, root_source);
     defer if (failing) |f| allocator.free(f);
     const name = failing orelse root_source;
-    common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot access '{s}': {s}", .{ name, common.posixErrorString(err) });
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "cp",
+        "cannot access '{s}': {s}",
+        .{ name, common.posixErrorString(err) },
+    );
 }
 
 /// Scan a source directory for the first subdirectory that cannot be opened,
@@ -1316,7 +1786,11 @@ fn findUnreadableTreeChild(
     parent_path: []const u8,
 ) ?[]const u8 {
     assert(parent_path.len > 0);
-    var parent_dir = std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true }) catch return null;
+    var parent_dir = std.Io.Dir.cwd().openDir(
+        io,
+        parent_path,
+        .{ .iterate = true },
+    ) catch return null;
     defer parent_dir.close(io);
     var iterator = parent_dir.iterate();
     while (iterator.next(io) catch null) |entry| {
@@ -1359,7 +1833,12 @@ fn getFileTypeAtomic(io: std.Io, path: []const u8, no_dereference: bool) !FileTy
 }
 
 /// Resolve the final destination path for a copy operation
-fn resolveFinalDestination(allocator: Allocator, io: std.Io, source: []const u8, dest: []const u8) ![]u8 {
+fn resolveFinalDestination(
+    allocator: Allocator,
+    io: std.Io,
+    source: []const u8,
+    dest: []const u8,
+) ![]u8 {
     // Sole caller copySingleFile reaches here only after stat'ing source, so an
     // empty source operand has already short-circuited; source is non-empty.
     // dest may be an empty operand (e.g. `cp src ''`), which the OS rejects below.
@@ -1475,7 +1954,13 @@ test "cp: single file copy" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
@@ -1497,7 +1982,13 @@ test "cp: copy to existing directory" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_dir_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
@@ -1520,7 +2011,13 @@ test "cp: error on directory without recursive flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
@@ -1546,7 +2043,13 @@ test "cp: recursive directory copy" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
@@ -1570,7 +2073,13 @@ test "cp: preserve attributes" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-p", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1602,7 +2111,13 @@ test "cp: symbolic link handling - follow by default" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ link_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("copied.txt", "Original content");
@@ -1621,14 +2136,24 @@ test "cp: symbolic link handling - no dereference (-d)" {
     defer testing.allocator.free(base_path);
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{base_path});
     defer testing.allocator.free(link_path);
-    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/copied_link.txt", .{base_path});
+    const dest_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/copied_link.txt",
+        .{base_path},
+    );
     defer testing.allocator.free(dest_path);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", link_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(try test_dir.isSymlink("copied_link.txt"));
@@ -1656,7 +2181,13 @@ test "cp: multiple sources to directory" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ file1_path, file2_path, dest_dir_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
@@ -1690,7 +2221,13 @@ test "cp: large file copy" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1734,7 +2271,10 @@ test "privileged: permission preservation with mode bits" {
     const dest_stat = try test_dir.getFileStat("dest.txt");
 
     // With privilege, full mode bits should be preserved
-    try testing.expectEqual(source_stat.permissions.toMode() & 0o777, dest_stat.permissions.toMode() & 0o777);
+    try testing.expectEqual(
+        source_stat.permissions.toMode() & 0o777,
+        dest_stat.permissions.toMode() & 0o777,
+    );
 }
 
 test "cp: same file detection across devices via hardlink" {
@@ -1747,7 +2287,11 @@ test "cp: same file detection across devices via hardlink" {
     defer testing.allocator.free(original_path);
     const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
-    const hardlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{base_path});
+    const hardlink_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/hardlink.txt",
+        .{base_path},
+    );
     defer testing.allocator.free(hardlink_path);
 
     // Create hardlink (same inode+device)
@@ -1772,7 +2316,11 @@ test "cp: same file detection across devices via hardlink" {
     try testing.expect(!common.file_ops.isSameFile(testing.io, original_path, different_path));
 
     // Nonexistent file must return false (not crash)
-    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent.txt", .{base_path});
+    const nonexistent_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/nonexistent.txt",
+        .{base_path},
+    );
     defer testing.allocator.free(nonexistent_path);
     try testing.expect(!common.file_ops.isSameFile(testing.io, original_path, nonexistent_path));
 
@@ -1781,7 +2329,13 @@ test "cp: same file detection across devices via hardlink" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ original_path, hardlink_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "same file") != null);
@@ -1803,7 +2357,13 @@ test "cp: overwrite hint suppressed when stderr is not a TTY" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Hint is only printed when stderr is a TTY; in tests it is not
@@ -1826,7 +2386,13 @@ test "cp: overwrite hint NOT printed with -i flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-i", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint:") == null);
@@ -1848,7 +2414,13 @@ test "cp: overwrite hint NOT printed with -f flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint:") == null);
@@ -1875,7 +2447,13 @@ test "cp: overwrite hint suppressed for non-TTY with multiple files" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ src1_path, src2_path, dest_dir_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Hint is suppressed when stderr is not a TTY
@@ -1899,7 +2477,13 @@ test "cp: no hint when destination does not exist" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint:") == null);
@@ -1923,7 +2507,13 @@ test "cp: -R flag triggers recursive copy" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-R", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "content");
@@ -1994,7 +2584,13 @@ test "cp: -R -P preserves symlinks in directory tree" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-R", "-P", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2025,7 +2621,13 @@ test "cp: -R -L follows all symlinks and copies as regular files" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-R", "-L", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2061,7 +2663,13 @@ test "cp: -R -H follows command-line symlinks but preserves inner symlinks" {
     // -H: follow the command-line symlink (dir_link -> real_dir),
     // but preserve symlinks encountered during traversal
     const args = [_][]const u8{ "-R", "-H", link_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2097,7 +2705,13 @@ test "cp: -R alone defaults to -P behavior (preserve symlinks)" {
 
     // -R without -H/-L/-P should default to -P (preserve symlinks)
     const args = [_][]const u8{ "-R", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2129,7 +2743,13 @@ test "cp: without -R, symlinks are always followed" {
 
     // No -R flag: symlinks should always be followed
     const args = [_][]const u8{ link_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2164,7 +2784,13 @@ test "cp: -n flag skips existing files" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-n", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Original content should be unchanged
@@ -2188,7 +2814,13 @@ test "cp: -n flag creates file when destination does not exist" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-n", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("new_dest.txt", "content");
@@ -2211,7 +2843,13 @@ test "cp: -v flag prints verbose output to stdout" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-v", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain 'source' -> 'dest' pattern
@@ -2237,7 +2875,13 @@ test "cp: -v flag with recursive prints each copied file to stdout" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-Rv", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have multiple -> entries (one per file)
@@ -2299,7 +2943,13 @@ test "cp: -b creates backup of existing destination" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // New content in destination
@@ -2325,7 +2975,13 @@ test "cp: -b does nothing when destination does not exist" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("new_dest.txt", "content");
@@ -2347,7 +3003,13 @@ test "cp: -S changes backup suffix" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", "-S", ".bak", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest.txt", "new content");
@@ -2371,7 +3033,13 @@ test "cp: -c flag accepted silently (no-op)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest.txt", "content");
@@ -2414,7 +3082,13 @@ test "cp -r replicates a multi-level tree with files at every depth and empty su
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2446,7 +3120,13 @@ test "cp of a directory without -r fails naming the directory and nonzero exit" 
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // Nonzero exit and a diagnostic that names the directory operand.
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -2481,7 +3161,13 @@ test "cp -r default does not follow symlinks: file-link and dir-link recreated a
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2522,7 +3208,13 @@ test "cp -rL materializes file-link as a regular file and dir-link as a real dir
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-L", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2560,7 +3252,13 @@ test "cp -rL with two sibling links to the same dir copies its contents twice (n
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-L", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2592,7 +3290,13 @@ test "cp -rH follows the operand link but preserves inner links" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-H", link_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2638,7 +3342,12 @@ test "cp -r reports an unreadable subdirectory, copies siblings, exits nonzero" 
     // restore perms in defer so TmpDir cleanup can recurse into it. If the
     // platform refuses to make the directory unreadable (e.g. some CI sandboxes
     // ignore chmod), skip rather than assert a behavior we could not provoke.
-    const locked_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/src/locked", .{base_path}, 0);
+    const locked_path_z = try std.fmt.allocPrintSentinel(
+        testing.allocator,
+        "{s}/src/locked",
+        .{base_path},
+        0,
+    );
     defer testing.allocator.free(locked_path_z);
     if (std.c.chmod(locked_path_z, 0o000) != 0) return error.SkipZigTest;
     defer _ = std.c.chmod(locked_path_z, 0o755);
@@ -2647,7 +3356,13 @@ test "cp -r reports an unreadable subdirectory, copies siblings, exits nonzero" 
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // Overall exit code is nonzero because one subtree failed.
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -2677,7 +3392,13 @@ test "cp -rv prints each copied path to stdout" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-v", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2735,7 +3456,13 @@ test "cp -r refuses to copy a directory onto itself (same-file guard)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // Refused with a nonzero exit and the specific same-file diagnostic naming
     // the directory. Asserting the exact message (not just stderr.len > 0)
@@ -2770,7 +3497,11 @@ test "cp -rp preserves regular file mode and mtime on copied files" {
     defer testing.allocator.free(src_file_path);
     const past_ns: i128 = 1_000_000_000 * 1_000_000_000; // 2001-09-09T01:46:40Z.
     {
-        const file = try std.Io.Dir.cwd().openFile(testing.io, src_file_path, .{ .mode = .read_write });
+        const file = try std.Io.Dir.cwd().openFile(
+            testing.io,
+            src_file_path,
+            .{ .mode = .read_write },
+        );
         defer file.close(testing.io);
         try file.setTimestamps(testing.io, .{
             .access_timestamp = .{ .new = .{ .nanoseconds = past_ns } },
@@ -2788,7 +3519,13 @@ test "cp -rp preserves regular file mode and mtime on copied files" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-p", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2840,7 +3577,12 @@ test "walker-migration: -rp preserves directory mode post-order (read-only sourc
 
     const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
-    const src_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/src", .{base_path}, 0);
+    const src_path_z = try std.fmt.allocPrintSentinel(
+        testing.allocator,
+        "{s}/src",
+        .{base_path},
+        0,
+    );
     defer testing.allocator.free(src_path_z);
 
     // Make the source dir read-only. Restore 0o755 in defer so TmpDir cleanup
@@ -2857,7 +3599,13 @@ test "walker-migration: -rp preserves directory mode post-order (read-only sourc
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-p", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // The copy succeeds and the child arrives: post-order preservation makes the
     // dest dir read-only only AFTER its children are written, so this holds even
@@ -2910,7 +3658,13 @@ test "walker-migration: -rp preserves directory mtime" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-p", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2965,7 +3719,13 @@ test "walker-migration: -rL reports symlink cycle without materializing junk" {
     // there is no hang risk; it WILL create junk nesting under dst on current
     // code (TmpDir cleanup removes it).
     const args = [_][]const u8{ "-r", "-L", source_path, dest_path };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // Nonzero exit: passes today via ELOOP, so this is NOT the RED assertion.
     try testing.expect(exit_code != 0);

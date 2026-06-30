@@ -28,20 +28,44 @@ const DirnameArgs = struct {
 };
 
 /// Execute dirname utility with given arguments and writers
-pub fn runDirname(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runDirname(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = io;
     const parsed_args = common.argparse.ArgParser.parse(DirnameArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "dirname", "unrecognized option", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "dirname",
+                    "unrecognized option",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "dirname", "option missing required argument", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "dirname",
+                    "option missing required argument",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "dirname", "invalid option value", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "dirname",
+                    "invalid option value",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -240,7 +264,13 @@ test "dirname: multiple paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "/usr/bin", "file.txt", "dir/subdir/" };
-    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr\n.\ndir\n", stdout_aw.writer.buffered());
@@ -253,7 +283,13 @@ test "dirname: zero flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-z", "/usr/bin", "file.txt", "/" };
-    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr\x00.\x00/\x00", stdout_aw.writer.buffered());
@@ -266,7 +302,13 @@ test "dirname: long zero flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--zero", "path/to/file" };
-    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("path/to\x00", stdout_aw.writer.buffered());
@@ -278,7 +320,13 @@ test "dirname: missing operand error" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runDirname(testing.allocator, io, &.{}, common.null_writer, &stderr_aw.writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &.{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
@@ -291,7 +339,13 @@ test "dirname: help flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: dirname") != null);
@@ -304,7 +358,13 @@ test "dirname: version flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "dirname") != null);
@@ -318,7 +378,13 @@ test "dirname: combined flags" {
 
     // Test that -z and paths work together
     const args = [_][]const u8{ "-z", "a/b", "c/d", "e" };
-    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runDirname(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\x00c\x00.\x00", stdout_aw.writer.buffered());

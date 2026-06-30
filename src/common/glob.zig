@@ -167,8 +167,9 @@ fn matchBracket(pattern: []const u8, start: usize, ch: u8, case_insensitive: boo
         first = false;
         if (pi + 2 < pattern.len and pattern[pi + 1] == '-' and pattern[pi + 2] != ']') {
             // Range
+            const range_hi = pattern[pi + 2];
             const lo = if (case_insensitive) std.ascii.toLower(pattern[pi]) else pattern[pi];
-            const hi = if (case_insensitive) std.ascii.toLower(pattern[pi + 2]) else pattern[pi + 2];
+            const hi = if (case_insensitive) std.ascii.toLower(range_hi) else range_hi;
             const test_ch = if (case_insensitive) std.ascii.toLower(ch) else ch;
             if (test_ch >= lo and test_ch <= hi) {
                 matched = true;

@@ -12,7 +12,12 @@ const Allocator = std.mem.Allocator;
 extern "c" fn geteuid() std.c.uid_t;
 extern "c" fn getegid() std.c.gid_t;
 extern "c" fn getgroups(size: c_int, list: [*]std.c.gid_t) c_int;
-extern "c" fn getgrouplist(user: [*:0]const u8, group: std.c.gid_t, groups: [*]std.c.gid_t, ngroups: *c_int) c_int;
+extern "c" fn getgrouplist(
+    user: [*:0]const u8,
+    group: std.c.gid_t,
+    groups: [*]std.c.gid_t,
+    ngroups: *c_int,
+) c_int;
 
 // C library bindings for passwd entry access (used by -F and -P flags)
 // macOS passwd struct includes pw_change, pw_class, pw_expire fields
@@ -102,10 +107,22 @@ const RunIdContext = struct {
 };
 
 /// Main entry point for the id utility
-pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runId(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = io;
     // Parse command-line arguments
-    const parsed = common.argparse.ArgParser.parseOrExit(IdArgs, allocator, args, "id", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        IdArgs,
+        allocator,
+        args,
+        "id",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     // Handle help
@@ -122,13 +139,25 @@ pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
 
     // Handle -A (audit) stub: print diagnostic and exit 1
     if (parsed.audit) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "-A (audit) not supported on this platform", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "-A (audit) not supported on this platform",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Reject extra positional arguments (at most one USERNAME)
     if (parsed.positionals.len > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "extra operand '{s}'", .{parsed.positionals[1]});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "extra operand '{s}'",
+            .{parsed.positionals[1]},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -213,17 +242,35 @@ fn runId_checkFlagCombos(
 
     // -n and -r only make sense with -u, -g, or -G.
     if (parsed.name and !parsed.user and !parsed.group and !show_groups) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print only names in default format", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "cannot print only names in default format",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
     if (parsed.real and !parsed.user and !parsed.group and !show_groups) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print only real IDs in default format", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "cannot print only real IDs in default format",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // GNU id: -z requires a format flag (-u, -g, or -G).
     if (parsed.zero and !parsed.user and !parsed.group and !show_groups) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "option --zero not permitted in default format", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "option --zero not permitted in default format",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -234,13 +281,25 @@ fn runId_checkFlagCombos(
     // Negative space: -A (audit) exits in runId before this validator runs.
     std.debug.assert(!parsed.audit);
     if (mode_count > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "cannot print 'only' of more than one choice",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // -p is mutually exclusive with -u, -g, -G.
     if (parsed.pretty and mode_count > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "cannot print 'only' of more than one choice",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -270,12 +329,24 @@ fn runId_resolveTarget(
         const username = parsed.positionals[0];
         const user_info = common.user_group.getUserById(
             common.user_group.parseUser(username, allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", "'{s}': no such user", .{username});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "id",
+                    "'{s}': no such user",
+                    .{username},
+                );
                 return @intFromEnum(common.ExitCode.general_error);
             },
             allocator,
         ) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "'{s}': no such user", .{username});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "id",
+                "'{s}': no such user",
+                .{username},
+            );
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer allocator.free(user_info.name);
@@ -604,7 +675,13 @@ fn printSingleGroup(
     std.debug.assert(runId_isTerminator(delimiter));
     if (print_name) {
         const info = common.user_group.getGroupById(target_gid, allocator) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for group ID {d}", .{target_gid});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "id",
+                "cannot find name for group ID {d}",
+                .{target_gid},
+            );
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer allocator.free(info.name);
@@ -628,7 +705,11 @@ fn printSingleGroup(
 ///   without growing `ngroups` under certain OpenDirectory conditions,
 ///   which would hang an unbounded loop. We cap at 8 iterations and
 ///   force `ngroups` to at least double on each retry.
-fn getGroupsForUser(uid: common.user_group.uid_t, gid: std.c.gid_t, allocator: Allocator) ?[]std.c.gid_t {
+fn getGroupsForUser(
+    uid: common.user_group.uid_t,
+    gid: std.c.gid_t,
+    allocator: Allocator,
+) ?[]std.c.gid_t {
     const pw = getpwuid(@intCast(uid)) orelse return null;
 
     // Copy the username out of the libc static buffer.
@@ -692,12 +773,28 @@ fn printDefaultFormat(
     const user_info = common.user_group.getUserById(uid, allocator) catch {
         // Print without name if lookup fails
         try stdout_writer.print("uid={d}", .{uid});
-        return printDefaultGidAndGroups(allocator, uid, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
+        return printDefaultGidAndGroups(
+            allocator,
+            uid,
+            gid,
+            is_specified_user,
+            delimiter,
+            stdout_writer,
+            stderr_writer,
+        );
     };
     defer allocator.free(user_info.name);
     try stdout_writer.print("uid={d}({s})", .{ uid, user_info.name });
 
-    return printDefaultGidAndGroups(allocator, uid, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
+    return printDefaultGidAndGroups(
+        allocator,
+        uid,
+        gid,
+        is_specified_user,
+        delimiter,
+        stdout_writer,
+        stderr_writer,
+    );
 }
 
 /// Print the gid and groups portions of default format
@@ -730,37 +827,23 @@ fn printDefaultGidAndGroups(
             try stdout_writer.writeByte(delimiter);
             return @intFromEnum(common.ExitCode.success);
         }
-    else blk: {
-        const ngroups = getgroups(0, undefined);
-        if (ngroups <= 0) {
+    else switch (runId_printAllGroups_currentGroups(allocator)) {
+        .list => |list| list,
+        .fall_back => {
             try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
             try stdout_writer.writeByte(delimiter);
             return @intFromEnum(common.ExitCode.success);
-        }
-        const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
+        },
+        .alloc_failed => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "id",
+                "memory allocation failed",
+                .{},
+            );
             return @intFromEnum(common.ExitCode.general_error);
-        };
-        const actual = getgroups(@intCast(ngroups), buf.ptr);
-        if (actual <= 0) {
-            allocator.free(buf);
-            try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
-            try stdout_writer.writeByte(delimiter);
-            return @intFromEnum(common.ExitCode.success);
-        }
-        const count: usize = @intCast(actual);
-        // getgroups never reports more groups than the buffer it was given;
-        // guards the count==buf.len check and the buf[0..count] memcpy below.
-        std.debug.assert(count <= buf.len);
-        if (count == buf.len) break :blk buf;
-        const exact = allocator.alloc(std.c.gid_t, count) catch {
-            allocator.free(buf);
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        @memcpy(exact, buf[0..count]);
-        allocator.free(buf);
-        break :blk exact;
+        },
     };
     defer allocator.free(group_list);
 
@@ -936,7 +1019,10 @@ test "id -u prints effective user ID" {
     try testing.expectEqual(@as(u8, 0), result);
     // Output should be a number followed by newline
     try testing.expect(stdout_aw.writer.buffered().len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
     // Should be a valid number
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     _ = try std.fmt.parseInt(u32, trimmed, 10);
@@ -955,7 +1041,10 @@ test "id -g prints effective group ID" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(stdout_aw.writer.buffered().len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     _ = try std.fmt.parseInt(u32, trimmed, 10);
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
@@ -974,7 +1063,10 @@ test "id -G prints all group IDs" {
     try testing.expectEqual(@as(u8, 0), result);
     // Should have at least one group ID
     try testing.expect(stdout_aw.writer.buffered().len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
@@ -1015,7 +1107,10 @@ test "id -G <username> uses getgrouplist to include supplementary groups" {
 
     // Both code paths must produce non-empty output ending with newline.
     try testing.expect(stdout_named_aw.writer.buffered().len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_named_aw.writer.buffered()[stdout_named_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_named_aw.writer.buffered()[stdout_named_aw.writer.buffered().len - 1],
+    );
 
     // The named-user output should contain the primary GID at minimum.
     const gid_str = try std.fmt.allocPrint(testing.allocator, "{d}", .{user_info.gid});
@@ -1065,7 +1160,10 @@ test "id -gn prints effective group name" {
     try testing.expectEqual(@as(u8, 0), result);
     // Should be a non-empty name
     try testing.expect(stdout_aw.writer.buffered().len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
@@ -1082,7 +1180,10 @@ test "id -ru prints real user ID" {
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     const real_uid = try std.fmt.parseInt(u32, trimmed, 10);
-    try testing.expectEqual(common.user_group.getCurrentUserId(), @as(common.user_group.uid_t, real_uid));
+    try testing.expectEqual(
+        common.user_group.getCurrentUserId(),
+        @as(common.user_group.uid_t, real_uid),
+    );
 }
 
 test "id -rg prints real group ID" {
@@ -1098,7 +1199,10 @@ test "id -rg prints real group ID" {
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     const real_gid = try std.fmt.parseInt(u32, trimmed, 10);
-    try testing.expectEqual(common.user_group.getCurrentGroupId(), @as(common.user_group.gid_t, real_gid));
+    try testing.expectEqual(
+        common.user_group.getCurrentGroupId(),
+        @as(common.user_group.gid_t, real_gid),
+    );
 }
 
 test "id -z uses NUL delimiter" {
@@ -1112,7 +1216,10 @@ test "id -z uses NUL delimiter" {
     try testing.expectEqual(@as(u8, 0), result);
     // Should end with NUL instead of newline
     try testing.expect(stdout_aw.writer.buffered().len > 0);
-    try testing.expectEqual(@as(u8, 0), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, 0),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
 }
 
 test "id help flag" {
@@ -1196,7 +1303,9 @@ test "id -n without -u/-g/-G returns misuse" {
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only names") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only names") != null,
+    );
 }
 
 test "id -r without -u/-g/-G returns misuse" {
@@ -1210,7 +1319,9 @@ test "id -r without -u/-g/-G returns misuse" {
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only real IDs") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only real IDs") != null,
+    );
 }
 
 test "id mutually exclusive -u and -g" {
@@ -1280,7 +1391,10 @@ test "id -Gn prints group names" {
     try testing.expectEqual(@as(u8, 0), result);
     // Output should have at least one group name (non-numeric)
     try testing.expect(stdout_aw.writer.buffered().len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
 }
 
 test "id with numeric user ID" {
@@ -1368,15 +1482,30 @@ test "id -a is a no-op (GNU behavior), produces default format" {
     defer stdout_default_aw.deinit();
 
     const args_a = [_][]const u8{"-a"};
-    const result_a = try runId(testing.allocator, io, &args_a, &stdout_a_aw.writer, common.null_writer);
+    const result_a = try runId(
+        testing.allocator,
+        io,
+        &args_a,
+        &stdout_a_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_a);
 
     const args_default = [_][]const u8{};
-    const result_default = try runId(testing.allocator, io, &args_default, &stdout_default_aw.writer, common.null_writer);
+    const result_default = try runId(
+        testing.allocator,
+        io,
+        &args_default,
+        &stdout_default_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_default);
 
     // GNU: -a is a no-op, so output should match plain id
-    try testing.expectEqualStrings(stdout_default_aw.writer.buffered(), stdout_a_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        stdout_default_aw.writer.buffered(),
+        stdout_a_aw.writer.buffered(),
+    );
 }
 
 test "id -a with -n is rejected (GNU: -a is no-op, -n alone is invalid)" {
@@ -1401,7 +1530,9 @@ test "id -A prints audit stub and exits 1" {
     const args = [_][]const u8{"-A"};
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-A (audit) not supported") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "-A (audit) not supported") != null,
+    );
 }
 
 test "id -F displays full name" {
@@ -1416,7 +1547,10 @@ test "id -F displays full name" {
     try testing.expectEqual(@as(u8, 0), result);
     // Output should end with a newline
     try testing.expect(stdout_aw.writer.buffered().len >= 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
 }
 
 test "id -P displays passwd entry format" {
@@ -1440,7 +1574,10 @@ test "id -P displays passwd entry format" {
     // passwd entry has at least 6 colons (name:passwd:uid:gid::change:expire:gecos:home:shell)
     try testing.expect(colon_count >= 6);
     // Should end with newline
-    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqual(
+        @as(u8, '\n'),
+        stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1],
+    );
 }
 
 test "id -P output contains current username" {
@@ -1515,13 +1652,25 @@ test "id -G with named user is superset of id -G without username" {
     var stdout_no_user_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_no_user_aw.deinit();
     const args_no_user = [_][]const u8{"-G"};
-    const result_no_user = try runId(testing.allocator, io, &args_no_user, &stdout_no_user_aw.writer, common.null_writer);
+    const result_no_user = try runId(
+        testing.allocator,
+        io,
+        &args_no_user,
+        &stdout_no_user_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
     var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_named_aw.deinit();
     const args_named = [_][]const u8{ "-G", user_info.name };
-    const result_named = try runId(testing.allocator, io, &args_named, &stdout_named_aw.writer, common.null_writer);
+    const result_named = try runId(
+        testing.allocator,
+        io,
+        &args_named,
+        &stdout_named_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_named);
 
     const no_user_trimmed = std.mem.trimEnd(u8, stdout_no_user_aw.writer.buffered(), "\n");
@@ -1541,13 +1690,25 @@ test "id -Gn with named user is superset of id -Gn without username" {
     var stdout_no_user_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_no_user_aw.deinit();
     const args_no_user = [_][]const u8{ "-G", "-n" };
-    const result_no_user = try runId(testing.allocator, io, &args_no_user, &stdout_no_user_aw.writer, common.null_writer);
+    const result_no_user = try runId(
+        testing.allocator,
+        io,
+        &args_no_user,
+        &stdout_no_user_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
     var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_named_aw.deinit();
     const args_named = [_][]const u8{ "-G", "-n", user_info.name };
-    const result_named = try runId(testing.allocator, io, &args_named, &stdout_named_aw.writer, common.null_writer);
+    const result_named = try runId(
+        testing.allocator,
+        io,
+        &args_named,
+        &stdout_named_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_named);
 
     const no_user_trimmed = std.mem.trimEnd(u8, stdout_no_user_aw.writer.buffered(), "\n");
@@ -1570,24 +1731,44 @@ test "id default format with named user includes all groups (superset)" {
     var stdout_no_user_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_no_user_aw.deinit();
     const args_no_user = [_][]const u8{};
-    const result_no_user = try runId(testing.allocator, io, &args_no_user, &stdout_no_user_aw.writer, common.null_writer);
+    const result_no_user = try runId(
+        testing.allocator,
+        io,
+        &args_no_user,
+        &stdout_no_user_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
     var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_named_aw.deinit();
     const args_named = [_][]const u8{user_info.name};
-    const result_named = try runId(testing.allocator, io, &args_named, &stdout_named_aw.writer, common.null_writer);
+    const result_named = try runId(
+        testing.allocator,
+        io,
+        &args_named,
+        &stdout_named_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_named);
 
     // Extract the groups= portion, strip trailing newline, extract the
     // inner comma-separated list (format is "groups=gid1(name),gid2(name)").
-    const no_user_groups_start = std.mem.find(u8, stdout_no_user_aw.writer.buffered(), "groups=") orelse
+    const no_user_groups_start = std.mem.find(
+        u8,
+        stdout_no_user_aw.writer.buffered(),
+        "groups=",
+    ) orelse
         return error.TestUnexpectedResult;
     const named_groups_start = std.mem.find(u8, stdout_named_aw.writer.buffered(), "groups=") orelse
         return error.TestUnexpectedResult;
 
-    const no_user_groups = std.mem.trimEnd(u8, stdout_no_user_aw.writer.buffered()[no_user_groups_start + "groups=".len ..], " \n");
-    const named_groups = std.mem.trimEnd(u8, stdout_named_aw.writer.buffered()[named_groups_start + "groups=".len ..], " \n");
+    const no_user_groups_slice =
+        stdout_no_user_aw.writer.buffered()[no_user_groups_start + "groups=".len ..];
+    const named_groups_slice =
+        stdout_named_aw.writer.buffered()[named_groups_start + "groups=".len ..];
+    const no_user_groups = std.mem.trimEnd(u8, no_user_groups_slice, " \n");
+    const named_groups = std.mem.trimEnd(u8, named_groups_slice, " \n");
 
     // Every comma-separated entry in no_user_groups must appear in named_groups.
     var it = std.mem.tokenizeScalar(u8, no_user_groups, ',');
@@ -1632,11 +1813,23 @@ test "id -a is a no-op in GNU, not an alias for -G" {
     defer stdout_with_a_aw.deinit();
 
     const args_default = [_][]const u8{};
-    const result_default = try runId(testing.allocator, io, &args_default, &stdout_default_aw.writer, common.null_writer);
+    const result_default = try runId(
+        testing.allocator,
+        io,
+        &args_default,
+        &stdout_default_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_default);
 
     const args_a = [_][]const u8{"-a"};
-    const result_a = try runId(testing.allocator, io, &args_a, &stdout_with_a_aw.writer, common.null_writer);
+    const result_a = try runId(
+        testing.allocator,
+        io,
+        &args_a,
+        &stdout_with_a_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result_a);
 
     // GNU: id -a should produce default format (uid=... gid=... groups=...)

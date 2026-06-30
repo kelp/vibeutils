@@ -138,7 +138,8 @@ pub const null_writer: *std.Io.Writer = &null_writer_state.writer;
 pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
     _ = fmt;
     _ = fmt_args;
-    @compileError("fatal() is deprecated - use fatalWithWriter() with explicit stderr writer instead");
+    @compileError("fatal() is deprecated - use fatalWithWriter() with explicit " ++
+        "stderr writer instead");
 }
 
 /// Print error message to the given stderr writer and exit with error code.
@@ -171,7 +172,8 @@ pub fn fatalWithWriter(
 pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
     _ = fmt;
     _ = fmt_args;
-    @compileError("printError() is deprecated - use printErrorWithWriter() with explicit stderr writer instead");
+    @compileError("printError() is deprecated - use printErrorWithWriter() with explicit " ++
+        "stderr writer instead");
 }
 
 /// DEPRECATED: Use printWarningWithWriter() instead
@@ -179,7 +181,8 @@ pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
 pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
     _ = fmt;
     _ = fmt_args;
-    @compileError("printWarning() is deprecated - use printWarningWithWriter() with explicit stderr writer instead");
+    @compileError("printWarning() is deprecated - use printWarningWithWriter() with " ++
+        "explicit stderr writer instead");
 }
 
 /// Detect whether stderr supports color output.
@@ -199,7 +202,13 @@ fn stderrSupportsColor() bool {
 /// Print error message with custom program name to a specific writer
 ///
 /// Color is detected automatically from stderr TTY state and environment.
-pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+pub fn printErrorWithProgram(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    prog_name: []const u8,
+    comptime fmt: []const u8,
+    fmt_args: anytype,
+) void {
     if (stderrSupportsColor()) {
         const StyleType = style.Style(@TypeOf(writer));
         var s = StyleType.init(allocator, writer) catch {
@@ -221,7 +230,13 @@ pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog
 ///
 /// Hints are informational suggestions for the user, displayed in cyan.
 /// Color is detected automatically from stderr TTY state and environment.
-pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+pub fn printHintWithProgram(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    prog_name: []const u8,
+    comptime fmt: []const u8,
+    fmt_args: anytype,
+) void {
     if (stderrSupportsColor()) {
         const StyleType = style.Style(@TypeOf(writer));
         var s = StyleType.init(allocator, writer) catch {
@@ -242,7 +257,13 @@ pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_
 /// Print warning message with custom program name to a specific writer
 ///
 /// Color is detected automatically from stderr TTY state and environment.
-pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+pub fn printWarningWithProgram(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    prog_name: []const u8,
+    comptime fmt: []const u8,
+    fmt_args: anytype,
+) void {
     if (stderrSupportsColor()) {
         const StyleType = style.Style(@TypeOf(writer));
         var s = StyleType.init(allocator, writer) catch {
@@ -353,7 +374,12 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
         if (std.mem.find(u8, entry.path, "integration_tests") != null) continue;
         if (std.mem.eql(u8, entry.basename, "lib.zig")) continue;
 
-        const content = src_dir.readFileAlloc(io, entry.path, testing.allocator, .limited(1024 * 1024)) catch continue;
+        const content = src_dir.readFileAlloc(
+            io,
+            entry.path,
+            testing.allocator,
+            .limited(1024 * 1024),
+        ) catch continue;
         defer testing.allocator.free(content);
 
         // Search for buggy pattern: .stdout().writer( or .stderr().writer(
@@ -385,7 +411,11 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     }
 
     if (violations.items.len > 0) {
-        std.debug.print("\nIssue #5 violation - these files use .writer() instead of .writerStreaming():\n{s}\n", .{violations.items});
+        std.debug.print(
+            "\nIssue #5 violation - these files use .writer() instead of " ++
+                ".writerStreaming():\n{s}\n",
+            .{violations.items},
+        );
         return error.TestExpectedEqual;
     }
 }
@@ -442,15 +472,24 @@ test "posixErrorString: EACCES maps to Permission denied" {
 
 test "posixErrorString: EPERM maps to Operation not permitted" {
     // Note: PermissionDenied == EPERM, distinct from AccessDenied == EACCES
-    try std.testing.expectEqualStrings("Operation not permitted", posixErrorString(error.PermissionDenied));
+    try std.testing.expectEqualStrings(
+        "Operation not permitted",
+        posixErrorString(error.PermissionDenied),
+    );
 }
 
 test "posixErrorString: ENOENT maps to No such file or directory" {
-    try std.testing.expectEqualStrings("No such file or directory", posixErrorString(error.FileNotFound));
+    try std.testing.expectEqualStrings(
+        "No such file or directory",
+        posixErrorString(error.FileNotFound),
+    );
 }
 
 test "posixErrorString: ENOENT alias NoSuchFileOrDirectory" {
-    try std.testing.expectEqualStrings("No such file or directory", posixErrorString(error.NoSuchFileOrDirectory));
+    try std.testing.expectEqualStrings(
+        "No such file or directory",
+        posixErrorString(error.NoSuchFileOrDirectory),
+    );
 }
 
 test "posixErrorString: ENOTDIR maps to Not a directory" {
@@ -474,19 +513,31 @@ test "posixErrorString: PathTooLong also maps to File name too long" {
 }
 
 test "posixErrorString: EROFS maps to Read-only file system" {
-    try std.testing.expectEqualStrings("Read-only file system", posixErrorString(error.ReadOnlyFileSystem));
+    try std.testing.expectEqualStrings(
+        "Read-only file system",
+        posixErrorString(error.ReadOnlyFileSystem),
+    );
 }
 
 test "posixErrorString: ENOSPC maps to No space left on device" {
-    try std.testing.expectEqualStrings("No space left on device", posixErrorString(error.NoSpaceLeft));
+    try std.testing.expectEqualStrings(
+        "No space left on device",
+        posixErrorString(error.NoSpaceLeft),
+    );
 }
 
 test "posixErrorString: ENOMEM maps to Cannot allocate memory" {
-    try std.testing.expectEqualStrings("Cannot allocate memory", posixErrorString(error.OutOfMemory));
+    try std.testing.expectEqualStrings(
+        "Cannot allocate memory",
+        posixErrorString(error.OutOfMemory),
+    );
 }
 
 test "posixErrorString: ELOOP maps to Too many levels of symbolic links" {
-    try std.testing.expectEqualStrings("Too many levels of symbolic links", posixErrorString(error.SymLinkLoop));
+    try std.testing.expectEqualStrings(
+        "Too many levels of symbolic links",
+        posixErrorString(error.SymLinkLoop),
+    );
 }
 
 test "posixErrorString: EPIPE maps to Broken pipe" {
@@ -494,15 +545,24 @@ test "posixErrorString: EPIPE maps to Broken pipe" {
 }
 
 test "posixErrorString: ECONNRESET maps to Connection reset by peer" {
-    try std.testing.expectEqualStrings("Connection reset by peer", posixErrorString(error.ConnectionResetByPeer));
+    try std.testing.expectEqualStrings(
+        "Connection reset by peer",
+        posixErrorString(error.ConnectionResetByPeer),
+    );
 }
 
 test "posixErrorString: EXDEV maps to Invalid cross-device link" {
-    try std.testing.expectEqualStrings("Invalid cross-device link", posixErrorString(error.CrossDeviceLink));
+    try std.testing.expectEqualStrings(
+        "Invalid cross-device link",
+        posixErrorString(error.CrossDeviceLink),
+    );
 }
 
 test "posixErrorString: EBUSY maps to Device or resource busy" {
-    try std.testing.expectEqualStrings("Device or resource busy", posixErrorString(error.DeviceBusy));
+    try std.testing.expectEqualStrings(
+        "Device or resource busy",
+        posixErrorString(error.DeviceBusy),
+    );
 }
 
 test "posixErrorString: ENOTEMPTY maps to Directory not empty" {
@@ -526,7 +586,10 @@ test "posixErrorString: EIO maps to Input/output error" {
 }
 
 test "posixErrorString: EBADF maps to Bad file descriptor" {
-    try std.testing.expectEqualStrings("Bad file descriptor", posixErrorString(error.InvalidHandle));
+    try std.testing.expectEqualStrings(
+        "Bad file descriptor",
+        posixErrorString(error.InvalidHandle),
+    );
 }
 
 test "posixErrorString: BadPathName maps to Invalid argument" {
@@ -546,15 +609,24 @@ test "posixErrorString: NotLink maps to Invalid argument" {
 }
 
 test "posixErrorString: EMFILE maps to Too many open files" {
-    try std.testing.expectEqualStrings("Too many open files", posixErrorString(error.ProcessFdQuotaExceeded));
+    try std.testing.expectEqualStrings(
+        "Too many open files",
+        posixErrorString(error.ProcessFdQuotaExceeded),
+    );
 }
 
 test "posixErrorString: ENFILE maps to Too many open files in system" {
-    try std.testing.expectEqualStrings("Too many open files in system", posixErrorString(error.SystemFdQuotaExceeded));
+    try std.testing.expectEqualStrings(
+        "Too many open files in system",
+        posixErrorString(error.SystemFdQuotaExceeded),
+    );
 }
 
 test "posixErrorString: SystemResources maps to Insufficient system resources" {
-    try std.testing.expectEqualStrings("Insufficient system resources", posixErrorString(error.SystemResources));
+    try std.testing.expectEqualStrings(
+        "Insufficient system resources",
+        posixErrorString(error.SystemResources),
+    );
 }
 
 test "posixErrorString: Unexpected maps to Unexpected error" {
@@ -562,7 +634,10 @@ test "posixErrorString: Unexpected maps to Unexpected error" {
 }
 
 test "posixErrorString: EAGAIN maps to Resource temporarily unavailable" {
-    try std.testing.expectEqualStrings("Resource temporarily unavailable", posixErrorString(error.WouldBlock));
+    try std.testing.expectEqualStrings(
+        "Resource temporarily unavailable",
+        posixErrorString(error.WouldBlock),
+    );
 }
 
 test "posixErrorString: unknown error falls back to @errorName" {

@@ -22,10 +22,17 @@ const lib = @import("lib.zig");
 /// The run function signature must be:
 ///   fn(std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8
 ///
-/// Where the parameters are: allocator, io, args (without program name), stdout_writer, stderr_writer
+/// Where the parameters are: allocator, io, args (without program name),
+/// stdout_writer, stderr_writer
 pub fn utilityMain(
     init: std.process.Init,
-    comptime runFn: fn (std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8,
+    comptime runFn: fn (
+        std.mem.Allocator,
+        std.Io,
+        []const []const u8,
+        *std.Io.Writer,
+        *std.Io.Writer,
+    ) anyerror!u8,
 ) noreturn {
     const io = init.io;
     const allocator = init.arena.allocator();
@@ -35,7 +42,10 @@ pub fn utilityMain(
         var stderr_buf: [256]u8 = undefined;
         var stderr_w = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
         const stderr = &stderr_w.interface;
-        stderr.print("error: failed to allocate arguments: {s}\n", .{lib.posixErrorString(err)}) catch {};
+        stderr.print(
+            "error: failed to allocate arguments: {s}\n",
+            .{lib.posixErrorString(err)},
+        ) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
@@ -77,7 +87,13 @@ pub fn utilityMain(
 /// caller-supplied writers.  Does NOT call `std.process.exit`; returns the
 /// exit code instead.
 pub fn runWithBufferedIO(
-    comptime runFn: fn (std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8,
+    comptime runFn: fn (
+        std.mem.Allocator,
+        std.Io,
+        []const []const u8,
+        *std.Io.Writer,
+        *std.Io.Writer,
+    ) anyerror!u8,
     allocator: std.mem.Allocator,
     io: std.Io,
     args: []const []const u8, // args[0] is the program name and is stripped
@@ -180,7 +196,14 @@ test "runWithBufferedIO: program name is stripped from args" {
     defer stderr_aw.deinit();
 
     const argv = [_][]const u8{ "/usr/bin/myprog", "arg1", "arg2" };
-    _ = runWithBufferedIO(runEchoArgs, testing.allocator, io, &argv, &stdout_aw.writer, &stderr_aw.writer);
+    _ = runWithBufferedIO(
+        runEchoArgs,
+        testing.allocator,
+        io,
+        &argv,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     const out = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, out, "myprog") == null);

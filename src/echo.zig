@@ -17,7 +17,13 @@ const testing = std.testing;
 /// including -z, -foo, --unknown, is printed as a positional argument.
 /// Once a non-flag argument is encountered, all remaining arguments
 /// (including ones that look like flags) are treated as positional.
-pub fn runEcho(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runEcho(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = io;
     _ = stderr_writer;
     var suppress_newline = false;
@@ -413,7 +419,10 @@ test "echo -e handles multiple escape sequences" {
     const args = [_][]const u8{ "-e", "\\t\\tindented\\nline\\ttwo\\\\backslash" };
     const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\t\tindented\nline\ttwo\\backslash\n", buffer.writer.buffered());
+    try testing.expectEqualStrings(
+        "\t\tindented\nline\ttwo\\backslash\n",
+        buffer.writer.buffered(),
+    );
 }
 
 test "echo -e with octal sequences" {

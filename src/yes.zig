@@ -141,8 +141,9 @@ fn runYes_outputForever(stdout_writer: *std.Io.Writer, output_str: []const u8) !
     const buffer_size = 8192;
 
     if (output_str.len > buffer_size) {
-        // Large string: write directly each iteration (output_str already has trailing newline)
-        while (true) {
+        // Large string: write directly each iteration (output_str already has trailing newline).
+        // GNU yes emits forever; sole exit is the write-error catch (e.g. BrokenPipe to head).
+        while (true) { // tiger:allow:unbounded-loop exits on write error (BrokenPipe to head)
             stdout_writer.writeAll(output_str) catch {
                 return @intFromEnum(common.ExitCode.success);
             };
@@ -166,8 +167,8 @@ fn runYes_outputForever(stdout_writer: *std.Io.Writer, output_str: []const u8) !
     // Loop invariant on exit: pos never advances past the buffer length.
     std.debug.assert(pos <= buffer.len);
 
-    // Output forever
-    while (true) {
+    // Output forever. GNU yes emits forever; sole exit is the write-error catch.
+    while (true) { // tiger:allow:unbounded-loop exits on write error (BrokenPipe to head)
         stdout_writer.writeAll(buffer[0..pos]) catch {
             // Any write error (including BrokenPipe) is expected when piping to head, etc.
             // yes traditionally exits silently on write errors
@@ -246,7 +247,13 @@ test "yes handles --help flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"--help"}, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"--help"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage:") != null);
@@ -260,7 +267,13 @@ test "yes handles --version flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"--version"}, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"--version"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "yes") != null);
@@ -299,7 +312,11 @@ const LimitedWriter = struct {
         return self.captured[0..self.pos];
     }
 
-    pub fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+    pub fn drain(
+        w: *std.Io.Writer,
+        data: []const []const u8,
+        splat: usize, // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
+    ) std.Io.Writer.Error!usize { // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
         const self: *LimitedWriter = @alignCast(@fieldParentPtr("writer", w));
         if (self.pos >= self.limit) return error.WriteFailed;
         const last = data[data.len - 1];
@@ -335,7 +352,11 @@ const CallBoundedWriter = struct {
     allocator: std.mem.Allocator,
     writer: std.Io.Writer,
 
-    pub fn init(allocator: std.mem.Allocator, capture_size: usize, max_calls: usize) !CallBoundedWriter {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        capture_size: usize, // tiger:allow:usize-arch byte-count capacity argument
+        max_calls: usize, // tiger:allow:usize-arch call-count threshold argument
+    ) !CallBoundedWriter {
         var self = CallBoundedWriter{
             .bytes_written = 0,
             .calls = 0,
@@ -360,7 +381,11 @@ const CallBoundedWriter = struct {
         return self.captured[0..self.captured_len];
     }
 
-    pub fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+    pub fn drain(
+        w: *std.Io.Writer,
+        data: []const []const u8,
+        splat: usize, // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
+    ) std.Io.Writer.Error!usize { // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
         const self: *CallBoundedWriter = @alignCast(@fieldParentPtr("writer", w));
         self.calls += 1;
         if (self.calls > self.max_calls) return error.WriteFailed;
@@ -417,7 +442,13 @@ test "yes outputs custom string" {
     var capture = try LimitedWriter.init(testing.allocator, 256);
     defer capture.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"hello"}, &capture.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"hello"},
+        &capture.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const output = capture.items();
@@ -447,7 +478,13 @@ test "yes with string longer than 8192 bytes produces output" {
     var writer = try CallBoundedWriter.init(testing.allocator, 16384, 100);
     defer writer.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{long_str}, &writer.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{long_str},
+        &writer.writer,
+        common.null_writer,
+    );
 
     // yes exits 0 on write error (broken pipe)
     try testing.expectEqual(@as(u8, 0), result);
@@ -469,7 +506,13 @@ test "yes with string of exactly 8193 bytes works correctly" {
     var writer = try CallBoundedWriter.init(testing.allocator, 16384, 100);
     defer writer.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{str_8193}, &writer.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{str_8193},
+        &writer.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(writer.bytes_written > 0);
@@ -489,7 +532,13 @@ test "yes unknown flag exits 1 (GNU behavior), not 2" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"--unknown-flag"}, common.null_writer, &stderr_aw.writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"--unknown-flag"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // GNU yes exits 1 for unrecognized options
     try testing.expectEqual(@as(u8, 1), result);
@@ -514,7 +563,13 @@ test "yes with string much larger than buffer produces output" {
     var writer = try CallBoundedWriter.init(testing.allocator, 8192 * 4, 100);
     defer writer.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{huge_str}, &writer.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{huge_str},
+        &writer.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(writer.bytes_written > 0);

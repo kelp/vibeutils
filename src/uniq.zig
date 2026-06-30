@@ -54,11 +54,23 @@ const UniqArgs = struct {
         .count = .{ .short = 'c', .desc = "Prefix lines by the number of occurrences" },
         .repeated = .{ .short = 'd', .desc = "Only print duplicate lines, one for each group" },
         .all_repeated = .{ .short = 'D', .desc = "Print all duplicate lines" },
-        .skip_fields = .{ .short = 'f', .desc = "Avoid comparing the first N fields", .value_name = "N" },
+        .skip_fields = .{
+            .short = 'f',
+            .desc = "Avoid comparing the first N fields",
+            .value_name = "N",
+        },
         .ignore_case = .{ .short = 'i', .desc = "Ignore differences in case when comparing" },
-        .skip_chars = .{ .short = 's', .desc = "Avoid comparing the first N characters", .value_name = "N" },
+        .skip_chars = .{
+            .short = 's',
+            .desc = "Avoid comparing the first N characters",
+            .value_name = "N",
+        },
         .unique = .{ .short = 'u', .desc = "Only print unique lines" },
-        .check_chars = .{ .short = 'w', .desc = "Compare no more than N characters in lines", .value_name = "N" },
+        .check_chars = .{
+            .short = 'w',
+            .desc = "Compare no more than N characters in lines",
+            .value_name = "N",
+        },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -92,22 +104,50 @@ fn runUniq_preprocessAllRepeated(
         if (std.mem.startsWith(u8, arg, "--all-repeated=")) {
             const method_str = arg["--all-repeated=".len..];
             method_out.* = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument '{s}' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{method_str});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "uniq",
+                    "invalid argument '{s}' for '--all-repeated'\nValid arguments are:" ++
+                        "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
+                    .{method_str},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             };
             if (method_out.* == .off) {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument 'off' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "uniq",
+                    "invalid argument 'off' for '--all-repeated'\nValid arguments are:" ++
+                        "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             }
             cleaned_args.appendAssumeCapacity("--all-repeated");
         } else if (std.mem.startsWith(u8, arg, "-D=")) {
             const method_str = arg["-D=".len..];
             method_out.* = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument '{s}' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{method_str});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "uniq",
+                    "invalid argument '{s}' for '--all-repeated'\nValid arguments are:" ++
+                        "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
+                    .{method_str},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             };
             if (method_out.* == .off) {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument 'off' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "uniq",
+                    "invalid argument 'off' for '--all-repeated'\nValid arguments are:" ++
+                        "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             }
             cleaned_args.appendAssumeCapacity("-D");
@@ -215,6 +255,20 @@ fn runUniq_dispatchInput(
     }
 }
 
+/// Resolve the effective --all-repeated method on `parsed_args` from the
+/// pre-processed `method`. If the bool flag is set but no =METHOD was given
+/// (method is .off), default to .none (GNU behavior); otherwise carry the
+/// pre-processed method through. No-op when the flag is absent.
+fn runUniq_resolveAllRepeated(parsed_args: *UniqArgs, method: AllRepeatedMethod) void {
+    if (parsed_args.all_repeated) {
+        if (method == .off) {
+            parsed_args.all_repeated_method = .none;
+        } else {
+            parsed_args.all_repeated_method = method;
+        }
+    }
+}
+
 /// Public entry point that reads from stdin or files
 pub fn runUniq(
     allocator: Allocator,
@@ -240,19 +294,17 @@ pub fn runUniq(
     }
     std.debug.assert(cleaned_args.items.len == args.len);
 
-    var parsed_args = common.argparse.ArgParser.parseOrExit(UniqArgs, allocator, cleaned_args.items, "uniq", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    var parsed_args = common.argparse.ArgParser.parseOrExit(
+        UniqArgs,
+        allocator,
+        cleaned_args.items,
+        "uniq",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Set the all_repeated_method from pre-processing.
-    // If --all-repeated or -D was used (bool is true) but no =METHOD was given,
-    // default to .none (GNU behavior).
-    if (parsed_args.all_repeated) {
-        if (all_repeated_method == .off) {
-            parsed_args.all_repeated_method = .none;
-        } else {
-            parsed_args.all_repeated_method = all_repeated_method;
-        }
-    }
+    runUniq_resolveAllRepeated(&parsed_args, all_repeated_method);
 
     if (parsed_args.help) {
         try printHelp(allocator, stdout_writer);
@@ -266,7 +318,13 @@ pub fn runUniq(
 
     // Validate positional count: at most 2 (INPUT, OUTPUT)
     if (parsed_args.positionals.len > 2) {
-        common.printErrorWithProgram(allocator, stderr_writer, "uniq", "extra operand '{s}'\nTry 'uniq --help' for more information.", .{parsed_args.positionals[2]});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "uniq",
+            "extra operand '{s}'\nTry 'uniq --help' for more information.",
+            .{parsed_args.positionals[2]},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
     std.debug.assert(parsed_args.positionals.len <= 2);
@@ -283,6 +341,48 @@ pub fn runUniq(
         input_path,
         stdout_writer,
         stderr_writer,
+    );
+}
+
+/// Loop-invariant output context for runUniqWithInput. Bundles the writer and
+/// the resolved formatting options so each group-flush site is a single short
+/// call instead of a wide multi-argument outputLine invocation.
+const UniqEmitContext = struct {
+    out_writer: *std.Io.Writer,
+    opts: UniqArgs,
+    method: AllRepeatedMethod,
+    delimiter: u8,
+    has_printed_group: *bool,
+
+    /// Emit one collapsed group through outputLine using the bundled context.
+    fn emit(context: UniqEmitContext, line: []const u8, count: u64) !void {
+        std.debug.assert(count >= 1);
+        try outputLine(
+            context.out_writer,
+            line,
+            count,
+            context.opts,
+            context.method,
+            context.delimiter,
+            context.has_printed_group,
+        );
+    }
+};
+
+/// Report a read error from runUniqWithInput to stderr with the program
+/// prefix. Centralizes the diagnostic so both readLine failure arms share
+/// one formatting site.
+fn runUniqWithInput_reportReadError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    err: anyerror,
+) void {
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "uniq",
+        "read error: {s}",
+        .{common.posixErrorString(err)},
     );
 }
 
@@ -313,24 +413,32 @@ fn runUniqWithInput(
     // prepend/separate blank-line logic).
     var has_printed_group = false;
 
-    while (true) {
+    const context: UniqEmitContext = .{
+        .out_writer = out_writer,
+        .opts = opts,
+        .method = method,
+        .delimiter = delimiter,
+        .has_printed_group = &has_printed_group,
+    };
+
+    // One pass per input line; line count is unbounded a priori, so a numeric
+    // cap would silently drop lines. Terminates at EOF: readLine returns null
+    // when the reader is exhausted, hitting the `break` below.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF (readLine null)
         const line = readLine(allocator, reader, delimiter) catch |err| switch (err) {
             error.OutOfMemory => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "read error: {s}", .{common.posixErrorString(err)});
+                runUniqWithInput_reportReadError(allocator, stderr_writer, err);
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "read error: {s}", .{common.posixErrorString(err)});
+                runUniqWithInput_reportReadError(allocator, stderr_writer, err);
                 return @intFromEnum(common.ExitCode.general_error);
             },
         };
 
         if (line == null) {
-            // End of input: flush last group
-            if (prev_line) |prev| {
-                std.debug.assert(count >= 1);
-                try outputLine(out_writer, prev, count, opts, method, delimiter, &has_printed_group);
-            }
+            // End of input: flush last group.
+            if (prev_line) |prev| try context.emit(prev, count);
             break;
         }
 
@@ -342,7 +450,7 @@ fn runUniqWithInput(
                 allocator.free(current);
             } else {
                 // Group boundary: output the previous group
-                try outputLine(out_writer, prev, count, opts, method, delimiter, &has_printed_group);
+                try context.emit(prev, count);
                 allocator.free(prev);
                 prev_line = current;
                 count = 1;
@@ -362,7 +470,10 @@ fn readLine(allocator: Allocator, reader: *std.Io.Reader, delimiter: u8) !?[]u8 
     var line: std.ArrayListUnmanaged(u8) = .empty;
     errdefer line.deinit(allocator);
 
-    while (true) {
+    // One pass per byte of the line; line length is unbounded a priori, so a
+    // numeric cap would truncate long lines. Terminates on EOF (takeByte
+    // returns error.EndOfStream) or when the delimiter byte is read.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF / on delimiter
         const byte = reader.takeByte() catch |err| switch (err) {
             error.EndOfStream => {
                 if (line.items.len == 0) {
@@ -439,7 +550,15 @@ fn getCompareSlice(line: []const u8, opts: UniqArgs) []const u8 {
 }
 
 /// Output a line (or not) according to count/repeated/unique/all_repeated flags.
-fn outputLine(writer: *std.Io.Writer, line: []const u8, count: u64, opts: UniqArgs, method: AllRepeatedMethod, delimiter: u8, has_printed_group: *bool) !void {
+fn outputLine(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    count: u64,
+    opts: UniqArgs,
+    method: AllRepeatedMethod,
+    delimiter: u8,
+    has_printed_group: *bool,
+) !void {
     std.debug.assert(count >= 1);
     // -D / --all-repeated: print all copies of duplicate groups.
     // Since we collapsed them, we print `count` copies.
@@ -667,7 +786,10 @@ test "uniq -c counts occurrences" {
     );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("      3 aaa\n      1 bbb\n      2 ccc\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "      3 aaa\n      1 bbb\n      2 ccc\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "uniq -d only prints duplicates" {

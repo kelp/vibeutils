@@ -86,7 +86,12 @@ const BlockSize = enum {
 const DfOptions = struct {
     all: bool = false,
     human_readable: bool = true,
-    display: common.display_config.DisplayConfig = .{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
+    display: common.display_config.DisplayConfig = .{
+        .color = .off,
+        .icons = .off,
+        .highlight = .off,
+        .theme = .none,
+    },
     si: bool = false,
     inodes: bool = false,
     block_1k: bool = false,
@@ -128,7 +133,10 @@ const FsInfo = struct {
 // Argument parsing (manual, for complex options)
 // ============================================================================
 
-fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOptions, err: ?[]const u8 } {
+fn parseArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+) struct { opts: DfOptions, err: ?[]const u8 } {
     var opts = DfOptions{};
     // Freshly constructed: positionals defaults to empty and is only assigned
     // its final value at the end via toOwnedSlice from the local list.
@@ -864,7 +872,10 @@ fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
         std.debug.assert(i + needle.len <= haystack.len);
         var match = true;
         for (0..needle.len) |j| {
-            const h = if (haystack[i + j] >= 'A' and haystack[i + j] <= 'Z') haystack[i + j] + 32 else haystack[i + j];
+            const h = if (haystack[i + j] >= 'A' and haystack[i + j] <= 'Z')
+                haystack[i + j] + 32
+            else
+                haystack[i + j];
             const n = if (needle[j] >= 'A' and needle[j] <= 'Z') needle[j] + 32 else needle[j];
             if (h != n) {
                 match = false;
@@ -1248,11 +1259,20 @@ fn computeColumnWidths(filesystems: []const FsInfo, opts: DfOptions) ColumnWidth
         }
         // Size columns: format and measure
         var size_buf: [32]u8 = undefined;
-        widths.size = @max(widths.size, formatSize(&size_buf, fs.total_blocks, fs.block_size, opts).len);
+        widths.size = @max(
+            widths.size,
+            formatSize(&size_buf, fs.total_blocks, fs.block_size, opts).len,
+        );
         var used_buf: [32]u8 = undefined;
-        widths.used = @max(widths.used, formatSize(&used_buf, fs.used_blocks, fs.block_size, opts).len);
+        widths.used = @max(
+            widths.used,
+            formatSize(&used_buf, fs.used_blocks, fs.block_size, opts).len,
+        );
         var avail_buf: [32]u8 = undefined;
-        widths.avail = @max(widths.avail, formatSize(&avail_buf, fs.avail_blocks, fs.block_size, opts).len);
+        widths.avail = @max(
+            widths.avail,
+            formatSize(&avail_buf, fs.avail_blocks, fs.block_size, opts).len,
+        );
     }
     // Both default to the 10-char header width and only grow via @max, so the
     // minimum-width floor is preserved as a postcondition.
@@ -1271,7 +1291,8 @@ fn capWidthsToTerminal(allocator: Allocator, widths: *ColumnWidths, opts: DfOpti
     const term_width: usize = @intCast(common.terminal.getWidth(allocator) catch 80);
 
     // Calculate total line width
-    var total: usize = widths.filesystem + 2 + widths.size + 2 + widths.used + 2 + widths.avail + 2 + widths.use_pct + 2 + widths.mount;
+    var total: usize = widths.filesystem + 2 + widths.size + 2 + // tiger:allow:usize-arch
+        widths.used + 2 + widths.avail + 2 + widths.use_pct + 2 + widths.mount;
     if (opts.print_type) total += widths.fs_type + 2;
     if (opts.display.icons == .on) total += 2 + widths.usage_bar + 2; // icon spacer + bar
 
@@ -1375,7 +1396,9 @@ fn writeColoredUsageBar(writer: *std.Io.Writer, s: anytype, percent: u8) !void {
     // Filled blocks with gradient coloring
     for (0..filled) |i| {
         // Calculate the percentage this block represents
-        const block_pct: u8 = @intCast(@min(@divTrunc((@as(u16, @intCast(i)) + 1) * 100, bar_width), 100));
+        const block_pct: u8 = @intCast(
+            @min(@divTrunc((@as(u16, @intCast(i)) + 1) * 100, bar_width), 100),
+        );
         const rgb = usageGradientRgb(block_pct);
 
         switch (s.color_mode) {
@@ -1818,7 +1841,12 @@ fn printTotal_formatField(buf: []u8, bytes: u64, display_block: u64, opts: DfOpt
     return std.fmt.bufPrint(buf, "{d}", .{val}) catch "?";
 }
 
-fn printTotal(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions, color_mode_int: u8) !void {
+fn printTotal(
+    stdout: *std.Io.Writer,
+    filesystems: []const FsInfo,
+    opts: DfOptions,
+    color_mode_int: u8,
+) !void {
     if (opts.inodes) {
         return printTotal_inodes(stdout, filesystems, opts);
     }
@@ -1962,7 +1990,12 @@ fn printTotal_emitColored(
 // Dynamic-width output formatting
 // ============================================================================
 
-fn printHeaderDynamic(stdout: *std.Io.Writer, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
+fn printHeaderDynamic(
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    s: anytype,
+) !void {
     var size_label_buf: [32]u8 = undefined;
     const size_label: []const u8 = blk: {
         if (opts.human_readable or opts.si) break :blk "Size";
@@ -2016,7 +2049,13 @@ fn printHeaderDynamic(stdout: *std.Io.Writer, opts: DfOptions, widths: ColumnWid
     try stdout.writeAll("\n");
 }
 
-fn printFsRowDynamic(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
+fn printFsRowDynamic(
+    stdout: *std.Io.Writer,
+    fs: FsInfo,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    s: anytype,
+) !void {
     const fs_class = classifyFs(fs.source, fs.fstype, fs.mount_point);
 
     var total_buf: [32]u8 = undefined;
@@ -2197,7 +2236,13 @@ fn printFsRowDynamic_emitColored(
     try stdout.writeAll("\n");
 }
 
-fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
+fn printTotalDynamic(
+    stdout: *std.Io.Writer,
+    filesystems: []const FsInfo,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    s: anytype,
+) !void {
     // Sum bytes across all filesystems
     var sum_total_bytes: u64 = 0;
     var sum_used_bytes: u64 = 0;
@@ -2219,7 +2264,9 @@ fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: 
         const pct = @divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total);
         break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
     };
-    const percent: u8 = if (sum_use_total == 0) 0 else @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
+    const percent: u8 = if (sum_use_total == 0) 0 else @intCast(
+        @min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100),
+    );
     // Both branches above yield <= 100 (explicit @min or the 0 branch).
     std.debug.assert(percent <= 100);
 
@@ -2341,7 +2388,13 @@ fn printTotalDynamic_emitColored(
 // Main logic
 // ============================================================================
 
-pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+pub fn runDf(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) anyerror!u8 {
     const parsed = parseArgs(allocator, args);
     const opts = parsed.opts;
 
@@ -2627,7 +2680,8 @@ fn runDf_renderDynamic(
     // Cap to terminal width
     capWidthsToTerminal(allocator, &widths, opts);
 
-    printHeaderDynamic(stdout, opts, widths, s) catch return @intFromEnum(common.ExitCode.general_error);
+    printHeaderDynamic(stdout, opts, widths, s) catch
+        return @intFromEnum(common.ExitCode.general_error);
     for (visible_items) |fs| {
         printFsRowDynamic(stdout, fs, opts, widths, s) catch {};
     }
@@ -3378,7 +3432,12 @@ test "truncatePath - root unchanged" {
     try testing.expectEqualStrings("/", result);
 }
 
-fn makeFsInfo(source: []const u8, mount_point: []const u8, total_blocks: u64, block_size: u64) FsInfo {
+fn makeFsInfo(
+    source: []const u8,
+    mount_point: []const u8,
+    total_blocks: u64,
+    block_size: u64,
+) FsInfo {
     return FsInfo{
         .source = source,
         .fstype = "apfs",
@@ -3663,7 +3722,10 @@ test "smartFormatSource - generic truncation" {
 test "smartFormatMount - fits" {
     var buf: [128]u8 = undefined;
     try testing.expectEqualStrings("/", smartFormatMount(&buf, "/", 20));
-    try testing.expectEqualStrings("/System/Volumes", smartFormatMount(&buf, "/System/Volumes", 20));
+    try testing.expectEqualStrings(
+        "/System/Volumes",
+        smartFormatMount(&buf, "/System/Volumes", 20),
+    );
 }
 
 test "smartFormatMount - needs abbreviation" {
@@ -3694,17 +3756,31 @@ test "classifyFs - virtual" {
 }
 
 test "classifyFs - backup" {
-    try testing.expectEqual(FsClass.backup, classifyFs("/dev/disk9s1", "apfs", "/Volumes/Backups of tcole-mbpro"));
-    try testing.expectEqual(FsClass.backup, classifyFs("//user@nas/share", "smbfs", "/Volumes/Time Machine Backups"));
+    try testing.expectEqual(
+        FsClass.backup,
+        classifyFs("/dev/disk9s1", "apfs", "/Volumes/Backups of tcole-mbpro"),
+    );
+    try testing.expectEqual(
+        FsClass.backup,
+        classifyFs("//user@nas/share", "smbfs", "/Volumes/Time Machine Backups"),
+    );
 }
 
 test "classifyFs - snapshot" {
-    try testing.expectEqual(FsClass.snapshot, classifyFs("com.apple.TimeMachine.2026-03-11-203149.local@/dev/disk3s5", "apfs", "/Volumes/.timemachine/data"));
+    try testing.expectEqual(FsClass.snapshot, classifyFs(
+        "com.apple.TimeMachine.2026-03-11-203149.local@/dev/disk3s5",
+        "apfs",
+        "/Volumes/.timemachine/data",
+    ));
 }
 
 test "isTimeMachineSnapshot - detection" {
-    try testing.expect(isTimeMachineSnapshot("com.apple.TimeMachine.2026-03-11-203149.local@/dev/disk3s5"));
-    try testing.expect(isTimeMachineSnapshot("com.apple.TimeMachine.2026-03-06-214229.backup@/dev/disk9s1"));
+    try testing.expect(
+        isTimeMachineSnapshot("com.apple.TimeMachine.2026-03-11-203149.local@/dev/disk3s5"),
+    );
+    try testing.expect(
+        isTimeMachineSnapshot("com.apple.TimeMachine.2026-03-06-214229.backup@/dev/disk9s1"),
+    );
     try testing.expect(!isTimeMachineSnapshot("/dev/disk1s1"));
     try testing.expect(!isTimeMachineSnapshot("OrbStack:/data"));
 }

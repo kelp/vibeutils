@@ -311,7 +311,11 @@ const FreeArgs = struct {
         .si = .{ .short = 0, .desc = "Use powers of 1000 instead of 1024" },
         .total = .{ .short = 't', .desc = "Display a line showing column totals" },
         .wide = .{ .short = 'w', .desc = "Wide output" },
-        .seconds = .{ .short = 's', .desc = "Continuous display every N seconds", .value_name = "N" },
+        .seconds = .{
+            .short = 's',
+            .desc = "Continuous display every N seconds",
+            .value_name = "N",
+        },
         .count = .{ .short = 'c', .desc = "Display N times (used with -s)", .value_name = "N" },
         .help = .{ .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -380,7 +384,15 @@ fn printValue(writer: *std.Io.Writer, bytes: u64, unit: Unit, use_si: bool) !voi
 }
 
 /// Print a memory row (Mem: or Swap: or Total:)
-fn printMemRow(writer: *std.Io.Writer, label: []const u8, info: MemInfo, unit: Unit, use_si: bool, wide: bool, is_swap: bool) !void {
+fn printMemRow(
+    writer: *std.Io.Writer,
+    label: []const u8,
+    info: MemInfo,
+    unit: Unit,
+    use_si: bool,
+    wide: bool,
+    is_swap: bool,
+) !void {
     // Every row carries a non-empty label for the left-padded label column.
     std.debug.assert(label.len != 0);
     try writer.print("{s:<6}", .{label});
@@ -413,7 +425,13 @@ fn printMemRow(writer: *std.Io.Writer, label: []const u8, info: MemInfo, unit: U
 }
 
 /// Print the total row
-fn printTotalRow(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool, wide: bool) !void {
+fn printTotalRow(
+    writer: *std.Io.Writer,
+    info: MemInfo,
+    unit: Unit,
+    use_si: bool,
+    wide: bool,
+) !void {
     const total_total = info.total + info.swap_total;
     const total_used = info.used + info.swap_used;
     const total_free = info.free + info.swap_free;
@@ -441,7 +459,14 @@ fn printTotalRow(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool
 }
 
 /// Print a complete memory report for the given MemInfo
-pub fn printReport(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool, show_total: bool, wide: bool) !void {
+pub fn printReport(
+    writer: *std.Io.Writer,
+    info: MemInfo,
+    unit: Unit,
+    use_si: bool,
+    show_total: bool,
+    wide: bool,
+) !void {
     try printHeader(writer, wide);
     try printMemRow(writer, "Mem:", info, unit, use_si, wide, false);
     try printMemRow(writer, "Swap:", info, unit, use_si, wide, true);
@@ -476,19 +501,43 @@ fn runFree_parseArgs(
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "unrecognized option",
+                    .{},
+                );
                 return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "option requires an argument",
+                    .{},
+                );
                 return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid option value",
+                    .{},
+                );
                 return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "argument parsing error", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "argument parsing error",
+                    .{},
+                );
                 return ParseResult{
                     .parsed = null,
                     .code = @intFromEnum(common.ExitCode.general_error),
@@ -548,6 +597,41 @@ fn runFree_displayContinuous(
     return @intFromEnum(common.ExitCode.success);
 }
 
+/// Handle the early-exit flags (help, version) and the extra-operand error.
+/// Returns the exit code to propagate, or null when normal display proceeds.
+fn runFree_handleEarlyExit(
+    allocator: Allocator,
+    parsed: FreeArgs,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(@intFromEnum(common.ExitCode.success) == 0);
+
+    if (parsed.help) {
+        printHelp(allocator, stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    if (parsed.version) {
+        printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    if (parsed.positionals.len > 0) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "extra operand '{s}'",
+            .{parsed.positionals[0]},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return null;
+}
+
 pub fn runFree(
     allocator: Allocator,
     io: std.Io,
@@ -563,19 +647,8 @@ pub fn runFree(
     const parsed = parse_result.parsed.?;
     defer allocator.free(parsed.positionals);
 
-    if (parsed.help) {
-        printHelp(allocator, stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    if (parsed.version) {
-        printVersion(stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    if (parsed.positionals.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{parsed.positionals[0]});
-        return @intFromEnum(common.ExitCode.misuse);
+    if (runFree_handleEarlyExit(allocator, parsed, stdout_writer, stderr_writer)) |code| {
+        return code;
     }
 
     const unit = resolveUnit(parsed);
@@ -588,13 +661,28 @@ pub fn runFree(
 
     // Per GNU free: -c requires -s
     if (parsed.count != null and parsed.seconds == null) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-c requires -s option", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "-c requires -s option",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // No continuous mode requested, display once
     if (interval == 0) {
-        return displayOnce(io, stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
+        return displayOnce(
+            io,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+            unit,
+            use_si,
+            show_total,
+            wide,
+        );
     }
 
     // Continuous mode
@@ -612,9 +700,24 @@ pub fn runFree(
     );
 }
 
-fn displayOnce(io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
+fn displayOnce(
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+    unit: Unit,
+    use_si: bool,
+    show_total: bool,
+    wide: bool,
+) u8 {
     const info = getMemInfo(io) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to read memory information", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "failed to read memory information",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
 

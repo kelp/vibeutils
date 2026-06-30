@@ -424,20 +424,7 @@ fn doStat(path: []const u8, follow_symlinks: bool) !StatInfo {
             .LOOP => return error.SymLinkLoop,
             else => return error.SystemResources,
         }
-        return StatInfo{
-            .dev = @intCast((@as(u64, stx.dev_major) << 8) | stx.dev_minor),
-            .ino = stx.ino,
-            .mode = stx.mode,
-            .nlink = stx.nlink,
-            .uid = stx.uid,
-            .gid = stx.gid,
-            .size = @intCast(stx.size),
-            .blksize = @intCast(stx.blksize),
-            .blocks = @intCast(stx.blocks),
-            .atim = .{ .sec = stx.atime.sec, .nsec = @intCast(stx.atime.nsec) },
-            .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
-            .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
-        };
+        return doStat_buildStatInfoLinux(stx);
     } else {
         var stat_buf: c.Stat = undefined;
         const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
@@ -453,24 +440,58 @@ fn doStat(path: []const u8, follow_symlinks: bool) !StatInfo {
                 else => error.SystemResources,
             };
         }
-        // Build StatInfo from c.Stat (macOS/BSD)
-        return StatInfo{
-            .dev = @intCast(stat_buf.dev),
-            .ino = @intCast(stat_buf.ino),
-            .mode = @intCast(stat_buf.mode),
-            .nlink = @intCast(stat_buf.nlink),
-            .uid = @intCast(stat_buf.uid),
-            .gid = @intCast(stat_buf.gid),
-            .size = @intCast(stat_buf.size),
-            .blksize = @intCast(stat_buf.blksize),
-            .blocks = @intCast(stat_buf.blocks),
-            .atim = .{ .sec = @intCast(stat_buf.atimespec.sec), .nsec = @intCast(stat_buf.atimespec.nsec) },
-            .mtim = .{ .sec = @intCast(stat_buf.mtimespec.sec), .nsec = @intCast(stat_buf.mtimespec.nsec) },
-            .ctim = .{ .sec = @intCast(stat_buf.ctimespec.sec), .nsec = @intCast(stat_buf.ctimespec.nsec) },
-            .birthtimespec = .{ .sec = @intCast(stat_buf.birthtimespec.sec), .nsec = @intCast(stat_buf.birthtimespec.nsec) },
-            .flags = if (@hasField(@TypeOf(stat_buf), "flags")) @intCast(stat_buf.flags) else 0,
-        };
+        return doStat_buildStatInfoBsd(stat_buf);
     }
+}
+
+/// Build StatInfo from a Linux statx result.
+fn doStat_buildStatInfoLinux(stx: std.os.linux.Statx) StatInfo {
+    return StatInfo{
+        .dev = @intCast((@as(u64, stx.dev_major) << 8) | stx.dev_minor),
+        .ino = stx.ino,
+        .mode = stx.mode,
+        .nlink = stx.nlink,
+        .uid = stx.uid,
+        .gid = stx.gid,
+        .size = @intCast(stx.size),
+        .blksize = @intCast(stx.blksize),
+        .blocks = @intCast(stx.blocks),
+        .atim = .{ .sec = stx.atime.sec, .nsec = @intCast(stx.atime.nsec) },
+        .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
+        .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
+    };
+}
+
+/// Build StatInfo from a c.Stat result (macOS/BSD).
+fn doStat_buildStatInfoBsd(stat_buf: c.Stat) StatInfo {
+    return StatInfo{
+        .dev = @intCast(stat_buf.dev),
+        .ino = @intCast(stat_buf.ino),
+        .mode = @intCast(stat_buf.mode),
+        .nlink = @intCast(stat_buf.nlink),
+        .uid = @intCast(stat_buf.uid),
+        .gid = @intCast(stat_buf.gid),
+        .size = @intCast(stat_buf.size),
+        .blksize = @intCast(stat_buf.blksize),
+        .blocks = @intCast(stat_buf.blocks),
+        .atim = .{
+            .sec = @intCast(stat_buf.atimespec.sec),
+            .nsec = @intCast(stat_buf.atimespec.nsec),
+        },
+        .mtim = .{
+            .sec = @intCast(stat_buf.mtimespec.sec),
+            .nsec = @intCast(stat_buf.mtimespec.nsec),
+        },
+        .ctim = .{
+            .sec = @intCast(stat_buf.ctimespec.sec),
+            .nsec = @intCast(stat_buf.ctimespec.nsec),
+        },
+        .birthtimespec = .{
+            .sec = @intCast(stat_buf.birthtimespec.sec),
+            .nsec = @intCast(stat_buf.birthtimespec.nsec),
+        },
+        .flags = if (@hasField(@TypeOf(stat_buf), "flags")) @intCast(stat_buf.flags) else 0,
+    };
 }
 
 fn getFileKind(mode: u32) FileType {
@@ -559,7 +580,12 @@ fn allocExpr(allocator: Allocator, tag: ExprTag, data: ExprData) !*Expression {
 }
 
 /// Compile a POSIX regex pattern. Returns null on failure.
-fn compileRegex(allocator: Allocator, pattern: []const u8, ignore_case: bool, extended: bool) ?*regex_h.regex_t {
+fn compileRegex(
+    allocator: Allocator,
+    pattern: []const u8,
+    ignore_case: bool,
+    extended: bool,
+) ?*regex_h.regex_t {
     const pattern_z = allocator.dupeZ(u8, pattern) catch return null;
     defer allocator.free(pattern_z);
 
@@ -680,6 +706,38 @@ fn parseArgs_collectLeadingGlobals(
 /// Pre-scan expression args for depth/xdev globals (-maxdepth/-mindepth/-depth/
 /// -d/-xdev/-mount and the readdir-race no-ops), mutating `flags`. Keeps the
 /// error-emitting branches identical to the original inline loop.
+/// Parse the numeric argument to a depth flag (-maxdepth/-mindepth) at args[i].
+/// The value lives at args[i + 1]; reports a missing/invalid argument error.
+fn parseArgs_parseDepthArg(
+    allocator: Allocator,
+    args: []const []const u8,
+    i: usize, // tiger:allow:usize-arch slice index cursor
+    flag: []const u8,
+    stderr: anytype,
+) !u32 {
+    assert(i < args.len);
+    if (i + 1 >= args.len) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "missing argument to '{s}'",
+            .{flag},
+        );
+        return error.MissingArgument;
+    }
+    return std.fmt.parseInt(u32, args[i + 1], 10) catch {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "invalid argument '{s}' to '{s}'",
+            .{ args[i + 1], flag },
+        );
+        return error.InvalidExpression;
+    };
+}
+
 fn parseArgs_prescanDepthGlobals(
     allocator: Allocator,
     args: []const []const u8,
@@ -691,24 +749,10 @@ fn parseArgs_prescanDepthGlobals(
     var i: usize = expr_start; // tiger:allow:usize-arch slice index cursor
     while (i < args.len) {
         if (std.mem.eql(u8, args[i], "-maxdepth")) {
-            if (i + 1 >= args.len) {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-maxdepth'", .{});
-                return error.MissingArgument;
-            }
-            flags.maxdepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-maxdepth'", .{args[i + 1]});
-                return error.InvalidExpression;
-            };
+            flags.maxdepth = try parseArgs_parseDepthArg(allocator, args, i, "-maxdepth", stderr);
             i += 2;
         } else if (std.mem.eql(u8, args[i], "-mindepth")) {
-            if (i + 1 >= args.len) {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-mindepth'", .{});
-                return error.MissingArgument;
-            }
-            flags.mindepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-mindepth'", .{args[i + 1]});
-                return error.InvalidExpression;
-            };
+            flags.mindepth = try parseArgs_parseDepthArg(allocator, args, i, "-mindepth", stderr);
             i += 2;
         } else if (std.mem.eql(u8, args[i], "-depth")) {
             // Check if next arg is numeric: -depth N (exact depth match, not depth-first)
@@ -743,6 +787,17 @@ fn parseArgs_prescanDepthGlobals(
     }
     assert(i == args.len);
     assert(i >= expr_start);
+}
+
+/// Wrap an expression with an implicit -print action via an AND node, matching
+/// find's default behavior when the expression contains no explicit action.
+fn parseArgs_wrapImplicitPrint(allocator: Allocator, final_expr: *Expression) !*Expression {
+    const print_expr = try allocExpr(allocator, .print, .{ .none = {} });
+    return try allocExpr(
+        allocator,
+        .and_expr,
+        .{ .binary = .{ .left = final_expr, .right = print_expr } },
+    );
 }
 
 fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
@@ -793,10 +848,10 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     }
 
     // If no action, wrap with implicit -print
-    const result_expr = if (!has_action) blk: {
-        const print_expr = try allocExpr(allocator, .print, .{ .none = {} });
-        break :blk try allocExpr(allocator, .and_expr, .{ .binary = .{ .left = final_expr, .right = print_expr } });
-    } else final_expr;
+    const result_expr = if (!has_action)
+        try parseArgs_wrapImplicitPrint(allocator, final_expr)
+    else
+        final_expr;
 
     const paths_slice = try allocator.dupe([]const u8, start_paths.items);
 
@@ -1925,7 +1980,13 @@ const BatchContext = struct {
     execdir_template: ?[]const []const u8 = null,
     execdir_dir: ?[]const u8 = null,
 
-    fn flushExec(self: *BatchContext, io: std.Io, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
+    fn flushExec(
+        self: *BatchContext,
+        io: std.Io,
+        allocator: Allocator,
+        stdout: anytype,
+        stderr: anytype,
+    ) bool {
         _ = stderr;
         if (self.exec_template == null or self.exec_paths.items.len == 0) return true;
         const template = self.exec_template.?;
@@ -1969,7 +2030,13 @@ const BatchContext = struct {
         return result.term == .exited and result.term.exited == 0;
     }
 
-    fn flushExecdir(self: *BatchContext, io: std.Io, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
+    fn flushExecdir(
+        self: *BatchContext,
+        io: std.Io,
+        allocator: Allocator,
+        stdout: anytype,
+        stderr: anytype,
+    ) bool {
         _ = stderr;
         if (self.execdir_template == null or self.execdir_paths.items.len == 0) return true;
         const template = self.execdir_template.?;
@@ -2832,24 +2899,52 @@ fn matchGroup(name_str: []const u8, gid: c.gid_t) bool {
     return false;
 }
 
-fn matchSymlinkTarget(io: std.Io, allocator: Allocator, path: []const u8, pattern: []const u8, case_insensitive: bool) bool {
+fn matchSymlinkTarget(
+    io: std.Io,
+    allocator: Allocator,
+    path: []const u8,
+    pattern: []const u8,
+    case_insensitive: bool,
+) bool {
     _ = allocator;
     var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = std.Io.Dir.cwd().readLink(io, path, &link_buf) catch return false;
     const target = link_buf[0..len];
-    return if (case_insensitive) glob.globMatchInsensitive(pattern, target) else glob.globMatch(pattern, target);
+    return if (case_insensitive)
+        glob.globMatchInsensitive(pattern, target)
+    else
+        glob.globMatch(pattern, target);
 }
 
-fn doDelete(io: std.Io, allocator: Allocator, path: []const u8, kind: FileType, stderr: anytype, had_error: *bool) bool {
+fn doDelete(
+    io: std.Io,
+    allocator: Allocator,
+    path: []const u8,
+    kind: FileType,
+    stderr: anytype,
+    had_error: *bool,
+) bool {
     if (kind == .directory) {
         std.Io.Dir.cwd().deleteDir(io, path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "cannot delete '{s}': {s}",
+                .{ path, common.posixErrorString(err) },
+            );
             had_error.* = true;
             return false;
         };
     } else {
         std.Io.Dir.cwd().deleteFile(io, path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "cannot delete '{s}': {s}",
+                .{ path, common.posixErrorString(err) },
+            );
             had_error.* = true;
             return false;
         };
@@ -2882,7 +2977,13 @@ fn doExec(io: std.Io, allocator: Allocator, path: []const u8, exec_data: ExecExp
     return result.term == .exited and result.term.exited == 0;
 }
 
-fn doExecdir(io: std.Io, allocator: Allocator, path: []const u8, basename: []const u8, exec_data: ExecExpr) bool {
+fn doExecdir(
+    io: std.Io,
+    allocator: Allocator,
+    path: []const u8,
+    basename: []const u8,
+    exec_data: ExecExpr,
+) bool {
     var argv = std.ArrayListUnmanaged([]const u8).empty;
     defer argv.deinit(allocator);
 
@@ -2927,7 +3028,14 @@ fn doOk(allocator: Allocator, path: []const u8, exec_data: ExecExpr, stderr: any
     return false;
 }
 
-fn doLs(allocator: Allocator, path: []const u8, stat_buf: StatInfo, kind: FileType, stdout: anytype, had_error: *bool) bool {
+fn doLs(
+    allocator: Allocator,
+    path: []const u8,
+    stat_buf: StatInfo,
+    kind: FileType,
+    stdout: anytype,
+    had_error: *bool,
+) bool {
     // Format: inode blocks permissions nlink user group size date name
     const ino = stat_buf.ino;
     const blk = if (stat_buf.blocks > 0) @divTrunc(@as(u64, @intCast(stat_buf.blocks)), 2) else 0;
@@ -2988,7 +3096,8 @@ fn getUserName(allocator: Allocator, uid: c.uid_t) NameResult {
         return .{ .name = std.mem.span(p.pw_name), .allocated = false };
     }
     // Fall back to numeric
-    const s = std.fmt.allocPrint(allocator, "{d}", .{uid}) catch return .{ .name = "?", .allocated = false };
+    const s = std.fmt.allocPrint(allocator, "{d}", .{uid}) catch
+        return .{ .name = "?", .allocated = false };
     return .{ .name = s, .allocated = true };
 }
 
@@ -2997,7 +3106,8 @@ fn getGroupName(allocator: Allocator, gid: c.gid_t) NameResult {
     if (gr) |g| {
         return .{ .name = std.mem.span(g.gr_name), .allocated = false };
     }
-    const s = std.fmt.allocPrint(allocator, "{d}", .{gid}) catch return .{ .name = "?", .allocated = false };
+    const s = std.fmt.allocPrint(allocator, "{d}", .{gid}) catch
+        return .{ .name = "?", .allocated = false };
     return .{ .name = s, .allocated = true };
 }
 
@@ -3005,13 +3115,22 @@ fn formatPermissions(mode: u32, buf: *[10]u8) void {
     const m: u32 = mode;
     buf[0] = if (m & 0o400 != 0) 'r' else '-';
     buf[1] = if (m & 0o200 != 0) 'w' else '-';
-    buf[2] = if (m & 0o4000 != 0) (if (m & 0o100 != 0) 's' else 'S') else (if (m & 0o100 != 0) 'x' else '-');
+    buf[2] = if (m & 0o4000 != 0)
+        (if (m & 0o100 != 0) 's' else 'S')
+    else
+        (if (m & 0o100 != 0) 'x' else '-');
     buf[3] = if (m & 0o040 != 0) 'r' else '-';
     buf[4] = if (m & 0o020 != 0) 'w' else '-';
-    buf[5] = if (m & 0o2000 != 0) (if (m & 0o010 != 0) 's' else 'S') else (if (m & 0o010 != 0) 'x' else '-');
+    buf[5] = if (m & 0o2000 != 0)
+        (if (m & 0o010 != 0) 's' else 'S')
+    else
+        (if (m & 0o010 != 0) 'x' else '-');
     buf[6] = if (m & 0o004 != 0) 'r' else '-';
     buf[7] = if (m & 0o002 != 0) 'w' else '-';
-    buf[8] = if (m & 0o1000 != 0) (if (m & 0o001 != 0) 't' else 'T') else (if (m & 0o001 != 0) 'x' else '-');
+    buf[8] = if (m & 0o1000 != 0)
+        (if (m & 0o001 != 0) 't' else 'T')
+    else
+        (if (m & 0o001 != 0) 'x' else '-');
     buf[9] = ' ';
 }
 
@@ -3048,10 +3167,15 @@ fn formatDate(timestamp: i64, buf: *[24]u8) []const u8 {
     if (timestamp < now - six_months or timestamp > now + six_months) {
         // Old or future: show year
         const year = year_day.year;
-        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, dom, year }) catch "??? ?? ????";
+        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, dom, year }) catch
+            "??? ?? ????";
     } else {
         // Recent: show time
-        return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{ month_name, dom, hours, mins }) catch "??? ?? ??:??";
+        return std.fmt.bufPrint(
+            buf,
+            "{s} {d: >2} {d:0>2}:{d:0>2}",
+            .{ month_name, dom, hours, mins },
+        ) catch "??? ?? ??:??";
     }
 }
 
@@ -3290,8 +3414,15 @@ fn reportWalkNextError(
     state.had_error.* = true;
     const parent_path = if (state.last_dir) |ld| ld.path else root_path;
     assert(parent_path.len > 0);
-    const failing = findUnreadableChildDir(state.allocator, state.io, parent_path) orelse parent_path;
-    common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': {s}", .{ failing, common.posixErrorString(err) });
+    const failing = findUnreadableChildDir(state.allocator, state.io, parent_path) orelse
+        parent_path;
+    common.printErrorWithProgram(
+        state.allocator,
+        stderr,
+        prog_name,
+        "'{s}': {s}",
+        .{ failing, common.posixErrorString(err) },
+    );
     if (state.config.depth_first and failing.ptr != parent_path.ptr) {
         evaluateUnreadableDir(state, parent_path, failing, stdout, stderr);
     }
@@ -3368,7 +3499,12 @@ fn normalizeWalkerPath(allocator: Allocator, path: []const u8) []const u8 {
 /// Dispatch one walker entry. Re-stats with find's own follow flag (entry.stat
 /// and entry.kind are never trusted for predicate evaluation), computes the
 /// find-visible depth, and routes to the directory / leaf / symlink handlers.
-fn findVisitEntry(state: *WalkState, raw_entry: common.walker.Entry, stdout: anytype, stderr: anytype) void {
+fn findVisitEntry(
+    state: *WalkState,
+    raw_entry: common.walker.Entry,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     assert(raw_entry.path.len > 0);
     var entry = raw_entry;
     if (entry.depth > 0) entry.path = normalizeWalkerPath(state.allocator, raw_entry.path);
@@ -3395,6 +3531,54 @@ fn findVisitEntry(state: *WalkState, raw_entry: common.walker.Entry, stdout: any
 /// device, apply -X / -xdev / -prune / -maxdepth, and (when not -depth)
 /// evaluate it. Pruning here suppresses the matching .post and the whole
 /// subtree.
+/// Under -xargs_safe, warn and prune a directory whose name is unsafe for xargs.
+/// Returns true when the directory was pruned so the caller can return early.
+fn findVisitDirPre_pruneXargsUnsafe(
+    state: *WalkState,
+    basename: []const u8,
+    effective_depth: u32,
+    is_hop_root: bool,
+    stderr: anytype,
+) bool {
+    if (is_hop_root or !state.config.xargs_safe or effective_depth == 0) return false;
+    if (!isXargsUnsafe(basename)) return false;
+    common.printErrorWithProgram(
+        state.allocator,
+        stderr,
+        prog_name,
+        "warning: file name '{s}' is not safe for use with xargs",
+        .{basename},
+    );
+    state.walker.pruneCurrent();
+    return true;
+}
+
+/// The walker opened this path as a directory, but find's own follow policy
+/// resolved it to a non-directory. Evaluate it as a leaf (subject to mindepth
+/// and hop-root rules) and prune the walker's descent.
+fn findVisitDirPre_handleNonDir(
+    state: *WalkState,
+    path: []const u8,
+    stat_buf: StatInfo,
+    effective_depth: u32,
+    is_hop_root: bool,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    if (!is_hop_root and effective_depth >= state.config.mindepth) {
+        findEvaluatePath(
+            state,
+            path,
+            stat_buf,
+            getFileKind(stat_buf.mode),
+            effective_depth,
+            stdout,
+            stderr,
+        );
+    }
+    state.walker.pruneCurrent();
+}
+
 fn findVisitDirPre(
     state: *WalkState,
     entry: common.walker.Entry,
@@ -3407,9 +3591,7 @@ fn findVisitDirPre(
     const basename = std.fs.path.basename(entry.path);
     const is_hop_root = state.skip_hop_root and entry.depth == 0;
     state.skip_hop_root = false;
-    if (!is_hop_root and state.config.xargs_safe and effective_depth > 0 and isXargsUnsafe(basename)) {
-        common.printErrorWithProgram(state.allocator, stderr, prog_name, "warning: file name '{s}' is not safe for use with xargs", .{basename});
-        state.walker.pruneCurrent();
+    if (findVisitDirPre_pruneXargsUnsafe(state, basename, effective_depth, is_hop_root, stderr)) {
         return;
     }
     // Re-stat with find's own follow policy. The walker opened this path as a
@@ -3425,10 +3607,15 @@ fn findVisitDirPre(
         return;
     };
     if (getFileKind(stat_buf.mode) != .directory) {
-        if (!is_hop_root and effective_depth >= state.config.mindepth) {
-            findEvaluatePath(state, entry.path, stat_buf, getFileKind(stat_buf.mode), effective_depth, stdout, stderr);
-        }
-        state.walker.pruneCurrent();
+        findVisitDirPre_handleNonDir(
+            state,
+            entry.path,
+            stat_buf,
+            effective_depth,
+            is_hop_root,
+            stdout,
+            stderr,
+        );
         return;
     }
     if (effective_depth == 0 and state.config.xdev) state.root_dev = @intCast(stat_buf.dev);
@@ -3438,14 +3625,35 @@ fn findVisitDirPre(
         state.walker.pruneCurrent();
         return;
     };
-    state.last_dir = .{ .path = dup_path, .stat = stat_buf, .kind = .directory, .effective_depth = effective_depth };
+    state.last_dir = .{
+        .path = dup_path,
+        .stat = stat_buf,
+        .kind = .directory,
+        .effective_depth = effective_depth,
+    };
     // Push onto the -L follow chain ONLY when this directory will actually be
     // descended (its .post will fire, balancing the pop). A directory pruned by
     // -prune or the -maxdepth boundary emits no .post, so pushing it here would
     // leak it and misalign the LIFO chain, tripping a false loop diagnostic on a
     // later sibling symlink. So decide the prunes first, then push.
-    if (findDirPreEvaluate(state, dup_path, stat_buf, effective_depth, is_hop_root, stdout, stderr)) return;
-    if (findDirMaxdepthBoundary(state, dup_path, stat_buf, effective_depth, is_hop_root, stdout, stderr)) return;
+    if (findDirPreEvaluate(
+        state,
+        dup_path,
+        stat_buf,
+        effective_depth,
+        is_hop_root,
+        stdout,
+        stderr,
+    )) return;
+    if (findDirMaxdepthBoundary(
+        state,
+        dup_path,
+        stat_buf,
+        effective_depth,
+        is_hop_root,
+        stdout,
+        stderr,
+    )) return;
     pushAncestor(state, stat_buf, dup_path);
 }
 
@@ -3552,11 +3760,23 @@ fn findVisitDirPost(
 
 /// Handle a non-directory leaf (file, or symlink under -P/-H-at-depth>0).
 /// Re-stats with find's follow flag and evaluates, gated by -mindepth and -X.
-fn findVisitLeaf(state: *WalkState, path: []const u8, effective_depth: u32, stdout: anytype, stderr: anytype) void {
+fn findVisitLeaf(
+    state: *WalkState,
+    path: []const u8,
+    effective_depth: u32,
+    stdout: anytype,
+    stderr: anytype,
+) void {
     assert(path.len > 0);
     const basename = std.fs.path.basename(path);
     if (state.config.xargs_safe and effective_depth > 0 and isXargsUnsafe(basename)) {
-        common.printErrorWithProgram(state.allocator, stderr, prog_name, "warning: file name '{s}' is not safe for use with xargs", .{basename});
+        common.printErrorWithProgram(
+            state.allocator,
+            stderr,
+            prog_name,
+            "warning: file name '{s}' is not safe for use with xargs",
+            .{basename},
+        );
         return;
     }
     const follow = state.config.follow_symlinks or
@@ -3648,8 +3868,16 @@ fn enqueueSymlinkHop(
         return;
     };
     @memcpy(chain[0..state.ancestors.items.len], state.ancestors.items);
-    chain[state.ancestors.items.len] = .{ .dev = target_dev, .inode = target_inode, .path = dup_path };
-    state.hops.append(state.allocator, .{ .path = dup_path, .base_depth = effective_depth, .ancestors = chain }) catch {
+    chain[state.ancestors.items.len] = .{
+        .dev = target_dev,
+        .inode = target_inode,
+        .path = dup_path,
+    };
+    state.hops.append(state.allocator, .{
+        .path = dup_path,
+        .base_depth = effective_depth,
+        .ancestors = chain,
+    }) catch {
         state.had_error.* = true;
     };
     _ = stderr;
@@ -3700,7 +3928,11 @@ fn walkOneSymlinkHop(state: *WalkState, hop: SymlinkHop, stdout: anytype, stderr
 /// Push a directory onto the follow chain for -L loop detection.
 fn pushAncestor(state: *WalkState, stat_buf: StatInfo, dup_path: []const u8) void {
     assert(dup_path.len > 0);
-    state.ancestors.append(state.allocator, .{ .dev = @intCast(stat_buf.dev), .inode = stat_buf.ino, .path = dup_path }) catch {
+    state.ancestors.append(state.allocator, .{
+        .dev = @intCast(stat_buf.dev),
+        .inode = stat_buf.ino,
+        .path = dup_path,
+    }) catch {
         state.had_error.* = true;
     };
     assert(state.ancestors.items.len > 0);
@@ -3753,10 +3985,34 @@ fn findEvaluatePath(
 fn reportStatError(state: *WalkState, path: []const u8, err: anyerror, stderr: anytype) void {
     assert(path.len > 0);
     switch (err) {
-        error.AccessDenied => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': Permission denied", .{path}),
-        error.FileNotFound => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': No such file or directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': Too many levels of symbolic links", .{path}),
-        else => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) }),
+        error.AccessDenied => common.printErrorWithProgram(
+            state.allocator,
+            stderr,
+            prog_name,
+            "'{s}': Permission denied",
+            .{path},
+        ),
+        error.FileNotFound => common.printErrorWithProgram(
+            state.allocator,
+            stderr,
+            prog_name,
+            "'{s}': No such file or directory",
+            .{path},
+        ),
+        error.SymLinkLoop => common.printErrorWithProgram(
+            state.allocator,
+            stderr,
+            prog_name,
+            "'{s}': Too many levels of symbolic links",
+            .{path},
+        ),
+        else => common.printErrorWithProgram(
+            state.allocator,
+            stderr,
+            prog_name,
+            "'{s}': {s}",
+            .{ path, common.posixErrorString(err) },
+        ),
     }
     state.had_error.* = true;
 }
@@ -3767,7 +4023,10 @@ fn reportStatError(state: *WalkState, path: []const u8, err: anyerror, stderr: a
 /// follow_all) so symlinks arrive as .sym_link and the driver re-stats them.
 fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
     const symlinks: common.walker.SymlinkPolicy =
-        if (config.follow_cmdline_symlinks and !config.follow_symlinks) .follow_cmdline else .no_follow;
+        if (config.follow_cmdline_symlinks and !config.follow_symlinks)
+            .follow_cmdline
+        else
+            .no_follow;
     return .{
         .order = .both,
         .symlinks = symlinks,
@@ -3782,7 +4041,13 @@ fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
 // Entry points
 // ============================================================================
 
-pub fn runFind(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
+pub fn runFind(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) anyerror!u8 {
     // Handle --help and --version before expression parsing
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
@@ -3844,7 +4109,10 @@ pub fn runFind(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     if (!batch_ctx.flushExec(io, allocator, stdout, stderr)) had_error = true;
     if (!batch_ctx.flushExecdir(io, allocator, stdout, stderr)) had_error = true;
 
-    return if (had_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (had_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -3852,7 +4120,13 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Typed wrapper for utilityMain compatibility
-fn runFindTyped(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+fn runFindTyped(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) anyerror!u8 {
     return runFind(allocator, io, args, stdout, stderr);
 }
 
@@ -4048,7 +4322,13 @@ test "find: help flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{"--help"}, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{"--help"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage:") != null);
 }
@@ -4063,7 +4343,13 @@ test "find: version flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{"--version"}, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{"--version"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "vibeutils") != null);
 }
@@ -4089,7 +4375,13 @@ test "find: basic directory search" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
@@ -4117,7 +4409,13 @@ test "find: -name filter" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
@@ -4145,7 +4443,13 @@ test "find: -type filter" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-type", "f" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
     }
@@ -4157,7 +4461,13 @@ test "find: -type filter" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "d" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-type", "d" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mydir") != null);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") == null);
@@ -4186,7 +4496,13 @@ test "find: -empty" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-empty" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-empty" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "empty.txt") != null);
@@ -4217,7 +4533,13 @@ test "find: -maxdepth" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-maxdepth", "1" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-maxdepth", "1" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") != null);
@@ -4245,7 +4567,13 @@ test "find: -not / !" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-not", "-name", "*.log", "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-not", "-name", "*.log", "-type", "f" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") != null);
@@ -4274,7 +4602,13 @@ test "find: -or operator" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "*.txt", "-o", "-name", "*.md" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "*.txt", "-o", "-name", "*.md" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "a.txt") != null);
@@ -4301,7 +4635,13 @@ test "find: parentheses grouping" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "(", "-name", "*.txt", "-o", "-name", "*.md", ")" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "(", "-name", "*.txt", "-o", "-name", "*.md", ")" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "a.txt") != null);
@@ -4326,7 +4666,13 @@ test "find: -print0" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "file.txt", "-print0" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "file.txt", "-print0" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should contain NUL byte
@@ -4345,7 +4691,13 @@ test "find: nonexistent path" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{"/tmp/nonexistent_vibeutils_test_path_99999"}, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{"/tmp/nonexistent_vibeutils_test_path_99999"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
@@ -4360,7 +4712,13 @@ test "find: unknown predicate" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ ".", "-bogus" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ ".", "-bogus" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unknown predicate") != null);
 }
@@ -4388,7 +4746,13 @@ test "find: -mindepth" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-mindepth", "2" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-mindepth", "2" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "deep.txt") != null);
@@ -4413,7 +4777,13 @@ test "find: -delete" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "deleteme.txt", "-delete" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "deleteme.txt", "-delete" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const stat = tmp.dir.statFile(testing.io, "deleteme.txt", .{});
@@ -4440,7 +4810,13 @@ test "find: -iname" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iname", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-iname", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Hello.TXT") != null);
@@ -4468,7 +4844,13 @@ test "find: -size filter" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "+1000c" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-size", "+1000c" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "medium.txt") != null);
@@ -4483,9 +4865,13 @@ test "find: -perm filter" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile(testing.io, "rw.txt", .{ .permissions = @enumFromInt(0o644) });
+    const f1 = try tmp.dir.createFile(testing.io, "rw.txt", .{
+        .permissions = @enumFromInt(0o644),
+    });
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "rwx.txt", .{ .permissions = @enumFromInt(0o755) });
+    const f2 = try tmp.dir.createFile(testing.io, "rwx.txt", .{
+        .permissions = @enumFromInt(0o755),
+    });
     f2.close(testing.io);
 
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
@@ -4495,7 +4881,13 @@ test "find: -perm filter" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-perm", "755" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-perm", "755" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "rwx.txt") != null);
@@ -4530,7 +4922,13 @@ test "find: -path matches full path pattern" {
     defer stderr_aw.deinit();
 
     // -path matches against the full path, not just basename
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-path", "*/subdir/*" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-path", "*/subdir/*" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should match subdir/file.txt (full path contains /subdir/)
@@ -4605,7 +5003,13 @@ test "find: -depth lists directory contents before directory" {
     defer stderr_aw.deinit();
 
     // With -depth, file.txt should appear before its parent adir
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-depth" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-depth" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const output = stdout_aw.writer.buffered();
@@ -4640,7 +5044,13 @@ test "find: -path with non-matching pattern returns no results" {
     defer stderr_aw.deinit();
 
     // Pattern that matches nothing in this tree
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-path", "*/nonexistent/*" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-path", "*/nonexistent/*" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // No files should match
@@ -4670,7 +5080,13 @@ test "find: -atime +9999 matches nothing" {
     defer stderr_aw.deinit();
 
     // No file was accessed more than 9999 days ago; should match nothing
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-atime", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-atime", "+9999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -4694,7 +5110,13 @@ test "find: -ctime +9999 matches nothing" {
     defer stderr_aw.deinit();
 
     // No file had its status changed more than 9999 days ago
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-ctime", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-ctime", "+9999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -4718,7 +5140,13 @@ test "find: -links 99 matches nothing" {
     defer stderr_aw.deinit();
 
     // A freshly created file has 1 hard link, not 99
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-links", "99" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-links", "99" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -4743,7 +5171,13 @@ test "find: -nouser matches nothing for normal files" {
 
     // Files created by this user have a valid owner; -nouser should
     // match nothing.
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-nouser" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-nouser" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -4767,7 +5201,13 @@ test "find: -xdev is accepted without error" {
     defer stderr_aw.deinit();
 
     // -xdev should parse without error and not prevent finding files
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-xdev", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-xdev", "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -4798,7 +5238,13 @@ test "find: -d is alias for -depth" {
     defer stderr_aw.deinit();
 
     // -d should behave like -depth: file.txt before adir
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-d" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-d" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const output = stdout_aw.writer.buffered();
@@ -4828,7 +5274,13 @@ test "find: -f specifies explicit search path" {
     defer stderr_aw.deinit();
 
     // -f path should specify the search path
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-f", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-f", dir_path, "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -4852,7 +5304,13 @@ test "find: -x is alias for -xdev" {
     defer stderr_aw.deinit();
 
     // -x should be accepted just like -xdev
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-x", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-x", "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -4880,7 +5338,13 @@ test "find: -X warns about xargs-unsafe filenames" {
     defer stderr_aw.deinit();
 
     // -X should warn about the file with a space
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-X", "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-X", "-type", "f" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // safe.txt should appear in output
@@ -4910,7 +5374,13 @@ test "find: -mmin matches recently modified files" {
     defer stderr_aw.deinit();
 
     // File was just created, so modified less than 5 minutes ago
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-mmin", "-5" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "fresh.txt") != null);
 }
@@ -4933,7 +5403,13 @@ test "find: -mmin +9999 matches nothing" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-mmin", "+9999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -4963,7 +5439,13 @@ test "find: -inum matches file by inode number" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-inum", ino_str }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-inum", ino_str },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") != null);
 }
@@ -4987,7 +5469,13 @@ test "find: -inum with non-matching inode returns nothing" {
     defer stderr_aw.deinit();
 
     // Inode 0 should not match any real file
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-inum", "0" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-inum", "0" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -5015,7 +5503,13 @@ test "find: -amin -5 matches recently accessed files" {
     defer stderr_aw.deinit();
 
     // File was just created, so accessed less than 5 minutes ago
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-amin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-amin", "-5" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "accessed.txt") != null);
 }
@@ -5038,7 +5532,13 @@ test "find: -amin +9999 matches nothing" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-amin", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-amin", "+9999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -5061,7 +5561,13 @@ test "find: -cmin -5 matches recently changed files" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-cmin", "-5" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "changed.txt") != null);
 }
@@ -5084,7 +5590,13 @@ test "find: -cmin +9999 matches nothing" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-cmin", "+9999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -5129,7 +5641,13 @@ test "find: -anewer matches files accessed after reference" {
     defer stderr_aw.deinit();
 
     // Use absolute path for the reference file
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-anewer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-anewer", ref_abs_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
 }
@@ -5173,7 +5691,13 @@ test "find: -cnewer matches files changed after reference" {
     defer stderr_aw.deinit();
 
     // Use absolute path for the reference file
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-cnewer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-cnewer", ref_abs_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
 }
@@ -5190,7 +5714,13 @@ test "find: -ok is parsed as valid primary" {
 
     // -ok should be parsed without error; it prompts on /dev/tty so we
     // cannot test execution, but parsing should succeed.
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-ok", "echo", "{}", ";" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "/tmp", "-maxdepth", "0", "-ok", "echo", "{}", ";" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -5213,7 +5743,13 @@ test "find: -execdir runs command in file directory" {
     defer stderr_aw.deinit();
 
     // -execdir should be parsed and accepted
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-execdir", "echo", "{}", ";" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-execdir", "echo", "{}", ";" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -5235,7 +5771,13 @@ test "find: -ls produces listing output" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "listed.txt", "-ls" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "listed.txt", "-ls" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // -ls output should contain the filename and some stat-like info
@@ -5263,7 +5805,13 @@ test "find: -fstype is accepted without error" {
     defer stderr_aw.deinit();
 
     // -fstype should be parsed without error; use a type that exists on macOS
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-fstype", "apfs" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-fstype", "apfs" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -5286,7 +5834,13 @@ test "find: -flags is accepted without error" {
     defer stderr_aw.deinit();
 
     // -flags should be parsed without error
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-flags", "uchg" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-flags", "uchg" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -5312,7 +5866,13 @@ test "find: -P global option accepted as no-op" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-P", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-P", dir_path, "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5335,7 +5895,13 @@ test "find: -E global option accepted as no-op" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-E", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-E", dir_path, "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5358,7 +5924,13 @@ test "find: -s global option accepted as no-op" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-s", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-s", dir_path, "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5385,7 +5957,13 @@ test "find: -ipath case-insensitive path matching" {
     defer stderr_aw.deinit();
 
     // Case-insensitive path matching
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-ipath", "*/subdir/*" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-ipath", "*/subdir/*" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File.TXT") != null);
 }
@@ -5408,7 +5986,13 @@ test "find: -iwholename is alias for -ipath" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iwholename", "*test*" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-iwholename", "*test*" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Test.TXT") != null);
 }
@@ -5431,7 +6015,13 @@ test "find: -regex matches full path" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-regex", ".*\\.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-regex", ".*\\.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5454,7 +6044,13 @@ test "find: -iregex matches case-insensitively" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5483,7 +6079,13 @@ test "find: -Bmin stub accepted (always true)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-Bmin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-Bmin", "-5" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
@@ -5508,7 +6110,13 @@ test "find: -Bnewer parses and evaluates" {
 
     // -Bnewer self: a file should NOT be newer than itself
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-Bnewer", file_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-Bnewer", file_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // File should not match -Bnewer self (not newer than itself)
 }
@@ -5538,7 +6146,13 @@ test "find: -Btime evaluates birth time" {
     defer stderr_aw.deinit();
 
     // -Btime -1: born less than 1 day ago -- a just-created file should match
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-Btime", "-1" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-Btime", "-1" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
@@ -5561,7 +6175,13 @@ test "find: -acl stub accepted (always false)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-acl" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-acl" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -acl always returns false, so nothing should match
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
@@ -5592,7 +6212,13 @@ test "find: -depth N matches files at exact depth" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-depth", "1" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-depth", "1" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") != null);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "sub\n") != null);
@@ -5606,7 +6232,13 @@ test "find: -depth N matches files at exact depth" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-depth", "2" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-depth", "2" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "deep.txt") != null);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") == null);
@@ -5637,7 +6269,13 @@ test "find: -gid matches numeric group ID" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-gid", gid_str }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-gid", gid_str },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5661,7 +6299,13 @@ test "find: -gid with non-matching GID returns nothing" {
     defer stderr_aw.deinit();
 
     // GID 99999 is unlikely to match any file
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-gid", "99999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-gid", "99999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -5690,7 +6334,13 @@ test "find: -uid matches numeric user ID" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-uid", uid_str }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-uid", uid_str },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5714,7 +6364,13 @@ test "find: -uid with non-matching UID returns nothing" {
     defer stderr_aw.deinit();
 
     // UID 99999 is unlikely to match any file
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-uid", "99999" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-uid", "99999" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -5737,7 +6393,13 @@ test "find: -ignore_readdir_race accepted as no-op" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-ignore_readdir_race", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-ignore_readdir_race", "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5760,7 +6422,13 @@ test "find: -noignore_readdir_race accepted as no-op" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-noignore_readdir_race", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-noignore_readdir_race", "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5783,7 +6451,13 @@ test "find: -noleaf accepted as no-op" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-noleaf", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-noleaf", "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5807,7 +6481,13 @@ test "find: -lname matches symlink target" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-lname", "target*" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-lname", "target*" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link.txt") != null);
     // target.txt is not a symlink, should not match
@@ -5834,7 +6514,13 @@ test "find: -ilname case-insensitive symlink target matching" {
     defer stderr_aw.deinit();
 
     // Case-insensitive match against symlink target
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-ilname", "target*" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-ilname", "target*" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link.txt") != null);
 }
@@ -5875,7 +6561,13 @@ test "find: -mnewer is alias for -newer" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-mnewer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-mnewer", ref_abs_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
 }
@@ -5898,7 +6590,13 @@ test "find: -mount is alias for -xdev" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-mount", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-mount", "-name", "*.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -5924,7 +6622,13 @@ test "find: -newerXY parses and evaluates" {
     // -newermm: file's mtime newer than ref's mtime
     // A file is not newer than itself
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-newermm", file_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-newermm", file_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // file.txt should not match -newermm self (not newer than itself)
 }
@@ -5939,7 +6643,13 @@ test "find: -okdir stub accepted (always false)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-okdir", "echo", "{}", ";" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "/tmp", "-maxdepth", "0", "-okdir", "echo", "{}", ";" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -5955,7 +6665,13 @@ test "find: -quit is accepted as valid primary" {
 
     // -quit with -maxdepth 0 -false ensures we never actually reach -quit
     // (so the test process doesn't exit)
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-false", "-quit" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "/tmp", "-maxdepth", "0", "-false", "-quit" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -5978,7 +6694,13 @@ test "find: -samefile matches files with same inode" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-samefile", orig_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-samefile", orig_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "original.txt") != null);
 }
@@ -6001,7 +6723,13 @@ test "find: -sparse stub accepted (always false)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-sparse" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-sparse" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -6024,7 +6752,13 @@ test "find: -xattr stub accepted (always false)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-xattr" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-xattr" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -6047,7 +6781,13 @@ test "find: -xattrname stub accepted (always false)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-xattrname", "com.apple.metadata" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-xattrname", "com.apple.metadata" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -6070,7 +6810,13 @@ test "find: -printf stub accepted (prints like -print)" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "file.txt", "-printf", "%p\\n" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "file.txt", "-printf", "%p\\n" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -6094,7 +6840,13 @@ test "find: -false always evaluates to false" {
     defer stderr_aw.deinit();
 
     // -false should prevent any output
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-false" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-false" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -6118,7 +6870,13 @@ test "find: -true always evaluates to true" {
     defer stderr_aw.deinit();
 
     // -true should match everything (equivalent to no test)
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-true" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-true" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -6141,7 +6899,13 @@ test "find: -false -o -true evaluates to true" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "(", "-false", "-o", "-true", ")" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "(", "-false", "-o", "-true", ")" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
@@ -6164,7 +6928,13 @@ test "find: -regex rejects non-matching pattern" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-regex", "^impossible_pattern_that_matches_nothing$" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-regex", "^impossible_pattern_that_matches_nothing$" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // No files should match an impossible regex pattern
@@ -6189,7 +6959,13 @@ test "find: -iregex rejects non-matching pattern" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iregex", "^impossible_pattern_that_matches_nothing$" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-iregex", "^impossible_pattern_that_matches_nothing$" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // No files should match an impossible regex pattern
@@ -6224,7 +7000,13 @@ test "find: -size 1 matches 100-byte file (block rounding)" {
     defer stderr_aw.deinit();
 
     // -size 1 means exactly 1 block (512 bytes); 100 bytes rounds up to 1 block
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "1" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-size", "1" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "small.txt") != null);
@@ -6253,7 +7035,13 @@ test "find: -size 2 matches 513-byte file (block rounding)" {
     defer stderr_aw.deinit();
 
     // -size 2 means exactly 2 blocks; 513 bytes rounds up to 2 blocks
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "2" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-size", "2" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "medium.txt") != null);
@@ -6287,7 +7075,13 @@ test "find: -size -2 excludes 513-byte file (block rounding)" {
     defer stderr_aw.deinit();
 
     // -size -2 means fewer than 2 blocks; 513 bytes = 2 blocks, should NOT match
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "-2" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-size", "-2" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // oneblk.txt (100 bytes = 1 block) should match -size -2
@@ -6325,7 +7119,13 @@ test "find: -exec runs command and filters on exit code" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/true", "{}", ";", "-print" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/true", "{}", ";", "-print" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") != null);
     }
@@ -6337,7 +7137,22 @@ test "find: -exec runs command and filters on exit code" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/false", "{}", ";", "-print" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{
+                dir_path,
+                "-type",
+                "f",
+                "-exec",
+                "/usr/bin/false",
+                "{}",
+                ";",
+                "-print",
+            },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // -exec /usr/bin/false returns false, so AND -print never fires
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") == null);
@@ -6372,7 +7187,13 @@ test "find: -user matches files by username" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-user", username }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-user", username },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "myfile.txt") != null);
 }
@@ -6405,7 +7226,13 @@ test "find: -group matches files by group name" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-group", groupname }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-group", groupname },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "grpfile.txt") != null);
 }
@@ -6433,7 +7260,13 @@ test "find: -nogroup matches nothing for normal files" {
 
     // Files created by this user have a valid group; -nogroup should
     // not match anything.
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-nogroup" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-nogroup" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "normalfile.txt") == null);
 }
@@ -6482,7 +7315,13 @@ test "find: -newer matches files modified after reference" {
     defer stderr_aw.deinit();
 
     // -newer compares mtime of found file against mtime of reference file
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-newer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-newer", ref_abs_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
     // old_ref.txt should NOT match -newer old_ref.txt (not newer than itself)
@@ -6517,7 +7356,13 @@ test "find: -L follows symlinks to directories" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "deep.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-name", "deep.txt" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // Should find deep.txt under realdir but NOT under linkdir
         const output = stdout_aw.writer.buffered();
@@ -6537,7 +7382,13 @@ test "find: -L follows symlinks to directories" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", dir_path, "-name", "deep.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ "-L", dir_path, "-name", "deep.txt" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // With -L, should find deep.txt under both realdir and linkdir
         const output = stdout_aw.writer.buffered();
@@ -6579,7 +7430,13 @@ test "find: -H follows only command-line symlinks" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-H", link_path, "-name", "inner.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-H", link_path, "-name", "inner.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -H should follow the symlink given on the command line
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "inner.txt") != null);
@@ -6611,7 +7468,13 @@ test "find: -follow in expression position is accepted" {
     defer stderr_aw.deinit();
 
     // -follow after -maxdepth should be accepted, not "unknown predicate"
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-maxdepth", "1", "-follow" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-maxdepth", "1", "-follow" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should not produce an error about unknown predicate
     try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
@@ -6645,7 +7508,13 @@ test "find: -a and -and operators combine predicates" {
         defer stderr_aw.deinit();
 
         // -name "hello*" -a -name "*.txt" should match only hello.txt
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "hello*", "-a", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-name", "hello*", "-a", "-name", "*.txt" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
@@ -6660,7 +7529,13 @@ test "find: -a and -and operators combine predicates" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "hello*", "-and", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ dir_path, "-name", "hello*", "-and", "-name", "*.txt" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
@@ -6716,7 +7591,13 @@ test "find: walker: multi-level pre-order prints parents before their contents" 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{root_path}, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{root_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -6774,12 +7655,20 @@ test "find: walker: multiple path operands are each fully walked in argument ord
 
     // beta is listed first to prove order follows the ARGUMENT order, not the
     // lexicographic order of the names (alpha < beta).
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ beta_path, alpha_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ beta_path, alpha_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
-    const beta_child_pos = std.mem.find(u8, out, "inside_beta.txt") orelse return error.MissingBetaChild;
-    const alpha_child_pos = std.mem.find(u8, out, "inside_alpha.txt") orelse return error.MissingAlphaChild;
+    const beta_child_pos = std.mem.find(u8, out, "inside_beta.txt") orelse
+        return error.MissingBetaChild;
+    const alpha_child_pos = std.mem.find(u8, out, "inside_alpha.txt") orelse
+        return error.MissingAlphaChild;
     // Both operands fully walked, and the FIRST operand (beta) comes first.
     try testing.expect(beta_child_pos < alpha_child_pos);
 }
@@ -6805,7 +7694,13 @@ test "find: walker: -maxdepth 0 evaluates only the start operand" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ base, "-maxdepth", "0" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ base, "-maxdepth", "0" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -6846,7 +7741,13 @@ test "find: walker: -maxdepth N under -depth evaluates depth N, never N+1" {
     defer stderr_aw.deinit();
 
     // root is depth 0, lvl1.txt and sub are depth 1, lvl2.txt is depth 2.
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-depth", "-maxdepth", "1" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ root_path, "-depth", "-maxdepth", "1" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -6893,7 +7794,13 @@ test "find: walker: -mindepth under -depth descends through shallow entries but 
     // mindepth 2: depth-0 root and depth-1 entries suppressed; deep.txt (depth
     // 2) must still be reached, proving the walk descended through the shallow,
     // suppressed levels.
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-depth", "-mindepth", "2" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ root_path, "-depth", "-mindepth", "2" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -6932,7 +7839,13 @@ test "find: walker: -depth -delete empties then removes a matched directory" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ victim_path, "-delete" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ victim_path, "-delete" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // The whole directory, including its files, must be gone. If children were
@@ -6981,12 +7894,20 @@ test "find: walker: unreadable subdirectory errors, siblings still processed, ex
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{root_path}, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{root_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Nonzero exit because one subtree could not be read.
     try testing.expectEqual(@as(u8, 1), exit_code);
     // The readable sibling is still processed despite the failed sibling.
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "readable_sibling.txt") != null);
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "readable_sibling.txt") != null,
+    );
     // The error names the unreadable directory.
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "locked") != null);
 }
@@ -7026,7 +7947,13 @@ test "find: walker: under -depth an unreadable directory is itself still evaluat
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-depth" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ root_path, "-depth" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Nonzero exit because the descent failed.
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -7069,7 +7996,13 @@ test "find: walker: -prune on a matched directory suppresses its whole subtree" 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-name", "prune_me", "-prune" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ root_path, "-name", "prune_me", "-prune" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -7167,7 +8100,13 @@ test "find: walker: -s emits each directory's children in lexicographic order" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-s", root_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-s", root_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -7197,7 +8136,8 @@ test "find: walker: -P does not descend a symlink-to-directory start operand" {
     var target = try tmp.dir.openDir(testing.io, "target", .{});
     defer target.close(testing.io);
     (try target.createFile(testing.io, "behind.txt", .{})).close(testing.io);
-    tmp.dir.symLink(testing.io, "target", "operand_link", .{ .is_directory = true }) catch return error.SkipZigTest;
+    tmp.dir.symLink(testing.io, "target", "operand_link", .{ .is_directory = true }) catch
+        return error.SkipZigTest;
 
     const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
     const link_path = try std.fs.path.join(allocator, &.{ base, "operand_link" });
@@ -7209,7 +8149,13 @@ test "find: walker: -P does not descend a symlink-to-directory start operand" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ link_path, "-type", "l" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ link_path, "-type", "l" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // The operand is evaluated as a symlink: -type l matches it.
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "operand_link") != null);
@@ -7223,7 +8169,13 @@ test "find: walker: -P does not descend a symlink-to-directory start operand" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{link_path}, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{link_path},
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // No descent through the symlink operand.
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "behind.txt") == null);
@@ -7253,10 +8205,16 @@ test "find: walker: -H follows operand symlink but evaluates inner symlinks as l
     var operand_target = try tmp.dir.openDir(testing.io, "operand_target", .{});
     defer operand_target.close(testing.io);
     (try operand_target.createFile(testing.io, "op_file.txt", .{})).close(testing.io);
-    operand_target.symLink(testing.io, "../inner_target", "inner_link", .{ .is_directory = true }) catch return error.SkipZigTest;
+    operand_target.symLink(
+        testing.io,
+        "../inner_target",
+        "inner_link",
+        .{ .is_directory = true },
+    ) catch return error.SkipZigTest;
 
     // The operand itself is a symlink to operand_target.
-    tmp.dir.symLink(testing.io, "operand_target", "operand_link", .{ .is_directory = true }) catch return error.SkipZigTest;
+    tmp.dir.symLink(testing.io, "operand_target", "operand_link", .{ .is_directory = true }) catch
+        return error.SkipZigTest;
 
     const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
     const operand_link = try std.fs.path.join(allocator, &.{ base, "operand_link" });
@@ -7266,7 +8224,13 @@ test "find: walker: -H follows operand symlink but evaluates inner symlinks as l
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-H", operand_link }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-H", operand_link },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -7280,7 +8244,13 @@ test "find: walker: -H follows operand symlink but evaluates inner symlinks as l
     defer stdout2.deinit();
     var stderr2: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr2.deinit();
-    const exit2 = try runFind(allocator, testing.io, &[_][]const u8{ "-H", operand_link, "-type", "l" }, &stdout2.writer, &stderr2.writer);
+    const exit2 = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-H", operand_link, "-type", "l" },
+        &stdout2.writer,
+        &stderr2.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit2);
     try testing.expect(std.mem.find(u8, stdout2.writer.buffered(), "inner_link") != null);
 }
@@ -7313,7 +8283,13 @@ test "find: walker: -L evaluates an inner symlink-to-file as its target type" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path, "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ "-L", root_path, "-type", "f" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // The link path is reported as a regular file under -L.
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link_to_file") != null);
@@ -7326,7 +8302,13 @@ test "find: walker: -L evaluates an inner symlink-to-file as its target type" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path, "-type", "l" }, &stdout_aw.writer, &stderr_aw.writer);
+        const exit_code = try runFind(
+            allocator,
+            testing.io,
+            &[_][]const u8{ "-L", root_path, "-type", "l" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
         // No symlinks are visible under -L.
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link_to_file") == null);
@@ -7355,8 +8337,10 @@ test "find: walker: -L descends two sibling symlinks pointing at the same direct
     try tmp.dir.createDir(testing.io, "root", .default_dir);
     var root = try tmp.dir.openDir(testing.io, "root", .{});
     defer root.close(testing.io);
-    root.symLink(testing.io, "../shared", "link_a", .{ .is_directory = true }) catch return error.SkipZigTest;
-    root.symLink(testing.io, "../shared", "link_b", .{ .is_directory = true }) catch return error.SkipZigTest;
+    root.symLink(testing.io, "../shared", "link_a", .{ .is_directory = true }) catch
+        return error.SkipZigTest;
+    root.symLink(testing.io, "../shared", "link_b", .{ .is_directory = true }) catch
+        return error.SkipZigTest;
 
     const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
@@ -7366,7 +8350,13 @@ test "find: walker: -L descends two sibling symlinks pointing at the same direct
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path, "-name", "found.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-L", root_path, "-name", "found.txt" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // found.txt must be reached through BOTH link names (two distinct hits).
@@ -7405,7 +8395,13 @@ test "find: walker: -X never filters the depth-0 start operand" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ operand_path, "-X" }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ operand_path, "-X" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -7459,14 +8455,23 @@ test "find: walker-migration: -L reports filesystem loop without descending it" 
     const loop_link_path = try std.fs.path.join(allocator, &.{ base, "root", "sub", "up" });
     // The path the junk descent produces: <root>/sub/up/sub. Its presence proves
     // the loop was followed instead of being detected and skipped.
-    const junk_descent_path = try std.fs.path.join(allocator, &.{ base, "root", "sub", "up", "sub" });
+    const junk_descent_path = try std.fs.path.join(
+        allocator,
+        &.{ base, "root", "sub", "up", "sub" },
+    );
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path }, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-L", root_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     const out = stdout_aw.writer.buffered();
     const err = stderr_aw.writer.buffered();

@@ -26,17 +26,40 @@ const TouchArgs = struct {
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .a = .{ .desc = "Change only the access time" },
-        .adjust = .{ .short = 'A', .desc = "Adjust access and modification times by value (not yet implemented)", .value_name = "ADJUST" },
+        .adjust = .{
+            .short = 'A',
+            .desc = "Adjust access and modification times by value (not yet implemented)",
+            .value_name = "ADJUST",
+        },
         .c = .{ .desc = "Do not create any files" },
         .no_create = .{ .short = 0, .desc = "Do not create any files" },
         .f = .{ .desc = "(ignored)" },
         .h = .{ .desc = "Affect symbolic link instead of any referenced file" },
-        .no_dereference = .{ .short = 0, .desc = "Affect symbolic link instead of any referenced file" },
+        .no_dereference = .{
+            .short = 0,
+            .desc = "Affect symbolic link instead of any referenced file",
+        },
         .m = .{ .desc = "Change only the modification time" },
-        .reference = .{ .short = 'r', .desc = "Use this file's times instead of current time", .value_name = "FILE" },
-        .date = .{ .short = 'd', .desc = "parse DATE and use it instead of current time", .value_name = "DATE" },
-        .t = .{ .desc = "Use [[CC]YY]MMDDhhmm[.ss] instead of current time", .value_name = "STAMP" },
-        .time = .{ .short = 0, .desc = "Change the specified time: \"access\", \"atime\", \"use\", \"modify\", \"mtime\"", .value_name = "WORD" },
+        .reference = .{
+            .short = 'r',
+            .desc = "Use this file's times instead of current time",
+            .value_name = "FILE",
+        },
+        .date = .{
+            .short = 'd',
+            .desc = "parse DATE and use it instead of current time",
+            .value_name = "DATE",
+        },
+        .t = .{
+            .desc = "Use [[CC]YY]MMDDhhmm[.ss] instead of current time",
+            .value_name = "STAMP",
+        },
+        .time = .{
+            .short = 0,
+            .desc = "Change the specified time: " ++
+                "\"access\", \"atime\", \"use\", \"modify\", \"mtime\"",
+            .value_name = "WORD",
+        },
     };
 };
 
@@ -46,10 +69,22 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Main implementation that accepts writers for output.
-fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+fn run(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     const prog_name = "touch";
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(TouchArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        TouchArgs,
+        allocator,
+        args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -68,25 +103,7 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
     // On Linux there is no equivalent. Accept silently and continue.
     // The flag is parsed but the adjustment value is ignored.
 
-    // Map long form aliases to short form
-    const access_only = parsed_args.a;
-    const modify_only = parsed_args.m;
-    const no_dereference = parsed_args.h or parsed_args.no_dereference;
-    // -h/--no-dereference implies -c: creating a regular file when the
-    // intent is to act on a symlink makes no sense (GNU behavior).
-    const no_create = parsed_args.c or parsed_args.no_create or no_dereference;
-
-    // Create options struct
-    const options = TouchOptions{
-        .access_only = access_only,
-        .modify_only = modify_only,
-        .no_create = no_create,
-        .no_dereference = no_dereference,
-        .date_str = parsed_args.date,
-        .reference_file = parsed_args.reference,
-        .timestamp_str = parsed_args.t,
-        .time_arg = parsed_args.time,
-    };
+    const options = run_buildOptions(parsed_args);
     // prog_name is our 5-char constant "touch", never empty.
     std.debug.assert(prog_name.len > 0);
     // -h/--no-dereference always forces -c (no_create), so no_dereference
@@ -97,7 +114,13 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
     const files = parsed_args.positionals;
 
     if (files.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing file operand\nTry '{s} --help' for more information.",
+            .{prog_name},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -110,7 +133,34 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
         };
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
+}
+
+/// Builds the TouchOptions struct from parsed command-line arguments,
+/// mapping long-form aliases onto their short-form equivalents.
+fn run_buildOptions(parsed_args: TouchArgs) TouchOptions {
+    // Map long form aliases to short form
+    const access_only = parsed_args.a;
+    const modify_only = parsed_args.m;
+    const no_dereference = parsed_args.h or parsed_args.no_dereference;
+    // -h/--no-dereference implies -c: creating a regular file when the
+    // intent is to act on a symlink makes no sense (GNU behavior).
+    const no_create = parsed_args.c or parsed_args.no_create or no_dereference;
+
+    // Create options struct
+    return TouchOptions{
+        .access_only = access_only,
+        .modify_only = modify_only,
+        .no_create = no_create,
+        .no_dereference = no_dereference,
+        .date_str = parsed_args.date,
+        .reference_file = parsed_args.reference,
+        .timestamp_str = parsed_args.t,
+        .time_arg = parsed_args.time,
+    };
 }
 
 /// Maps a per-file touch error to a user-friendly message on stderr.
@@ -281,7 +331,12 @@ const TouchOptions = struct {
 };
 
 /// Touches a single file with the specified options.
-fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator, io: std.Io) !void {
+fn touchFile(
+    path: []const u8,
+    options: TouchOptions,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+) !void {
     // Get the timestamps to use
     var times: [2]c.timespec = undefined;
 
@@ -328,7 +383,15 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
         }
     }
 
-    return touchFileWithTimes(path, options, times, options.access_only, options.modify_only, allocator, io);
+    return touchFileWithTimes(
+        path,
+        options,
+        times,
+        options.access_only,
+        options.modify_only,
+        allocator,
+        io,
+    );
 }
 
 /// Touches a file with specific timestamps.
@@ -342,7 +405,15 @@ fn touchFileWithTimes(
     io: std.Io,
 ) !void {
     // Try to update the file times first
-    updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator, io) catch |err| {
+    updateFileTimes(
+        path,
+        times,
+        access_only,
+        modify_only,
+        options.no_dereference,
+        allocator,
+        io,
+    ) catch |err| {
         if (err == error.FileNotFound) {
             // File doesn't exist
             if (options.no_create) {
@@ -353,14 +424,30 @@ fn touchFileWithTimes(
             createFileAtomic(path, io) catch |create_err| {
                 // If creation fails due to race condition, try updating times anyway
                 if (create_err == error.PathAlreadyExists) {
-                    try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator, io);
+                    try updateFileTimes(
+                        path,
+                        times,
+                        access_only,
+                        modify_only,
+                        options.no_dereference,
+                        allocator,
+                        io,
+                    );
                     return;
                 }
                 return create_err;
             };
 
             // Now update times on the newly created file
-            try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator, io);
+            try updateFileTimes(
+                path,
+                times,
+                access_only,
+                modify_only,
+                options.no_dereference,
+                allocator,
+                io,
+            );
         } else {
             // Some other error occurred
             return err;
@@ -510,7 +597,8 @@ fn parseTimestamp_validateAndConvert(
     const max_days = std.math.maxInt(i64) / 86400;
     if (days_since_epoch > max_days) return error.InvalidTimestamp;
 
-    const day_seconds = std.math.mul(i64, days_since_epoch, 86400) catch return error.InvalidTimestamp;
+    const day_seconds = std.math.mul(i64, days_since_epoch, 86400) catch
+        return error.InvalidTimestamp;
     // days_since_epoch is non-negative (checked above) so its product with
     // the positive seconds-per-day is non-negative.
     std.debug.assert(day_seconds >= 0);
@@ -624,23 +712,7 @@ fn parseIso8601(date_str: []const u8) !c.timespec {
     if (year < 1970) return error.InvalidDateFormat;
 
     // Parse optional timezone suffix after datetime (position 19+)
-    var tz_offset_seconds: i64 = 0;
-    if (date_str.len > 19) {
-        const suffix = date_str[19..];
-        if (suffix.len == 1 and suffix[0] == 'Z') {
-            // Z means UTC, offset is 0
-            tz_offset_seconds = 0;
-        } else if ((suffix[0] == '+' or suffix[0] == '-') and suffix.len == 6 and suffix[3] == ':') {
-            const tz_hours = std.fmt.parseInt(i64, suffix[1..3], 10) catch return error.InvalidDateFormat;
-            const tz_minutes = std.fmt.parseInt(i64, suffix[4..6], 10) catch return error.InvalidDateFormat;
-            const offset = tz_hours * 3600 + tz_minutes * 60;
-            // Positive offset (+05:00) means ahead of UTC, so subtract to get UTC
-            // Negative offset (-05:00) means behind UTC, so add to get UTC
-            tz_offset_seconds = if (suffix[0] == '+') -offset else offset;
-        } else {
-            return error.InvalidDateFormat;
-        }
-    }
+    const tz_offset_seconds = try parseIso8601_tzOffset(date_str);
 
     // Convert to seconds since epoch
     const days_since_epoch = daysFromYMD(year, month, day) - daysFromYMD(1970, 1, 1);
@@ -652,6 +724,32 @@ fn parseIso8601(date_str: []const u8) !c.timespec {
         .sec = @intCast(total_seconds),
         .nsec = 0,
     };
+}
+
+/// Parses the optional timezone suffix of an ISO 8601 string (position 19+)
+/// and returns the seconds to add to local time to obtain UTC. A missing
+/// suffix or a trailing 'Z' yields a zero offset.
+fn parseIso8601_tzOffset(date_str: []const u8) !i64 {
+    if (date_str.len <= 19) return 0;
+
+    const suffix = date_str[19..];
+    if (suffix.len == 1 and suffix[0] == 'Z') {
+        // Z means UTC, offset is 0
+        return 0;
+    } else if ((suffix[0] == '+' or suffix[0] == '-') and
+        suffix.len == 6 and suffix[3] == ':')
+    {
+        const tz_hours = std.fmt.parseInt(i64, suffix[1..3], 10) catch
+            return error.InvalidDateFormat;
+        const tz_minutes = std.fmt.parseInt(i64, suffix[4..6], 10) catch
+            return error.InvalidDateFormat;
+        const offset = tz_hours * 3600 + tz_minutes * 60;
+        // Positive offset (+05:00) means ahead of UTC, so subtract to get UTC
+        // Negative offset (-05:00) means behind UTC, so add to get UTC
+        return if (suffix[0] == '+') -offset else offset;
+    } else {
+        return error.InvalidDateFormat;
+    }
 }
 
 /// Creates a file atomically to avoid race conditions.
@@ -711,34 +809,59 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
 }
 
 /// Handles errors by printing appropriate error messages.
-fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: *std.Io.Writer) void {
+fn handleError(
+    allocator: std.mem.Allocator,
+    prog_name: []const u8,
+    path: []const u8,
+    err: anyerror,
+    stderr_writer: *std.Io.Writer,
+) void {
     // prog_name flows from run()'s constant "touch"; never empty. path is not
     // asserted because "touch ''" is a legitimate invocation to report.
     std.debug.assert(prog_name.len > 0);
 
-    // GNU touch format: "touch: cannot touch 'filename': Error message"
-    switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such file or directory", .{path}),
-        error.AccessDenied => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Permission denied", .{path}),
-        error.BadPathName => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad address", .{path}),
-        error.Interrupted => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Interrupted system call", .{path}),
-        error.SystemCallNotSupported => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Function not implemented", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Read-only file system", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': File name too long", .{path}),
-        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Too many levels of symbolic links", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Invalid argument", .{path}),
-        error.BadFileDescriptor => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad file descriptor", .{path}),
-        error.NoSuchProcess => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such process", .{path}),
-        else => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': {s}", .{ path, common.posixErrorString(err) }),
-    }
+    // GNU touch format: "touch: cannot touch 'filename': Error message".
+    // The errno-to-message mapping lives in handleError_message; reporting is a
+    // single call so wrapping the long format strings stays within the column
+    // limit without changing behavior.
+    const message = handleError_message(err);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "cannot touch '{s}': {s}",
+        .{ path, message },
+    );
+}
+
+/// Maps a touch error to its GNU-style message string. Errors not handled
+/// explicitly fall back to posixErrorString, matching the prior switch's
+/// else arm. The returned message contains no format specifiers, so the
+/// single-call site reproduces the original per-arm output byte-for-byte.
+fn handleError_message(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "No such file or directory",
+        error.AccessDenied => "Permission denied",
+        error.BadPathName => "Bad address",
+        error.Interrupted => "Interrupted system call",
+        error.SystemCallNotSupported => "Function not implemented",
+        error.ReadOnlyFileSystem => "Read-only file system",
+        error.NameTooLong => "File name too long",
+        error.NotDir => "Not a directory",
+        error.SymLinkLoop => "Too many levels of symbolic links",
+        error.InvalidValue => "Invalid argument",
+        error.BadFileDescriptor => "Bad file descriptor",
+        error.NoSuchProcess => "No such process",
+        else => common.posixErrorString(err),
+    };
 }
 
 // ==================== TESTS ====================
 // Comprehensive test suite for touch functionality
 
 /// Helper function to compare timestamps with tolerance for cross-platform compatibility.
-/// Linux file systems may truncate timestamps to seconds while macOS preserves nanosecond precision.
+/// Linux file systems may truncate timestamps to seconds while macOS
+/// preserves nanosecond precision.
 /// We use a larger tolerance when comparing "preserved" timestamps since they may be rounded
 /// when read back from the file system.
 fn expectTimestampsEqual(expected: i128, actual: i128) !void {
@@ -1080,7 +1203,13 @@ test "touch: -A flag is accepted as silent no-op" {
 
     // -A is a macOS-only feature; on Linux it should be a silent no-op exiting 0
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -1103,7 +1232,13 @@ test "touch: -d flag is parsed by argparser" {
 
     // -d should be accepted without error
     const args = [_][]const u8{ "-d", "2024-01-15", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -1123,7 +1258,13 @@ test "touch: -d with ISO date sets timestamp" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "2024-01-15", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-01-15 00:00:00 UTC
@@ -1149,7 +1290,13 @@ test "touch: -d with date and time sets timestamp" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "2024-01-15T10:30:00", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-01-15 10:30:00 UTC
@@ -1168,14 +1315,24 @@ test "touch: -d with invalid date gives error" {
     const n = try tmp_dir.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
-    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/invalid_date.txt", .{tmp_path});
+    const test_file = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/invalid_date.txt",
+        .{tmp_path},
+    );
     defer testing.allocator.free(test_file);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "not-a-date", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     // Should return error exit code for invalid date
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
@@ -1189,7 +1346,11 @@ test "touch: -d with space-separated datetime" {
     const n = try tmp_dir.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
-    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/space_datetime.txt", .{tmp_path});
+    const test_file = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/space_datetime.txt",
+        .{tmp_path},
+    );
     defer testing.allocator.free(test_file);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1197,7 +1358,13 @@ test "touch: -d with space-separated datetime" {
 
     // Space-separated date and time (ISO 8601 allows space instead of T)
     const args = [_][]const u8{ "-d", "2024-06-15 14:30:00", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-06-15 14:30:00 UTC
@@ -1218,14 +1385,24 @@ test "touch: -A flag with non-zero value exits zero" {
     const n = try tmp_dir.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
-    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_nonzero.txt", .{tmp_path});
+    const test_file = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/adjust_nonzero.txt",
+        .{tmp_path},
+    );
     defer testing.allocator.free(test_file);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // -A is a silent no-op on Linux; should succeed
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -1247,7 +1424,13 @@ test "touch: -A flag produces no stderr output" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-A", "01", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Silent no-op should produce no stderr
@@ -1301,7 +1484,13 @@ test "touch: -d with Z suffix sets correct UTC timestamp on file" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "2024-01-15T00:00:00Z", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify mtime is 2024-01-15 00:00:00 UTC = 1705276800
@@ -1327,7 +1516,13 @@ test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
 
     // midnight at +05:00 = 2024-01-14T19:00:00 UTC = epoch 1705258800
     const args = [_][]const u8{ "-d", "2024-01-15T00:00:00+05:00", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const stat = try common.file.FileInfo.stat(testing.io, test_file);
@@ -1348,7 +1543,11 @@ test "touch: -A flag still touches file timestamps (adjustment ignored)" {
     const n = try tmp_dir.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
-    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_nomod.txt", .{tmp_path});
+    const test_file = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/adjust_nomod.txt",
+        .{tmp_path},
+    );
     defer testing.allocator.free(test_file);
 
     // Record timestamps before the -A invocation
@@ -1361,7 +1560,13 @@ test "touch: -A flag still touches file timestamps (adjustment ignored)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // -A adjustment is ignored but touch still updates timestamps to now

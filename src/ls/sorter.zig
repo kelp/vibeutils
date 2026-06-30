@@ -21,8 +21,18 @@ pub fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
     const result: bool = if (config.by_time) blk: {
         // Sort by time (mtime by default, atime with -u, ctime with -c)
         if (a.stat != null and b.stat != null) {
-            const a_time = if (config.use_ctime) a.stat.?.ctime else if (config.use_atime) a.stat.?.atime else a.stat.?.mtime;
-            const b_time = if (config.use_ctime) b.stat.?.ctime else if (config.use_atime) b.stat.?.atime else b.stat.?.mtime;
+            const a_time = if (config.use_ctime)
+                a.stat.?.ctime
+            else if (config.use_atime)
+                a.stat.?.atime
+            else
+                a.stat.?.mtime;
+            const b_time = if (config.use_ctime)
+                b.stat.?.ctime
+            else if (config.use_atime)
+                b.stat.?.atime
+            else
+                b.stat.?.mtime;
             if (a_time != b_time) {
                 break :blk a_time > b_time; // Newest first by default
             }
@@ -203,9 +213,39 @@ test "sorter - size sorting" {
     const common = @import("common");
 
     var entries = [_]Entry{
-        .{ .name = "small.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 0, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "large.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 1000, .atime = 0, .mtime = 0, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "medium.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 500, .atime = 0, .mtime = 0, .mode = 0, .kind = .file, .inode = 3, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "small.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 0,
+            .mode = 0,
+            .kind = .file,
+            .inode = 1,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "large.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 1000,
+            .atime = 0,
+            .mtime = 0,
+            .mode = 0,
+            .kind = .file,
+            .inode = 2,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "medium.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 500,
+            .atime = 0,
+            .mtime = 0,
+            .mode = 0,
+            .kind = .file,
+            .inode = 3,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
     };
 
     const config = SortConfig{ .by_size = true };
@@ -221,9 +261,39 @@ test "sorter - time sorting" {
     const common = @import("common");
 
     var entries = [_]Entry{
-        .{ .name = "old.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 1000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "new.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 3000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "medium.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 2000, .mode = 0, .kind = .file, .inode = 3, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "old.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 1000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 1,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "new.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 3000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 2,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "medium.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 2000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 3,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
     };
 
     const config = SortConfig{ .by_time = true };
@@ -240,9 +310,39 @@ test "sorter - atime sorting with use_atime" {
 
     // Files with different atime values (atime order differs from mtime order)
     var entries = [_]Entry{
-        .{ .name = "old_access.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 1000, .mtime = 3000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "new_access.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 3000, .mtime = 1000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "mid_access.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 2000, .mtime = 2000, .mode = 0, .kind = .file, .inode = 3, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "old_access.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 1000,
+            .mtime = 3000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 1,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "new_access.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 3000,
+            .mtime = 1000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 2,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "mid_access.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 2000,
+            .mtime = 2000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 3,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
     };
 
     const config = SortConfig{ .by_time = true, .use_atime = true };
@@ -259,9 +359,42 @@ test "sorter - ctime sorting with use_ctime" {
 
     // Files with different ctime values (ctime order differs from mtime order)
     var entries = [_]Entry{
-        .{ .name = "old_change.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 3000, .ctime = 1000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "new_change.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 1000, .ctime = 3000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "mid_change.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 2000, .ctime = 2000, .mode = 0, .kind = .file, .inode = 3, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "old_change.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 3000,
+            .ctime = 1000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 1,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "new_change.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 1000,
+            .ctime = 3000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 2,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "mid_change.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 0,
+            .mtime = 2000,
+            .ctime = 2000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 3,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
     };
 
     const config = SortConfig{ .by_time = true, .use_ctime = true };
@@ -278,8 +411,30 @@ test "sorter - ctime takes precedence over atime" {
 
     // When both use_ctime and use_atime are set, ctime should take precedence
     var entries = [_]Entry{
-        .{ .name = "a.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 3000, .mtime = 0, .ctime = 1000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
-        .{ .name = "b.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 1000, .mtime = 0, .ctime = 3000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "a.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 3000,
+            .mtime = 0,
+            .ctime = 1000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 1,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
+        .{ .name = "b.txt", .kind = .file, .stat = common.file.FileInfo{
+            .size = 100,
+            .atime = 1000,
+            .mtime = 0,
+            .ctime = 3000,
+            .mode = 0,
+            .kind = .file,
+            .inode = 2,
+            .nlink = 1,
+            .uid = 1000,
+            .gid = 1000,
+        } },
     };
 
     const config = SortConfig{ .by_time = true, .use_ctime = true, .use_atime = true };

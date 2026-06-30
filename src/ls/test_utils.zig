@@ -53,40 +53,103 @@ pub fn listDirectoryTest(
 
     // Enhance with metadata if needed
     if (entry_collector.needsMetadata(test_options)) {
-        try entry_collector.enhanceEntriesWithMetadata(io, allocator, entries.items, dir, test_options, null, stderr_writer);
+        try entry_collector.enhanceEntriesWithMetadata(
+            io,
+            allocator,
+            entries.items,
+            dir,
+            test_options,
+            null,
+            stderr_writer,
+        );
     }
 
     // Sort entries based on options (skip if -f)
     if (!test_options.no_sort) {
-        const sort_config = types.SortConfig{
-            .by_time = test_options.sort_by_time,
-            .by_size = test_options.sort_by_size,
-            .dirs_first = test_options.group_directories_first,
-            .reverse = test_options.reverse_sort,
-            .use_atime = test_options.use_atime,
-            .use_ctime = test_options.use_ctime,
-            .by_extension = test_options.sort_by_extension,
-            .version_sort = test_options.version_sort,
-        };
-
-        sorter.sortEntries(entries.items, sort_config);
+        sortTestEntries(entries.items, test_options);
     }
 
     // Print entries
-    _ = try formatter.printEntries(allocator, entries.items, stdout_writer, test_options, style);
+    _ = try formatter.printEntries(
+        allocator,
+        entries.items,
+        stdout_writer,
+        test_options,
+        style,
+    );
 
     // Handle recursive listing
     if (test_options.recursive) {
-        var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
-        defer visited_fs_ids.deinit();
-
-        try entry_collector.processSubdirectoriesRecursively(io, entries.items, dir, base_path, stdout_writer, stderr_writer, test_options, allocator, style, &visited_fs_ids, null);
+        try recurseTestSubdirectories(
+            io,
+            entries.items,
+            dir,
+            base_path,
+            stdout_writer,
+            stderr_writer,
+            test_options,
+            allocator,
+            style,
+        );
     }
+}
+
+/// Recurse into subdirectories for the test harness, with its own cycle set.
+fn recurseTestSubdirectories(
+    io: std.Io,
+    entries: []types.Entry,
+    dir: std.Io.Dir,
+    base_path: []const u8,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+    test_options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+) !void {
+    var visited_fs_ids = common.directory.FileSystemIdSet.initContext(
+        allocator,
+        common.directory.FileSystemId.Context{},
+    );
+    defer visited_fs_ids.deinit();
+
+    try entry_collector.processSubdirectoriesRecursively(
+        io,
+        entries,
+        dir,
+        base_path,
+        stdout_writer,
+        stderr_writer,
+        test_options,
+        allocator,
+        style,
+        &visited_fs_ids,
+        null,
+    );
+}
+
+/// Sort test entries in place using a SortConfig derived from the options.
+fn sortTestEntries(entries: []types.Entry, test_options: LsOptions) void {
+    const sort_config = types.SortConfig{
+        .by_time = test_options.sort_by_time,
+        .by_size = test_options.sort_by_size,
+        .dirs_first = test_options.group_directories_first,
+        .reverse = test_options.reverse_sort,
+        .use_atime = test_options.use_atime,
+        .use_ctime = test_options.use_ctime,
+        .by_extension = test_options.sort_by_extension,
+        .version_sort = test_options.version_sort,
+    };
+
+    sorter.sortEntries(entries, sort_config);
 }
 
 /// Create a test entry with the given properties.
 /// Allocates memory for the entry name that must be freed with freeTestEntry().
-pub fn createTestEntry(allocator: std.mem.Allocator, name: []const u8, kind: std.Io.File.Kind) !types.Entry {
+pub fn createTestEntry(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    kind: std.Io.File.Kind,
+) !types.Entry {
     return types.Entry{
         .name = try allocator.dupe(u8, name),
         .kind = kind,
@@ -183,7 +246,12 @@ pub const LsTestEnv = struct {
     }
 
     /// Create a regular file with specified name and size (filled with repeating pattern).
-    pub fn createFileWithSize(self: *LsTestEnv, name: []const u8, size: usize, fill_char: u8) !void {
+    pub fn createFileWithSize(
+        self: *LsTestEnv,
+        name: []const u8,
+        size: usize, // tiger:allow:usize-arch byte size is usize
+        fill_char: u8,
+    ) !void {
         const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
         defer file.close(std.testing.io);
 
@@ -271,7 +339,10 @@ pub const LsAssertions = struct {
     /// Assert that stdout contains the specified permission string.
     pub fn expectContainsPermissions(stdout: []const u8, perms: []const u8) !void {
         if (std.mem.find(u8, stdout, perms) == null) {
-            std.debug.print("Expected to find permissions '{s}' in output:\n{s}\n", .{ perms, stdout });
+            std.debug.print(
+                "Expected to find permissions '{s}' in output:\n{s}\n",
+                .{ perms, stdout },
+            );
             return error.PermissionsNotFound;
         }
     }
@@ -282,12 +353,18 @@ pub const LsAssertions = struct {
 
         for (expected_lines) |expected_line| {
             const actual_line = lines.next() orelse {
-                std.debug.print("Expected line '{s}' but reached end of output\n", .{expected_line});
+                std.debug.print(
+                    "Expected line '{s}' but reached end of output\n",
+                    .{expected_line},
+                );
                 return error.MissingLine;
             };
 
             if (!std.mem.eql(u8, actual_line, expected_line)) {
-                std.debug.print("Expected line '{s}' but got '{s}'\n", .{ expected_line, actual_line });
+                std.debug.print(
+                    "Expected line '{s}' but got '{s}'\n",
+                    .{ expected_line, actual_line },
+                );
                 return error.LineOrderMismatch;
             }
         }
@@ -307,12 +384,23 @@ pub const LsAssertions = struct {
     }
 
     /// Assert that output contains symlink target notation.
-    pub fn expectSymlinkTarget(stdout: []const u8, link_name: []const u8, target: []const u8) !void {
-        const expected_format = try std.fmt.allocPrint(std.testing.allocator, "{s} -> {s}", .{ link_name, target });
+    pub fn expectSymlinkTarget(
+        stdout: []const u8,
+        link_name: []const u8,
+        target: []const u8,
+    ) !void {
+        const expected_format = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{s} -> {s}",
+            .{ link_name, target },
+        );
         defer std.testing.allocator.free(expected_format);
 
         if (std.mem.find(u8, stdout, expected_format) == null) {
-            std.debug.print("Expected symlink format '{s}' in output:\n{s}\n", .{ expected_format, stdout });
+            std.debug.print(
+                "Expected symlink format '{s}' in output:\n{s}\n",
+                .{ expected_format, stdout },
+            );
             return error.SymlinkFormatNotFound;
         }
     }
@@ -320,7 +408,10 @@ pub const LsAssertions = struct {
     /// Assert that output contains file type indicators.
     pub fn expectFileTypeIndicator(stdout: []const u8, name_with_indicator: []const u8) !void {
         if (std.mem.find(u8, stdout, name_with_indicator) == null) {
-            std.debug.print("Expected file type indicator '{s}' in output:\n{s}\n", .{ name_with_indicator, stdout });
+            std.debug.print(
+                "Expected file type indicator '{s}' in output:\n{s}\n",
+                .{ name_with_indicator, stdout },
+            );
             return error.FileTypeIndicatorNotFound;
         }
     }
@@ -328,7 +419,10 @@ pub const LsAssertions = struct {
     /// Assert that output contains directory headers for recursive listing.
     pub fn expectDirectoryHeader(stdout: []const u8, header: []const u8) !void {
         if (std.mem.find(u8, stdout, header) == null) {
-            std.debug.print("Expected directory header '{s}' in output:\n{s}\n", .{ header, stdout });
+            std.debug.print(
+                "Expected directory header '{s}' in output:\n{s}\n",
+                .{ header, stdout },
+            );
             return error.DirectoryHeaderNotFound;
         }
     }
@@ -343,7 +437,10 @@ pub const LsAssertions = struct {
         }
 
         if (line_count >= file_count) {
-            std.debug.print("Expected multi-column format (lines < files), but got {} lines for {} files\n", .{ line_count, file_count });
+            std.debug.print(
+                "Expected multi-column format (lines < files), but got {} lines for {} files\n",
+                .{ line_count, file_count },
+            );
             return error.NotMultiColumn;
         }
     }
@@ -363,7 +460,10 @@ pub const LsAssertions = struct {
         }
 
         if (!has_numeric) {
-            std.debug.print("Expected to find numeric values for {s} in output:\n{s}\n", .{ description, stdout });
+            std.debug.print(
+                "Expected to find numeric values for {s} in output:\n{s}\n",
+                .{ description, stdout },
+            );
             return error.NumericValueNotFound;
         }
     }
@@ -371,7 +471,10 @@ pub const LsAssertions = struct {
     /// Assert that output contains a specific size format (like "2.0K" for human readable).
     pub fn expectHumanReadableSize(stdout: []const u8, expected_size: []const u8) !void {
         if (std.mem.find(u8, stdout, expected_size) == null) {
-            std.debug.print("Expected human readable size '{s}' in output:\n{s}\n", .{ expected_size, stdout });
+            std.debug.print(
+                "Expected human readable size '{s}' in output:\n{s}\n",
+                .{ expected_size, stdout },
+            );
             return error.HumanReadableSizeNotFound;
         }
     }

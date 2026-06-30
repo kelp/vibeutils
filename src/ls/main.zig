@@ -81,54 +81,108 @@ const LsArgs = struct {
         .all = .{ .short = 'a', .desc = "Do not ignore entries starting with ." },
         .almost_all = .{ .short = 'A', .desc = "Do not list implied . and .." },
         .long_format = .{ .short = 'l', .desc = "Use a long listing format" },
-        .human_readable = .{ .short = 'h', .desc = "With -l, print sizes in human readable format" },
+        .human_readable = .{
+            .short = 'h',
+            .desc = "With -l, print sizes in human readable format",
+        },
         .kilobytes = .{ .short = 'k', .desc = "With -l, print sizes in kilobytes" },
         .one_per_line = .{ .short = '1', .desc = "List one file per line" },
         .directory = .{ .short = 'd', .desc = "List directories themselves, not their contents" },
-        .file_type_indicators = .{ .short = 'F', .desc = "Append indicator (one of */=>@|) to entries" },
-        .append_slash_dirs = .{ .short = 'p', .desc = "Write a slash (/) after each directory name" },
-        .non_printable_as_question = .{ .short = 'q', .desc = "Force non-printable characters to be written as '?'" },
+        .file_type_indicators = .{
+            .short = 'F',
+            .desc = "Append indicator (one of */=>@|) to entries",
+        },
+        .append_slash_dirs = .{
+            .short = 'p',
+            .desc = "Write a slash (/) after each directory name",
+        },
+        .non_printable_as_question = .{
+            .short = 'q',
+            .desc = "Force non-printable characters to be written as '?'",
+        },
         .omit_owner = .{ .short = 'g', .desc = "Like -l, but do not print the owner" },
         .omit_group = .{ .short = 'o', .desc = "Like -l, but do not print the group" },
         .show_inodes = .{ .short = 'i', .desc = "Print the index number of each file" },
-        .comma_format = .{ .short = 'm', .desc = "Fill width with a comma separated list of entries" },
+        .comma_format = .{
+            .short = 'm',
+            .desc = "Fill width with a comma separated list of entries",
+        },
         .numeric_ids = .{ .short = 'n', .desc = "With -l, show numeric user and group IDs" },
         .recursive = .{ .short = 'R', .desc = "List subdirectories recursively" },
         .sort_by_time = .{ .short = 't', .desc = "Sort by modification time, newest first" },
         .sort_by_size = .{ .short = 'S', .desc = "Sort by file size, largest first" },
         .reverse_sort = .{ .short = 'r', .desc = "Reverse order while sorting" },
-        .no_sort = .{ .short = 'f', .desc = "Do not sort; list entries in directory order (implies -a)" },
+        .no_sort = .{
+            .short = 'f',
+            .desc = "Do not sort; list entries in directory order (implies -a)",
+        },
         .show_blocks = .{ .short = 's', .desc = "Display number of filesystem blocks" },
         .use_atime = .{ .short = 'u', .desc = "Use access time instead of modification time" },
-        .use_ctime = .{ .short = 'c', .desc = "Use status change time instead of modification time" },
+        .use_ctime = .{
+            .short = 'c',
+            .desc = "Use status change time instead of modification time",
+        },
         .multi_column = .{ .short = 'C', .desc = "Force multi-column output sorted down columns" },
         .columns_across = .{ .short = 'x', .desc = "Multi-column output sorted across rows" },
         .full_time = .{ .short = 'T', .desc = "With -l, show complete time including seconds" },
         .follow_all_symlinks = .{ .short = 'L', .desc = "Follow all symbolic links" },
-        .follow_cmdline_symlinks = .{ .short = 'H', .desc = "Follow symbolic links on the command line" },
-        .escape_non_printable = .{ .short = 'b', .desc = "Print C-style escape sequences for non-printable characters" },
+        .follow_cmdline_symlinks = .{
+            .short = 'H',
+            .desc = "Follow symbolic links on the command line",
+        },
+        .escape_non_printable = .{
+            .short = 'b',
+            .desc = "Print C-style escape sequences for non-printable characters",
+        },
         .hide_backups = .{ .short = 'B', .desc = "Do not list entries ending with ~" },
         .dired = .{ .short = 'D', .desc = "Generate output suitable for Emacs dired mode" },
         .show_acls = .{ .short = 'e', .desc = "Display ACL information in long format" },
         .colorize = .{ .short = 'G', .desc = "Enable colorized output" },
-        .ignore_pattern = .{ .short = 'I', .desc = "Do not list entries matching shell PATTERN", .value_name = "PATTERN" },
+        .ignore_pattern = .{
+            .short = 'I',
+            .desc = "Do not list entries matching shell PATTERN",
+            .value_name = "PATTERN",
+        },
         .show_file_flags = .{ .short = 'O', .desc = "Display file flags in long format" },
         .no_follow_symlinks = .{ .short = 'P', .desc = "Do not follow symbolic links" },
         .unsorted = .{ .short = 'U', .desc = "Do not sort; list entries in directory order" },
         .version_sort = .{ .short = 'v', .desc = "Natural sort of version numbers within text" },
-        .output_width = .{ .short = 'w', .desc = "Set output width to COLS columns", .value_name = "COLS" },
+        .output_width = .{
+            .short = 'w',
+            .desc = "Set output width to COLS columns",
+            .value_name = "COLS",
+        },
         .show_whiteouts = .{ .short = 'W', .desc = "Display whiteout entries" },
         .sort_by_extension = .{ .short = 'X', .desc = "Sort alphabetically by entry extension" },
         .sort_by_name = .{ .short = 'y', .desc = "Sort by name (default behavior)" },
         .show_xattrs = .{ .short = '@', .desc = "Display extended attribute keys and sizes" },
         .show_sip = .{ .short = '%', .desc = "Display SIP protection information" },
-        .thousands_grouping = .{ .short = ',', .desc = "Format file sizes with thousands grouping" },
-        .color = .{ .short = 0, .desc = "When to use colors (valid: always, auto, never)", .value_name = "WHEN" },
+        .thousands_grouping = .{
+            .short = ',',
+            .desc = "Format file sizes with thousands grouping",
+        },
+        .color = .{
+            .short = 0,
+            .desc = "When to use colors (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
         .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
-        .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
+        .icons = .{
+            .short = 0,
+            .desc = "When to show icons (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
         .test_icons = .{ .short = 0, .desc = "Show sample icons to test Nerd Font support" },
-        .time_style = .{ .short = 0, .desc = "Time/date format (valid: default, relative, iso, long-iso)", .value_name = "STYLE" },
-        .git = .{ .short = 0, .desc = "when to show git status (valid: always, auto, never)", .value_name = "WHEN" },
+        .time_style = .{
+            .short = 0,
+            .desc = "Time/date format (valid: default, relative, iso, long-iso)",
+            .value_name = "STYLE",
+        },
+        .git = .{
+            .short = 0,
+            .desc = "when to show git status (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
     };
 };
 
@@ -147,7 +201,13 @@ pub fn runLs(
     stderr: *std.Io.Writer,
 ) !u8 {
     const parsed = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr, "ls", "argument parsing failed: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "ls",
+            "argument parsing failed: {s}",
+            .{common.posixErrorString(err)},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     };
     defer allocator.free(parsed.positionals);
@@ -164,7 +224,13 @@ const ResolvedModes = struct {
 
 /// Core ls functionality.
 /// Returns exit code: 0 for success, 2 for serious errors (e.g. nonexistent path)
-fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, args: LsArgs, allocator: std.mem.Allocator) !u8 {
+fn lsMain(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+    allocator: std.mem.Allocator,
+) !u8 {
     // Handle help
     if (args.help) {
         try printHelp(allocator, writer);
@@ -545,7 +611,9 @@ fn printIconTest(writer: anytype) !void {
     try writer.writeAll("Icon Test - Nerd Font Support Check\n");
     try writer.writeAll("====================================\n\n");
 
-    try writer.writeAll("If you can see the following icons correctly, your terminal supports Nerd Fonts:\n\n");
+    try writer.writeAll(
+        "If you can see the following icons correctly, your terminal supports Nerd Fonts:\n\n",
+    );
 
     // Test common file type icons
     try writer.print("  {s}  Directory\n", .{theme.directory});
@@ -581,7 +649,10 @@ fn printIconTest(writer: anytype) !void {
 
     try writer.writeAll("\n");
     try writer.writeAll("To configure icons in ls:\n");
-    try writer.writeAll("  ls --icons=auto                      # Show icons in terminal, hide in pipes (default)\n");
+    try writer.writeAll(
+        "  ls --icons=auto                      " ++
+            "# Show icons in terminal, hide in pipes (default)\n",
+    );
     try writer.writeAll("  ls --icons=always                    # Always show icons\n");
     try writer.writeAll("  ls --icons=never                     # Never show icons\n");
     try writer.writeAll("  export LS_ICONS=auto                 # Set default mode\n");
@@ -594,79 +665,169 @@ fn printIconTest(writer: anytype) !void {
 
 /// List a directory or file, handling both files and directories appropriately.
 /// Errors are printed but don't stop execution except for BrokenPipe.
-fn listDirectory(io: std.Io, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
+fn listDirectory(
+    io: std.Io,
+    path: []const u8,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "failed to initialize styling: {s}",
+            .{common.posixErrorString(err)},
+        );
         return err;
     };
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(io, path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: {s}",
+            .{ path, common.posixErrorString(err) },
+        );
         return err;
     };
 
     // If it's a file (not a directory), just print the file entry
     if (stat.kind != .directory) {
-        var entry = Entry{
-            .name = std.fs.path.basename(path),
-            .kind = stat.kind,
-            .stat = stat,
-            .symlink_target = null,
-        };
-
-        // Get Git status for the file if requested
-        if (options.show_git_status and git_context != null) {
-            entry.git_status = git_context.?.getFileStatus(io, entry.name) orelse .not_in_repo;
-        }
-
-        if (options.long_format) {
-            try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
-        } else {
-            try display.printEntryName(entry, writer, style, options);
-        }
-        try writer.writeAll("\n");
+        try listSingleFileEntry(io, path, writer, options, allocator, git_context, style, stat);
         return;
     }
 
     // If -d is specified, just list the directory itself
     if (options.directory) {
-        if (options.long_format) {
-            const entry = Entry{
-                .name = path,
-                .kind = .directory,
-                .stat = stat,
-                .symlink_target = null,
-            };
-
-            try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
-        } else {
-            try writer.print("{s}\n", .{path});
-        }
+        try listDirectoryItself(path, writer, options, allocator, style, stat);
         return;
     }
 
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: {s}",
+            .{ path, common.posixErrorString(err) },
+        );
         return err;
     };
     defer dir.close(io);
 
     // Call the shared implementation
-    try listDirectoryImpl(io, dir, path, writer, stderr_writer, options, allocator, style, git_context);
+    try listDirectoryImpl(
+        io,
+        dir,
+        path,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        style,
+        git_context,
+    );
+}
+
+/// Print a single non-directory operand as one entry, with optional git status.
+fn listSingleFileEntry(
+    io: std.Io,
+    path: []const u8,
+    writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+    style: anytype,
+    stat: common.file.FileInfo,
+) anyerror!void {
+    var entry = Entry{
+        .name = std.fs.path.basename(path),
+        .kind = stat.kind,
+        .stat = stat,
+        .symlink_target = null,
+    };
+
+    // Get Git status for the file if requested
+    if (options.show_git_status and git_context != null) {
+        entry.git_status = git_context.?.getFileStatus(io, entry.name) orelse .not_in_repo;
+    }
+
+    if (options.long_format) {
+        try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
+    } else {
+        try display.printEntryName(entry, writer, style, options);
+    }
+    try writer.writeAll("\n");
+}
+
+/// Print just the directory operand itself (the -d case), not its contents.
+fn listDirectoryItself(
+    path: []const u8,
+    writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+    stat: common.file.FileInfo,
+) anyerror!void {
+    if (options.long_format) {
+        const entry = Entry{
+            .name = path,
+            .kind = .directory,
+            .stat = stat,
+            .symlink_target = null,
+        };
+
+        try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
+    } else {
+        try writer.print("{s}\n", .{path});
+    }
 }
 
 /// Set up visited filesystem ID tracking for secure cycle detection in recursive mode
-fn listDirectoryImpl(io: std.Io, dir: std.Io.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*types.GitContext) anyerror!void {
-    var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
+fn listDirectoryImpl(
+    io: std.Io,
+    dir: std.Io.Dir,
+    path: []const u8,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+    git_context: ?*types.GitContext,
+) anyerror!void {
+    var visited_fs_ids = common.directory.FileSystemIdSet.initContext(
+        allocator,
+        common.directory.FileSystemId.Context{},
+    );
     defer visited_fs_ids.deinit();
 
-    try core.listDirectoryImplWithVisited(io, dir, path, writer, stderr_writer, options, allocator, style, &visited_fs_ids, git_context);
+    try core.listDirectoryImplWithVisited(
+        io,
+        dir,
+        path,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        style,
+        &visited_fs_ids,
+        git_context,
+    );
 }
 
 /// Determine whether to show git status indicators.
-fn resolveGitMode(io: std.Io, git_arg: ?[]const u8, disp: common.display_config.DisplayConfig) bool {
+fn resolveGitMode(
+    io: std.Io,
+    git_arg: ?[]const u8,
+    disp: common.display_config.DisplayConfig,
+) bool {
     if (git_arg) |value| {
         if (std.mem.eql(u8, value, "always")) return true;
         if (std.mem.eql(u8, value, "never")) return false;
@@ -687,7 +848,10 @@ fn isInGitRepo(io: std.Io) bool {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const cwd_len = std.process.currentPath(io, &buf) catch return false;
     var path: []const u8 = buf[0..cwd_len];
-    while (true) {
+    // Bounded by the absolute path's component count: each iteration strips one
+    // component (path = parent), and dirname's root fixed-point (parent == path)
+    // returns false, so the loop always terminates at the filesystem root.
+    while (true) { // tiger:allow:unbounded-loop terminates at filesystem root
         var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
         defer dir.close(io);
         if (dir.statFile(io, ".git", .{})) |_| {

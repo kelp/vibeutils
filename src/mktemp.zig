@@ -73,24 +73,26 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Run the mktemp utility with given arguments
-fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
-    const parsed = common.argparse.ArgParser.parseOrExit(MktempArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+fn run(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        MktempArgs,
+        allocator,
+        args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
-    if (parsed.help) {
-        try printHelp(allocator, stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    if (parsed.version) {
-        try printVersion(stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Too many positional arguments
-    if (parsed.positionals.len > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "too many templates\nTry 'mktemp --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+    // Handle --help/--version and the too-many-templates guard up front. Each
+    // yields a final exit code; null means run should continue.
+    if (try run_handleEarlyExit(allocator, stdout_writer, stderr_writer, &parsed)) |code| {
+        return code;
     }
 
     // Resolve the template, explicit suffix, and X run in one straight-line
@@ -142,6 +144,40 @@ fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer
         prep.xs,
         prep.explicit_suffix,
     );
+}
+
+/// Handle the early-exit cases for run: --help, --version, and too many
+/// templates. Returns the final exit code for those cases, or null when run
+/// should proceed with normal template generation.
+fn run_handleEarlyExit(
+    allocator: Allocator,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    parsed: *const MktempArgs,
+) !?u8 {
+    if (parsed.help) {
+        try printHelp(allocator, stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    if (parsed.version) {
+        try printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    // Too many positional arguments
+    if (parsed.positionals.len > 1) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "too many templates\nTry 'mktemp --help' for more information.",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return null;
 }
 
 /// Bundle of values resolved from the parsed args before path building.
@@ -451,7 +487,15 @@ fn resolveForcedTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8) ![]const u
 /// Generate a temporary file or directory with a unique name
 /// Tries up to 100 times with different random suffixes
 /// suffix_len indicates how many bytes at the end are the suffix (after the X's)
-fn generateTemp(allocator: Allocator, io: std.Io, template: []const u8, x_count: usize, suffix_len: usize, is_dir: bool, dry_run: bool) ![]const u8 {
+fn generateTemp(
+    allocator: Allocator,
+    io: std.Io,
+    template: []const u8,
+    x_count: usize, // tiger:allow:usize-arch X-run length, indexes template slice
+    suffix_len: usize, // tiger:allow:usize-arch suffix length, indexes template slice
+    is_dir: bool,
+    dry_run: bool,
+) ![]const u8 {
     const max_attempts = 100;
     // Domain precondition: mktemp requires at least three X positions.
     std.debug.assert(x_count >= 3);
@@ -485,7 +529,11 @@ fn generateTemp(allocator: Allocator, io: std.Io, template: []const u8, x_count:
 
         if (is_dir) {
             // Try to create directory exclusively with mode 0o700
-            std.Io.Dir.cwd().createDir(io, candidate, std.Io.File.Permissions.fromMode(0o700)) catch |err| {
+            std.Io.Dir.cwd().createDir(
+                io,
+                candidate,
+                std.Io.File.Permissions.fromMode(0o700),
+            ) catch |err| {
                 allocator.free(candidate);
                 switch (err) {
                     error.PathAlreadyExists => continue,
@@ -566,17 +614,44 @@ fn printVersion(writer: *std.Io.Writer) !void {
 
 test "mktemp findTemplateXs" {
     // Trailing X's (no implicit suffix)
-    try testing.expectEqual(TemplateXs{ .x_count = 10, .implicit_suffix_len = 0 }, findTemplateXs("tmp.XXXXXXXXXX"));
-    try testing.expectEqual(TemplateXs{ .x_count = 3, .implicit_suffix_len = 0 }, findTemplateXs("tmp.XXX"));
-    try testing.expectEqual(TemplateXs{ .x_count = 5, .implicit_suffix_len = 0 }, findTemplateXs("XXXXX"));
-    try testing.expectEqual(TemplateXs{ .x_count = 3, .implicit_suffix_len = 0 }, findTemplateXs("prefixXXX"));
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 10, .implicit_suffix_len = 0 },
+        findTemplateXs("tmp.XXXXXXXXXX"),
+    );
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 3, .implicit_suffix_len = 0 },
+        findTemplateXs("tmp.XXX"),
+    );
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 5, .implicit_suffix_len = 0 },
+        findTemplateXs("XXXXX"),
+    );
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 3, .implicit_suffix_len = 0 },
+        findTemplateXs("prefixXXX"),
+    );
     // No X's at all
-    try testing.expectEqual(TemplateXs{ .x_count = 0, .implicit_suffix_len = 0 }, findTemplateXs("tmp.txt"));
-    try testing.expectEqual(TemplateXs{ .x_count = 0, .implicit_suffix_len = 0 }, findTemplateXs(""));
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 0, .implicit_suffix_len = 0 },
+        findTemplateXs("tmp.txt"),
+    );
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 0, .implicit_suffix_len = 0 },
+        findTemplateXs(""),
+    );
     // Implicit suffix (X's not at end)
-    try testing.expectEqual(TemplateXs{ .x_count = 3, .implicit_suffix_len = 3 }, findTemplateXs("XXXabc"));
-    try testing.expectEqual(TemplateXs{ .x_count = 6, .implicit_suffix_len = 3 }, findTemplateXs("myapp.XXXXXXtxt"));
-    try testing.expectEqual(TemplateXs{ .x_count = 6, .implicit_suffix_len = 4 }, findTemplateXs("test.XXXXXX.log"));
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 3, .implicit_suffix_len = 3 },
+        findTemplateXs("XXXabc"),
+    );
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 6, .implicit_suffix_len = 3 },
+        findTemplateXs("myapp.XXXXXXtxt"),
+    );
+    try testing.expectEqual(
+        TemplateXs{ .x_count = 6, .implicit_suffix_len = 4 },
+        findTemplateXs("test.XXXXXX.log"),
+    );
 }
 
 test "mktemp fillRandom produces alphanumeric characters" {
@@ -808,7 +883,9 @@ test "mktemp suffix with slash is rejected" {
     const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "contains directory separator") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "contains directory separator") != null,
+    );
 }
 
 test "mktemp with -p flag" {
@@ -901,7 +978,10 @@ test "fillRandom fills all positions including >256" {
     fillRandom(io, &buf);
     for (buf, 0..) |b, i| {
         if (std.mem.findScalar(u8, alphanumeric, b) == null) {
-            std.debug.print("fillRandom: non-alphanumeric byte 0x{x:0>2} at position {}\n", .{ b, i });
+            std.debug.print(
+                "fillRandom: non-alphanumeric byte 0x{x:0>2} at position {}\n",
+                .{ b, i },
+            );
             return error.TestUnexpectedResult;
         }
     }

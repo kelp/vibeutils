@@ -261,7 +261,13 @@ pub const Walker = struct {
             self.popFrame(io);
         }
         self.prune_current = false;
-        while (true) {
+        // Drive loop terminates when the explicit stack drains and every root
+        // is consumed: each turn either returns an entry, returns null (empty
+        // stack and root_cursor == roots.len), or makes monotonic progress
+        // (pops a frame, advances a finite dir iterator, or starts the next
+        // root, incrementing root_cursor). Stack depth is bounded by max_depth;
+        // root_cursor only increases toward roots.items.len.
+        while (true) { // tiger:allow:unbounded-loop terminates when stack drains and roots consumed
             // Pop frames whose post-order entry was already emitted.
             if (self.stack.items.len > 0) {
                 const top = &self.stack.items[self.stack.items.len - 1];
@@ -486,7 +492,15 @@ pub const Walker = struct {
         const is_dir = (eff_kind == .directory);
         const stay = self.shouldStayAbove(de.kind, frame);
         if (!is_dir or stay) {
-            return buildEntry(self.path_buf.items, bn_start, eff_kind, child_depth, .pre, null, frame.dir);
+            return buildEntry(
+                self.path_buf.items,
+                bn_start,
+                eff_kind,
+                child_depth,
+                .pre,
+                null,
+                frame.dir,
+            );
         }
         // Descend: check depth cap.
         if (child_depth >= self.config.max_depth) {
@@ -510,27 +524,74 @@ pub const Walker = struct {
         assert(child_depth < self.config.max_depth);
         assert(child_path_len > parent_path_len);
         const child_path = self.path_buf.items[0..child_path_len];
-        const child_dir = std.Io.Dir.cwd().openDir(io, child_path, .{ .iterate = true }) catch |err| {
+        const child_dir = std.Io.Dir.cwd().openDir(
+            io,
+            child_path,
+            .{ .iterate = true },
+        ) catch |err| {
             self.path_buf.items.len = parent_path_len;
             return err;
         };
+        // Cycle and cross-device filters; on rejection the helper closes
+        // the dir, restores path_buf, and we skip this child.
+        if (self.childDirRejected(io, child_dir, parent_path_len)) {
+            return null;
+        }
+        const pframe = &self.stack.items[parent_frame_idx];
+        const root_index = pframe.root_index;
+        const pending_post = (self.config.order != .pre);
+        const emit_pre = (self.config.order != .post);
+        const bn_start = parent_path_len + 1;
+        try self.descendInto(
+            io,
+            parent_path_len,
+            child_path_len,
+            child_dir,
+            child_depth,
+            root_index,
+            pending_post,
+        );
+        if (emit_pre) {
+            return buildEntry(
+                self.path_buf.items,
+                bn_start,
+                .directory,
+                child_depth,
+                .pre,
+                null,
+                null,
+            );
+        }
+        return null; // post-order: emit on unwind.
+    }
+
+    /// Apply cycle-detection and stay-on-filesystem filters to an opened
+    /// child dir. Returns true if the child must be skipped; on skip it
+    /// closes the dir and restores path_buf to parent_path_len.
+    fn childDirRejected(
+        self: *Walker,
+        io: std.Io,
+        child_dir: std.Io.Dir,
+        parent_path_len: usize, // tiger:allow:usize-arch mirrors path_buf.items.len
+    ) bool {
+        assert(parent_path_len <= self.path_buf.items.len);
         // Cycle detection.
         if (self.config.detect_cycles) {
             if (self.visited) |*v| {
                 const fs_id = directory.FileSystemId.fromDir(child_dir) catch {
                     child_dir.close(io);
                     self.path_buf.items.len = parent_path_len;
-                    return null;
+                    return true;
                 };
                 const gop = v.getOrPut(fs_id) catch {
                     child_dir.close(io);
                     self.path_buf.items.len = parent_path_len;
-                    return null;
+                    return true;
                 };
                 if (gop.found_existing) {
                     child_dir.close(io);
                     self.path_buf.items.len = parent_path_len;
-                    return null; // Cycle: skip.
+                    return true; // Cycle: skip.
                 }
             }
         }
@@ -541,20 +602,11 @@ pub const Walker = struct {
                 if (child_dev_id != null and child_dev_id.?.device != root_dev) {
                     child_dir.close(io);
                     self.path_buf.items.len = parent_path_len;
-                    return null; // Cross device: skip.
+                    return true; // Cross device: skip.
                 }
             }
         }
-        const pframe = &self.stack.items[parent_frame_idx];
-        const root_index = pframe.root_index;
-        const pending_post = (self.config.order != .pre);
-        const emit_pre = (self.config.order != .post);
-        const bn_start = parent_path_len + 1;
-        try self.descendInto(io, parent_path_len, child_path_len, child_dir, child_depth, root_index, pending_post);
-        if (emit_pre) {
-            return buildEntry(self.path_buf.items, bn_start, .directory, child_depth, .pre, null, null);
-        }
-        return null; // post-order: emit on unwind.
+        return false;
     }
 
     /// Handle an exhausted frame: emit post-order or just pop.
@@ -697,7 +749,7 @@ fn nextChildDirent(
         return de;
     }
     // Live iterator.
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF when dir iterator returns null
         const maybe = try frame.iterator.next(io);
         if (maybe == null) return null;
         const entry = maybe.?;
@@ -1077,7 +1129,7 @@ test "walker: max_entries cap — next() returns EntryLimitExceeded after limit"
     // Drain until we get an error or null. Count successful emissions.
     var count: u32 = 0;
     var got_limit_error = false;
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop bounded walker; exhausts at null
         const result = w.next(io);
         if (result) |maybe_entry| {
             if (maybe_entry == null) break;
@@ -1599,7 +1651,12 @@ test "walker: next() is re-entrant after a per-entry I/O error" {
     const no_access = std.Io.File.Permissions.fromMode(0o000);
     try tmp.dir.setFilePermissions(io, "locked", no_access, .{});
     // Restore on exit so that tmp.cleanup() can remove it.
-    defer tmp.dir.setFilePermissions(io, "locked", std.Io.File.Permissions.fromMode(0o700), .{}) catch {};
+    defer tmp.dir.setFilePermissions(
+        io,
+        "locked",
+        std.Io.File.Permissions.fromMode(0o700),
+        .{},
+    ) catch {};
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -1613,7 +1670,7 @@ test "walker: next() is re-entrant after a per-entry I/O error" {
     var saw_io_error = false;
 
     // Drive the walker; on an I/O error continue from the next call.
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop bounded walker; exhausts at null
         const result = w.next(io);
         if (result) |maybe_entry| {
             if (maybe_entry == null) break;

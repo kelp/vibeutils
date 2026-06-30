@@ -18,7 +18,10 @@ const MkdirArgs = struct {
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .mode = .{ .short = 'm', .desc = "Set file mode (as in chmod)", .value_name = "MODE" },
-        .parents = .{ .short = 'p', .desc = "Make parent directories as needed, no error if existing" },
+        .parents = .{
+            .short = 'p',
+            .desc = "Make parent directories as needed, no error if existing",
+        },
         .verbose = .{ .short = 'v', .desc = "Print a message for each created directory" },
     };
 };
@@ -50,7 +53,13 @@ fn run(
 ) !u8 {
     const prog_name = "mkdir";
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(MkdirArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        MkdirArgs,
+        allocator,
+        args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -72,7 +81,43 @@ fn run(
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Create options
+    // Build options from parsed flags, parsing -m mode if present.
+    const options = run_buildOptions(allocator, parsed_args, prog_name, stderr_writer) catch {
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+
+    // Process directories - continue processing even if some fail
+    // The missing-operand guard above returned for dirs.len == 0, so any path
+    // reaching the loop has a non-empty operand list.
+    std.debug.assert(dirs.len > 0);
+    var exit_code = common.ExitCode.success;
+    for (dirs) |dir_path| {
+        createDirectory(
+            io,
+            dir_path,
+            options,
+            prog_name,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+        ) catch {
+            // Mark overall failure but continue with remaining directories
+            exit_code = common.ExitCode.general_error;
+            continue;
+        };
+    }
+
+    return @intFromEnum(exit_code);
+}
+
+/// Build MkdirOptions from parsed flags, parsing the -m mode string if present.
+/// On an invalid mode it prints the diagnostic and returns error.InvalidMode.
+fn run_buildOptions(
+    allocator: std.mem.Allocator,
+    parsed_args: MkdirArgs,
+    prog_name: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !MkdirOptions {
     var options = MkdirOptions{
         .parents = parsed_args.parents,
         .verbose = parsed_args.verbose,
@@ -81,25 +126,18 @@ fn run(
     // Parse mode if provided
     if (parsed_args.mode) |mode_str| {
         options.mode = parseMode(mode_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid mode '{s}'", .{mode_str});
-            return @intFromEnum(common.ExitCode.general_error);
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid mode '{s}'",
+                .{mode_str},
+            );
+            return error.InvalidMode;
         };
     }
 
-    // Process directories - continue processing even if some fail
-    // The missing-operand guard above returned for dirs.len == 0, so any path
-    // reaching the loop has a non-empty operand list.
-    std.debug.assert(dirs.len > 0);
-    var exit_code = common.ExitCode.success;
-    for (dirs) |dir_path| {
-        createDirectory(io, dir_path, options, prog_name, stdout_writer, stderr_writer, allocator) catch {
-            // Mark overall failure but continue with remaining directories
-            exit_code = common.ExitCode.general_error;
-            continue;
-        };
-    }
-
-    return @intFromEnum(exit_code);
+    return options;
 }
 
 /// Print help message to provided writer
@@ -128,14 +166,27 @@ fn printVersion(writer: *std.Io.Writer) !void {
 }
 
 /// Set directory permissions. No-op with warning on Windows.
-fn setDirectoryMode(io: std.Io, path: []const u8, mode: std.posix.mode_t, prog_name: []const u8, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+fn setDirectoryMode(
+    io: std.Io,
+    path: []const u8,
+    mode: std.posix.mode_t,
+    prog_name: []const u8,
+    stderr_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
     _ = io;
     // Precondition: both callers pass a created/cumulative path component, never
     // empty (createDir would already have failed on an empty path).
     std.debug.assert(path.len > 0);
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
-        common.printWarningWithProgram(allocator, stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
+        common.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "mode flag (-m) is not supported on Windows",
+            .{},
+        );
         return;
     }
 
@@ -144,14 +195,26 @@ fn setDirectoryMode(io: std.Io, path: []const u8, mode: std.posix.mode_t, prog_n
 
     // Use C chmod function for directories on POSIX systems
     const path_z = std.posix.toPosixPath(path) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "path too long: '{s}'", .{path});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "path too long: '{s}'",
+            .{path},
+        );
         return error.ChmodFailed;
     };
 
     const result = std.c.chmod(&path_z, mode);
     if (result != 0) {
         const err = std.posix.errno(result);
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "cannot set mode on '{s}': {s}",
+            .{ path, @tagName(err) },
+        );
         return error.ChmodFailed;
     }
 }
@@ -204,12 +267,34 @@ fn parseMode(mode_str: []const u8) !std.posix.mode_t {
 }
 
 /// Create directory with specified options
-fn createDirectory(io: std.Io, path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+fn createDirectory(
+    io: std.Io,
+    path: []const u8,
+    options: MkdirOptions,
+    prog_name: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
     if (options.parents) {
-        try createPathComponents(io, path, options, prog_name, stdout_writer, stderr_writer, allocator);
+        try createPathComponents(
+            io,
+            path,
+            options,
+            prog_name,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+        );
     } else {
         std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "cannot create directory '{s}': {s}",
+                .{ path, common.posixErrorString(err) },
+            );
             return err;
         };
 
@@ -226,7 +311,15 @@ fn createDirectory(io: std.Io, path: []const u8, options: MkdirOptions, prog_nam
 
 /// Create path components one at a time, supporting -v per directory
 /// and -m on the leaf directory only (GNU behavior).
-fn createPathComponents(io: std.Io, path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+fn createPathComponents(
+    io: std.Io,
+    path: []const u8,
+    options: MkdirOptions,
+    prog_name: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
     // Handle absolute paths - start with "/"
     const is_absolute = path.len > 0 and path[0] == '/';
 
@@ -272,7 +365,13 @@ fn createPathComponents(io: std.Io, path: []const u8, options: MkdirOptions, pro
         std.Io.Dir.cwd().createDir(io, current_path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => continue, // -p: silently skip existing
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path, common.posixErrorString(err) });
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "cannot create directory '{s}': {s}",
+                    .{ current_path, common.posixErrorString(err) },
+                );
                 return err;
             },
         };
@@ -380,7 +479,11 @@ test "mkdir with verbose flag prints creation messages" {
     const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mkdir: created directory 'test_verbose'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_aw.writer.buffered(),
+        "mkdir: created directory 'test_verbose'",
+    ) != null);
 }
 
 test "mkdir with mode flag sets permissions" {
@@ -456,7 +559,11 @@ test "mkdir shows help with -h flag" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: mkdir") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Create the DIRECTORY") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_aw.writer.buffered(),
+        "Create the DIRECTORY",
+    ) != null);
 }
 
 test "mkdir shows version with -V flag" {
@@ -688,7 +795,11 @@ test "mkdir -p handles absolute-like paths" {
     const tmp_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const tmp_path = path_buf[0..tmp_len];
 
-    const deep_path = try std.fmt.allocPrint(testing.allocator, "{s}/abs_test/sub/dir", .{tmp_path});
+    const deep_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/abs_test/sub/dir",
+        .{tmp_path},
+    );
     defer testing.allocator.free(deep_path);
 
     const args = [_][]const u8{ "-p", deep_path };
@@ -733,5 +844,9 @@ test "mkdir error for existing directory uses POSIX-style message" {
 
     try testing.expect(std.mem.find(u8, stderr_output, "File exists") != null);
     try testing.expect(std.mem.find(u8, stderr_output, "PathAlreadyExists") == null);
-    try testing.expect(std.mem.find(u8, stderr_output, "cannot create directory 'test_posix_err'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_output,
+        "cannot create directory 'test_posix_err'",
+    ) != null);
 }

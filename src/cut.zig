@@ -45,14 +45,25 @@ const CutArgs = struct {
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .bytes = .{ .short = 'b', .desc = "Select only these bytes", .value_name = "LIST" },
-        .characters = .{ .short = 'c', .desc = "Select only these characters", .value_name = "LIST" },
+        .characters = .{
+            .short = 'c',
+            .desc = "Select only these characters",
+            .value_name = "LIST",
+        },
         .delimiter = .{ .short = 'd', .desc = "Use DELIM instead of TAB", .value_name = "DELIM" },
         .fields = .{ .short = 'f', .desc = "Select only these fields", .value_name = "LIST" },
         .only_delimited = .{ .short = 's', .desc = "print only lines containing delimiters" },
         .complement = .{ .short = 0, .desc = "Complement the set of selected bytes/chars/fields" },
-        .output_delimiter = .{ .short = 0, .desc = "Use STRING as output delimiter", .value_name = "STRING" },
+        .output_delimiter = .{
+            .short = 0,
+            .desc = "Use STRING as output delimiter",
+            .value_name = "STRING",
+        },
         .no_split = .{ .short = 'n', .desc = "Do not split multi-byte characters (with -b)" },
-        .whitespace_delim = .{ .short = 'w', .desc = "Use whitespace (spaces and tabs) as field delimiter" },
+        .whitespace_delim = .{
+            .short = 'w',
+            .desc = "Use whitespace (spaces and tabs) as field delimiter",
+        },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
     };
 };
@@ -73,8 +84,16 @@ fn parseRangeList_parseToken(token: []const u8) !Range {
         }
 
         // Range.start/end are usize, so parseInt must use usize to match.
-        const start: usize = if (left.len == 0) 1 else std.fmt.parseInt(usize, left, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
-        const end: usize = if (right.len == 0) Range.END else std.fmt.parseInt(usize, right, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
+        const start: usize = if (left.len == 0) // tiger:allow:usize-arch
+            1
+        else
+            std.fmt.parseInt(usize, left, 10) catch // tiger:allow:usize-arch
+                return error.InvalidRange;
+        const end: usize = if (right.len == 0) // tiger:allow:usize-arch
+            Range.END
+        else
+            std.fmt.parseInt(usize, right, 10) catch // tiger:allow:usize-arch
+                return error.InvalidRange;
 
         if (start == 0 or (end != Range.END and end == 0)) return error.InvalidRange;
         if (end != Range.END and start > end) return error.InvalidRange;
@@ -86,7 +105,8 @@ fn parseRangeList_parseToken(token: []const u8) !Range {
         return .{ .start = start, .end = end };
     } else {
         // Range.start/end are usize, so parseInt must use usize to match.
-        const val = std.fmt.parseInt(usize, token, 10) catch return error.InvalidRange; // tiger:allow:usize-arch tiger:allow:long-line
+        const val = std.fmt.parseInt(usize, token, 10) catch // tiger:allow:usize-arch
+            return error.InvalidRange;
         if (val == 0) return error.InvalidRange;
 
         // Postcondition: single-value range is 1-indexed.
@@ -328,9 +348,21 @@ fn cutFieldsWhitespace(
 }
 
 /// Main entry point for cut utility
-pub fn runCut(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runCut(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
-    const parsed = common.argparse.ArgParser.parseOrExit(CutArgs, allocator, args, "cut", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        CutArgs,
+        allocator,
+        args,
+        "cut",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -356,7 +388,13 @@ pub fn runCut(allocator: Allocator, io: std.Io, args: []const []const u8, stdout
     // Parse the range list
     const list_str = parsed.bytes orelse parsed.characters orelse parsed.fields.?;
     const ranges = parseRangeList(allocator, list_str) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "invalid range: '{s}'", .{list_str}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "invalid range: '{s}'",
+            .{list_str},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     };
     defer allocator.free(ranges);
@@ -373,31 +411,148 @@ pub fn runCut(allocator: Allocator, io: std.Io, args: []const []const u8, stdout
 
     const line_terminator: u8 = if (parsed.zero_terminated) 0 else '\n';
 
-    if (parsed.positionals.len == 0) {
+    // Bundle the resolved per-line cut options so the dispatch helpers do not
+    // need 14-argument signatures at each call site. output_delim may point
+    // into runCut's delim_storage frame, which outlives the dispatch call.
+    const options = CutOptions.init(parsed, ranges, mode, delimiter, output_delim, line_terminator);
+
+    return runCut_dispatch(
+        allocator,
+        io,
+        parsed.positionals,
+        options,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+/// Dispatch each input source (stdin when there are no positionals) to the cut
+/// pipeline and fold their exit codes. Single-caller helper for runCut; keeps
+/// the source-iteration loop out of the parent's body.
+fn runCut_dispatch(
+    allocator: Allocator,
+    io: std.Io,
+    positionals: []const []const u8,
+    options: CutOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    if (positionals.len == 0) {
         const stdin_file = std.Io.File.stdin();
-        return runCut_processSource(allocator, io, stdin_file, ranges, mode, delimiter, output_delim, parsed.only_delimited, parsed.complement, parsed.no_split, parsed.whitespace_delim, line_terminator, stdout_writer, stderr_writer); // tiger:allow:long-line
+        return runCut_runOnFile(allocator, io, stdin_file, options, stdout_writer, stderr_writer);
     }
 
     var has_error = false;
-    for (parsed.positionals) |file_path| {
-        if (std.mem.eql(u8, file_path, "-")) {
-            const stdin_file = std.Io.File.stdin();
-            const result = runCut_processSource(allocator, io, stdin_file, ranges, mode, delimiter, output_delim, parsed.only_delimited, parsed.complement, parsed.no_split, parsed.whitespace_delim, line_terminator, stdout_writer, stderr_writer); // tiger:allow:long-line
-            if (result > 0) has_error = true;
-        } else {
-            const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, common.posixErrorString(err) }); // tiger:allow:long-line
-                has_error = true;
-                continue;
-            };
-            defer file.close(io);
-
-            const result = runCut_processSource(allocator, io, file, ranges, mode, delimiter, output_delim, parsed.only_delimited, parsed.complement, parsed.no_split, parsed.whitespace_delim, line_terminator, stdout_writer, stderr_writer); // tiger:allow:long-line
-            if (result > 0) has_error = true;
-        }
+    for (positionals) |file_path| {
+        const result = runCut_processPositional(
+            allocator,
+            io,
+            file_path,
+            options,
+            stdout_writer,
+            stderr_writer,
+        );
+        if (result > 0) has_error = true;
     }
 
     return if (has_error) @intFromEnum(common.ExitCode.general_error) else 0;
+}
+
+/// Resolved per-line cut options, bundled so the dispatch helpers avoid
+/// 14-argument signatures. Built once in runCut and threaded to each source.
+const CutOptions = struct {
+    ranges: []const Range,
+    mode: CutMode,
+    delimiter: u8,
+    output_delim: []const u8,
+    only_delimited: bool,
+    do_complement: bool,
+    no_split: bool,
+    whitespace_delim: bool,
+    line_terminator: u8,
+
+    /// Build CutOptions from parsed args and the resolved scalars. output_delim
+    /// may alias the caller's frame; the returned struct only copies the slice
+    /// header, so the caller must keep that backing storage alive.
+    fn init(
+        parsed: CutArgs,
+        ranges: []const Range,
+        mode: CutMode,
+        delimiter: u8,
+        output_delim: []const u8,
+        line_terminator: u8,
+    ) CutOptions {
+        return .{
+            .ranges = ranges,
+            .mode = mode,
+            .delimiter = delimiter,
+            .output_delim = output_delim,
+            .only_delimited = parsed.only_delimited,
+            .do_complement = parsed.complement,
+            .no_split = parsed.no_split,
+            .whitespace_delim = parsed.whitespace_delim,
+            .line_terminator = line_terminator,
+        };
+    }
+};
+
+/// Process one positional argument: stdin for "-", otherwise the named file.
+/// Returns the per-source exit code (0 on success). Single-caller helper for
+/// runCut; centralizes the open/close so the parent loop stays small.
+fn runCut_processPositional(
+    allocator: Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    options: CutOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    if (std.mem.eql(u8, file_path, "-")) {
+        const stdin_file = std.Io.File.stdin();
+        return runCut_runOnFile(allocator, io, stdin_file, options, stdout_writer, stderr_writer);
+    }
+
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+    defer file.close(io);
+
+    return runCut_runOnFile(allocator, io, file, options, stdout_writer, stderr_writer);
+}
+
+/// Unpack CutOptions and forward to runCut_processSource. Single-caller helper
+/// that keeps the option struct out of processFile's positional signature.
+fn runCut_runOnFile(
+    allocator: Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    options: CutOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    return runCut_processSource(
+        allocator,
+        io,
+        file,
+        options.ranges,
+        options.mode,
+        options.delimiter,
+        options.output_delim,
+        options.only_delimited,
+        options.do_complement,
+        options.no_split,
+        options.whitespace_delim,
+        options.line_terminator,
+        stdout_writer,
+        stderr_writer,
+    );
 }
 
 /// Result of mode resolution: either an early-exit code or the resolved mode.
@@ -420,12 +575,26 @@ fn runCut_resolveMode(
     assert(mode_count <= 3);
 
     if (mode_count == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "you must specify a list of bytes, characters, or fields\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "you must specify a list of bytes, characters, or fields\n" ++
+                "Try 'cut --help' for more information.",
+            .{},
+        );
         return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
     }
 
     if (mode_count > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "only one type of list may be specified\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "only one type of list may be specified\n" ++
+                "Try 'cut --help' for more information.",
+            .{},
+        );
         return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
     }
 
@@ -455,25 +624,53 @@ fn runCut_validateFlags(
 
     // -s is only valid with -f
     if (parsed.only_delimited and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "suppressing non-delimited lines makes sense only when operating on fields\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "suppressing non-delimited lines makes sense only when operating on fields\n" ++
+                "Try 'cut --help' for more information.",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // -d is only valid with -f
     if (parsed.delimiter != null and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "an input delimiter may be specified only when operating on fields\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "an input delimiter may be specified only when operating on fields\n" ++
+                "Try 'cut --help' for more information.",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // -w is only valid with -f
     if (parsed.whitespace_delim and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "-w may only be used with -f\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "-w may only be used with -f\n" ++
+                "Try 'cut --help' for more information.",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // -w and -d are mutually exclusive
     if (parsed.whitespace_delim and parsed.delimiter != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "-w and -d may not both be specified\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cut",
+            "-w and -d may not both be specified\n" ++
+                "Try 'cut --help' for more information.",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -513,11 +710,23 @@ fn runCut_resolveDelimiters(
     // Determine delimiter
     const delimiter: u8 = if (parsed.delimiter) |d| blk: {
         if (d.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{}); // tiger:allow:long-line
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cut",
+                "the delimiter must be a single character",
+                .{},
+            );
             return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
         }
         if (d.len > 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{}); // tiger:allow:long-line
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cut",
+                "the delimiter must be a single character",
+                .{},
+            );
             return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
         }
         break :blk d[0];
@@ -610,12 +819,20 @@ fn processFile(
     var line_buf = std.ArrayListUnmanaged(u8).empty;
     defer line_buf.deinit(allocator);
 
-    while (true) {
+    // readLine returns eof=true at stream end; this loop breaks when eof and
+    // the line buffer is empty, or after emitting the final line when eof.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF
         line_buf.clearRetainingCapacity();
 
         // Read until line terminator or EOF
         const eof = readLine(reader, &line_buf, allocator, line_terminator) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "read error: {s}", .{common.posixErrorString(err)});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cut",
+                "read error: {s}",
+                .{common.posixErrorString(err)},
+            );
             return @intFromEnum(common.ExitCode.general_error);
         };
 
@@ -670,59 +887,106 @@ fn processFile_emitLine(
 
     switch (mode) {
         .bytes, .characters => {
-            cutBytesOrChars(line, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch |err| { // tiger:allow:long-line
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)}); // tiger:allow:long-line
-                return @intFromEnum(common.ExitCode.general_error);
+            const split_bytes = if (mode == .bytes) no_split else false;
+            cutBytesOrChars(line, ranges, do_complement, split_bytes, stdout_writer) catch |err| {
+                return emitLine_writeError(allocator, stderr_writer, err);
             };
             stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)}); // tiger:allow:long-line
-                return @intFromEnum(common.ExitCode.general_error);
+                return emitLine_writeError(allocator, stderr_writer, err);
             };
         },
         .fields => {
-            if (whitespace_delim) {
-                cutFieldsWhitespace(
-                    line,
-                    ranges,
-                    do_complement,
-                    output_delim,
-                    only_delimited,
-                    stdout_writer,
-                ) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-                stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            } else {
-                const line_has_delim = std.mem.indexOfScalar(u8, line, delimiter) != null;
-
-                if (!line_has_delim and only_delimited) {
-                    // Skip this line
-                } else {
-                    cutFields(
-                        line,
-                        ranges,
-                        do_complement,
-                        delimiter,
-                        output_delim,
-                        only_delimited,
-                        stdout_writer,
-                    ) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                }
-            }
+            const rc = emitLine_fields(
+                allocator,
+                line,
+                ranges,
+                delimiter,
+                output_delim,
+                only_delimited,
+                do_complement,
+                whitespace_delim,
+                line_terminator,
+                stdout_writer,
+                stderr_writer,
+            );
+            if (rc != 0) return rc;
         },
     }
 
+    return 0;
+}
+
+/// Report a write-error diagnostic to stderr and return the general-error exit
+/// code. Single-caller-pattern helper for the emitLine family; centralizes the
+/// identical "write error: {s}" message every catch arm produced.
+fn emitLine_writeError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    err: anyerror,
+) u8 {
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "cut",
+        "write error: {s}",
+        .{common.posixErrorString(err)},
+    );
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+/// Emit a single line in field mode (whitespace or delimiter split). Returns 0
+/// on success or ExitCode.general_error on a write failure. Single-caller
+/// helper for processFile_emitLine; keeps the field branching out of parent.
+fn emitLine_fields(
+    allocator: Allocator,
+    line: []const u8,
+    ranges: []const Range,
+    delimiter: u8,
+    output_delim: []const u8,
+    only_delimited: bool,
+    do_complement: bool,
+    whitespace_delim: bool,
+    line_terminator: u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    if (whitespace_delim) {
+        cutFieldsWhitespace(
+            line,
+            ranges,
+            do_complement,
+            output_delim,
+            only_delimited,
+            stdout_writer,
+        ) catch |err| {
+            return emitLine_writeError(allocator, stderr_writer, err);
+        };
+        stdout_writer.writeAll(&.{line_terminator}) catch |err| {
+            return emitLine_writeError(allocator, stderr_writer, err);
+        };
+        return 0;
+    }
+
+    const line_has_delim = std.mem.indexOfScalar(u8, line, delimiter) != null;
+    if (!line_has_delim and only_delimited) {
+        // Skip this line: no delimiter present and -s suppresses such lines.
+        return 0;
+    }
+
+    cutFields(
+        line,
+        ranges,
+        do_complement,
+        delimiter,
+        output_delim,
+        only_delimited,
+        stdout_writer,
+    ) catch |err| {
+        return emitLine_writeError(allocator, stderr_writer, err);
+    };
+    stdout_writer.writeAll(&.{line_terminator}) catch |err| {
+        return emitLine_writeError(allocator, stderr_writer, err);
+    };
     return 0;
 }
 
@@ -737,7 +1001,10 @@ fn readLine(
     // The only production caller is processFile, which passes exactly '\n' or 0.
     const terminator_is_valid = line_terminator == '\n' or line_terminator == 0;
     assert(terminator_is_valid);
-    while (true) {
+    // peekGreedy returns EndOfStream or a zero-length chunk (return true), or
+    // the terminator is found (return false); each non-returning iteration
+    // tosses the whole peeked chunk, so the reader strictly advances to EOF.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF or terminator
         const chunk = reader.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => return true,
             else => |e| return e,
@@ -886,7 +1153,9 @@ test "cut unknown flag returns error" {
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
+    );
 }
 
 test "parseRangeList single value" {
@@ -1209,7 +1478,9 @@ test "cut nonexistent file returns error" {
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "nonexistent_test_file") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "nonexistent_test_file") != null,
+    );
 }
 
 // ============================================================================
@@ -1388,7 +1659,9 @@ test "cut: -w without -f returns error" {
     const args = [_][]const u8{ "-w", "-b", "1" };
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-w may only be used with -f") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "-w may only be used with -f") != null,
+    );
 }
 
 test "cutFieldsWhitespace basic" {

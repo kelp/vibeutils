@@ -107,7 +107,12 @@ const CompiledPattern = union(enum) {
 
 /// Parse grep command-line arguments
 /// Returns null on error (error already printed to stderr)
-fn parseArgs(allocator: Allocator, io: std.Io, args: []const []const u8, stderr_writer: *std.Io.Writer) !?GrepOptions {
+fn parseArgs(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stderr_writer: *std.Io.Writer,
+) !?GrepOptions {
     var opts = GrepOptions{};
     errdefer opts.deinit(allocator);
 
@@ -134,31 +139,15 @@ fn parseArgs(allocator: Allocator, io: std.Io, args: []const []const u8, stderr_
         if (arg.len > 1 and arg[0] == '-' and arg[1] == '-') {
             // Long option
             const flag = arg[2..];
-
-            if (parseArgs_longFlag(&opts, flag)) {
-                // Consumed by a boolean/mode flag.
-            } else switch (try parseArgs_longValued(allocator, io, &opts, flag, stderr_writer)) {
-                .consumed_ok => {},
-                .consumed_error => return null,
-                .not_mine => {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'", .{flag}); // tiger:allow:long-line
-                    return null;
-                },
+            switch (try parseArgs_handleLong(allocator, io, &opts, flag, stderr_writer)) {
+                .ok => {},
+                .fail => return null,
             }
         } else if (arg.len > 1 and arg[0] == '-') {
             // Short options
-            var j: usize = 1; // tiger:allow:usize-arch arg index, slice-index-forced
-            while (j < arg.len) : (j += 1) {
-                const ch = arg[j];
-                if (parseArgs_shortFlag(&opts, ch)) continue;
-                switch (try parseArgs_shortValued(allocator, io, &opts, arg, args, &i, &j, stderr_writer)) { // tiger:allow:long-line
-                    .consumed_break => break,
-                    .consumed_error => return null,
-                    .not_mine => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option -- '{c}'", .{ch});
-                        return null;
-                    },
-                }
+            switch (try parseArgs_handleShort(allocator, io, &opts, arg, args, &i, stderr_writer)) {
+                .ok => {},
+                .fail => return null,
             }
         } else {
             // Positional argument
@@ -172,6 +161,80 @@ fn parseArgs(allocator: Allocator, io: std.Io, args: []const []const u8, stderr_
     }
 
     return opts;
+}
+
+/// Outcome of handling one argv element: applied, or report-and-abort.
+const ArgStepResult = enum { ok, fail };
+
+/// Apply one long option (`--flag` or `--flag=value`). Reports an
+/// "unrecognized option" error and returns `.fail` when `flag` is unknown.
+fn parseArgs_handleLong(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *GrepOptions,
+    flag: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !ArgStepResult {
+    if (parseArgs_longFlag(opts, flag)) {
+        // Consumed by a boolean/mode flag.
+        return .ok;
+    }
+    switch (try parseArgs_longValued(allocator, io, opts, flag, stderr_writer)) {
+        .consumed_ok => return .ok,
+        .consumed_error => return .fail,
+        .not_mine => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "unrecognized option '--{s}'",
+                .{flag},
+            );
+            return .fail;
+        },
+    }
+}
+
+/// Apply a cluster of short options (`-abc` or `-A5`). Advances `i_ptr` when a
+/// valued option consumes the next argv element. Returns `.fail` on error.
+fn parseArgs_handleShort(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *GrepOptions,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) !ArgStepResult {
+    var j: usize = 1; // tiger:allow:usize-arch arg index, slice-index-forced
+    while (j < arg.len) : (j += 1) {
+        const ch = arg[j];
+        if (parseArgs_shortFlag(opts, ch)) continue;
+        switch (try parseArgs_shortValued(
+            allocator,
+            io,
+            opts,
+            arg,
+            args,
+            i_ptr,
+            &j,
+            stderr_writer,
+        )) {
+            .consumed_break => break,
+            .consumed_error => return .fail,
+            .not_mine => {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid option -- '{c}'",
+                    .{ch},
+                );
+                return .fail;
+            },
+        }
+    }
+    return .ok;
 }
 
 /// Outcome of a long-option value parse: handled, errored, or unrecognized.
@@ -243,6 +306,55 @@ fn parseArgs_longFlag(opts: *GrepOptions, flag: []const u8) bool {
     return true;
 }
 
+/// Parse a context-length value (`-A`/`-B`/`-C` and their long forms).
+/// Returns null after printing the GNU "invalid context length argument"
+/// error so the caller can return `.consumed_error`.
+fn parseArgs_contextValue(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    val_str: []const u8,
+) ?usize { // tiger:allow:usize-arch context length, matches GrepOptions field type
+    return std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid context length argument",
+            .{},
+        );
+        return null;
+    };
+}
+
+/// Apply `--color=WHEN` / `--colour=WHEN`. Reports an "invalid argument"
+/// error and returns `.consumed_error` when WHEN is not auto/always/never.
+fn parseArgs_colorValue(
+    allocator: Allocator,
+    opts: *GrepOptions,
+    flag: []const u8,
+    stderr_writer: *std.Io.Writer,
+) LongOptionResult {
+    const eq_pos = std.mem.findScalar(u8, flag, '=').?;
+    const when = flag[eq_pos + 1 ..];
+    if (std.mem.eql(u8, when, "auto")) {
+        // Keep resolved value (TTY-dependent)
+    } else if (std.mem.eql(u8, when, "always")) {
+        opts.color = .on;
+    } else if (std.mem.eql(u8, when, "never")) {
+        opts.color = .off;
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid argument '{s}' for '--color'",
+            .{when},
+        );
+        return .consumed_error;
+    }
+    return .consumed_ok;
+}
+
 /// Handle valued long options (the `startsWith` arms). Returns not_mine when
 /// `flag` is unrecognized so the caller can report the error.
 fn parseArgs_longValued(
@@ -258,48 +370,46 @@ fn parseArgs_longValued(
         try opts.patterns.append(allocator, flag["regexp=".len..]);
     } else if (std.mem.startsWith(u8, flag, "file=")) {
         const pattern_file = flag["file=".len..];
-        try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, pattern_file, stderr_writer); // tiger:allow:long-line
+        try loadPatternsFromFile(
+            allocator,
+            io,
+            &opts.patterns,
+            &opts.pattern_file_contents,
+            pattern_file,
+            stderr_writer,
+        );
     } else if (std.mem.startsWith(u8, flag, "max-count=")) {
         const val_str = flag["max-count=".len..];
         opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{val_str}); // tiger:allow:long-line
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid max count '{s}'",
+                .{val_str},
+            );
             return .consumed_error;
         };
     } else if (std.mem.startsWith(u8, flag, "after-context=")) {
         const val_str = flag["after-context=".len..];
-        opts.after_context = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+        opts.after_context = parseArgs_contextValue(allocator, stderr_writer, val_str) orelse
             return .consumed_error;
-        };
     } else if (std.mem.startsWith(u8, flag, "before-context=")) {
         const val_str = flag["before-context=".len..];
-        opts.before_context = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+        opts.before_context = parseArgs_contextValue(allocator, stderr_writer, val_str) orelse
             return .consumed_error;
-        };
     } else if (std.mem.startsWith(u8, flag, "context=")) {
         const val_str = flag["context=".len..];
-        const ctx = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+        const ctx = parseArgs_contextValue(allocator, stderr_writer, val_str) orelse
             return .consumed_error;
-        };
         opts.before_context = ctx;
         opts.after_context = ctx;
     } else if (std.mem.eql(u8, flag, "color") or std.mem.eql(u8, flag, "colour")) {
         opts.color = .on;
-    } else if (std.mem.startsWith(u8, flag, "color=") or std.mem.startsWith(u8, flag, "colour=")) {
-        const eq_pos = std.mem.findScalar(u8, flag, '=').?;
-        const when = flag[eq_pos + 1 ..];
-        if (std.mem.eql(u8, when, "auto")) {
-            // Keep resolved value (TTY-dependent)
-        } else if (std.mem.eql(u8, when, "always")) {
-            opts.color = .on;
-        } else if (std.mem.eql(u8, when, "never")) {
-            opts.color = .off;
-        } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--color'", .{when}); // tiger:allow:long-line
-            return .consumed_error;
-        }
+    } else if (std.mem.startsWith(u8, flag, "color=") or
+        std.mem.startsWith(u8, flag, "colour="))
+    {
+        return parseArgs_colorValue(allocator, opts, flag, stderr_writer);
     } else if (std.mem.startsWith(u8, flag, "include=")) {
         try opts.include_globs.append(allocator, flag["include=".len..]);
     } else if (std.mem.startsWith(u8, flag, "exclude=")) {
@@ -387,6 +497,29 @@ fn parseArgs_shortFlag(opts: *GrepOptions, ch: u8) bool {
 /// or unrecognized so the caller reports "invalid option".
 const ShortValuedResult = enum { consumed_break, consumed_error, not_mine };
 
+/// Fetch the value for a short option that requires one, reporting GNU's
+/// "option requires an argument -- 'X'" and returning null when it is missing.
+fn parseArgs_requireValue(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    ch: u8,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+) ?[]const u8 {
+    return parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "option requires an argument -- '{c}'",
+            .{ch},
+        );
+        return null;
+    };
+}
+
 /// Handle valued short options (P, e, f, m, A, B, C, d, D). Numeric arms are
 /// delegated to parseArgs_shortNumeric. Advances cursors via parseArgs_shortValue.
 fn parseArgs_shortValued(
@@ -415,48 +548,156 @@ fn parseArgs_shortValued(
             stderr_writer,
         ),
         'P' => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-P (Perl regex) not supported", .{}); // tiger:allow:long-line
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "-P (Perl regex) not supported",
+                .{},
+            );
             return .consumed_error;
         },
-        'e' => {
-            const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'e'", .{}); // tiger:allow:long-line
-                return .consumed_error;
-            };
-            try opts.patterns.append(allocator, value);
-            return .consumed_break;
-        },
-        'f' => {
-            const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'f'", .{}); // tiger:allow:long-line
-                return .consumed_error;
-            };
-            try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, value, stderr_writer); // tiger:allow:long-line
-            return .consumed_break;
-        },
-        'd' => {
-            const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'd'", .{}); // tiger:allow:long-line
-                return .consumed_error;
-            };
-            if (std.mem.eql(u8, value, "recurse")) {
-                opts.recursive = true;
-            } else if (std.mem.eql(u8, value, "skip")) {
-                opts.skip_dirs = true;
-            }
-            // "read" is the default behavior, no action needed
-            return .consumed_break;
-        },
-        'D' => {
-            // Device action stub: accept value, silently ignore
-            _ = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'D'", .{}); // tiger:allow:long-line
-                return .consumed_error;
-            };
-            return .consumed_break;
-        },
+        'e' => return parseArgs_short_e(
+            allocator,
+            opts,
+            arg,
+            args,
+            i_ptr,
+            j_ptr,
+            stderr_writer,
+        ),
+        'f' => return parseArgs_short_f(
+            allocator,
+            io,
+            opts,
+            arg,
+            args,
+            i_ptr,
+            j_ptr,
+            stderr_writer,
+        ),
+        'd' => return parseArgs_short_d(
+            allocator,
+            opts,
+            arg,
+            args,
+            i_ptr,
+            j_ptr,
+            stderr_writer,
+        ),
+        'D' => return parseArgs_short_D(
+            allocator,
+            arg,
+            args,
+            i_ptr,
+            j_ptr,
+            stderr_writer,
+        ),
         else => return .not_mine,
     }
+}
+
+/// Handle `-e PATTERN`: append an explicit pattern.
+fn parseArgs_short_e(
+    allocator: Allocator,
+    opts: *GrepOptions,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) !ShortValuedResult {
+    const value = parseArgs_requireValue(
+        allocator,
+        stderr_writer,
+        'e',
+        arg,
+        args,
+        i_ptr,
+        j_ptr,
+    ) orelse return .consumed_error;
+    try opts.patterns.append(allocator, value);
+    return .consumed_break;
+}
+
+/// Handle `-D ACTION`: device action stub. Accepts the value, ignores it.
+fn parseArgs_short_D(
+    allocator: Allocator,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) ShortValuedResult {
+    _ = parseArgs_requireValue(
+        allocator,
+        stderr_writer,
+        'D',
+        arg,
+        args,
+        i_ptr,
+        j_ptr,
+    ) orelse return .consumed_error;
+    return .consumed_break;
+}
+
+/// Handle `-f FILE`: load patterns from a file, one per line.
+fn parseArgs_short_f(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *GrepOptions,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) !ShortValuedResult {
+    const value = parseArgs_requireValue(
+        allocator,
+        stderr_writer,
+        'f',
+        arg,
+        args,
+        i_ptr,
+        j_ptr,
+    ) orelse return .consumed_error;
+    try loadPatternsFromFile(
+        allocator,
+        io,
+        &opts.patterns,
+        &opts.pattern_file_contents,
+        value,
+        stderr_writer,
+    );
+    return .consumed_break;
+}
+
+/// Handle `-d ACTION`: select the directory action (recurse, skip, or read).
+fn parseArgs_short_d(
+    allocator: Allocator,
+    opts: *GrepOptions,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) ShortValuedResult {
+    const value = parseArgs_requireValue(
+        allocator,
+        stderr_writer,
+        'd',
+        arg,
+        args,
+        i_ptr,
+        j_ptr,
+    ) orelse return .consumed_error;
+    if (std.mem.eql(u8, value, "recurse")) {
+        opts.recursive = true;
+    } else if (std.mem.eql(u8, value, "skip")) {
+        opts.skip_dirs = true;
+    }
+    // "read" is the default behavior, no action needed
+    return .consumed_break;
 }
 
 /// Handle the integer-valued short options (m, A, B, C).
@@ -474,21 +715,30 @@ fn parseArgs_shortNumeric(
     assert(ch_is_numeric);
     assert(arg.len > 1);
     assert(j_ptr.* < arg.len);
-    const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- '{c}'", .{ch}); // tiger:allow:long-line
-        return .consumed_error;
-    };
+    const value = parseArgs_requireValue(
+        allocator,
+        stderr_writer,
+        ch,
+        arg,
+        args,
+        i_ptr,
+        j_ptr,
+    ) orelse return .consumed_error;
     if (ch == 'm') {
         opts.max_count = std.fmt.parseInt(usize, value, 10) catch { // tiger:allow:usize-arch
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{value}); // tiger:allow:long-line
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid max count '{s}'",
+                .{value},
+            );
             return .consumed_error;
         };
         return .consumed_break;
     }
-    const parsed = std.fmt.parseInt(usize, value, 10) catch { // tiger:allow:usize-arch
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+    const parsed = parseArgs_contextValue(allocator, stderr_writer, value) orelse
         return .consumed_error;
-    };
     if (ch == 'A') {
         opts.after_context = parsed;
     } else if (ch == 'B') {
@@ -501,9 +751,27 @@ fn parseArgs_shortNumeric(
 }
 
 /// Load patterns from a file, one per line
-fn loadPatternsFromFile(allocator: Allocator, io: std.Io, patterns: *std.ArrayListUnmanaged([]const u8), pattern_file_contents: *std.ArrayListUnmanaged([]const u8), path: []const u8, stderr_writer: *std.Io.Writer) !void {
-    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(10 * 1024 * 1024)) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: No such file or directory", .{path});
+fn loadPatternsFromFile(
+    allocator: Allocator,
+    io: std.Io,
+    patterns: *std.ArrayListUnmanaged([]const u8),
+    pattern_file_contents: *std.ArrayListUnmanaged([]const u8),
+    path: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !void {
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        allocator,
+        .limited(10 * 1024 * 1024),
+    ) catch {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "{s}: No such file or directory",
+            .{path},
+        );
         return;
     };
     try pattern_file_contents.append(allocator, content);
@@ -540,7 +808,8 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
     var i: usize = 0;
     while (i < pattern.len) {
         if (i + 1 < pattern.len and pattern[i] == '\\' and pattern[i + 1] == '|') {
-            parts.append(allocator, pattern[start..i]) catch return .{ .pattern = null, .use_ere = false };
+            parts.append(allocator, pattern[start..i]) catch
+                return .{ .pattern = null, .use_ere = false };
             start = i + 2;
             i = start;
         } else {
@@ -552,8 +821,10 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
     assert(parts.items.len >= 1);
 
     if (parts.items.len == 1) {
+        const anchored = std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch
+            return .{ .pattern = null, .use_ere = false };
         return .{
-            .pattern = std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch return .{ .pattern = null, .use_ere = false },
+            .pattern = anchored,
             .use_ere = false,
         };
     }
@@ -575,7 +846,12 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
 }
 
 /// Compile a single pattern. Returns null on error.
-fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOptions, stderr_writer: *std.Io.Writer) ?CompiledPattern {
+fn compilePattern(
+    allocator: Allocator,
+    pattern: []const u8,
+    opts: *const GrepOptions,
+    stderr_writer: *std.Io.Writer,
+) ?CompiledPattern {
     assert(@intFromEnum(opts.regex_mode) <= @intFromEnum(RegexMode.fixed));
     if (opts.regex_mode == .fixed) {
         if (opts.ignore_case) {
@@ -619,7 +895,13 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
         var errbuf: [256]u8 = undefined;
         const err_len = c.regerror(@intCast(result), regex, &errbuf, errbuf.len);
         const err_msg = errbuf[0..err_len];
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid regular expression: {s}", .{err_msg});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid regular expression: {s}",
+            .{err_msg},
+        );
         if (comptime is_linux) {
             regex_c.regex_heap_free(regex);
         } else {
@@ -684,7 +966,13 @@ fn regOffsetToIndex(off: RegOffset) usize { // tiger:allow:usize-arch slice inde
 /// prev_char is the character immediately before line[0], needed when
 /// matching a substring (e.g. from the -o loop). Pass null when matching
 /// from the real start of the line.
-fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool, prev_char: ?u8) MatchResult {
+fn matchLine(
+    pat: *const CompiledPattern,
+    line: []const u8,
+    allocator: Allocator,
+    word_regexp: bool,
+    prev_char: ?u8,
+) MatchResult {
     switch (pat.*) {
         .fixed => |fp| {
             if (word_regexp) {
@@ -812,7 +1100,13 @@ fn matchLine_regexPlain(re: *c.regex_t, line: []const u8, allocator: Allocator) 
 }
 
 /// Check if a line matches any of the compiled patterns
-fn matchAnyPattern(patterns: []const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool, prev_char: ?u8) MatchResult {
+fn matchAnyPattern(
+    patterns: []const CompiledPattern,
+    line: []const u8,
+    allocator: Allocator,
+    word_regexp: bool,
+    prev_char: ?u8,
+) MatchResult {
     for (patterns) |*pat| {
         const result = matchLine(pat, line, allocator, word_regexp, prev_char);
         if (result.matched) return result;
@@ -873,7 +1167,14 @@ fn printSep(writer: *std.Io.Writer, sep: u8, use_color: bool) void {
 }
 
 /// Print a line with optional color highlighting of the match
-fn printMatchLine(writer: *std.Io.Writer, line: []const u8, match_start: usize, match_end: usize, use_color: bool, terminator: u8) void {
+fn printMatchLine(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    match_start: usize, // tiger:allow:usize-arch slice index into line
+    match_end: usize, // tiger:allow:usize-arch slice index into line
+    use_color: bool,
+    terminator: u8,
+) void {
     assert(match_start <= match_end);
     if (use_color and match_end > match_start and match_end <= line.len) {
         writer.writeAll(line[0..match_start]) catch {};
@@ -905,12 +1206,14 @@ fn processFile(
 ) bool {
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(io, &file_buffer);
-    const content = file_reader.interface.allocRemaining(allocator, .limited(512 * 1024 * 1024)) catch return false;
+    const content = file_reader.interface.allocRemaining(
+        allocator,
+        .limited(512 * 1024 * 1024),
+    ) catch return false;
     defer allocator.free(content);
 
     var found_match = false;
     var match_count: usize = 0;
-    var line_num: usize = 0;
 
     // Determine the line delimiter: NUL for -z/--null-data, newline otherwise
     const line_delim: u8 = if (opts.null_line_sep) 0 else '\n';
@@ -934,29 +1237,85 @@ fn processFile(
     // Context tracking
     var scan = ScanState{};
 
-    for (lines.items) |line| {
+    const scan_inputs = ScanInputs{
+        .allocator = allocator,
+        .patterns = patterns,
+        .opts = opts,
+        .stdout_writer = stdout_writer,
+        .lines = lines.items,
+        .line_offsets = line_offsets.items,
+        .filename = filename,
+        .fn_sep = fn_sep,
+        .line_term = line_term,
+        .show_filename = show_filename,
+        .use_color = use_color,
+    };
+    if (processFile_scanLines(scan_inputs, &scan)) return true;
+
+    found_match = scan.found_match;
+    match_count = scan.match_count;
+    processFile_printSummary(
+        stdout_writer,
+        opts,
+        filename,
+        match_count,
+        found_match,
+        show_filename,
+        use_color,
+        fn_sep,
+        line_term,
+    );
+
+    return found_match;
+}
+
+/// Loop-level inputs for `processFile_scanLines`, grouped to keep the
+/// parameter list small (the per-line slice is rebuilt for each line).
+const ScanInputs = struct {
+    allocator: Allocator,
+    patterns: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    lines: []const []const u8,
+    line_offsets: []const usize, // tiger:allow:usize-arch byte offsets, slice-index-forced
+    filename: []const u8,
+    fn_sep: u8,
+    line_term: u8,
+    show_filename: bool,
+    use_color: bool,
+};
+
+/// Scan every line, dispatching to `processFile_handleLine`. Returns true when
+/// a -q quiet match warrants returning true straight from `processFile`.
+fn processFile_scanLines(in: ScanInputs, scan: *ScanState) bool {
+    var line_num: usize = 0; // tiger:allow:usize-arch line counter
+    for (in.lines) |line| {
         line_num += 1;
         const ctx = LineContext{
             .line = line,
             .line_num = line_num,
-            .lines = lines.items,
-            .line_offsets = line_offsets.items,
-            .filename = filename,
-            .fn_sep = fn_sep,
-            .line_term = line_term,
+            .lines = in.lines,
+            .line_offsets = in.line_offsets,
+            .filename = in.filename,
+            .fn_sep = in.fn_sep,
+            .line_term = in.line_term,
         };
-        switch (processFile_handleLine(allocator, patterns, opts, stdout_writer, ctx, show_filename, use_color, &scan)) { // tiger:allow:long-line
+        switch (processFile_handleLine(
+            in.allocator,
+            in.patterns,
+            in.opts,
+            in.stdout_writer,
+            ctx,
+            in.show_filename,
+            in.use_color,
+            scan,
+        )) {
             .keep_going => {},
             .stop_scanning => break,
             .quiet_return => return true,
         }
     }
-
-    found_match = scan.found_match;
-    match_count = scan.match_count;
-    processFile_printSummary(stdout_writer, opts, filename, match_count, found_match, show_filename, use_color, fn_sep, line_term); // tiger:allow:long-line
-
-    return found_match;
+    return false;
 }
 
 /// Loop-carried state for the per-line scan in processFile.
@@ -1344,7 +1703,19 @@ fn processFile_printSummary(
 }
 
 /// Print a context line (with - separator instead of :)
-fn printContextLine(writer: *std.Io.Writer, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool, fn_sep: u8, line_term: u8) void {
+fn printContextLine(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    line_num: usize, // tiger:allow:usize-arch line counter, matches existing type
+    filename: []const u8,
+    show_filename: bool,
+    show_line_number: bool,
+    show_byte_offset: bool,
+    byte_offset: usize, // tiger:allow:usize-arch byte offset, matches existing type
+    use_color: bool,
+    fn_sep: u8,
+    line_term: u8,
+) void {
     const ctx_sep_ok = fn_sep == 0 or fn_sep == ':';
     assert(ctx_sep_ok);
     const ctx_term_ok = line_term == 0 or line_term == '\n';
@@ -1450,7 +1821,8 @@ fn searchTree(
     found_any: *bool,
 ) void {
     assert(root_path.len > 0);
-    assert(opts.recursive or opts.skip_dirs);
+    // Cannot split: "or" means either flag suffices, not both.
+    assert(opts.recursive or opts.skip_dirs); // tiger:allow:compound-assert
 
     var search = TreeSearch{
         .allocator = allocator,
@@ -1472,7 +1844,9 @@ fn searchTree(
     if (search.visited_dirs != null) registerDir(io, root_path, &search);
     search.walker.addRoot(root_path) catch return;
 
-    while (true) {
+    // Terminates when walker.next() returns null: every root of the finite
+    // directory tree has been exhausted (see break below).
+    while (true) { // tiger:allow:unbounded-loop walker.next() returns null at exhaustion
         const maybe_entry = search.walker.next(io) catch |err| {
             // An unreadable directory (or other per-entry I/O failure) is
             // non-fatal: report it and let the walker resume at siblings.
@@ -1808,26 +2182,21 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Public entry point for the grep utility
-pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) anyerror!u8 {
+pub fn runGrep(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) anyerror!u8 {
     var opts = (parseArgs(allocator, io, args, stderr_writer) catch {
         return @intFromEnum(common.ExitCode.misuse);
     }) orelse return @intFromEnum(common.ExitCode.misuse);
     defer opts.deinit(allocator);
 
-    if (opts.help) {
-        printHelp(allocator, stdout_writer) catch {};
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    if (opts.version) {
-        printVersion(stdout_writer) catch {};
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Must have at least one pattern
-    if (opts.patterns.items.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "no pattern specified\nTry 'grep --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+    // Handle --help/--version and the no-pattern error before searching.
+    if (runGrep_earlyExit(allocator, &opts, stdout_writer, stderr_writer)) |code| {
+        return code;
     }
 
     // Compile patterns
@@ -1853,21 +2222,20 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     // Determine stdin label (--label overrides default)
     const stdin_label = opts.stdin_label orelse "(standard input)";
 
-    if (opts.files.items.len == 0 and !opts.recursive) {
-        // Read from stdin
-        const stdin_file = std.Io.File.stdin();
-        if (processFile(allocator, io, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
-            found_any = true;
-        }
-    } else if (opts.files.items.len == 0 and opts.recursive) {
-        // Recursive with no files means search current directory
-        searchTree(allocator, io, ".", compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
-    } else {
-        for (opts.files.items) |file_path| {
-            const quiet_early = runGrep_processOneOperand(allocator, io, file_path, compiled.items, &opts, stdout_writer, stderr_writer, show_filename, use_color, stdin_label, &found_any, &had_error); // tiger:allow:long-line
-            if (quiet_early) return 0;
-        }
-    }
+    const quiet_early = runGrep_dispatchInputs(.{
+        .allocator = allocator,
+        .io = io,
+        .opts = &opts,
+        .compiled = compiled.items,
+        .stdout_writer = stdout_writer,
+        .stderr_writer = stderr_writer,
+        .show_filename = show_filename,
+        .use_color = use_color,
+        .stdin_label = stdin_label,
+        .found_any_ptr = &found_any,
+        .had_error_ptr = &had_error,
+    });
+    if (quiet_early) return 0;
 
     if (opts.quiet) {
         return if (found_any) 0 else 1;
@@ -1875,6 +2243,106 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
 
     if (had_error) return 2;
     return if (found_any) 0 else 1;
+}
+
+/// Handle the early-exit cases (--help, --version, missing pattern). Returns
+/// the exit code to return immediately, or null to continue searching.
+fn runGrep_earlyExit(
+    allocator: Allocator,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    if (opts.help) {
+        printHelp(allocator, stdout_writer) catch {};
+        return @intFromEnum(common.ExitCode.success);
+    }
+    if (opts.version) {
+        printVersion(stdout_writer) catch {};
+        return @intFromEnum(common.ExitCode.success);
+    }
+    if (opts.patterns.items.len == 0) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "no pattern specified\nTry 'grep --help' for more information.",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+    return null;
+}
+
+/// Bundled inputs for `runGrep_dispatchInputs`: too many to pass positionally.
+const DispatchInputs = struct {
+    allocator: Allocator,
+    io: std.Io,
+    opts: *const GrepOptions,
+    compiled: []const CompiledPattern,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    show_filename: bool,
+    use_color: bool,
+    stdin_label: []const u8,
+    found_any_ptr: *bool,
+    had_error_ptr: *bool,
+};
+
+/// Route grep to its input source: stdin, a recursive tree walk, or the
+/// listed file operands. Returns true when a -q match warrants an early
+/// `return 0` in the caller.
+fn runGrep_dispatchInputs(d: DispatchInputs) bool {
+    const opts = d.opts;
+    if (opts.files.items.len == 0 and !opts.recursive) {
+        // Read from stdin
+        const stdin_file = std.Io.File.stdin();
+        if (processFile(
+            d.allocator,
+            d.io,
+            stdin_file,
+            d.stdin_label,
+            d.compiled,
+            opts,
+            d.stdout_writer,
+            d.show_filename,
+            d.use_color,
+        )) {
+            d.found_any_ptr.* = true;
+        }
+    } else if (opts.files.items.len == 0 and opts.recursive) {
+        // Recursive with no files means search current directory
+        searchTree(
+            d.allocator,
+            d.io,
+            ".",
+            d.compiled,
+            opts,
+            d.stdout_writer,
+            d.stderr_writer,
+            d.use_color,
+            d.found_any_ptr,
+        );
+    } else {
+        for (opts.files.items) |file_path| {
+            const quiet_early = runGrep_processOneOperand(
+                d.allocator,
+                d.io,
+                file_path,
+                d.compiled,
+                opts,
+                d.stdout_writer,
+                d.stderr_writer,
+                d.show_filename,
+                d.use_color,
+                d.stdin_label,
+                d.found_any_ptr,
+                d.had_error_ptr,
+            );
+            if (quiet_early) return true;
+        }
+    }
+    return false;
 }
 
 /// Compile every parsed pattern, appending to `compiled_ptr`.
@@ -1907,6 +2375,25 @@ fn runGrep_showFilename(opts: *const GrepOptions) bool {
         true
     else
         opts.files.items.len > 1;
+}
+
+/// Report a stat/open failure for an operand unless -s/--no-messages silences
+/// it. Centralizes the duplicated error path in runGrep_processOneOperand.
+fn runGrep_reportFileError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    opts: *const GrepOptions,
+    file_path: []const u8,
+    err: anyerror,
+) void {
+    if (opts.no_messages) return;
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "{s}: {s}",
+        .{ file_path, common.posixErrorString(err) },
+    );
 }
 
 /// Search one command-line operand (stdin, directory, or regular file).
@@ -1946,9 +2433,7 @@ fn runGrep_processOneOperand(
     if (opts.recursive or opts.skip_dirs) {
         // Check if it's a directory
         const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
-            if (!opts.no_messages) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) }); // tiger:allow:long-line
-            }
+            runGrep_reportFileError(allocator, stderr_writer, opts, file_path, err);
             had_error_ptr.* = true;
             return false;
         };
@@ -1970,9 +2455,7 @@ fn runGrep_processOneOperand(
     }
 
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-        if (!opts.no_messages) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) }); // tiger:allow:long-line
-        }
+        runGrep_reportFileError(allocator, stderr_writer, opts, file_path, err);
         had_error_ptr.* = true;
         return false;
     };
@@ -2256,19 +2739,37 @@ test "toLower empty string" {
 
 test "runGrep no pattern returns misuse" {
     const args = [_][]const u8{};
-    const exit_code = try runGrep(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runGrep --help returns success" {
     const args = [_][]const u8{"--help"};
-    const exit_code = try runGrep(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 test "runGrep --version returns success" {
     const args = [_][]const u8{"--version"};
-    const exit_code = try runGrep(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -2323,7 +2824,10 @@ test "runGrep -v invert match" {
 }
 
 test "runGrep -F fixed strings" {
-    const exit_code = try testRunGrep("hello.world\nfoo.bar\nhello world\n", &.{ "-F", "hello.world" });
+    const exit_code = try testRunGrep(
+        "hello.world\nfoo.bar\nhello world\n",
+        &.{ "-F", "hello.world" },
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -2336,7 +2840,13 @@ test "runGrep nonexistent file returns error" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "--color=never", "pattern", "/nonexistent/path/file.txt" };
-    const exit_code = try runGrep(arena.allocator(), testing.io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
@@ -2354,17 +2864,29 @@ test "runGrep invalid regex returns misuse" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "--color=never", "[invalid", "/dev/null" };
-    const exit_code = try runGrep(arena.allocator(), testing.io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runGrep -m max-count" {
-    const exit_code = try testRunGrep("hello one\nhello two\nhello three\nhello four\n", &.{ "-m", "2", "hello" });
+    const exit_code = try testRunGrep(
+        "hello one\nhello two\nhello three\nhello four\n",
+        &.{ "-m", "2", "hello" },
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 /// Helper to run grep and capture stdout output
-fn testRunGrepOutput(file_content: []const u8, grep_args: []const []const u8) !struct { exit_code: u8, output: []const u8, arena: std.heap.ArenaAllocator } {
+fn testRunGrepOutput(
+    file_content: []const u8,
+    grep_args: []const []const u8,
+) !struct { exit_code: u8, output: []const u8, arena: std.heap.ArenaAllocator } {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -2679,7 +3201,12 @@ test "runGrep -y case insensitive match" {
 // --- -P error stub ---
 
 test "parseArgs -P returns null (error stub)" {
-    const result = try parseArgs(testing.allocator, testing.io, &[_][]const u8{ "-P", "pattern" }, common.null_writer);
+    const result = try parseArgs(
+        testing.allocator,
+        testing.io,
+        &[_][]const u8{ "-P", "pattern" },
+        common.null_writer,
+    );
     try testing.expect(result == null);
 }
 
@@ -2687,7 +3214,13 @@ test "runGrep -P returns misuse exit code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "-P", "pattern", "/dev/null" };
-    const exit_code = try runGrep(arena.allocator(), testing.io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
@@ -2946,7 +3479,11 @@ test "runGrep -f pattern file does not leak file contents buffer" {
     try data_file.writeStreamingAll(io, "hello there\ngoodbye now\nworld peace\n");
     data_file.close(io);
 
-    const pattern_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "patterns.txt", testing.allocator);
+    const pattern_path = try tmp_dir.dir.realPathFileAlloc(
+        testing.io,
+        "patterns.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(pattern_path);
 
     const data_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "data.txt", testing.allocator);
@@ -2954,7 +3491,13 @@ test "runGrep -f pattern file does not leak file contents buffer" {
 
     // Use testing.allocator directly (not arena) so leaks are detected
     const args = [_][]const u8{ "--color=never", "-f", pattern_path, data_path };
-    const exit_code = try runGrep(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -3342,7 +3885,9 @@ test "walker-migration: -R follows a symlink to a file and searches it" {
 
     // -R must dereference the symlink-to-file and search its contents.
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "DEREFFILE marker") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, stdout_aw.writer.buffered(), "DEREFFILE marker") != null,
+    );
 }
 
 test "walker-migration: -R descends a symlink to a directory and finds the buried file" {
@@ -3432,7 +3977,9 @@ test "walker-migration: directory operand is searched recursively under -r" {
     const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "OPERANDMATCH here") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, stdout_aw.writer.buffered(), "OPERANDMATCH here") != null,
+    );
 }
 
 test "walker-migration: -d skip silently skips a directory operand and keeps file operands" {
@@ -3477,8 +4024,12 @@ test "walker-migration: -d skip silently skips a directory operand and keeps fil
 
     // File operand searched, directory operand silently skipped, no error emitted.
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "SKIPMATCH in file") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "SKIPMATCH in dir") == null);
+    try testing.expect(
+        std.mem.indexOf(u8, stdout_aw.writer.buffered(), "SKIPMATCH in file") != null,
+    );
+    try testing.expect(
+        std.mem.indexOf(u8, stdout_aw.writer.buffered(), "SKIPMATCH in dir") == null,
+    );
     try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 

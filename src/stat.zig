@@ -77,7 +77,10 @@ const StatOptions = struct {
 /// whether the parent dispatch loop must stop processing further arguments.
 const ParseStep = struct { err: ?[]const u8, stop: bool };
 
-fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: StatOptions, err: ?[]const u8 } {
+fn parseArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+) struct { opts: StatOptions, err: ?[]const u8 } {
     var opts = StatOptions{};
     var err_msg: ?[]const u8 = null;
     var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -404,9 +407,11 @@ fn formatTimestamp(sec: i64, nsec: i64, fmt_buf: []u8) ![]const u8 {
     const tz_hours = @divTrunc(abs_off, 3600);
     const tz_mins = @divTrunc(@rem(abs_off, 3600), 60);
 
-    return std.fmt.bufPrint(fmt_buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} {c}{d:0>2}{d:0>2}", .{
-        year, mon, day, hour, min, s, ns, sign, tz_hours, tz_mins,
-    });
+    return std.fmt.bufPrint(
+        fmt_buf,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} {c}{d:0>2}{d:0>2}",
+        .{ year, mon, day, hour, min, s, ns, sign, tz_hours, tz_mins },
+    );
 }
 
 // ============================================================================
@@ -745,7 +750,14 @@ fn processFormatString(
         std.debug.assert(i <= format.len);
         if (format[i] == '%' and i + 1 < format.len) {
             i += 1;
-            try expandFormatDirective(allocator, format[i], stat_buf, path, follow_symlinks, writer);
+            try expandFormatDirective(
+                allocator,
+                format[i],
+                stat_buf,
+                path,
+                follow_symlinks,
+                writer,
+            );
             i += 1;
         } else if (interpret_escapes and format[i] == '\\' and i + 1 < format.len) {
             i += 1;
@@ -1071,9 +1083,18 @@ fn fsTypeName(f_type: c_long) []const u8 {
 
 /// Read mount point and device for a given path from /proc/self/mountinfo (Linux).
 /// Uses longest-prefix matching on mount points.
-fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) struct { mount: []const u8, dev: []const u8 } {
+fn lookupMountInfo(
+    path: []const u8,
+    mount_buf: *[1024]u8,
+    dev_buf: *[1024]u8,
+) struct { mount: []const u8, dev: []const u8 } {
     // Use raw POSIX syscalls to avoid needing std.Io here.
-    const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/self/mountinfo", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch
+    const fd = std.posix.openat(
+        std.posix.AT.FDCWD,
+        "/proc/self/mountinfo",
+        .{ .ACCMODE = .RDONLY, .CLOEXEC = true },
+        0,
+    ) catch
         return .{ .mount = "?", .dev = "?" };
     defer _ = std.c.close(fd);
 
@@ -1271,14 +1292,26 @@ fn printFileSystemInfo(
 // Main utility function
 // ============================================================================
 
-pub fn runStat(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runStat(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = io;
     const parsed = parseArgs(allocator, args);
     const opts = parsed.opts;
     defer allocator.free(opts.positionals);
 
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}\nTry 'stat --help' for more information.", .{err_msg});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "{s}\nTry 'stat --help' for more information.",
+            .{err_msg},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -1293,7 +1326,13 @@ pub fn runStat(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     }
 
     if (opts.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand\nTry 'stat --help' for more information.", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing operand\nTry 'stat --help' for more information.",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -1302,42 +1341,93 @@ pub fn runStat(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     // The empty-positionals case returned above, so the loop has work to do.
     std.debug.assert(opts.positionals.len > 0);
     for (opts.positionals) |path| {
-        if (opts.file_system and opts.format == null and opts.printf_fmt == null) {
-            printFileSystemInfo(path, stdout_writer) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot statfs '{s}': No such file or directory", .{path});
-                has_error = true;
-                continue;
-            };
-            continue;
-        }
-
-        const stat_buf = doStat(path, opts.dereference) catch |err| {
-            const msg = switch (err) {
-                error.AccessDenied => "Permission denied",
-                error.FileNotFound => "No such file or directory",
-                error.NotDir => "Not a directory",
-                error.NameTooLong => "File name too long",
-                error.SymLinkLoop => "Too many levels of symbolic links",
-                else => "Cannot access",
-            };
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot stat '{s}': {s}", .{ path, msg });
+        const failed = try processOnePath(
+            allocator,
+            &opts,
+            path,
+            stdout_writer,
+            stderr_writer,
+        );
+        if (failed) {
             has_error = true;
-            continue;
-        };
-
-        if (opts.format) |format| {
-            try processFormatString(allocator, format, stat_buf, path, opts.dereference, false, stdout_writer);
-            try stdout_writer.writeByte('\n');
-        } else if (opts.printf_fmt) |format| {
-            try processFormatString(allocator, format, stat_buf, path, opts.dereference, true, stdout_writer);
-        } else if (opts.terse) {
-            try printTerseFormat(stat_buf, path, stdout_writer);
-        } else {
-            try printDefaultFormat(allocator, stat_buf, path, opts.dereference, stdout_writer);
         }
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
+}
+
+/// Emit stat output for a single path. Returns true when the path could
+/// not be statted (or statfs'd), so the caller can flag overall failure.
+fn processOnePath(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !bool {
+    if (opts.file_system and opts.format == null and opts.printf_fmt == null) {
+        printFileSystemInfo(path, stdout_writer) catch {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "cannot statfs '{s}': No such file or directory",
+                .{path},
+            );
+            return true;
+        };
+        return false;
+    }
+
+    const stat_buf = doStat(path, opts.dereference) catch |err| {
+        const msg = switch (err) {
+            error.AccessDenied => "Permission denied",
+            error.FileNotFound => "No such file or directory",
+            error.NotDir => "Not a directory",
+            error.NameTooLong => "File name too long",
+            error.SymLinkLoop => "Too many levels of symbolic links",
+            else => "Cannot access",
+        };
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "cannot stat '{s}': {s}",
+            .{ path, msg },
+        );
+        return true;
+    };
+
+    if (opts.format) |format| {
+        try processFormatString(
+            allocator,
+            format,
+            stat_buf,
+            path,
+            opts.dereference,
+            false,
+            stdout_writer,
+        );
+        try stdout_writer.writeByte('\n');
+    } else if (opts.printf_fmt) |format| {
+        try processFormatString(
+            allocator,
+            format,
+            stat_buf,
+            path,
+            opts.dereference,
+            true,
+            stdout_writer,
+        );
+    } else if (opts.terse) {
+        try printTerseFormat(stat_buf, path, stdout_writer);
+    } else {
+        try printDefaultFormat(allocator, stat_buf, path, opts.dereference, stdout_writer);
+    }
+    return false;
 }
 
 // ============================================================================
@@ -1416,7 +1506,13 @@ test "stat --help shows usage" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: stat") != null);
@@ -1428,7 +1524,13 @@ test "stat -h shows usage" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: stat") != null);
@@ -1441,7 +1543,13 @@ test "stat --version shows version" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "stat") != null);
@@ -1453,7 +1561,13 @@ test "stat -V shows version" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "stat") != null);
@@ -1466,7 +1580,13 @@ test "stat missing operand returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
@@ -1479,10 +1599,18 @@ test "stat unknown flag returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
+    );
 }
 
 test "stat nonexistent file returns error" {
@@ -1492,7 +1620,13 @@ test "stat nonexistent file returns error" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent/file/path"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot stat") != null);
@@ -1516,7 +1650,13 @@ test "stat default output on regular file" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Check key fields in default output
@@ -1546,7 +1686,13 @@ test "stat -c format: file name" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%n", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Output should be the path + newline
@@ -1571,7 +1717,13 @@ test "stat -c format: size" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
@@ -1591,7 +1743,13 @@ test "stat -c format: file type" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%F", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("directory\n", stdout_aw.writer.buffered());
@@ -1612,7 +1770,13 @@ test "stat -c format: inode number" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%i", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should be a valid number followed by newline
@@ -1625,7 +1789,11 @@ test "stat -c format: permissions octal" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{ .permissions = @enumFromInt(0o644) });
+    const test_file = try tmp_dir.dir.createFile(
+        testing.io,
+        "test.txt",
+        .{ .permissions = @enumFromInt(0o644) },
+    );
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1636,7 +1804,13 @@ test "stat -c format: permissions octal" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%a", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -1658,7 +1832,11 @@ test "stat -c format: permissions human readable" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{ .permissions = @enumFromInt(0o644) });
+    const test_file = try tmp_dir.dir.createFile(
+        testing.io,
+        "test.txt",
+        .{ .permissions = @enumFromInt(0o644) },
+    );
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1669,7 +1847,13 @@ test "stat -c format: permissions human readable" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%A", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should start with '-' for regular file
@@ -1692,7 +1876,13 @@ test "stat -c format: user and group IDs" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%u %g", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should be two numbers separated by space
@@ -1719,7 +1909,13 @@ test "stat -c format: user and group names" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%U", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -1746,7 +1942,13 @@ test "stat -c format: timestamps" {
 
     // Test epoch seconds format
     const args = [_][]const u8{ "-c", "%X %Y %Z", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -1785,7 +1987,13 @@ test "stat --printf interprets escapes" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--printf=%s\\n", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("4\n", stdout_aw.writer.buffered());
@@ -1807,7 +2015,13 @@ test "stat --format=FMT syntax" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--format=%s", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
@@ -1829,7 +2043,13 @@ test "stat -t terse output" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-t", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Terse output is one line with space-separated fields
@@ -1854,7 +2074,13 @@ test "stat empty file shows regular empty file" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%F", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("regular empty file\n", stdout_aw.writer.buffered());
@@ -1874,7 +2100,13 @@ test "stat directory type" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%F", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("directory\n", stdout_aw.writer.buffered());
@@ -1910,7 +2142,13 @@ test "stat symlink without dereference" {
     _ = link_path;
 
     const args = [_][]const u8{ "-c", "%F", symlink_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("symbolic link\n", stdout_aw.writer.buffered());
@@ -1937,7 +2175,13 @@ test "stat symlink with dereference" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-L", "-c", "%F", symlink_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("regular file\n", stdout_aw.writer.buffered());
@@ -1966,7 +2210,13 @@ test "stat multiple files" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", path1, path2 };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3\n5\n", stdout_aw.writer.buffered());
@@ -1989,7 +2239,13 @@ test "stat -f file system info" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should contain file system info
@@ -2012,7 +2268,13 @@ test "stat -c format: hard links" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%h", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1\n", stdout_aw.writer.buffered());
@@ -2033,7 +2295,13 @@ test "stat -c format: device number" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%d", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -2056,7 +2324,13 @@ test "stat -c format: multiple directives" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "size=%s type=%F", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("size=5 type=regular file\n", stdout_aw.writer.buffered());
@@ -2080,7 +2354,13 @@ test "stat partial failure with multiple files" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", "/nonexistent", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should return error (1) because one file failed
     try testing.expectEqual(@as(u8, 1), result);
@@ -2166,7 +2446,13 @@ test "stat -- separator" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", "--", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
@@ -2179,13 +2465,23 @@ test "stat nonexistent file error message says No such file" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/no/such/path/at/all"};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     // Error message should contain the filename
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "/no/such/path/at/all") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "/no/such/path/at/all") != null,
+    );
     // Error message should say "No such file or directory" for ENOENT
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
 }
 
 test "stat permission denied error message is not No such file" {
@@ -2204,7 +2500,11 @@ test "stat permission denied error message is not No such file" {
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
-    const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/secret.txt", .{dir_path});
+    const inner_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/noaccess/secret.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(inner_path);
 
     // Remove execute permission from the directory, making the file inaccessible
@@ -2222,12 +2522,20 @@ test "stat permission denied error message is not No such file" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{inner_path};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should fail
     try testing.expectEqual(@as(u8, 1), result);
     // Error message should contain the filename
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "noaccess/secret.txt") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "noaccess/secret.txt") != null,
+    );
     // BUG: The error message should NOT say "No such file or directory"
     // for an AccessDenied error. It should say "Permission denied".
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Permission denied") != null);
@@ -2252,7 +2560,13 @@ test "stat default output has no spurious plus on numeric fields" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 
     const output = stdout_aw.writer.buffered();
@@ -2266,7 +2580,8 @@ test "stat default output has no spurious plus on numeric fields" {
     const size_line = rest[0..eol];
 
     // GNU stat outputs "  Size: 5         Blocks: 8          IO Block: 4096   regular file"
-    // Our implementation incorrectly outputs "  Size: +5        Blocks: +8         IO Block: +4096  regular file"
+    // Our implementation incorrectly outputs
+    // "  Size: +5        Blocks: +8         IO Block: +4096  regular file"
     // The '+' character should not appear anywhere on this line
     try testing.expect(std.mem.find(u8, size_line, "+") == null);
 }
@@ -2289,7 +2604,13 @@ test "stat -f -c format string is honored" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", "-c", "%n", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 
     // -f -c '%n' should output just the file name, not the full filesystem block
@@ -2319,7 +2640,13 @@ test "stat -t terse output has 16 fields like GNU" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-t", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 
     // Count space-separated fields
@@ -2362,7 +2689,13 @@ test "stat -f produces sane block size on this platform" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 
     const output = stdout_aw.writer.buffered();
@@ -2376,7 +2709,10 @@ test "stat -f produces sane block size on this platform" {
     while (start < after_label.len and after_label[start] == ' ') : (start += 1) {}
     // Read digits
     var end: usize = start;
-    while (end < after_label.len and after_label[end] >= '0' and after_label[end] <= '9') : (end += 1) {}
+    while (end < after_label.len and
+        after_label[end] >= '0' and
+        after_label[end] <= '9') : (end += 1)
+    {}
     const block_size_str = after_label[start..end];
     const block_size = std.fmt.parseInt(u64, block_size_str, 10) catch
         return error.TestExpectedEqual;
@@ -2405,7 +2741,13 @@ test "stat default output Device line uses GNU major,minor format" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 
     // Find the Device line
@@ -2439,7 +2781,13 @@ test "stat -c format: blocks allocated %b" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%b", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -2468,7 +2816,13 @@ test "stat -c format: group name %G" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%G", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -2500,7 +2854,13 @@ test "stat -c format: %N regular file is quoted" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%N", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
@@ -2528,11 +2888,21 @@ test "stat -c format: %N symlink shows arrow" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%N", symlink_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // GNU stat -c '%N' on a symlink: 'link' -> 'target'
-    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}' -> 'target.txt'\n", .{symlink_path});
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}' -> 'target.txt'\n",
+        .{symlink_path},
+    );
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
@@ -2555,7 +2925,13 @@ test "stat -c format: %y mtime human-readable timestamp" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%y", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
@@ -2589,7 +2965,13 @@ test "stat --printf does not add trailing newline" {
 
     // --printf=%s without \n should produce "5" with no trailing newline
     const args = [_][]const u8{ "--printf=%s", test_path };
-    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Must be exactly "5" with no newline

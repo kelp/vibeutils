@@ -177,35 +177,62 @@ test "parseTimeString - basic integer seconds" {
 }
 
 test "parseTimeString - decimal seconds" {
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString("0.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_s)), try parseTimeString("1.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.25 * std.time.ns_per_s)), try parseTimeString("2.25"));
-    try testing.expectEqual(@as(u64, @intFromFloat(0.1 * std.time.ns_per_s)), try parseTimeString("0.1"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_s)),
+        try parseTimeString("0.5"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(1.5 * std.time.ns_per_s)),
+        try parseTimeString("1.5"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.25 * std.time.ns_per_s)),
+        try parseTimeString("2.25"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.1 * std.time.ns_per_s)),
+        try parseTimeString("0.1"),
+    );
 }
 
 test "parseTimeString - seconds with suffix" {
     try testing.expectEqual(@as(u64, 5 * std.time.ns_per_s), try parseTimeString("5s"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.5 * std.time.ns_per_s)), try parseTimeString("2.5s"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.5 * std.time.ns_per_s)),
+        try parseTimeString("2.5s"),
+    );
     try testing.expectEqual(@as(u64, 0), try parseTimeString("0s"));
 }
 
 test "parseTimeString - minutes" {
     try testing.expectEqual(@as(u64, 1 * std.time.ns_per_min), try parseTimeString("1m"));
     try testing.expectEqual(@as(u64, 5 * std.time.ns_per_min), try parseTimeString("5m"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.5 * std.time.ns_per_min)), try parseTimeString("2.5m"));
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_min)), try parseTimeString("0.5m"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.5 * std.time.ns_per_min)),
+        try parseTimeString("2.5m"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_min)),
+        try parseTimeString("0.5m"),
+    );
 }
 
 test "parseTimeString - hours" {
     try testing.expectEqual(@as(u64, 1 * std.time.ns_per_hour), try parseTimeString("1h"));
     try testing.expectEqual(@as(u64, 2 * std.time.ns_per_hour), try parseTimeString("2h"));
-    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_hour)), try parseTimeString("1.5h"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(1.5 * std.time.ns_per_hour)),
+        try parseTimeString("1.5h"),
+    );
 }
 
 test "parseTimeString - days" {
     try testing.expectEqual(@as(u64, 1 * std.time.ns_per_day), try parseTimeString("1d"));
     try testing.expectEqual(@as(u64, 2 * std.time.ns_per_day), try parseTimeString("2d"));
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_day)), try parseTimeString("0.5d"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_day)),
+        try parseTimeString("0.5d"),
+    );
 }
 
 test "parseTimeString - invalid formats" {
@@ -218,7 +245,10 @@ test "parseTimeString - invalid formats" {
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5x"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5."));
     // .5 is valid (GNU compatible, means 0.5 seconds)
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString(".5"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_s)),
+        try parseTimeString(".5"),
+    );
 }
 
 test "parseTimeString - reject NaN and Inf (except GNU-compatible inf/infinity)" {

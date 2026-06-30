@@ -248,7 +248,13 @@ fn isDdOperandLine(trimmed: []const u8) bool {
 }
 
 /// Colorize a Usage/or: line.
-fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8, use_glyphs: bool) !void {
+fn colorizeUsageLine(
+    writer: anytype,
+    line: []const u8,
+    indent_len: usize,
+    trimmed: []const u8,
+    use_glyphs: bool,
+) !void {
     std.debug.assert(indent_len <= line.len);
     // Write leading whitespace
     try writer.writeAll(line[0..indent_len]);
@@ -314,7 +320,12 @@ fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimm
 }
 
 /// Colorize a flag line (e.g. "  -n, --number    description").
-fn colorizeFlagLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8) !void {
+fn colorizeFlagLine(
+    writer: anytype,
+    line: []const u8,
+    indent_len: usize,
+    trimmed: []const u8,
+) !void {
     std.debug.assert(indent_len <= line.len);
     // Write leading whitespace
     try writer.writeAll(line[0..indent_len]);
@@ -369,7 +380,9 @@ fn colorizeFlagTokens(writer: anytype, flag_part: []const u8) !void {
 
         // Find end of this token
         var end = i;
-        while (end < flag_part.len and flag_part[end] != ' ' and flag_part[end] != ',') : (end += 1) {}
+        while (end < flag_part.len and
+            flag_part[end] != ' ' and flag_part[end] != ',') : (end += 1)
+        {}
         std.debug.assert(end <= flag_part.len);
         const token = flag_part[i..end];
 
@@ -542,7 +555,9 @@ test "usage line colorization" {
     const result = aw.writer.buffered();
 
     // "Usage:" label should be bold green
-    try testing.expect(std.mem.find(u8, result, esc_bold ++ esc_green ++ "Usage:" ++ esc_reset) != null);
+    try testing.expect(
+        std.mem.find(u8, result, esc_bold ++ esc_green ++ "Usage:" ++ esc_reset) != null,
+    );
     // Utility name "echo" should be bold
     try testing.expect(std.mem.find(u8, result, esc_bold ++ "echo" ++ esc_reset) != null);
     // [OPTION]... should be yellow (uppercase placeholder)
@@ -569,7 +584,10 @@ test "section header bold with color" {
     defer aw.deinit();
 
     try colorizeHelp(&aw.writer, text, true);
-    try testing.expectEqualStrings(esc_bold ++ esc_bright_blue ++ "Options:" ++ esc_reset ++ "\n", aw.writer.buffered());
+    try testing.expectEqualStrings(
+        esc_bold ++ esc_bright_blue ++ "Options:" ++ esc_reset ++ "\n",
+        aw.writer.buffered(),
+    );
 }
 
 test "section header with glyphs" {

@@ -237,12 +237,18 @@ test "parseGroup with numeric ID" {
 
 test "parseUser with numeric overflow falls back to name lookup" {
     // Test numeric overflow - parseUser falls back to name lookup which fails
-    try testing.expectError(Error.UserNotFound, parseUser("999999999999999999999", testing.allocator));
+    try testing.expectError(
+        Error.UserNotFound,
+        parseUser("999999999999999999999", testing.allocator),
+    );
 }
 
 test "parseGroup with numeric overflow falls back to name lookup" {
     // Test numeric overflow - parseGroup falls back to name lookup which fails
-    try testing.expectError(Error.GroupNotFound, parseGroup("999999999999999999999", testing.allocator));
+    try testing.expectError(
+        Error.GroupNotFound,
+        parseGroup("999999999999999999999", testing.allocator),
+    );
 }
 
 test "OwnershipSpec.parse user only" {
@@ -344,11 +350,17 @@ test "lookupGroupByName with root group" {
 }
 
 test "lookupUserByName with nonexistent user" {
-    try testing.expectError(Error.UserNotFound, lookupUserByName("nonexistent_user_12345", testing.allocator));
+    try testing.expectError(
+        Error.UserNotFound,
+        lookupUserByName("nonexistent_user_12345", testing.allocator),
+    );
 }
 
 test "lookupGroupByName with nonexistent group" {
-    try testing.expectError(Error.GroupNotFound, lookupGroupByName("nonexistent_group_12345", testing.allocator));
+    try testing.expectError(
+        Error.GroupNotFound,
+        lookupGroupByName("nonexistent_group_12345", testing.allocator),
+    );
 }
 
 test "octal confusion warning for 700" {

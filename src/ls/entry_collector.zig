@@ -112,14 +112,26 @@ pub fn needsMetadata(options: LsOptions) bool {
 }
 
 /// Simplified symlink reading that trusts OS readLink syscall completely
-fn readSymlinkSafely(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, stderr_writer: anytype) !?[]u8 {
+fn readSymlinkSafely(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    dir: std.Io.Dir,
+    name: []const u8,
+    stderr_writer: anytype,
+) !?[]u8 {
     var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
     const target_len = dir.readLink(io, name, &target_buf) catch |err| switch (err) {
         error.NotLink => return null,
         // For all other errors, use OS error message directly - no custom categories
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", "symlink {s}: {s}", .{ name, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "ls",
+                "symlink {s}: {s}",
+                .{ name, common.posixErrorString(err) },
+            );
             return null; // Continue processing other entries rather than failing completely
         },
     };
@@ -172,31 +184,57 @@ pub fn enhanceEntriesWithMetadata(
 
     // Batch process stat operations
     if (stat_indices.items.len > 0) {
-        for (stat_indices.items) |i| {
-            if (options.follow_all_symlinks) {
-                // -L: follow symlinks, show target file info
-                entries[i].stat = common.file.FileInfo.statDir(allocator, dir, entries[i].name) catch null;
-                // Update entry kind to match the stat result
-                if (entries[i].stat) |stat| {
-                    entries[i].kind = stat.kind;
-                }
-            } else {
-                entries[i].stat = common.file.FileInfo.lstatDir(allocator, dir, entries[i].name) catch null;
-            }
-        }
+        applyStatMetadata(allocator, entries, dir, stat_indices.items, options);
     }
 
     // Batch process symlink operations
     if (symlink_indices.items.len > 0) {
         for (symlink_indices.items) |i| {
-            entries[i].symlink_target = readSymlinkSafely(io, allocator, dir, entries[i].name, stderr_writer) catch null;
+            entries[i].symlink_target = readSymlinkSafely(
+                io,
+                allocator,
+                dir,
+                entries[i].name,
+                stderr_writer,
+            ) catch null;
         }
     }
 
     // Batch process git operations
     if (needs_git and git_context != null) {
         for (git_indices.items) |i| {
-            entries[i].git_status = git_context.?.getFileStatus(io, entries[i].name) orelse .not_in_repo;
+            entries[i].git_status =
+                git_context.?.getFileStatus(io, entries[i].name) orelse .not_in_repo;
+        }
+    }
+}
+
+/// Populate stat metadata for the given entry indices.
+fn applyStatMetadata(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    dir: std.Io.Dir,
+    stat_indices: []const usize, // tiger:allow:usize-arch slice indices are usize
+    options: LsOptions,
+) void {
+    for (stat_indices) |i| {
+        if (options.follow_all_symlinks) {
+            // -L: follow symlinks, show target file info
+            entries[i].stat = common.file.FileInfo.statDir(
+                allocator,
+                dir,
+                entries[i].name,
+            ) catch null;
+            // Update entry kind to match the stat result
+            if (entries[i].stat) |stat| {
+                entries[i].kind = stat.kind;
+            }
+        } else {
+            entries[i].stat = common.file.FileInfo.lstatDir(
+                allocator,
+                dir,
+                entries[i].name,
+            ) catch null;
         }
     }
 }
@@ -236,28 +274,83 @@ pub fn processSubdirectoriesRecursively(
             return err;
         };
 
-        // Open the subdirectory relative to the current directory
-        var sub_dir = dir.openDir(io, subdir.name, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ subdir.path, err });
-            continue;
-        };
+        // Open the subdirectory and check for cycles; null means skip it.
+        var sub_dir = openSubdirChecked(
+            io,
+            dir,
+            subdir,
+            &cycle_detector,
+            allocator,
+            stderr_writer,
+        ) orelse continue;
         defer sub_dir.close(io);
-
-        // Atomically check for cycles and mark as visited (TOCTOU-safe)
-        const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: unable to check for cycles: {}", .{ subdir.path, err });
-            continue;
-        };
-
-        if (is_cycle) {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: not following symlink cycle", .{subdir.path});
-            continue;
-        }
 
         // Recurse using the recursive module implementation
         const recursive = @import("recursive.zig");
-        try recursive.recurseIntoSubdirectory(io, sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context);
+        try recursive.recurseIntoSubdirectory(
+            io,
+            sub_dir,
+            subdir.path,
+            writer,
+            stderr_writer,
+            options,
+            allocator,
+            style,
+            visited_fs_ids,
+            git_context,
+        );
     }
+}
+
+/// Open a subdirectory and verify it is not a symlink cycle.
+/// Returns the open directory, or null (after printing an error) when the
+/// caller should skip this entry. The caller owns closing the result.
+fn openSubdirChecked(
+    io: std.Io,
+    dir: std.Io.Dir,
+    subdir: common.directory.SubdirEntry,
+    cycle_detector: *common.directory.CycleDetector,
+    allocator: std.mem.Allocator,
+    stderr_writer: anytype,
+) ?std.Io.Dir {
+    // Open the subdirectory relative to the current directory
+    var sub_dir = dir.openDir(io, subdir.name, .{ .iterate = true }) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: {}",
+            .{ subdir.path, err },
+        );
+        return null;
+    };
+
+    // Atomically check for cycles and mark as visited (TOCTOU-safe)
+    const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
+        sub_dir.close(io);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: unable to check for cycles: {}",
+            .{ subdir.path, err },
+        );
+        return null;
+    };
+
+    if (is_cycle) {
+        sub_dir.close(io);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: not following symlink cycle",
+            .{subdir.path},
+        );
+        return null;
+    }
+
+    return sub_dir;
 }
 
 /// Free allocated memory for entries
@@ -350,7 +443,12 @@ test "entry_collector - collectFilteredEntries with all option" {
     var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{ .all = true });
+    var entries = try collectFilteredEntries(
+        testing.io,
+        testing.allocator,
+        test_dir,
+        LsOptions{ .all = true },
+    );
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);
@@ -384,7 +482,12 @@ test "entry_collector - hide_backups filters tilde files" {
     var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{ .hide_backups = true });
+    var entries = try collectFilteredEntries(
+        testing.io,
+        testing.allocator,
+        test_dir,
+        LsOptions{ .hide_backups = true },
+    );
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);
@@ -411,7 +514,12 @@ test "entry_collector - ignore_pattern filters matching files" {
     var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{ .ignore_pattern = "*.c" });
+    var entries = try collectFilteredEntries(
+        testing.io,
+        testing.allocator,
+        test_dir,
+        LsOptions{ .ignore_pattern = "*.c" },
+    );
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);

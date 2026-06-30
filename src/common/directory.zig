@@ -1,7 +1,12 @@
 const std = @import("std");
 
 /// Type alias for HashMap using FileSystemId as keys
-pub const FileSystemIdSet = std.HashMap(FileSystemId, void, FileSystemId.Context, std.hash_map.default_max_load_percentage);
+pub const FileSystemIdSet = std.HashMap(
+    FileSystemId,
+    void,
+    FileSystemId.Context,
+    std.hash_map.default_max_load_percentage,
+);
 
 /// Unique file system identifier combining device and inode for cycle detection.
 ///
@@ -158,7 +163,11 @@ pub fn collectSubdirectories(
                 continue;
             }
 
-            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, entry.name });
+            const full_path = try std.fmt.allocPrint(
+                allocator,
+                "{s}/{s}",
+                .{ base_path, entry.name },
+            );
             errdefer allocator.free(full_path);
             try subdirs.append(allocator, SubdirEntry{ .name = entry.name, .path = full_path });
         }

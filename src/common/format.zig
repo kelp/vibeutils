@@ -83,7 +83,9 @@ pub fn parseBlockSize(str: []const u8) ?u64 {
 
     // Try numeric with suffix
     var num_end: usize = 0;
-    while (num_end < str.len and (std.ascii.isDigit(str[num_end]) or str[num_end] == '.')) : (num_end += 1) {}
+    while (num_end < str.len and
+        (std.ascii.isDigit(str[num_end]) or str[num_end] == '.')) : (num_end += 1)
+    {}
     // The scan only advances while num_end < str.len, so on exit num_end is at
     // most str.len; this bounds the str[0..num_end] and str[num_end..] slices.
     std.debug.assert(num_end <= str.len);
@@ -135,7 +137,10 @@ test "formatHumanReadable - binary short" {
     try std.testing.expectEqualStrings("100", formatHumanReadable(&buf, 100, opts));
     try std.testing.expectEqualStrings("1.0K", formatHumanReadable(&buf, 1024, opts));
     try std.testing.expectEqualStrings("1.0M", formatHumanReadable(&buf, 1048576, opts));
-    try std.testing.expectEqualStrings("10G", formatHumanReadable(&buf, 10 * 1024 * 1024 * 1024, opts));
+    try std.testing.expectEqualStrings(
+        "10G",
+        formatHumanReadable(&buf, 10 * 1024 * 1024 * 1024, opts),
+    );
 }
 
 test "formatHumanReadable - SI short" {

@@ -40,8 +40,14 @@ const CatArgs = struct {
         .show_tabs_and_nonprinting = .{ .short = 't', .desc = "Equivalent to -vT" },
         .show_tabs = .{ .short = 'T', .desc = "Display TAB characters as ^I" },
         .ignored_u = .{ .short = 'u', .desc = "(no effect; for compatibility)" },
-        .ignored_l = .{ .short = 'l', .desc = "Set output to line buffered (no effect; for compatibility)" },
-        .show_nonprinting = .{ .short = 'v', .desc = "Use ^ and M- notation, except for LFD and TAB" },
+        .ignored_l = .{
+            .short = 'l',
+            .desc = "Set output to line buffered (no effect; for compatibility)",
+        },
+        .show_nonprinting = .{
+            .short = 'v',
+            .desc = "Use ^ and M- notation, except for LFD and TAB",
+        },
     };
 };
 
@@ -60,9 +66,12 @@ fn resolveFlagCombinations(parsed_args: CatArgs) CatOptions {
         .number_lines = parsed_args.number,
         .number_nonblank = parsed_args.number_nonblank,
         .squeeze_blank = parsed_args.squeeze_blank,
-        .show_ends = parsed_args.show_ends or parsed_args.show_all or parsed_args.show_ends_and_nonprinting,
-        .show_tabs = parsed_args.show_tabs or parsed_args.show_all or parsed_args.show_tabs_and_nonprinting,
-        .show_nonprinting = parsed_args.show_nonprinting or parsed_args.show_all or parsed_args.show_ends_and_nonprinting or parsed_args.show_tabs_and_nonprinting,
+        .show_ends = parsed_args.show_ends or parsed_args.show_all or
+            parsed_args.show_ends_and_nonprinting,
+        .show_tabs = parsed_args.show_tabs or parsed_args.show_all or
+            parsed_args.show_tabs_and_nonprinting,
+        .show_nonprinting = parsed_args.show_nonprinting or parsed_args.show_all or
+            parsed_args.show_ends_and_nonprinting or parsed_args.show_tabs_and_nonprinting,
     };
 }
 
@@ -120,7 +129,10 @@ pub fn runCat(
         }
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
 }
 
 /// Maps an argparse error to a misuse exit code, printing the matching GNU-style
@@ -254,11 +266,13 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Configuration options that control how cat formats and displays output.
-/// These options determine line numbering, blank line handling, and special character visualization.
+/// These options determine line numbering, blank line handling, and special
+/// character visualization.
 const CatOptions = struct {
     /// Number all output lines when true (controlled by -n flag)
     number_lines: bool = false,
-    /// Number only non-blank output lines when true (controlled by -b flag, overrides number_lines)
+    /// Number only non-blank output lines when true (controlled by -b flag,
+    /// overrides number_lines)
     number_nonblank: bool = false,
     /// Suppress consecutive empty output lines when true (controlled by -s flag)
     squeeze_blank: bool = false,
@@ -266,7 +280,8 @@ const CatOptions = struct {
     show_ends: bool = false,
     /// Display TAB characters as '^I' when true (controlled by -T flag)
     show_tabs: bool = false,
-    /// Display non-printing characters using caret and M- notation when true (controlled by -v flag)
+    /// Display non-printing characters using caret and M- notation when true
+    /// (controlled by -v flag)
     show_nonprinting: bool = false,
 };
 
@@ -280,6 +295,21 @@ const LineNumberState = struct {
     prev_blank: bool = false,
 };
 
+/// Streams chunks directly from reader to writer with no heap allocation,
+/// used when no formatting options are active. peekGreedy(1) fills the
+/// internal buffer and returns all available bytes. Single-caller helper
+/// for processInput.
+fn processInput_streamRaw(reader: anytype, writer: anytype) !void {
+    while (true) { // tiger:allow:unbounded-loop EOF-bounded (peekGreedy EndOfStream)
+        const chunk = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        try writer.writeAll(chunk);
+        reader.toss(chunk.len);
+    }
+}
+
 /// Format output according to the specified options.
 /// Maintains line numbering state across multiple files.
 /// Streams data directly from the reader without buffering entire
@@ -287,7 +317,12 @@ const LineNumberState = struct {
 /// for zero-copy throughput; the formatting path reads line by line
 /// with takeDelimiterInclusive and handles lines longer than buffer
 /// by processing them in chunks (StreamTooLong error).
-fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
+fn processInput(
+    reader: anytype,
+    writer: anytype,
+    options: CatOptions,
+    state: *LineNumberState,
+) !void {
 
     // Check if we need any line-based processing (formatting options)
     const needs_line_processing = options.number_lines or options.number_nonblank or
@@ -295,17 +330,7 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
         options.show_tabs or options.show_nonprinting;
 
     if (!needs_line_processing) {
-        // Stream chunks directly from reader to writer with no heap allocation.
-        // peekGreedy(1) fills the internal buffer and returns all available bytes.
-        while (true) {
-            const chunk = reader.peekGreedy(1) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => |e| return e,
-            };
-            try writer.writeAll(chunk);
-            reader.toss(chunk.len);
-        }
-        return;
+        return processInput_streamRaw(reader, writer);
     }
 
     // Formatting path: process one line at a time using the reader's
@@ -314,13 +339,23 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
     // buffer size, handle StreamTooLong by processing chunks until we
     // find the newline or reach EOF.
     var at_line_start = true; // Track if we're at the beginning of a line for numbering
-    while (true) {
+    // Terminates at EOF: takeDelimiterInclusive returns EndOfStream when the
+    // reader is exhausted, which breaks the loop; the StreamTooLong branch always
+    // tosses partial.len > 0 bytes, so it makes forward progress and cannot spin.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF (see comment above)
         const line_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
             error.StreamTooLong => {
                 // Line exceeds buffer size - process what we have as a partial line
                 const partial = reader.buffered();
                 if (partial.len > 0) {
-                    try processFormattedLineChunk(writer, partial, false, options, state, &at_line_start);
+                    try processFormattedLineChunk(
+                        writer,
+                        partial,
+                        false,
+                        options,
+                        state,
+                        &at_line_start,
+                    );
                     reader.toss(partial.len);
                 }
                 continue; // Keep reading more of the same line
@@ -329,7 +364,14 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
                 // Handle any remaining partial line (no trailing newline)
                 const remaining = reader.buffered();
                 if (remaining.len > 0) {
-                    try processFormattedLineChunk(writer, remaining, false, options, state, &at_line_start);
+                    try processFormattedLineChunk(
+                        writer,
+                        remaining,
+                        false,
+                        options,
+                        state,
+                        &at_line_start,
+                    );
                     reader.toss(remaining.len);
                 }
                 break;
@@ -350,7 +392,14 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
 /// `has_newline` indicates whether this chunk ends with a newline.
 /// `at_line_start` tracks whether we're at the beginning of a line (for line numbering).
 /// When processing chunks of a long line, only the first chunk is at line start.
-fn processFormattedLineChunk(writer: anytype, chunk: []const u8, has_newline: bool, options: CatOptions, state: *LineNumberState, at_line_start: *bool) !void {
+fn processFormattedLineChunk(
+    writer: anytype,
+    chunk: []const u8,
+    has_newline: bool,
+    options: CatOptions,
+    state: *LineNumberState,
+    at_line_start: *bool,
+) !void {
     const is_blank = chunk.len == 0;
 
     // Only handle squeeze_blank and line numbering at the start of a line
@@ -449,7 +498,13 @@ test "cat reads single file" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Hello, world!\n", stdout_aw.writer.buffered());
@@ -472,7 +527,13 @@ test "cat concatenates multiple files" {
     defer testing.allocator.free(path2);
 
     const args = [_][]const u8{ path1, path2 };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("First file\nSecond file\n", stdout_aw.writer.buffered());
@@ -482,7 +543,12 @@ test "cat with -n numbers all lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try common.test_utils.createTestFile(
+        testing.io,
+        tmp_dir.dir,
+        "test.txt",
+        "Line 1\nLine 2\nLine 3\n",
+    );
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -492,10 +558,19 @@ test "cat with -n numbers all lines" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("     1\tLine 1\n     2\tLine 2\n     3\tLine 3\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\tLine 1\n     2\tLine 2\n     3\tLine 3\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "cat with -b numbers non-blank lines" {
@@ -512,17 +587,31 @@ test "cat with -b numbers non-blank lines" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-b", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("     1\tLine 1\n\n     2\tLine 3\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\tLine 1\n\n     2\tLine 3\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "cat with -s squeezes blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n");
+    try common.test_utils.createTestFile(
+        testing.io,
+        tmp_dir.dir,
+        "test.txt",
+        "Line 1\n\n\n\nLine 2\n",
+    );
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -532,7 +621,13 @@ test "cat with -s squeezes blank lines" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-s", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Line 1\n\nLine 2\n", stdout_aw.writer.buffered());
@@ -552,7 +647,13 @@ test "cat with -E shows ends" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Line 1$\nLine 2$\n", stdout_aw.writer.buffered());
@@ -572,7 +673,13 @@ test "cat with -T shows tabs" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-T", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("col1^Icol2\n", stdout_aw.writer.buffered());
@@ -590,11 +697,21 @@ test "cat handles non-existent file" {
 
     const tmp_base_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_base_path);
-    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent.txt", .{tmp_base_path});
+    const nonexistent_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/nonexistent.txt",
+        .{tmp_base_path},
+    );
     defer testing.allocator.free(nonexistent_path);
 
     const args = [_][]const u8{nonexistent_path};
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
     try testing.expect(stderr_aw.writer.buffered().len > 0);
@@ -614,7 +731,13 @@ test "cat with -A shows all (equivalent to -vET)" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-A", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Line 1^I$\nLine 2$\n", stdout_aw.writer.buffered());
@@ -634,7 +757,13 @@ test "cat with -e shows ends and non-printing (equivalent to -vE)" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-e", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Line 1$\nLine 2$\n", stdout_aw.writer.buffered());
@@ -654,7 +783,13 @@ test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-t", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Line^Iwith^Itabs\n", stdout_aw.writer.buffered());
@@ -674,7 +809,13 @@ test "cat with -l flag is ignored" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-l", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // -l should be ignored, so output should be normal
@@ -695,7 +836,13 @@ test "cat with -u flag is ignored" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-u", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // -u should be ignored, so output should be normal
@@ -717,7 +864,13 @@ test "cat with -A and control characters" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-A", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Test^A^IEnd$\n", stdout_aw.writer.buffered());
@@ -739,7 +892,13 @@ test "cat handles very long lines without truncation" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings(long_line, stdout_aw.writer.buffered());
@@ -761,7 +920,13 @@ test "cat with -n handles very long lines correctly" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
 
@@ -791,12 +956,22 @@ test "cat continues processing files after error" {
     // Create a non-existent file path in the temp directory
     const tmp_base_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_base_path);
-    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/definitely-nonexistent-file.txt", .{tmp_base_path});
+    const nonexistent_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/definitely-nonexistent-file.txt",
+        .{tmp_base_path},
+    );
     defer testing.allocator.free(nonexistent_path);
 
     // Test with non-existent file followed by good file
     const args = [_][]const u8{ nonexistent_path, good_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should return error exit code due to nonexistent file
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
@@ -827,7 +1002,13 @@ test "cat -E renders trailing CR as ^M$ on CRLF lines" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // Expected: "test^M$\n" — the \r is shown as ^M before the $ end marker
@@ -851,7 +1032,13 @@ test "cat -E preserves mid-line CR as raw byte" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // Mid-line \r stays as raw \r, only the $ end marker is added
@@ -863,7 +1050,12 @@ test "cat -E with multiple CRLF lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "multi.txt", "line1\r\nline2\r\nline3\n");
+    try common.test_utils.createTestFile(
+        testing.io,
+        tmp_dir.dir,
+        "multi.txt",
+        "line1\r\nline2\r\nline3\n",
+    );
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -873,7 +1065,13 @@ test "cat -E with multiple CRLF lines" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runCat(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_aw.writer.buffered());

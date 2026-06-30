@@ -31,7 +31,11 @@ const TrArgs = struct {
         .complement = .{ .short = 'c', .desc = "Use the complement of SET1" },
         .complement_c = .{ .short = 'C', .desc = "Use the complement of SET1" },
         .delete = .{ .short = 'd', .desc = "delete characters in SET1 without translating" },
-        .squeeze_repeats = .{ .short = 's', .desc = "Replace each sequence of a repeated character that is listed in the last specified SET, with a single occurrence of that character" },
+        .squeeze_repeats = .{
+            .short = 's',
+            .desc = "Replace each sequence of a repeated character that is listed in the last " ++
+                "specified SET, with a single occurrence of that character",
+        },
         .truncate_set1 = .{ .short = 't', .desc = "First truncate SET1 to length of SET2" },
         .ignored_u = .{ .short = 'u', .desc = "Unbuffered output (no effect; for compatibility)" },
     };
@@ -392,9 +396,21 @@ pub fn main(init: std.process.Init) noreturn {
 
 /// Run the tr utility with given arguments.
 /// Public API that reads from stdin.
-pub fn runTr(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runTr(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
-    const parsed = common.argparse.ArgParser.parseOrExit(TrArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        TrArgs,
+        allocator,
+        args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -409,7 +425,13 @@ pub fn runTr(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
 
     // Validate operand count
     if (parsed.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand\nTry 'tr --help' for more information.", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing operand\nTry 'tr --help' for more information.",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -421,12 +443,25 @@ pub fn runTr(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
     // indexes positionals[0].
     assert(parsed.positionals.len > 0);
     if (!parsed.delete and !parsed.squeeze_repeats and parsed.positionals.len < 2) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'\nTwo strings must be given when translating.", .{parsed.positionals[0]});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing operand after '{s}'\nTwo strings must be given when translating.",
+            .{parsed.positionals[0]},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     if (parsed.delete and parsed.squeeze_repeats and parsed.positionals.len < 2) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'\nTwo strings must be given when both deleting and squeezing.", .{parsed.positionals[0]});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing operand after '{s}'\nTwo strings must be given when both " ++
+                "deleting and squeezing.",
+            .{parsed.positionals[0]},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -655,7 +690,13 @@ fn runTrWithInput(
     // Check for extra operands
     const max_positionals: usize = if (args.delete and !args.squeeze_repeats) 1 else 2;
     if (args.positionals.len > max_positionals) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{args.positionals[max_positionals]});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "extra operand '{s}'",
+            .{args.positionals[max_positionals]},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     }
     // Past the extra-operand guard, surplus operands have been rejected.
@@ -700,7 +741,23 @@ fn runTrWithInput(
         set1 = set1[0..set2.len];
     }
 
-    // Choose operation mode
+    return runTrWithInput_dispatch(args, reader, stdout_writer, set1, set2);
+}
+
+/// Choose the operation mode and run it: delete, squeeze, translate, or the
+/// combined delete+squeeze / translate+squeeze paths. Split from
+/// runTrWithInput to keep that function within the 70-line limit.
+fn runTrWithInput_dispatch(
+    args: TrArgs,
+    reader: *std.Io.Reader,
+    stdout_writer: *std.Io.Writer,
+    set1: []const u8,
+    set2: []const u8,
+) !u8 {
+    // Precondition: SET1 is always parsed before dispatch, so it is non-empty
+    // unless the input set was empty; SET2 may be empty (delete/squeeze modes).
+    assert(args.positionals.len >= 1);
+
     if (args.delete and args.squeeze_repeats) {
         // Delete SET1, then squeeze SET2
         return processDeleteSqueeze(reader, stdout_writer, set1, set2);
@@ -729,7 +786,7 @@ fn processTranslate(
     const table = buildTranslationTable(set1, set2);
     var buffer: [8192]u8 = undefined;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop reads until readSliceShort returns 0 (EOF)
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -760,7 +817,7 @@ fn processTranslateSqueeze(
     var buffer: [8192]u8 = undefined;
     var last_byte: ?u8 = null;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop reads until readSliceShort returns 0 (EOF)
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -794,7 +851,7 @@ fn processDelete(
     const delete_set = buildSetMembership(set1);
     var buffer: [8192]u8 = undefined;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop reads until readSliceShort returns 0 (EOF)
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -827,7 +884,7 @@ fn processDeleteSqueeze(
     var buffer: [8192]u8 = undefined;
     var last_byte: ?u8 = null;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop reads until readSliceShort returns 0 (EOF)
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -865,7 +922,7 @@ fn processSqueeze(
     var buffer: [8192]u8 = undefined;
     var last_byte: ?u8 = null;
 
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop reads until readSliceShort returns 0 (EOF)
         const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -949,7 +1006,13 @@ test "tr --help shows help message" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runTr(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runTr(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: tr") != null);
 }
@@ -959,7 +1022,13 @@ test "tr --version shows version information" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runTr(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runTr(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "tr") != null);
 }
@@ -969,7 +1038,13 @@ test "tr with no arguments returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runTr(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runTr(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
@@ -979,7 +1054,13 @@ test "tr translate missing SET2 returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"abc"};
-    const result = try runTr(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runTr(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
 }
 
@@ -1010,7 +1091,13 @@ test "tr unknown flag returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runTr(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runTr(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
 }
 

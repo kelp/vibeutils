@@ -7,7 +7,11 @@ const LsOptions = types.LsOptions;
 const ColorMode = types.ColorMode;
 
 /// Initialize style based on color mode configuration
-pub fn initStyle(allocator: std.mem.Allocator, writer: anytype, color_mode: ColorMode) !common.style.Style(@TypeOf(writer)) {
+pub fn initStyle(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    color_mode: ColorMode,
+) !common.style.Style(@TypeOf(writer)) {
     var style = try common.style.Style(@TypeOf(writer)).init(allocator, writer);
     if (color_mode == .never) {
         style.color_mode = .none;

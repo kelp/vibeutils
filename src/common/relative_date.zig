@@ -48,7 +48,10 @@ const Strings = struct {
     const months_unit = "months";
     const years_unit = "years";
 
-    const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const month_names = [_][]const u8{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
     const same_year_fmt = "{s} {d} {d:0>2}:{d:0>2}";
     const different_year_fmt = "{s} {d} {d}";
 };
@@ -222,10 +225,18 @@ pub fn formatAbsoluteDate(timestamp_ns: i128, allocator: std.mem.Allocator) ![]u
         // Same year: show "Jan 15 15:30"
         const hour = day_seconds.getHoursIntoDay();
         const minute = day_seconds.getMinutesIntoHour();
-        return try std.fmt.allocPrint(allocator, Strings.same_year_fmt, .{ month_name, month_day.day_index + 1, hour, minute });
+        return try std.fmt.allocPrint(
+            allocator,
+            Strings.same_year_fmt,
+            .{ month_name, month_day.day_index + 1, hour, minute },
+        );
     } else {
         // Different year: show "Jan 15 2024"
-        return try std.fmt.allocPrint(allocator, Strings.different_year_fmt, .{ month_name, month_day.day_index + 1, year_day.year });
+        return try std.fmt.allocPrint(
+            allocator,
+            Strings.different_year_fmt,
+            .{ month_name, month_day.day_index + 1, year_day.year },
+        );
     }
 }
 
@@ -300,7 +311,8 @@ test "relative dates - yesterday" {
     const config = RelativeDateConfig{ .current_time_ns = current };
 
     // 1 day ago (within yesterday range)
-    const yesterday = current - (30 * TimeConstants.seconds_per_hour * std.time.ns_per_s); // 30 hours ago
+    // 30 hours ago
+    const yesterday = current - (30 * TimeConstants.seconds_per_hour * std.time.ns_per_s);
     const result = try formatRelativeDate(yesterday, config, allocator);
     defer allocator.free(result);
     try testing.expectEqualStrings("yesterday", result);
@@ -376,7 +388,8 @@ test "relative dates - future dates show absolute" {
     const result = try formatRelativeDate(future, config, allocator);
     defer allocator.free(result);
 
-    // Should be an absolute date format (we don't test exact string since it depends on current date)
+    // Should be an absolute date format (we don't test exact string since it
+    // depends on current date)
     try testing.expect(result.len > 0);
     try testing.expect(!std.mem.startsWith(u8, result, "ago"));
 }

@@ -667,8 +667,24 @@ fn formatDate_appendSpecifier_tzNumeric(buf: []u8, tm: *const time.c_tm) []const
     return tz_str;
 }
 
+/// Convert epoch seconds to broken-down time. Returns true on success,
+/// false if the conversion failed (out-of-range time_t).
+fn runDate_brokenDownTime(secs: i64, utc: bool, tm: *time.c_tm) bool {
+    const time_secs: c.time_t = @intCast(secs);
+    if (utc) {
+        return time.gmtime_r(&time_secs, tm) != null;
+    }
+    return time.localtime_r(&time_secs, tm) != null;
+}
+
 /// Main date utility logic
-pub fn runDate(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runDate(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
     const parsed = parseArgs(args);
     if (parsed.err) |err_msg| {
@@ -697,7 +713,13 @@ pub fn runDate(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
 
     // Handle -v stub: not yet implemented, exit with error
     if (opts.v_adjust != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-v adjustment not yet implemented", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "-v adjustment not yet implemented",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -709,18 +731,16 @@ pub fn runDate(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     }
 
     // Convert to broken-down time
-    const time_secs: c.time_t = @intCast(ts.secs);
     var tm: time.c_tm = undefined;
-    if (opts.utc) {
-        if (time.gmtime_r(&time_secs, &tm) == null) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot convert time", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        }
-    } else {
-        if (time.localtime_r(&time_secs, &tm) == null) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot convert time", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        }
+    if (!runDate_brokenDownTime(ts.secs, opts.utc, &tm)) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "cannot convert time",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Get format string
@@ -886,7 +906,10 @@ test "date -R outputs RFC 5322 format" {
     const args = [_][]const u8{ "-u", "-d", "@0", "-R" };
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("Thu, 01 Jan 1970 00:00:00 +0000\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "Thu, 01 Jan 1970 00:00:00 +0000\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "date +%% outputs literal percent" {
@@ -1045,7 +1068,10 @@ test "date --rfc-3339=ns with epoch" {
     const args = [_][]const u8{ "-u", "-d", "@0", "--rfc-3339=ns" };
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1970-01-01 00:00:00.000000000+00:00\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "1970-01-01 00:00:00.000000000+00:00\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "date --rfc-3339 invalid precision" {
@@ -1122,7 +1148,10 @@ test "date -Ins outputs ISO with nanoseconds" {
     const args = [_][]const u8{ "-u", "-d", "@0", "-Ins" };
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1970-01-01T00:00:00,000000000+00:00\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "1970-01-01T00:00:00,000000000+00:00\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "date -d with invalid epoch" {
@@ -1224,7 +1253,10 @@ test "date combined short flags -uR" {
     const args = [_][]const u8{ "-uR", "-d", "@0" };
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("Thu, 01 Jan 1970 00:00:00 +0000\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "Thu, 01 Jan 1970 00:00:00 +0000\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "date --date= form" {
@@ -1291,7 +1323,8 @@ test "date -r with reference file" {
     try testing.expectEqual(@as(u8, 0), result);
     // Should output a valid 4-digit year
     try testing.expect(stdout_aw.writer.buffered().len >= 4);
-    try testing.expect(stdout_aw.writer.buffered()[0] >= '1' and stdout_aw.writer.buffered()[0] <= '9');
+    const first_year_digit = stdout_aw.writer.buffered()[0];
+    try testing.expect(first_year_digit >= '1' and first_year_digit <= '9');
 }
 
 test "date -r with nonexistent file" {
@@ -1426,7 +1459,12 @@ test "date -v flag accepts value and prints diagnostic" {
     // -v is unimplemented so no stdout output is produced
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     // Should print diagnostic to stderr
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-v adjustment not yet implemented") != null);
+    const found_v_msg = std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "-v adjustment not yet implemented",
+    );
+    try testing.expect(found_v_msg != null);
 }
 
 test "date parseArgs -v stores v_adjust" {
@@ -1493,7 +1531,12 @@ test "date -v stderr should contain error message" {
     const args = [_][]const u8{ "-v", "+1d", "-u", "-d", "@0", "+%Y" };
     _ = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // stderr should contain a message about -v not being implemented
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "not yet implemented") != null);
+    const found_not_impl = std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "not yet implemented",
+    );
+    try testing.expect(found_not_impl != null);
 }
 
 // ============================================================================

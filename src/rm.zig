@@ -29,15 +29,25 @@ const RmArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .force = .{ .short = 'f', .desc = "Ignore nonexistent files and arguments, never prompt" },
         .interactive = .{ .short = 'i', .desc = "Prompt before every removal" },
-        .interactive_once = .{ .short = 'I', .desc = "Prompt once before removing more than three files, or when removing recursively" },
+        .interactive_once = .{
+            .short = 'I',
+            .desc = "Prompt once before removing more than three files, " ++
+                "or when removing recursively",
+        },
         .recursive = .{ .short = 'r', .desc = "Remove directories and their contents recursively" },
-        .R = .{ .short = 'R', .desc = "Remove directories and their contents recursively (same as -r)" },
+        .R = .{
+            .short = 'R',
+            .desc = "Remove directories and their contents recursively (same as -r)",
+        },
         .remove_empty_dirs = .{ .short = 'd', .desc = "Remove empty directories" },
         .P = .{ .short = 'P', .desc = "Overwrite before deletion (no-op, BSD compatibility)" },
         .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
         .preserve_root = .{ .short = 0, .desc = "Do not remove '/' (default)" },
         .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially" },
-        .no_cross_device = .{ .short = 'x', .desc = "Don't cross mount points during recursive removal" },
+        .no_cross_device = .{
+            .short = 'x',
+            .desc = "Don't cross mount points during recursive removal",
+        },
         .undelete = .{ .short = 'W', .desc = "Attempt to undelete (not supported, stub)" },
     };
 };
@@ -114,10 +124,22 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Main entry point for the rm command with writer-based interface.
-pub fn runRm(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runRm(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     std.debug.assert(stdout_writer != stderr_writer);
     // Parse command-line arguments using the common argument parser
-    const parsed_args = common.argparse.ArgParser.parseOrExit(RmArgs, allocator, args, "rm", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        RmArgs,
+        allocator,
+        args,
+        "rm",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help flag
@@ -161,7 +183,10 @@ pub fn runRm(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
     };
 
     const success = try removeFiles(allocator, io, files, stdout_writer, stderr_writer, options);
-    return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
+    return if (success)
+        @intFromEnum(common.ExitCode.success)
+    else
+        @intFromEnum(common.ExitCode.general_error);
 }
 
 /// Prints help information to the specified writer.
@@ -198,11 +223,24 @@ fn printVersion(writer: *std.Io.Writer) !void {
 }
 
 /// Main file removal function that processes a list of files/directories.
-fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !bool {
+fn removeFiles(
+    allocator: Allocator,
+    io: std.Io,
+    files: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !bool {
     std.debug.assert(stdout_writer != stderr_writer);
     // Handle interactive once mode (-I flag) - but force overrides
     if (!options.force and options.interactive_once and (files.len > 3 or options.recursive)) {
-        if (!try common.prompt.promptYesNo(io, stderr_writer, "rm: remove {d} arguments? ", .{files.len})) {
+        const proceed = try common.prompt.promptYesNo(
+            io,
+            stderr_writer,
+            "rm: remove {d} arguments? ",
+            .{files.len},
+        );
+        if (!proceed) {
             return true; // User said no, but no error occurred
         }
     }
@@ -212,7 +250,13 @@ fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdo
     for (files) |file| {
         // Check preserve-root protection before anything else
         if (options.preserve_root and isRootPath(file)) {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "refusing to remove '/'; use --no-preserve-root to override", .{});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "refusing to remove '/'; use --no-preserve-root to override",
+                .{},
+            );
             any_errors = true;
             continue;
         }
@@ -225,44 +269,99 @@ fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdo
         }
 
         // Try to remove the file/directory
-        removeItem(allocator, io, file, stdout_writer, stderr_writer, options) catch |err| switch (err) {
-            error.FileNotFound => {
-                if (!options.force) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{file});
-                    any_errors = true;
-                }
-            },
-            error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
-                any_errors = true;
-            },
-            error.IsDir => {
-                const dir_error = try removeFiles_handleIsDir(
-                    allocator,
-                    io,
-                    file,
-                    stdout_writer,
-                    stderr_writer,
-                    options,
-                    any_errors,
-                );
-                any_errors = dir_error or any_errors;
-            },
-            error.InteractiveUserCancelled => {
-                // User declined in interactive mode - this is normal behavior, not an error
-            },
-            error.UserCancelled => {
-                // User declined write-protected file prompt - this is an error
-                any_errors = true;
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(err) });
-                any_errors = true;
-            },
-        };
+        const file_error = try removeFiles_removeOne(
+            allocator,
+            io,
+            file,
+            stdout_writer,
+            stderr_writer,
+            options,
+            any_errors,
+        );
+        any_errors = file_error or any_errors;
     }
 
     return !any_errors;
+}
+
+/// Removes a single file/directory and reports per-file errors for the
+/// `removeFiles` loop. Returns whether THIS file errored, so the caller
+/// centralizes the `any_errors` accumulation. `any_errors_so_far` is the
+/// loop-wide gate forwarded to `removeFiles_handleIsDir` so the -d verbose
+/// message keeps its original behavior bit-for-bit.
+fn removeFiles_removeOne(
+    allocator: Allocator,
+    io: std.Io,
+    file: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+    any_errors_so_far: bool,
+) !bool {
+    std.debug.assert(file.len > 0);
+    std.debug.assert(stdout_writer != stderr_writer);
+    var local_error = false;
+    removeItem(
+        allocator,
+        io,
+        file,
+        stdout_writer,
+        stderr_writer,
+        options,
+    ) catch |err| switch (err) {
+        error.FileNotFound => {
+            if (!options.force) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "rm",
+                    "cannot remove '{s}': No such file or directory",
+                    .{file},
+                );
+                local_error = true;
+            }
+        },
+        error.AccessDenied => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': Permission denied",
+                .{file},
+            );
+            local_error = true;
+        },
+        error.IsDir => {
+            const dir_error = try removeFiles_handleIsDir(
+                allocator,
+                io,
+                file,
+                stdout_writer,
+                stderr_writer,
+                options,
+                any_errors_so_far,
+            );
+            local_error = dir_error or any_errors_so_far;
+        },
+        error.InteractiveUserCancelled => {
+            // User declined in interactive mode - this is normal behavior, not an error
+        },
+        error.UserCancelled => {
+            // User declined write-protected file prompt - this is an error
+            local_error = true;
+        },
+        else => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': {s}",
+                .{ file, common.posixErrorString(err) },
+            );
+            local_error = true;
+        },
+    };
+    return local_error;
 }
 
 /// Reports the specific reason an unsafe path was refused by `removeFiles`.
@@ -418,7 +517,14 @@ fn removeFiles_handleIsDir_reportDeleteDir(
 }
 
 /// Remove a single file or symlink.
-fn removeItem(_: Allocator, io: std.Io, file_path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !void {
+fn removeItem(
+    _: Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !void {
     std.debug.assert(file_path.len > 0);
     std.debug.assert(stdout_writer != stderr_writer);
     // Use lstat so symlinks are examined directly (not their targets).
@@ -448,7 +554,13 @@ fn removeItem(_: Allocator, io: std.Io, file_path: []const u8, stdout_writer: *s
         const mode = stat_result.mode;
         const user_write = (mode & 0o200) != 0;
         if (!user_write) {
-            if (!try common.prompt.promptYesNo(io, stderr_writer, "rm: remove write-protected regular file '{s}'? ", .{file_path})) {
+            const proceed = try common.prompt.promptYesNo(
+                io,
+                stderr_writer,
+                "rm: remove write-protected regular file '{s}'? ",
+                .{file_path},
+            );
+            if (!proceed) {
                 return error.UserCancelled;
             }
         }
@@ -468,7 +580,14 @@ fn removeItem(_: Allocator, io: std.Io, file_path: []const u8, stdout_writer: *s
 }
 
 /// Remove a directory recursively with per-entry verbose/interactive support.
-fn removeDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !void {
+fn removeDirectory(
+    allocator: Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !void {
     std.debug.assert(dir_path.len > 0);
     std.debug.assert(options.recursive);
     // For non-verbose, non-interactive mode with force and no -x, use deleteTree as fast path
@@ -572,7 +691,15 @@ fn handleWalkEntry(
         return handleDirectoryPre(io, entry, walker, allocator, cancelled, stderr_writer, options);
     }
     if (is_directory and entry.visit == .post) {
-        return handleDirectoryPost(allocator, io, entry, cancelled, stdout_writer, stderr_writer, options);
+        return handleDirectoryPost(
+            allocator,
+            io,
+            entry,
+            cancelled,
+            stdout_writer,
+            stderr_writer,
+            options,
+        );
     }
 
     // Regular file or symlink: always a single pre-order visit.
@@ -603,17 +730,35 @@ fn handleFileError(
         error.UserCancelled => return true,
         error.FileNotFound => {
             if (!options.force) {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{entry.path});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "rm",
+                    "cannot remove '{s}': No such file or directory",
+                    .{entry.path},
+                );
                 return true;
             }
             return false;
         },
         error.AccessDenied => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{entry.path});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': Permission denied",
+                .{entry.path},
+            );
             return true;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry.path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': {s}",
+                .{ entry.path, common.posixErrorString(err) },
+            );
             return true;
         },
     }
@@ -668,15 +813,33 @@ fn handleDirectoryPost(
 
     std.Io.Dir.cwd().deleteDir(io, entry.path) catch |err| switch (err) {
         error.DirNotEmpty => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{entry.path});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': Directory not empty",
+                .{entry.path},
+            );
             return true;
         },
         error.AccessDenied => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{entry.path});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': Permission denied",
+                .{entry.path},
+            );
             return true;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry.path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rm",
+                "cannot remove '{s}': {s}",
+                .{ entry.path, common.posixErrorString(err) },
+            );
             return true;
         },
     };
@@ -847,7 +1010,9 @@ test "rm: root directory protection" {
     try testing.expect(exit_code != 0);
     // Should have preserve-root error message
     try testing.expect(stderr_aw.writer.buffered().len > 0);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove '/'") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove '/'") != null,
+    );
 }
 
 test "rm: empty path handling" {
@@ -1002,12 +1167,20 @@ test "rm: verbose recursive removal" {
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
 
     try testing.expect(success);
     // Verbose output should mention individual files
     const output = stdout_aw.writer.buffered();
-    try testing.expect(std.mem.find(u8, output, "removed '") != null or std.mem.find(u8, output, "removed directory '") != null);
+    try testing.expect(std.mem.find(u8, output, "removed '") != null or
+        std.mem.find(u8, output, "removed directory '") != null);
 }
 
 test "rm: recursive removal with nested directories" {
@@ -1039,7 +1212,14 @@ test "rm: recursive removal with nested directories" {
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
 
     try testing.expect(success);
 
@@ -1084,7 +1264,9 @@ test "rm: triple-slash root protection" {
 
     // Should fail with preserve-root error
     try testing.expect(exit_code != 0);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove '/'") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove '/'") != null,
+    );
 }
 
 test "rm: no-preserve-root flag is parsed" {
@@ -1116,7 +1298,9 @@ test "rm: non-root path does not trigger preserve-root" {
 
     // Should succeed (-f ignores nonexistent) and NOT show preserve-root error
     try testing.expect(exit_code == 0);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove '/'") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove '/'") == null,
+    );
 }
 
 test "rm: preserve-root flag is accepted" {
@@ -1617,7 +1801,14 @@ test "rm: post-order deletion removes children before the parent directory" {
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     const out = stdout_aw.writer.buffered();
@@ -1627,7 +1818,8 @@ test "rm: post-order deletion removes children before the parent directory" {
     const beta = std.mem.find(u8, out, "beta.txt") orelse return error.MissingBetaLine;
 
     // The parent directory removal line must exist...
-    const dir_line = std.mem.find(u8, out, "removed directory '") orelse return error.MissingDirLine;
+    const dir_line = std.mem.find(u8, out, "removed directory '") orelse
+        return error.MissingDirLine;
 
     // ...and it must come AFTER both child removals (post-order).
     try testing.expect(dir_line > alpha);
@@ -1687,7 +1879,14 @@ test "rm: recursive removal clears a multi-level tree leaving nothing behind" {
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{root_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{root_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     // Root gone entirely.
@@ -1739,7 +1938,14 @@ test "rm: directory symlink is removed as a link and not descended under no-foll
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{tree_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{tree_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     // The removed tree (and its symlink) must be gone.
@@ -1803,7 +2009,14 @@ test "rm: deep directory chain is fully removed without stack overflow" {
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{top_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{top_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     // Top of chain gone, and the deepest path gone too.
@@ -1847,7 +2060,14 @@ test "rm: -x recursive removal removes a same-device tree completely" {
         .no_cross_device = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     try testing.expect(std.Io.Dir.cwd().statFile(io, dir_path, .{}) == error.FileNotFound);
@@ -1940,7 +2160,14 @@ test "rm: interactive decline of a directory keeps that directory" {
     };
 
     // Declining is not an error; the call should report overall success.
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     // Positive fact: the directory the user refused must still exist.
@@ -1997,7 +2224,14 @@ test "rm: interactive declined child keeps the parent directory" {
         .preserve_root = true,
     };
 
-    _ = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    _ = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
 
     // Assert on the SAME (absolute, realpath-resolved) path space that rm
     // operated on, not on tmp.dir-relative paths — on systems where the
@@ -2068,7 +2302,14 @@ test "rm: interactive accept removes the entire tree through the recursive path"
         .preserve_root = true,
     };
 
-    const success = try removeFiles(testing.allocator, io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer, options);
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{dir_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expect(success);
 
     // Whole tree gone (assert on the absolute realpath rm operated on).

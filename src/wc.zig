@@ -35,8 +35,16 @@ const WcOptions = struct {
         .bytes = .{ .short = 'c', .desc = "Print the byte counts" },
         .chars = .{ .short = 'm', .desc = "Print the character counts" },
         .max_line_length = .{ .short = 'L', .desc = "Print the maximum line length" },
-        .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
-        .libxo = .{ .short = 0, .desc = "Generate output via libxo (not supported)", .value_name = "FORMAT" },
+        .color = .{
+            .short = 0,
+            .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'",
+            .value_name = "WHEN",
+        },
+        .libxo = .{
+            .short = 0,
+            .desc = "Generate output via libxo (not supported)",
+            .value_name = "FORMAT",
+        },
     };
 };
 
@@ -120,9 +128,21 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Run the wc utility with given arguments
-pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runWc(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
-    const options = common.argparse.ArgParser.parseOrExit(WcOptions, allocator, args, "wc", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const options = common.argparse.ArgParser.parseOrExit(
+        WcOptions,
+        allocator,
+        args,
+        "wc",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(options.positionals);
 
     if (options.help) {
@@ -137,30 +157,32 @@ pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
 
     // Handle --libxo: not supported, print error and exit
     if (options.libxo != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, "wc", "libxo output is not supported", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "wc",
+            "libxo output is not supported",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     }
 
     // GNU wc: -c and -m are NOT mutually exclusive.
     // When both are specified, both columns are printed (chars before bytes).
     var opts = options;
-
-    // If no count options specified, default to lines, words, and bytes
-    if (!opts.lines and !opts.words and !opts.bytes and !opts.chars and !opts.max_line_length) {
-        opts.lines = true;
-        opts.words = true;
-        opts.bytes = true;
-    }
-
-    // Positive space: after defaulting, at least one count is always requested.
-    const any_count_requested = opts.lines or opts.words or opts.bytes or
-        opts.chars or opts.max_line_length;
-    std.debug.assert(any_count_requested);
+    runWc_applyDefaults(&opts);
 
     // Resolve display configuration
     const config = resolveConfig(allocator, opts) catch |err| switch (err) {
         error.InvalidColorMode => {
-            common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "wc",
+                "invalid argument '{s}' for '--color'\n" ++
+                    "Valid arguments are: 'always', 'auto', 'never'",
+                .{opts.color orelse ""},
+            );
             return @intFromEnum(common.ExitCode.misuse);
         },
     };
@@ -178,6 +200,23 @@ pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
         stderr_writer,
         style_inst,
     );
+}
+
+/// Apply GNU wc's default count selection in place: when no count flag is set,
+/// enable lines, words, and bytes. Asserts at least one count is requested after
+/// defaulting. Single caller: runWc.
+fn runWc_applyDefaults(opts: *WcOptions) void {
+    // If no count options specified, default to lines, words, and bytes
+    if (!opts.lines and !opts.words and !opts.bytes and !opts.chars and !opts.max_line_length) {
+        opts.lines = true;
+        opts.words = true;
+        opts.bytes = true;
+    }
+
+    // Positive space: after defaulting, at least one count is always requested.
+    const any_count_requested = opts.lines or opts.words or opts.bytes or
+        opts.chars or opts.max_line_length;
+    std.debug.assert(any_count_requested);
 }
 
 /// Count every requested input and print per-input and total stats, returning the
@@ -349,7 +388,13 @@ fn countReader(reader: *std.Io.Reader, options: WcOptions) !FileStats {
     // Precondition: counting starts from a zeroed byte tally (positive space).
     std.debug.assert(stats.bytes == 0);
 
-    while (true) {
+    // Streams an unbounded input (stdin or arbitrary-size file) in 8192-byte
+    // chunks. Termination: peekGreedy(1) returns error.EndOfStream at end of
+    // input, hitting the break; any other read error returns early. Each
+    // successful iteration tosses chunk.len >= 1 bytes, so the reader strictly
+    // advances toward EOF. No numeric cap: it would silently truncate valid
+    // long input and undercount.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF (peekGreedy errs)
         const chunk = reader.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => break,
             else => |e| return e,
@@ -548,7 +593,13 @@ fn addStats(total: *FileStats, stats: FileStats) void {
 }
 
 /// Print statistics for a file
-fn printStats(writer: *std.Io.Writer, stats: FileStats, filename: ?[]const u8, options: WcOptions, style_inst: anytype) !void {
+fn printStats(
+    writer: *std.Io.Writer,
+    stats: FileStats,
+    filename: ?[]const u8,
+    options: WcOptions,
+    style_inst: anytype,
+) !void {
     // Print counts in GNU column order: lines words chars bytes max_line_length filename
     // When both -c and -m are given, both columns appear (chars before bytes).
     if (options.lines) {
@@ -678,7 +729,8 @@ test "wc counts UTF-8 characters correctly" {
     defer tmp_dir.cleanup();
 
     const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
-    try test_file.writeStreamingAll(io, "hello \xe4\xb8\x96\xe7\x95\x8c\n"); // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
+    // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
+    try test_file.writeStreamingAll(io, "hello \xe4\xb8\x96\xe7\x95\x8c\n");
     test_file.close(io);
 
     const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
@@ -704,7 +756,8 @@ test "wc finds maximum line length" {
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .max_line_length = true });
-    try testing.expectEqual(@as(u64, 21), stats.max_line_length); // "this is a longer line" = 21 chars
+    // "this is a longer line" = 21 chars
+    try testing.expectEqual(@as(u64, 21), stats.max_line_length);
 }
 
 test "wc handles empty input" {
@@ -785,8 +838,20 @@ test "wc handles all counts together" {
 
 test "wc addStats combines statistics correctly" {
     var total = FileStats{};
-    const stats1 = FileStats{ .lines = 5, .words = 10, .bytes = 50, .chars = 45, .max_line_length = 20 };
-    const stats2 = FileStats{ .lines = 3, .words = 8, .bytes = 30, .chars = 28, .max_line_length = 25 };
+    const stats1 = FileStats{
+        .lines = 5,
+        .words = 10,
+        .bytes = 50,
+        .chars = 45,
+        .max_line_length = 20,
+    };
+    const stats2 = FileStats{
+        .lines = 3,
+        .words = 8,
+        .bytes = 30,
+        .chars = 28,
+        .max_line_length = 25,
+    };
 
     addStats(&total, stats1);
     addStats(&total, stats2);
@@ -823,7 +888,10 @@ test "wc output formatting" {
         .bytes = true,
     }, test_style);
 
-    try testing.expectEqualStrings("      10      50     250 test.txt\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "      10      50     250 test.txt\n",
+        stdout_aw.writer.buffered(),
+    );
     _ = io;
 }
 
@@ -888,7 +956,9 @@ test "wc with multiple files shows total" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "total") != null);
 
     // Total should be 2 lines, 5 words, 24 bytes
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "       2       5      24 total") != null);
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "       2       5      24 total") != null,
+    );
 }
 
 test "wc --help shows usage" {
@@ -1055,7 +1125,9 @@ test "wc --libxo prints error and exits with code 1" {
     const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "libxo output is not supported") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "libxo output is not supported") != null,
+    );
 }
 
 test "wc --color=invalid exits with code 2" {

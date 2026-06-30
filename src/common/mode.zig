@@ -381,7 +381,9 @@ fn applyPerms(mode: *Mode, who: u8, op: u8, perms: u8) void {
 // --- Mode struct ---
 
 test "mode: fromOctal / toOctal roundtrip" {
-    const cases = [_]u32{ 0o000, 0o644, 0o755, 0o777, 0o123, 0o456, 0o4755, 0o2644, 0o1777, 0o7777 };
+    const cases = [_]u32{
+        0o000, 0o644, 0o755, 0o777, 0o123, 0o456, 0o4755, 0o2644, 0o1777, 0o7777,
+    };
     for (cases) |original| {
         const m = Mode.fromOctal(original);
         try testing.expectEqual(original, m.toOctal());

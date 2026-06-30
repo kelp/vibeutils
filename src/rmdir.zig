@@ -15,9 +15,11 @@ const RmdirArgs = struct {
     pub const meta = .{
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .parents = .{ .short = 'p', .desc = "Remove DIRECTORY and its ancestors; e.g., 'rmdir -p a/b/c' is similar to 'rmdir a/b/c a/b a'" },
+        .parents = .{ .short = 'p', .desc = "Remove DIRECTORY and its ancestors; " ++
+            "e.g., 'rmdir -p a/b/c' is similar to 'rmdir a/b/c a/b a'" },
         .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every directory processed" },
-        .ignore_fail_on_non_empty = .{ .short = 0, .desc = "Ignore each failure that is solely because a directory is non-empty" },
+        .ignore_fail_on_non_empty = .{ .short = 0, .desc = "Ignore each failure that is " ++
+            "solely because a directory is non-empty" },
     };
 };
 
@@ -85,7 +87,13 @@ fn run(
 ) !u8 {
     const prog_name = "rmdir";
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(RmdirArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        RmdirArgs,
+        allocator,
+        args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -112,7 +120,14 @@ fn run(
 
     // The missing-operand guard above returned for the empty case, so we have at least one.
     std.debug.assert(directories.len > 0);
-    const exit_code = try removeDirectories(allocator, io, directories, stdout_writer, stderr_writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        directories,
+        stdout_writer,
+        stderr_writer,
+        options,
+    );
     return @intFromEnum(exit_code);
 }
 
@@ -141,7 +156,14 @@ fn printVersion(writer: *std.Io.Writer) !void {
 }
 
 /// Remove directories with proper error handling.
-fn removeDirectories(allocator: std.mem.Allocator, io: std.Io, directories: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmdirOptions) !common.ExitCode {
+fn removeDirectories(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    directories: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmdirOptions,
+) !common.ExitCode {
     // Callers only invoke this after the missing-operand guard, so there is always work to do.
     std.debug.assert(directories.len > 0);
     var had_error = false;
@@ -152,13 +174,26 @@ fn removeDirectories(allocator: std.mem.Allocator, io: std.Io, directories: []co
         // basename returns the final component, always a subslice no longer than dir.
         std.debug.assert(base.len <= dir.len);
         if (std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
-            common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "refusing to remove '.' or '..' component from '{s}'", .{dir});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "rmdir",
+                "refusing to remove '.' or '..' component from '{s}'",
+                .{dir},
+            );
             had_error = true;
             continue;
         }
 
         if (options.parents) {
-            if (removeDirectoryWithParents(allocator, io, dir, stdout_writer, stderr_writer, options)) |_| {
+            if (removeDirectoryWithParents(
+                allocator,
+                io,
+                dir,
+                stdout_writer,
+                stderr_writer,
+                options,
+            )) |_| {
                 // Success
             } else |err| {
                 had_error = true;
@@ -178,7 +213,13 @@ fn removeDirectories(allocator: std.mem.Allocator, io: std.Io, directories: []co
 }
 
 /// Remove a single directory.
-fn removeSingleDirectory(io: std.Io, path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmdirOptions) !void {
+fn removeSingleDirectory(
+    io: std.Io,
+    path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmdirOptions,
+) !void {
     // stderr_writer unused here, errors handled by caller
     _ = stderr_writer;
 
@@ -197,7 +238,14 @@ fn removeSingleDirectory(io: std.Io, path: []const u8, stdout_writer: *std.Io.Wr
 }
 
 /// Remove directory with its parent directories.
-fn removeDirectoryWithParents(allocator: std.mem.Allocator, io: std.Io, path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmdirOptions) !void {
+fn removeDirectoryWithParents(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmdirOptions,
+) !void {
     // First remove the directory itself
     try removeSingleDirectory(io, path, stdout_writer, stderr_writer, options);
 
@@ -221,12 +269,24 @@ fn removeDirectoryWithParents(allocator: std.mem.Allocator, io: std.Io, path: []
 }
 
 /// Handle errors with friendly messages.
-fn handleError(allocator: std.mem.Allocator, err: anyerror, path: []const u8, stderr_writer: *std.Io.Writer, options: RmdirOptions) !void {
+fn handleError(
+    allocator: std.mem.Allocator,
+    err: anyerror,
+    path: []const u8,
+    stderr_writer: *std.Io.Writer,
+    options: RmdirOptions,
+) !void {
     if (options.ignore_fail_on_non_empty and err == error.DirNotEmpty) {
         return;
     }
 
-    common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "failed to remove '{s}': {s}", .{ path, common.posixErrorString(err) });
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "rmdir",
+        "failed to remove '{s}': {s}",
+        .{ path, common.posixErrorString(err) },
+    );
 }
 
 // ===== TESTS =====
@@ -246,7 +306,14 @@ test "rmdir: remove empty directory" {
     const dirs = [_][]const u8{test_dir};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     const stat = std.Io.Dir.cwd().statFile(io, test_dir, .{});
@@ -274,7 +341,14 @@ test "rmdir: fail on non-empty directory" {
     const dirs = [_][]const u8{test_dir};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
     const stat = try std.Io.Dir.cwd().statFile(io, test_dir, .{});
@@ -304,7 +378,14 @@ test "rmdir: ignore fail on non-empty with flag" {
         .ignore_fail_on_non_empty = true,
     };
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     const stat = try std.Io.Dir.cwd().statFile(io, test_dir, .{});
@@ -328,7 +409,14 @@ test "rmdir: verbose output" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_verbose") != null);
@@ -354,14 +442,25 @@ test "rmdir: remove with parents" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     const stat = std.Io.Dir.cwd().statFile(io, base_dir, .{});
     try testing.expectError(error.FileNotFound, stat);
 
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents/sub/deep") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents/sub") != null);
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents/sub/deep") != null,
+    );
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents/sub") != null,
+    );
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents") != null);
 }
 
@@ -389,7 +488,14 @@ test "rmdir: multiple directories" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, dir1, .{}));
@@ -408,7 +514,14 @@ test "rmdir: error on non-existent directory" {
     const dirs = [_][]const u8{"nonexistent_directory"};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 }
 
@@ -428,7 +541,14 @@ test "rmdir: error on file instead of directory" {
     const dirs = [_][]const u8{test_file};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
     const stat = try std.Io.Dir.cwd().statFile(io, test_file, .{});
@@ -462,7 +582,14 @@ test "rmdir: parents stops on error" {
         .verbose = true,
     };
 
-    _ = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    _ = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
 
     try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, deep_dir, .{}));
     const sub_stat = try std.Io.Dir.cwd().statFile(io, sub_dir, .{});
@@ -488,7 +615,14 @@ test "rmdir: unicode path handling" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, io, &dirs, &stdout_aw.writer, &stderr_aw.writer, options);
+    const exit_code = try removeDirectories(
+        allocator,
+        io,
+        &dirs,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     const stat = std.Io.Dir.cwd().statFile(io, test_dir, .{});
@@ -523,10 +657,19 @@ test "rmdir: parent iterator memory management" {
 }
 
 test "rmdir: error message consistency" {
-    try testing.expectEqualStrings("Directory not empty", common.posixErrorString(error.DirNotEmpty));
+    try testing.expectEqualStrings(
+        "Directory not empty",
+        common.posixErrorString(error.DirNotEmpty),
+    );
     try testing.expectEqualStrings("Not a directory", common.posixErrorString(error.NotDir));
-    try testing.expectEqualStrings("Permission denied", common.posixErrorString(error.AccessDenied));
-    try testing.expectEqualStrings("No such file or directory", common.posixErrorString(error.FileNotFound));
+    try testing.expectEqualStrings(
+        "Permission denied",
+        common.posixErrorString(error.AccessDenied),
+    );
+    try testing.expectEqualStrings(
+        "No such file or directory",
+        common.posixErrorString(error.FileNotFound),
+    );
 }
 
 test "rmdir: -p dotdot should fail with refusing message" {

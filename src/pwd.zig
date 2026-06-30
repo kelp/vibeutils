@@ -21,7 +21,10 @@ const PwdArgs = struct {
     pub const meta = .{
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .logical = .{ .short = 'L', .desc = "Use PWD from environment, even if it contains symlinks" },
+        .logical = .{
+            .short = 'L',
+            .desc = "Use PWD from environment, even if it contains symlinks",
+        },
         .physical = .{ .short = 'P', .desc = "Resolve all symbolic links (default)" },
     };
 };
@@ -37,15 +40,33 @@ pub fn runPwd(
     const parsed_args = common.argparse.ArgParser.parse(PwdArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "unrecognized option", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "pwd",
+                    "unrecognized option",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "option requires an argument", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "pwd",
+                    "option requires an argument",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "invalid option value", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "pwd",
+                    "invalid option value",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -64,7 +85,13 @@ pub fn runPwd(
     }
 
     const cwd = getWorkingDirectory(allocator, io, parsed_args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "pwd",
+            "failed to get current directory: {s}",
+            .{common.posixErrorString(err)},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(cwd);

@@ -67,7 +67,12 @@ pub const TestDir = struct {
     }
 
     /// Create a file with specified content and optional mode
-    pub fn createFile(self: *TestDir, name: []const u8, content: []const u8, mode: ?std.posix.mode_t) !void {
+    pub fn createFile(
+        self: *TestDir,
+        name: []const u8,
+        content: []const u8,
+        mode: ?std.posix.mode_t,
+    ) !void {
         const io = testing.io;
         const file_options: std.Io.Dir.CreateFileOptions = if (mode) |m|
             .{ .permissions = std.Io.File.Permissions.fromMode(m) }

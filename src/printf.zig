@@ -23,9 +23,21 @@ pub fn main(init: std.process.Init) noreturn {
 ///
 /// printf does not use ArgParser since FORMAT is a positional argument.
 /// Only --help and --version are handled as special cases.
-pub fn runPrintf(allocator: Allocator, _: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runPrintf(
+    allocator: Allocator,
+    _: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     if (args.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "printf", "usage: printf FORMAT [ARGUMENT...]", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "printf",
+            "usage: printf FORMAT [ARGUMENT...]",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -47,9 +59,17 @@ pub fn runPrintf(allocator: Allocator, _: std.Io, args: []const []const u8, stdo
     var arg_idx: usize = 0;
 
     // Process format string, reusing it if arguments remain
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop terminates: breaks when no arg consumed or all used
         const start_arg_idx = arg_idx;
-        const halted = processFormat(format, arguments, &arg_idx, stdout_writer, stderr_writer, allocator, &had_error) catch blk: {
+        const halted = processFormat(
+            format,
+            arguments,
+            &arg_idx,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+            &had_error,
+        ) catch blk: {
             had_error = true;
             break :blk false;
         };
@@ -101,7 +121,16 @@ fn processFormat(
                 i += 2;
             } else {
                 // Format specifier
-                const result = try processSpecifier(format, i, arguments, arg_idx, writer, stderr_writer, allocator, had_error);
+                const result = try processSpecifier(
+                    format,
+                    i,
+                    arguments,
+                    arg_idx,
+                    writer,
+                    stderr_writer,
+                    allocator,
+                    had_error,
+                );
                 if (result.halt) return true;
                 i = result.pos;
             }
@@ -1179,7 +1208,11 @@ fn applyFloatPadding(writer: anytype, formatted: []const u8, spec: FormatSpec) !
             try writePadding(writer, ' ', padding);
         } else if (spec.zero_pad) {
             // Insert zeros after sign/prefix
-            const prefix_end: usize = if (formatted.len > 1 and (formatted[1] == 'x' or formatted[1] == 'X')) 2 else if (formatted.len > 0 and formatted[0] == '-') 1 else 0;
+            const has_hex_prefix =
+                formatted.len > 1 and (formatted[1] == 'x' or formatted[1] == 'X');
+            const has_sign = formatted.len > 0 and formatted[0] == '-';
+            const prefix_end: usize = // tiger:allow:usize-arch slice index
+                if (has_hex_prefix) 2 else if (has_sign) 1 else 0;
             // Each prefix_end value is guarded by the matching length check, so
             // both slices of formatted below stay in bounds.
             std.debug.assert(prefix_end <= formatted.len);
@@ -1463,7 +1496,13 @@ test "printf basic string" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello", buffer_aw.writer.buffered());
 }
@@ -1473,7 +1512,13 @@ test "printf string with newline escape" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s\\n", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\n", buffer_aw.writer.buffered());
 }
@@ -1483,7 +1528,13 @@ test "printf integer formatting" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
@@ -1493,7 +1544,13 @@ test "printf negative integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "-7" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-7", buffer_aw.writer.buffered());
 }
@@ -1503,7 +1560,13 @@ test "printf octal" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%o", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("377", buffer_aw.writer.buffered());
 }
@@ -1513,7 +1576,13 @@ test "printf hex lowercase" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%x", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("ff", buffer_aw.writer.buffered());
 }
@@ -1523,7 +1592,13 @@ test "printf hex uppercase" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%X", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("FF", buffer_aw.writer.buffered());
 }
@@ -1533,7 +1608,13 @@ test "printf unsigned integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%u", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
@@ -1543,7 +1624,13 @@ test "printf character" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%c", "A" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1553,7 +1640,13 @@ test "printf float" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%f", "3.14" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3.140000", buffer_aw.writer.buffered());
 }
@@ -1563,7 +1656,13 @@ test "printf literal percent" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"100%%"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("100%", buffer_aw.writer.buffered());
 }
@@ -1573,7 +1672,13 @@ test "printf width right-aligned" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%10s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("     hello", buffer_aw.writer.buffered());
 }
@@ -1583,7 +1688,13 @@ test "printf width left-aligned" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%-10s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello     ", buffer_aw.writer.buffered());
 }
@@ -1593,7 +1704,13 @@ test "printf precision truncates string" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.3s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hel", buffer_aw.writer.buffered());
 }
@@ -1603,7 +1720,13 @@ test "printf zero-padded integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%05d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("00042", buffer_aw.writer.buffered());
 }
@@ -1613,7 +1736,13 @@ test "printf format string reuse" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s\\n", "a", "b", "c" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\nb\nc\n", buffer_aw.writer.buffered());
 }
@@ -1623,7 +1752,13 @@ test "printf missing argument defaults to empty string" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%s"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1633,7 +1768,13 @@ test "printf missing argument defaults to zero for integers" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%d"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0", buffer_aw.writer.buffered());
 }
@@ -1643,7 +1784,13 @@ test "printf escape sequences in format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\t\\n\\r\\a"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\t\n\r\x07", buffer_aw.writer.buffered());
 }
@@ -1653,7 +1800,13 @@ test "printf octal escape in format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\0101"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1663,7 +1816,13 @@ test "printf hex escape in format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\x41"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1673,7 +1832,13 @@ test "printf backslash escape" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\\\"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\\", buffer_aw.writer.buffered());
 }
@@ -1683,7 +1848,13 @@ test "printf %b with escape sequences" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b", "hello\\nworld" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld", buffer_aw.writer.buffered());
 }
@@ -1695,7 +1866,13 @@ test "printf no arguments shows usage error" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, &stderr_aw.writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
 }
 
@@ -1704,7 +1881,13 @@ test "printf --help" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "Usage: printf") != null);
 }
@@ -1714,7 +1897,13 @@ test "printf --version" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "printf") != null);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), common.version) != null);
@@ -1725,7 +1914,13 @@ test "printf multiple format specifiers" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "Name: %s Age: %d\\n", "Alice", "30" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("Name: Alice Age: 30\n", buffer_aw.writer.buffered());
 }
@@ -1735,7 +1930,13 @@ test "printf character from quote syntax" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "'A" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("65", buffer_aw.writer.buffered());
 }
@@ -1745,7 +1946,13 @@ test "printf hex argument prefix" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "0xff" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("255", buffer_aw.writer.buffered());
 }
@@ -1755,7 +1962,13 @@ test "printf octal argument prefix" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "010" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("8", buffer_aw.writer.buffered());
 }
@@ -1765,7 +1978,13 @@ test "printf scientific notation" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%e", "100000" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.000000e+05", buffer_aw.writer.buffered());
 }
@@ -1775,7 +1994,13 @@ test "printf plus sign flag" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%+d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("+42", buffer_aw.writer.buffered());
 }
@@ -1785,7 +2010,13 @@ test "printf hash flag for octal" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%#o", "8" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("010", buffer_aw.writer.buffered());
 }
@@ -1795,7 +2026,13 @@ test "printf hash flag for hex" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%#x", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0xff", buffer_aw.writer.buffered());
 }
@@ -1805,7 +2042,13 @@ test "printf width with integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%8d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("      42", buffer_aw.writer.buffered());
 }
@@ -1815,7 +2058,13 @@ test "printf empty format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{""};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1825,7 +2074,13 @@ test "printf plain text no specifiers" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"hello world"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello world", buffer_aw.writer.buffered());
 }
@@ -1835,7 +2090,13 @@ test "printf %g removes trailing zeros" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%g", "3.0" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3", buffer_aw.writer.buffered());
 }
@@ -1845,7 +2106,13 @@ test "printf %c with empty argument" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%c", "" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1855,7 +2122,13 @@ test "printf %c with missing argument" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%c"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1865,7 +2138,13 @@ test "printf float with precision" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "3.14159" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3.14", buffer_aw.writer.buffered());
 }
@@ -1875,7 +2154,13 @@ test "printf float zero" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%f", "0" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.000000", buffer_aw.writer.buffered());
 }
@@ -1903,7 +2188,13 @@ test "printf float carry propagation past decimal: 9.995 -> 10.00" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "9.995" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10.00", buffer_aw.writer.buffered());
 }
@@ -1913,7 +2204,13 @@ test "printf float carry propagation past decimal: 9.95 -> 10.0" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.1f", "9.95" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10.0", buffer_aw.writer.buffered());
 }
@@ -1923,7 +2220,13 @@ test "printf float carry propagation zero precision: 9.5 -> 10" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.0f", "9.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10", buffer_aw.writer.buffered());
 }
@@ -1933,7 +2236,13 @@ test "printf float carry propagation multi-digit integer: 99.999 -> 100.00" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "99.999" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("100.00", buffer_aw.writer.buffered());
 }
@@ -1943,7 +2252,13 @@ test "printf float simple rounding no carry overflow: 1.005 -> 1.01" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "1.005" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.01", buffer_aw.writer.buffered());
 }
@@ -1960,7 +2275,13 @@ test "F31: format string \\NNN octal without leading zero" {
 
     // \101 = octal 101 = 65 = 'A'
     const args = [_][]const u8{"\\101"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1971,7 +2292,13 @@ test "F31: format string \\NNN octal 1-digit" {
 
     // \7 = octal 7 = 0x07
     const args = [_][]const u8{"\\7"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\x07", buffer_aw.writer.buffered());
 }
@@ -1982,7 +2309,13 @@ test "F31: format string \\NNN octal 2-digit" {
 
     // \62 = octal 62 = 50 = '2'
     const args = [_][]const u8{"\\62"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("2", buffer_aw.writer.buffered());
 }
@@ -1993,7 +2326,13 @@ test "F31: format string \\NNN octal 3-digit" {
 
     // \110 = octal 110 = 72 = 'H'
     const args = [_][]const u8{"\\110"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("H", buffer_aw.writer.buffered());
 }
@@ -2008,7 +2347,13 @@ test "F32: percent-b octal \\0NNN produces correct byte" {
 
     // %b with \0101: the '0' is a prefix, '101' is octal = 65 = 'A'
     const args = [_][]const u8{ "%b", "\\0101" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -2020,7 +2365,13 @@ test "F32: percent-b octal \\0NNN 3-digit non-zero start" {
     // %b \0110: the '0' is a prefix, '110' is octal = 72 = 'H'
     // Bug: code re-reads the '0' prefix, processes '011' = 9 instead
     const args = [_][]const u8{ "%b", "\\0110" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("H", buffer_aw.writer.buffered());
 }
@@ -2032,7 +2383,13 @@ test "F32: percent-b octal \\0NNN followed by text" {
     // %b \0101X: octal 101 = 65 = 'A', then literal 'X'
     // Bug: code reads '010' = 8, then outputs char(8) + '1' + 'X'
     const args = [_][]const u8{ "%b", "\\0101X" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("AX", buffer_aw.writer.buffered());
 }
@@ -2046,7 +2403,13 @@ test "F33: format string \\c stops output" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"before\\cafter"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     // Should output only "before", nothing after \c
     try testing.expectEqualStrings("before", buffer_aw.writer.buffered());
@@ -2057,7 +2420,13 @@ test "F33: format string \\c at start produces no output" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\chello"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -2071,7 +2440,13 @@ test "F34: percent-b \\c halts format-string reuse" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b\\n", "hello\\c", "world" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     // Should output only "hello" -- \c stops everything, no newline, no "world"
     try testing.expectEqualStrings("hello", buffer_aw.writer.buffered());
@@ -2082,7 +2457,13 @@ test "F34: percent-b \\c halts even within single format pass" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b %b", "hi\\c", "bye" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     // \c in first %b should halt all output; "bye" never printed
     try testing.expectEqualStrings("hi", buffer_aw.writer.buffered());
@@ -2097,7 +2478,13 @@ test "F35: percent-F uppercase float" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%F", "3.14" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3.140000", buffer_aw.writer.buffered());
 }
@@ -2107,7 +2494,13 @@ test "F35: percent-F with zero" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%F", "0" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.000000", buffer_aw.writer.buffered());
 }
@@ -2117,7 +2510,13 @@ test "F35: percent-a hex float" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%a", "1.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // GNU outputs "0xcp-3" for 1.5 -- hex float representation
     // Must start with "0x" and contain "p" (hex float format)
@@ -2131,7 +2530,13 @@ test "F35: percent-A hex float uppercase" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%A", "1.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // GNU outputs "0XCP-3" for 1.5
     try testing.expect(buffer_aw.writer.buffered().len > 0);
@@ -2151,7 +2556,13 @@ test "audit: printf %d with non-numeric input exits 1 and warns" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "%d\\n", "abc" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     // GNU outputs "0\n" to stdout
     try testing.expectEqualStrings("0\n", stdout_aw.writer.buffered());
     // Must exit 1 (not 0) when argument is not a valid number
@@ -2168,7 +2579,13 @@ test "audit: printf %d with partial numeric input warns" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "%d", "5abc" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     // GNU outputs "5" for partial numeric
     try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
     // Must exit 1 and warn
@@ -2183,7 +2600,13 @@ test "audit: printf %i format specifier" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%i", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
@@ -2194,7 +2617,13 @@ test "audit: printf %i negative" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%i", "-7" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-7", buffer_aw.writer.buffered());
 }
@@ -2206,7 +2635,13 @@ test "audit: printf %E uppercase scientific" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%E", "1234.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.234500E+03", buffer_aw.writer.buffered());
 }
@@ -2218,7 +2653,13 @@ test "audit: printf %G uppercase general" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%G", "0.00001" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // Must contain uppercase E, not lowercase e
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "E") != null);
@@ -2231,7 +2672,13 @@ test "audit: printf dynamic width with *" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%*d", "10", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("        42", buffer_aw.writer.buffered());
 }
@@ -2243,7 +2690,13 @@ test "audit: printf negative dynamic width implies left-justify" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%*d", "-5", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42   ", buffer_aw.writer.buffered());
 }
@@ -2255,7 +2708,13 @@ test "audit: printf space-sign flag positive" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "% d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(" 42", buffer_aw.writer.buffered());
 }
@@ -2266,7 +2725,13 @@ test "audit: printf space-sign flag negative" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "% d", "-42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-42", buffer_aw.writer.buffered());
 }
@@ -2285,7 +2750,13 @@ test "printf %e with positive infinity outputs inf" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%e", "inf" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("inf", buffer_aw.writer.buffered());
 }
@@ -2295,7 +2766,13 @@ test "printf %e with negative infinity outputs -inf" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%e", "-inf" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-inf", buffer_aw.writer.buffered());
 }
@@ -2305,7 +2782,13 @@ test "printf %e with NaN outputs nan" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%e", "nan" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("nan", buffer_aw.writer.buffered());
 }
@@ -2315,7 +2798,13 @@ test "printf %E with positive infinity outputs INF (uppercase)" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%E", "inf" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("INF", buffer_aw.writer.buffered());
 }
@@ -2325,7 +2814,13 @@ test "printf %g with positive infinity outputs inf" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%g", "inf" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("inf", buffer_aw.writer.buffered());
 }
@@ -2335,7 +2830,13 @@ test "printf %g with NaN outputs nan" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%g", "nan" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("nan", buffer_aw.writer.buffered());
 }
@@ -2345,7 +2846,13 @@ test "printf %G with NaN outputs NAN (uppercase)" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%G", "nan" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("NAN", buffer_aw.writer.buffered());
 }

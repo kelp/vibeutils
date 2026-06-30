@@ -113,7 +113,14 @@ fn writeGroupColored(style: anytype, writer: anytype, name: []const u8) !void {
 /// Write user and group names with distinct colors.
 /// Truecolor: warm wheat for user, soft lavender for group.
 /// 16-color: yellow for user, cyan for group.
-fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8, group_name: []const u8, omit_owner: bool, omit_group: bool) !void {
+fn writeUserGroupColored(
+    style: anytype,
+    writer: anytype,
+    user_name: []const u8,
+    group_name: []const u8,
+    omit_owner: bool,
+    omit_group: bool,
+) !void {
     if (!omit_owner) {
         try writeOwnerColored(style, writer, user_name);
     }
@@ -126,7 +133,13 @@ fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8,
 /// Truecolor: smooth RGB gradient from green (small) to red-orange (large).
 /// 256-color: approximate palette indices.
 /// 16-color: green (normal), bold green (human-readable).
-fn writeSizeColored(style: anytype, writer: anytype, size_str: []const u8, size: u64, human_readable: bool) !void {
+fn writeSizeColored(
+    style: anytype,
+    writer: anytype,
+    size_str: []const u8,
+    size: u64,
+    human_readable: bool,
+) !void {
     if (style.color_mode != .none) {
         if (human_readable and style.color_mode == .basic) try style.setBold();
         try common.colors.applySizeColor(style, size);
@@ -145,7 +158,13 @@ fn writeSizeColored(style: anytype, writer: anytype, size_str: []const u8, size:
 
 /// Write date/time with tiered color based on file age.
 /// Recent files are bright green, aging through blue to dim gray.
-fn writeDateColored(style: anytype, writer: anytype, time_str: []const u8, mtime_ns: i128, max_time_width: usize) !void {
+fn writeDateColored(
+    style: anytype,
+    writer: anytype,
+    time_str: []const u8,
+    mtime_ns: i128,
+    max_time_width: usize, // tiger:allow:usize-arch column width is usize
+) !void {
     if (style.color_mode != .none) {
         const now_ns = common.file.currentTimestampNanoseconds();
         const age_ns = now_ns - mtime_ns;
@@ -210,7 +229,12 @@ fn writeDateColored(style: anytype, writer: anytype, time_str: []const u8, mtime
 }
 
 /// Format timestamp according to the specified time style
-pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std.mem.Allocator, buf: []u8) ![]const u8 {
+pub fn formatTimeWithStyle(
+    mtime_ns: i128,
+    time_style: TimeStyle,
+    allocator: std.mem.Allocator,
+    buf: []u8,
+) ![]const u8 {
     std.debug.assert(buf.len > 0);
     std.debug.assert(NS_PER_6MONTHS > NS_PER_MONTH);
     switch (time_style) {
@@ -360,12 +384,25 @@ fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
 }
 
 /// Print a single entry in long format (public API, no time alignment)
-pub fn printLongFormatEntry(allocator: std.mem.Allocator, entry: Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printLongFormatEntry(
+    allocator: std.mem.Allocator,
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
     return printLongFormatEntryAligned(allocator, entry, writer, options, style, 0);
 }
 
 /// Print a single entry in long format with time column alignment
-fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, writer: anytype, options: LsOptions, style: anytype, max_time_width: usize) !void {
+fn printLongFormatEntryAligned(
+    allocator: std.mem.Allocator,
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+    max_time_width: usize, // tiger:allow:usize-arch column width is usize
+) !void {
     // Per-entry block count if -s is active
     if (options.show_blocks) {
         const blocks = calculateDisplayBlocks(entry, options);
@@ -670,7 +707,13 @@ fn printColumnar_writePadding(
 }
 
 /// Print entries in columnar format
-pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printColumnar(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
     if (entries.len == 0) return;
     // The only way past the early return is a non-empty slice; the column
     // math below indexes entries and depends on this.
@@ -749,7 +792,13 @@ fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
 }
 
 /// Print entries in columnar format sorted across rows (-x flag)
-pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printColumnarAcross(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
     if (entries.len == 0) return;
     // Past the early return the slice is non-empty; the entries.len - 1 logic
     // below depends on it.
@@ -759,21 +808,14 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
     const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
 
     // Calculate block width prefix if -s is enabled
-    var block_prefix_width: usize = 0;
-    if (options.show_blocks) {
-        var max_block_width: usize = 0;
-        for (entries) |entry| {
-            max_block_width = @max(max_block_width, blockCountWidth(calculateDisplayBlocks(entry, options)));
-        }
-        block_prefix_width = max_block_width + 1; // block count + space
-    }
+    const block_prefix_width = if (options.show_blocks)
+        printColumnar_blockPrefixWidth(entries, options)
+    else
+        0;
 
     // Pre-calculate display widths for all entries in a single pass
-    var max_width: usize = 0;
-    for (entries) |*entry| {
-        const width = entry.getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-        max_width = @max(max_width, width);
-    }
+    // This ensures all widths are cached and finds the maximum width
+    const max_width = printColumnar_maxEntryWidth(entries, options);
 
     // Add padding between columns, including block prefix
     const col_width = block_prefix_width + max_width + COLUMN_PADDING;
@@ -788,13 +830,7 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
     for (entries, 0..) |entry, idx| {
         // Print block count prefix if -s
         if (options.show_blocks) {
-            const blocks = calculateDisplayBlocks(entry, options);
-            const bw = blockCountWidth(blocks);
-            const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
-            for (0..pad_count) |_| {
-                try writer.writeByte(' ');
-            }
-            try writer.print("{d} ", .{blocks});
+            try printColumnar_writeBlockPrefix(entry, options, block_prefix_width, writer);
         }
 
         try display.printEntryName(entry, writer, style, options);
@@ -805,11 +841,7 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
             try writer.writeByte('\n');
         } else {
             // Pad to column width
-            const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-            const padding = max_width + COLUMN_PADDING - width;
-            for (0..padding) |_| {
-                try writer.writeByte(' ');
-            }
+            try printColumnar_writePadding(entries, idx, max_width, options, writer);
         }
     }
 }
@@ -1349,7 +1381,11 @@ test "writeSizeColored - all truecolor tiers" {
         try writeSizeColored(style, &buf_aw.writer, size_str, tier.size, false);
 
         var expected_buf: [64]u8 = undefined;
-        const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
+        const expected = std.fmt.bufPrint(
+            &expected_buf,
+            "\x1b[38;2;{d};{d};{d}m",
+            .{ tier.r, tier.g, tier.b },
+        ) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, buf_aw.writer.buffered(), expected) != null);
     }
 }
@@ -1378,7 +1414,11 @@ test "writeDateColored - all truecolor age tiers" {
         try writeDateColored(style, &buf_aw.writer, "test", mtime_ns, 4);
 
         var expected_buf: [64]u8 = undefined;
-        const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
+        const expected = std.fmt.bufPrint(
+            &expected_buf,
+            "\x1b[38;2;{d};{d};{d}m",
+            .{ tier.r, tier.g, tier.b },
+        ) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, buf_aw.writer.buffered(), expected) != null);
     }
 }

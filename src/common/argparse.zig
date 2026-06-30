@@ -26,7 +26,11 @@ const testing = std.testing;
 ///     };
 /// };
 ///
-/// const args = try ArgParser.parse(Args, allocator, &[_][]const u8{"--count=5", "-m", "fast", "file.txt"});
+/// const args = try ArgParser.parse(
+///     Args,
+///     allocator,
+///     &[_][]const u8{ "--count=5", "-m", "fast", "file.txt" },
+/// );
 /// defer allocator.free(args.positionals);
 /// ```
 pub const ArgParser = struct {
@@ -46,7 +50,11 @@ pub const ArgParser = struct {
 
     /// Parse arguments from a slice of strings
     /// Returns a parsed struct with all fields populated according to the command-line arguments
-    pub fn parse(comptime T: type, allocator: std.mem.Allocator, args: []const []const u8) ParseError!T {
+    pub fn parse(
+        comptime T: type,
+        allocator: std.mem.Allocator,
+        args: []const []const u8,
+    ) ParseError!T {
         var result: T = .{};
         var positionals = try std.ArrayList([]const u8).initCapacity(allocator, 0);
         defer positionals.deinit(allocator);
@@ -288,7 +296,8 @@ pub const ArgParser = struct {
     /// Deprecated: pass args explicitly via parse() instead.
     pub fn parseProcess(comptime T: type, allocator: std.mem.Allocator) !T {
         _ = allocator;
-        @compileError("parseProcess is removed in 0.16; pass args slice explicitly via ArgParser.parse()");
+        @compileError("parseProcess is removed in 0.16; " ++
+            "pass args slice explicitly via ArgParser.parse()");
     }
 
     fn parseLongFlag(comptime T: type, obj: *T, flag_name: []const u8) !bool {
@@ -312,12 +321,20 @@ pub const ArgParser = struct {
         return false;
     }
 
-    fn parseLongFlagWithValue(comptime T: type, obj: *T, flag_name: []const u8, provided_value: ?[]const u8, next_arg: ?[]const u8, position: usize) !ValueUsage {
+    fn parseLongFlagWithValue(
+        comptime T: type,
+        obj: *T,
+        flag_name: []const u8,
+        provided_value: ?[]const u8,
+        next_arg: ?[]const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+    ) !ValueUsage {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             // Check if field name or converted name matches
             const long_flag = comptime getLongFlag(field.name);
-            const matches = std.mem.eql(u8, field.name, flag_name) or std.mem.eql(u8, long_flag, flag_name);
+            const matches = std.mem.eql(u8, field.name, flag_name) or
+                std.mem.eql(u8, long_flag, flag_name);
 
             if (matches) {
                 // Check field type
@@ -335,7 +352,13 @@ pub const ArgParser = struct {
                         return ParseError.MissingValue;
                     };
 
-                    try parseValue(field_type_info.optional.child, &@field(obj, field.name), value_str, flag_name, position);
+                    try parseValue(
+                        field_type_info.optional.child,
+                        &@field(obj, field.name),
+                        value_str,
+                        flag_name,
+                        position,
+                    );
                     return if (provided_value != null) .NoValue else .ValueUsed;
                 }
             }
@@ -343,11 +366,19 @@ pub const ArgParser = struct {
         return .Unknown;
     }
 
-    fn parseShortFlagWithValue(comptime T: type, obj: *T, flag_char: u8, provided_value: ?[]const u8, next_arg: ?[]const u8, position: usize) !ValueUsage {
+    fn parseShortFlagWithValue(
+        comptime T: type,
+        obj: *T,
+        flag_char: u8,
+        provided_value: ?[]const u8,
+        next_arg: ?[]const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+    ) !ValueUsage {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             // Check metadata first, then default
-            const short_flag = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name) and
+            const short_flag = if (@hasDecl(T, "meta") and
+                @hasField(@TypeOf(T.meta), field.name) and
                 @hasField(@TypeOf(@field(T.meta, field.name)), "short"))
                 @field(T.meta, field.name).short
             else
@@ -369,7 +400,13 @@ pub const ArgParser = struct {
                         return ParseError.MissingValue;
                     };
 
-                    try parseValue(field_type_info.optional.child, &@field(obj, field.name), value_str, field.name, position);
+                    try parseValue(
+                        field_type_info.optional.child,
+                        &@field(obj, field.name),
+                        value_str,
+                        field.name,
+                        position,
+                    );
                     return if (provided_value != null) .NoValue else .ValueUsed;
                 }
             }
@@ -381,7 +418,8 @@ pub const ArgParser = struct {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             if (field.type == bool) {
-                const short_flag = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name) and
+                const short_flag = if (@hasDecl(T, "meta") and
+                    @hasField(@TypeOf(T.meta), field.name) and
                     @hasField(@TypeOf(@field(T.meta, field.name)), "short"))
                     @field(T.meta, field.name).short
                 else
@@ -446,7 +484,13 @@ pub const ArgParser = struct {
     }
 
     /// Parse a value string into the appropriate type
-    fn parseValue(comptime T: type, dest: *?T, value_str: []const u8, flag_name: []const u8, position: usize) !void {
+    fn parseValue(
+        comptime T: type,
+        dest: *?T,
+        value_str: []const u8,
+        flag_name: []const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+    ) !void {
         _ = flag_name;
         _ = position;
         const type_info = @typeInfo(T);
@@ -988,7 +1032,11 @@ test "float parsing" {
         try testing.expect(result.rate != null);
         try testing.expectApproxEqAbs(@as(f32, 3.14159), result.rate.?, 0.00001);
         try testing.expect(result.precision != null);
-        try testing.expectApproxEqAbs(@as(f64, 2.71828182845904523536), result.precision.?, 0.0000000000001);
+        try testing.expectApproxEqAbs(
+            @as(f64, 2.71828182845904523536),
+            result.precision.?,
+            0.0000000000001,
+        );
     }
 
     // Test scientific notation

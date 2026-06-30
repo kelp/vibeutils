@@ -26,7 +26,14 @@ const assert = std.debug.assert;
 /// # Returns
 /// Returns success (0) if the operation succeeds, or general_error (1) if it fails
 /// after issuing warnings for platform-specific limitations.
-pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.posix.mode_t, context: ?[]const u8, program_name: []const u8, stderr_writer: anytype) !u8 {
+pub fn setPermissions(
+    allocator: std.mem.Allocator,
+    handle: anytype,
+    mode: std.posix.mode_t,
+    context: ?[]const u8,
+    program_name: []const u8,
+    stderr_writer: anytype,
+) !u8 {
     // A shared leaf called by cp/mv/chmod/install: an empty program_name would
     // mislabel the warning diagnostics, never a valid invocation. Matches the
     // sibling leaves copyFileWithAttributes/preserveDirAttributes in this file.
@@ -48,11 +55,7 @@ pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.p
     // On Linux under fakeroot, setting special permissions can cause hangs
     // Strip special bits and warn the user
     const effective_mode = if (isRunningUnderLinuxFakeroot() and has_special_bits) blk: {
-        if (context) |ctx| {
-            lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
-        } else {
-            lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Stripped special permissions (Linux fakeroot limitation)", .{});
-        }
+        setPermissionsWarnStripped(allocator, stderr_writer, program_name, context);
         // This branch is entered only when special bits are set; assert that
         // precondition holds here, since stripping them is the whole reason
         // this branch exists.
@@ -67,17 +70,80 @@ pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.p
         // operations may fail. We report this as a warning but don't fail
         // the operation since the file operation itself succeeded.
         if (builtin.os.tag == .macos) {
-            if (context) |ctx| {
-                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, lib.posixErrorString(err) });
-            } else {
-                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on macOS: {s}", .{lib.posixErrorString(err)});
-            }
+            setPermissionsWarnMacosFailed(allocator, stderr_writer, program_name, context, err);
             return @intFromEnum(lib.ExitCode.success);
         }
         return @intFromEnum(lib.ExitCode.general_error);
     }
 
     return @intFromEnum(lib.ExitCode.success);
+}
+
+/// Warn that special permission bits were stripped under Linux fakeroot.
+///
+/// Extracted from setPermissions so the parent stays within the 70-line limit;
+/// emits a context-qualified message when a path is known, a bare message
+/// otherwise. Behavior matches the inlined branches exactly.
+fn setPermissionsWarnStripped(
+    allocator: std.mem.Allocator,
+    stderr_writer: anytype,
+    program_name: []const u8,
+    context: ?[]const u8,
+) void {
+    // Shares setPermissions's precondition: an empty program_name would mislabel
+    // the warning, and this leaf is only reached from that already-asserted path.
+    assert(program_name.len > 0);
+    if (context) |ctx| {
+        lib.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "Stripped special permissions on {s} (Linux fakeroot limitation)",
+            .{ctx},
+        );
+    } else {
+        lib.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "Stripped special permissions (Linux fakeroot limitation)",
+            .{},
+        );
+    }
+}
+
+/// Warn that a chmod failed on macOS, where it is downgraded to a warning.
+///
+/// Extracted from setPermissions so the parent stays within the 70-line limit;
+/// emits a context-qualified message when a path is known, a bare message
+/// otherwise. Behavior matches the inlined branches exactly.
+fn setPermissionsWarnMacosFailed(
+    allocator: std.mem.Allocator,
+    stderr_writer: anytype,
+    program_name: []const u8,
+    context: ?[]const u8,
+    err: anyerror,
+) void {
+    // Shares setPermissions's precondition: an empty program_name would mislabel
+    // the warning, and this leaf is only reached from that already-asserted path.
+    assert(program_name.len > 0);
+    if (context) |ctx| {
+        lib.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "Failed to set permissions on {s} (macOS limitation): {s}",
+            .{ ctx, lib.posixErrorString(err) },
+        );
+    } else {
+        lib.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "Failed to set permissions on macOS: {s}",
+            .{lib.posixErrorString(err)},
+        );
+    }
 }
 
 /// Check if running in a CI environment
@@ -186,7 +252,7 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
     assert(COPY_BUFFER_SIZE > 0);
 
     var buffer: [COPY_BUFFER_SIZE]u8 = undefined;
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop reads until short/zero read (EOF)
         const buf_slice: []u8 = &buffer;
         const bytes_read = source_file.readStreaming(io, &.{buf_slice}) catch |err| switch (err) {
             error.EndOfStream => break,
@@ -227,7 +293,13 @@ pub fn copyFileWithAttributes(
     assert(dest_path.len > 0);
 
     const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
-        lib.printErrorWithProgram(allocator, stderr_writer, program_name, "cannot open '{s}': {s}", .{ source_path, lib.posixErrorString(err) });
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot open '{s}': {s}",
+            .{ source_path, lib.posixErrorString(err) },
+        );
         return error.SourceNotReadable;
     };
     defer source_file.close(io);
@@ -235,13 +307,25 @@ pub fn copyFileWithAttributes(
     const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
         .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
     }) catch |err| {
-        lib.printErrorWithProgram(allocator, stderr_writer, program_name, "cannot create '{s}': {s}", .{ dest_path, lib.posixErrorString(err) });
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot create '{s}': {s}",
+            .{ dest_path, lib.posixErrorString(err) },
+        );
         return error.DestinationNotWritable;
     };
     defer dest_file.close(io);
 
     copyFileContents(io, source_file, dest_file) catch |err| {
-        lib.printErrorWithProgram(allocator, stderr_writer, program_name, "error copying '{s}' to '{s}': {s}", .{ source_path, dest_path, lib.posixErrorString(err) });
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "error copying '{s}' to '{s}': {s}",
+            .{ source_path, dest_path, lib.posixErrorString(err) },
+        );
         return error.SourceNotReadable;
     };
 
@@ -250,18 +334,55 @@ pub fn copyFileWithAttributes(
         .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
         .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
     }) catch |err| {
-        lib.printWarningWithProgram(allocator, stderr_writer, program_name, "cannot preserve timestamps for '{s}': {s}", .{ dest_path, lib.posixErrorString(err) });
+        lib.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot preserve timestamps for '{s}': {s}",
+            .{ dest_path, lib.posixErrorString(err) },
+        );
     };
 
-    // Preserve ownership (uid/gid) — GNU cp -p is --preserve=mode,ownership,timestamps.
-    // Silently ignore EPERM (non-root cannot chown to other users).
-    const fchown_result = std.c.fchown(dest_file.handle, source_info.uid, source_info.gid);
+    copyFileWithAttributesPreserveOwnership(
+        allocator,
+        stderr_writer,
+        program_name,
+        dest_path,
+        dest_file.handle,
+        source_info,
+    );
+}
+
+/// Restore the source file's uid/gid onto the copied destination.
+///
+/// Extracted from copyFileWithAttributes so the parent stays within the 70-line
+/// limit. GNU cp -p is --preserve=mode,ownership,timestamps; EPERM is silent
+/// because a non-root user cannot chown to other users. Behavior matches the
+/// inlined block exactly.
+fn copyFileWithAttributesPreserveOwnership(
+    allocator: std.mem.Allocator,
+    stderr_writer: anytype,
+    program_name: []const u8,
+    dest_path: []const u8,
+    dest_fd: std.posix.fd_t,
+    source_info: lib.file.FileInfo,
+) void {
+    // Shares copyFileWithAttributes's precondition: an empty program_name would
+    // mislabel the warning, and this leaf is only reached from that asserted path.
+    assert(program_name.len > 0);
+    const fchown_result = std.c.fchown(dest_fd, source_info.uid, source_info.gid);
     if (fchown_result != 0) {
         const errno = std.c._errno().*;
         switch (errno) {
             @intFromEnum(std.c.E.PERM) => {}, // Non-root; silently ignore.
             else => {
-                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "cannot preserve ownership for '{s}'", .{dest_path});
+                lib.printWarningWithProgram(
+                    allocator,
+                    stderr_writer,
+                    program_name,
+                    "cannot preserve ownership for '{s}'",
+                    .{dest_path},
+                );
             },
         }
     }
@@ -301,7 +422,13 @@ pub fn preserveDirAttributes(
         .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(atime_ns) } },
         .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(mtime_ns) } },
     }) catch |err| {
-        lib.printWarningWithProgram(allocator, stderr_writer, program_name, "cannot preserve timestamps for '{s}': {s}", .{ dest_path, lib.posixErrorString(err) });
+        lib.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot preserve timestamps for '{s}': {s}",
+            .{ dest_path, lib.posixErrorString(err) },
+        );
     };
     const dest_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{dest_path}, 0) catch return true;
     defer allocator.free(dest_z);
@@ -347,7 +474,14 @@ test "setPermissions with file" {
     defer file.close(io);
 
     // This should work on all platforms
-    const result = try setPermissions(std.testing.allocator, file, 0o644, "test.txt", "test", lib.null_writer);
+    const result = try setPermissions(
+        std.testing.allocator,
+        file,
+        0o644,
+        "test.txt",
+        "test",
+        lib.null_writer,
+    );
     try std.testing.expectEqual(@as(u8, 0), result);
 
     const stat = try file.stat(io);
@@ -364,7 +498,14 @@ test "setPermissions with directory" {
     defer dir.close(io);
 
     // This should work on all platforms
-    const result = try setPermissions(std.testing.allocator, dir, 0o755, "subdir", "test", lib.null_writer);
+    const result = try setPermissions(
+        std.testing.allocator,
+        dir,
+        0o755,
+        "subdir",
+        "test",
+        lib.null_writer,
+    );
     try std.testing.expectEqual(@as(u8, 0), result);
 
     // Verify permissions via the stat method on a file opened from the directory

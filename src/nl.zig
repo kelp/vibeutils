@@ -85,27 +85,63 @@ const NlArgs = struct {
         // -h is header-numbering, so help has no short flag
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .body_numbering = .{ .short = 0, .desc = "Set body numbering style (a, t, n)", .value_name = "STYLE" },
+        .body_numbering = .{
+            .short = 0,
+            .desc = "Set body numbering style (a, t, n)",
+            .value_name = "STYLE",
+        },
         .b = .{ .desc = "Set body numbering style (a, t, n)", .value_name = "STYLE" },
-        .header_numbering = .{ .short = 0, .desc = "Set header numbering style (a, t, n)", .value_name = "STYLE" },
+        .header_numbering = .{
+            .short = 0,
+            .desc = "Set header numbering style (a, t, n)",
+            .value_name = "STYLE",
+        },
         .h = .{ .desc = "Set header numbering style (a, t, n)", .value_name = "STYLE" },
-        .footer_numbering = .{ .short = 0, .desc = "Set footer numbering style (a, t, n)", .value_name = "STYLE" },
+        .footer_numbering = .{
+            .short = 0,
+            .desc = "Set footer numbering style (a, t, n)",
+            .value_name = "STYLE",
+        },
         .f = .{ .desc = "Set footer numbering style (a, t, n)", .value_name = "STYLE" },
-        .number_format = .{ .short = 0, .desc = "Set number format (ln, rn, rz)", .value_name = "FORMAT" },
+        .number_format = .{
+            .short = 0,
+            .desc = "Set number format (ln, rn, rz)",
+            .value_name = "FORMAT",
+        },
         .n = .{ .desc = "Set number format (ln, rn, rz)", .value_name = "FORMAT" },
         .number_width = .{ .short = 0, .desc = "Set number width", .value_name = "NUMBER" },
         .w = .{ .desc = "Set number width", .value_name = "NUMBER" },
-        .number_separator = .{ .short = 0, .desc = "Set separator between number and text", .value_name = "STRING" },
+        .number_separator = .{
+            .short = 0,
+            .desc = "Set separator between number and text",
+            .value_name = "STRING",
+        },
         .s = .{ .desc = "Set separator between number and text", .value_name = "STRING" },
-        .starting_line_number = .{ .short = 0, .desc = "Set initial line number", .value_name = "NUMBER" },
+        .starting_line_number = .{
+            .short = 0,
+            .desc = "Set initial line number",
+            .value_name = "NUMBER",
+        },
         .v = .{ .desc = "Set initial line number", .value_name = "NUMBER" },
-        .line_increment = .{ .short = 0, .desc = "Set line number increment", .value_name = "NUMBER" },
+        .line_increment = .{
+            .short = 0,
+            .desc = "Set line number increment",
+            .value_name = "NUMBER",
+        },
         .i = .{ .desc = "Set line number increment", .value_name = "NUMBER" },
         .no_renumber = .{ .short = 0, .desc = "Do not reset line numbers at logical pages" },
         .p = .{ .desc = "Do not reset line numbers at logical pages" },
-        .section_delimiter = .{ .short = 0, .desc = "Set section delimiter characters", .value_name = "CC" },
+        .section_delimiter = .{
+            .short = 0,
+            .desc = "Set section delimiter characters",
+            .value_name = "CC",
+        },
         .d = .{ .desc = "Set section delimiter characters", .value_name = "CC" },
-        .join_blank_lines = .{ .short = 0, .desc = "Count N consecutive blank lines as one", .value_name = "NUMBER" },
+        .join_blank_lines = .{
+            .short = 0,
+            .desc = "Count N consecutive blank lines as one",
+            .value_name = "NUMBER",
+        },
         .l = .{ .desc = "Count N consecutive blank lines as one", .value_name = "NUMBER" },
     };
 };
@@ -218,7 +254,13 @@ fn resolveOptions_styles(
     const body_val = args.b orelse args.body_numbering;
     if (body_val) |val| {
         opts.body_style = parseNumberingStyleFull(val, allocator) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid body numbering style: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid body numbering style: '{s}'",
+                .{val},
+            );
             return false;
         };
     }
@@ -227,7 +269,13 @@ fn resolveOptions_styles(
     const header_val = args.h orelse args.header_numbering;
     if (header_val) |val| {
         opts.header_style = parseNumberingStyleFull(val, allocator) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid header numbering style: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid header numbering style: '{s}'",
+                .{val},
+            );
             return false;
         };
     }
@@ -236,7 +284,13 @@ fn resolveOptions_styles(
     const footer_val = args.f orelse args.footer_numbering;
     if (footer_val) |val| {
         opts.footer_style = parseNumberingStyleFull(val, allocator) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid footer numbering style: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid footer numbering style: '{s}'",
+                .{val},
+            );
             return false;
         };
     }
@@ -259,7 +313,13 @@ fn resolveOptions_numberAndWidth(
     const format_val = args.n orelse args.number_format;
     if (format_val) |val| {
         opts.format = parseNumberFormat(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number format: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid line number format: '{s}'",
+                .{val},
+            );
             return false;
         };
     }
@@ -269,7 +329,13 @@ fn resolveOptions_numberAndWidth(
     if (width_val) |val| {
         const w = parsePositiveInt(val);
         if (w == null or w.? == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number field width: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid line number field width: '{s}'",
+                .{val},
+            );
             return false;
         }
         opts.width = w.?;
@@ -300,7 +366,13 @@ fn resolveOptions_counters(
     const start_val = args.v orelse args.starting_line_number;
     if (start_val) |val| {
         opts.start = parseSignedInt(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid starting line number: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid starting line number: '{s}'",
+                .{val},
+            );
             return false;
         };
     }
@@ -309,7 +381,13 @@ fn resolveOptions_counters(
     const inc_val = args.i orelse args.line_increment;
     if (inc_val) |val| {
         opts.increment = parseSignedInt(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number increment: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid line number increment: '{s}'",
+                .{val},
+            );
             return false;
         };
     }
@@ -341,7 +419,13 @@ fn resolveOptions_delimiterAndJoin(
         } else if (val.len == 2) {
             opts.delimiter = .{ val[0], val[1] };
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid section delimiter: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid section delimiter: '{s}'",
+                .{val},
+            );
             return false;
         }
     }
@@ -351,7 +435,13 @@ fn resolveOptions_delimiterAndJoin(
     if (join_val) |val| {
         const j = parsePositiveInt(val);
         if (j == null or j.? == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number of blank lines: '{s}'", .{val});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "invalid line number of blank lines: '{s}'",
+                .{val},
+            );
             return false;
         }
         opts.join_blank_lines = j.?;
@@ -518,8 +608,18 @@ fn writeUnnumberedLine(writer: *std.Io.Writer, line: []const u8, opts: NlOptions
 }
 
 /// Process lines from a reader with nl numbering logic
-fn numberLines(reader: *std.Io.Reader, writer: *std.Io.Writer, opts: NlOptions, state: *NlState, allocator: Allocator) !void {
-    while (true) {
+fn numberLines(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    opts: NlOptions,
+    state: *NlState,
+    allocator: Allocator,
+) !void {
+    // Terminates at EOF: takeDelimiterInclusive returns error.EndOfStream when the
+    // stream is exhausted, which flushes remaining bytes then breaks; read errors
+    // propagate via return e. Line count is unbounded a priori, so a numeric cap
+    // would silently drop valid input.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF (see above)
         const line_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
             error.StreamTooLong => {
                 // Line exceeds buffer - process partial
@@ -637,7 +737,13 @@ fn processLine_styleRegex(
 }
 
 /// Process a single line: check for section delimiters, apply numbering
-fn processLine(writer: *std.Io.Writer, line: []const u8, opts: NlOptions, state: *NlState, allocator: Allocator) !void {
+fn processLine(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    opts: NlOptions,
+    state: *NlState,
+    allocator: Allocator,
+) !void {
     std.debug.assert(opts.width >= 1);
     std.debug.assert(opts.join_blank_lines >= 1);
 
@@ -740,9 +846,21 @@ fn runNl_numberFile(
 }
 
 /// Run the nl utility with given arguments
-pub fn runNl(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runNl(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
-    const parsed_args = common.argparse.ArgParser.parseOrExit(NlArgs, allocator, args, "nl", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        NlArgs,
+        allocator,
+        args,
+        "nl",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -765,38 +883,84 @@ pub fn runNl(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
     defer runNl_freeRegexStyles(opts, allocator);
 
     var state = NlState{ .line_number = opts.start };
+    const has_error = runNl_processInputs(
+        allocator,
+        io,
+        parsed_args.positionals,
+        opts,
+        &state,
+        stdout_writer,
+        stderr_writer,
+    );
+
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
+}
+
+/// Process all inputs (stdin or named files) for nl, reporting per-input errors.
+/// Returns true when any input failed.
+fn runNl_processInputs(
+    allocator: Allocator,
+    io: std.Io,
+    positionals: []const []const u8,
+    opts: NlOptions,
+    state: *NlState,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) bool {
     var has_error = false;
 
-    if (parsed_args.positionals.len == 0) {
+    if (positionals.len == 0) {
         // Read from stdin
-        runNl_numberStdin(io, stdout_writer, opts, &state, allocator) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{common.posixErrorString(err)});
+        runNl_numberStdin(io, stdout_writer, opts, state, allocator) catch |err| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "nl",
+                "stdin: {s}",
+                .{common.posixErrorString(err)},
+            );
             has_error = true;
         };
-    } else {
-        for (parsed_args.positionals) |file_path| {
-            if (std.mem.eql(u8, file_path, "-")) {
-                runNl_numberStdin(io, stdout_writer, opts, &state, allocator) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{common.posixErrorString(err)});
-                    has_error = true;
-                };
-            } else {
-                runNl_numberFile(
-                    io,
-                    file_path,
-                    stdout_writer,
-                    opts,
-                    &state,
+        return has_error;
+    }
+
+    for (positionals) |file_path| {
+        if (std.mem.eql(u8, file_path, "-")) {
+            runNl_numberStdin(io, stdout_writer, opts, state, allocator) catch |err| {
+                common.printErrorWithProgram(
                     allocator,
-                ) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                };
-            }
+                    stderr_writer,
+                    "nl",
+                    "stdin: {s}",
+                    .{common.posixErrorString(err)},
+                );
+                has_error = true;
+            };
+        } else {
+            runNl_numberFile(
+                io,
+                file_path,
+                stdout_writer,
+                opts,
+                state,
+                allocator,
+            ) catch |err| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "nl",
+                    "{s}: {s}",
+                    .{ file_path, common.posixErrorString(err) },
+                );
+                has_error = true;
+            };
         }
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return has_error;
 }
 
 // ============================================================================
@@ -807,7 +971,13 @@ test "nl --help" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const exit_code = try runNl(testing.allocator, testing.io, &.{"--help"}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{"--help"},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: nl") != null);
 }
@@ -816,33 +986,69 @@ test "nl --version" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const exit_code = try runNl(testing.allocator, testing.io, &.{"--version"}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{"--version"},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "nl (vibeutils)") != null);
 }
 
 test "nl invalid flag" {
-    const exit_code = try runNl(testing.allocator, testing.io, &.{"--invalid-flag"}, common.null_writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{"--invalid-flag"},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "nl invalid body style" {
-    const exit_code = try runNl(testing.allocator, testing.io, &.{ "-b", "x" }, common.null_writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{ "-b", "x" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "nl invalid number format" {
-    const exit_code = try runNl(testing.allocator, testing.io, &.{ "-n", "xx" }, common.null_writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{ "-n", "xx" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "nl invalid width" {
-    const exit_code = try runNl(testing.allocator, testing.io, &.{ "-w", "abc" }, common.null_writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{ "-w", "abc" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "nl non-existent file" {
-    const exit_code = try runNl(testing.allocator, testing.io, &.{"/tmp/nonexistent_nl_test_file_12345"}, common.null_writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        testing.io,
+        &.{"/tmp/nonexistent_nl_test_file_12345"},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
@@ -882,10 +1088,20 @@ test "nl default numbers non-empty lines" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{file_path}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{file_path},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("     1\thello\n     2\tworld\n", stdout_aw.writer.buffered());
 }
@@ -900,12 +1116,25 @@ test "nl default skips blank lines" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{file_path}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{file_path},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\thello\n       \n     2\tworld\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\thello\n       \n     2\tworld\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "nl -b a numbers all lines" {
@@ -918,12 +1147,25 @@ test "nl -b a numbers all lines" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "a", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "a", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\thello\n     2\t\n     3\tworld\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\thello\n     2\t\n     3\tworld\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "nl -b n numbers no lines" {
@@ -936,10 +1178,20 @@ test "nl -b n numbers no lines" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "n", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "n", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("       hello\n       world\n", stdout_aw.writer.buffered());
 }
@@ -954,10 +1206,20 @@ test "nl -n ln left justified" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-n", "ln", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-n", "ln", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("1     \thello\n2     \tworld\n", stdout_aw.writer.buffered());
 }
@@ -972,10 +1234,20 @@ test "nl -n rz zero filled" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-n", "rz", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-n", "rz", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("000001\thello\n000002\tworld\n", stdout_aw.writer.buffered());
 }
@@ -990,10 +1262,20 @@ test "nl -w 3 narrow width" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-w", "3", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-w", "3", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("  1\thello\n  2\tworld\n", stdout_aw.writer.buffered());
 }
@@ -1008,10 +1290,20 @@ test "nl -s custom separator" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-s", ": ", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-s", ": ", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("     1: hello\n     2: world\n", stdout_aw.writer.buffered());
 }
@@ -1026,10 +1318,20 @@ test "nl -v 10 start at 10" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-v", "10", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-v", "10", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("    10\thello\n    11\tworld\n", stdout_aw.writer.buffered());
 }
@@ -1044,12 +1346,25 @@ test "nl -i 5 increment by 5" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-i", "5", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-i", "5", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\tline1\n     6\tline2\n    11\tline3\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\tline1\n     6\tline2\n    11\tline3\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "nl combined -v 100 -i 10 -n rz" {
@@ -1062,10 +1377,20 @@ test "nl combined -v 100 -i 10 -n rz" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-v", "100", "-i", "10", "-n", "rz", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-v", "100", "-i", "10", "-n", "rz", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("000100\thello\n000110\tworld\n", stdout_aw.writer.buffered());
 }
@@ -1080,10 +1405,20 @@ test "nl empty file" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{file_path}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{file_path},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
@@ -1094,15 +1429,30 @@ test "nl section delimiters" {
     defer tmp_dir.cleanup();
 
     // header delimiter, header content, body delimiter, body content
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "\\:\\:\\:\nHEADER\n\\:\\:\nbody1\nbody2\n");
+    try common.test_utils.createTestFile(
+        io,
+        tmp_dir.dir,
+        "test.txt",
+        "\\:\\:\\:\nHEADER\n\\:\\:\nbody1\nbody2\n",
+    );
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-h", "a", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-h", "a", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Delimiter lines become blank lines, header and body lines are numbered
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "HEADER") != null);
@@ -1120,10 +1470,20 @@ test "nl no final newline" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{file_path}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{file_path},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("     1\thello\n", stdout_aw.writer.buffered());
 }
@@ -1172,18 +1532,36 @@ test "nl section delimiter resets counter on body transition" {
 
     // body (default section) -> body delimiter -> new body section
     // line1 and line2 start at 10; body delimiter should reset to 10
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "line1\nline2\n\\:\\:\nbody1\nbody2\n");
+    try common.test_utils.createTestFile(
+        io,
+        tmp_dir.dir,
+        "test.txt",
+        "line1\nline2\n\\:\\:\nbody1\nbody2\n",
+    );
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "a", "-v", "10", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "a", "-v", "10", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // GNU resets line number to start (10) on body section transition
-    try testing.expectEqualStrings("    10\tline1\n    11\tline2\n\n    10\tbody1\n    11\tbody2\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "    10\tline1\n    11\tline2\n\n    10\tbody1\n    11\tbody2\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "nl section delimiter resets counter on footer transition" {
@@ -1192,18 +1570,36 @@ test "nl section delimiter resets counter on footer transition" {
     defer tmp_dir.cleanup();
 
     // body lines then footer delimiter then footer lines
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "line1\nline2\n\\:\nfoot1\nfoot2\n");
+    try common.test_utils.createTestFile(
+        io,
+        tmp_dir.dir,
+        "test.txt",
+        "line1\nline2\n\\:\nfoot1\nfoot2\n",
+    );
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "a", "-f", "a", "-v", "10", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "a", "-f", "a", "-v", "10", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // GNU resets line number to start (10) on footer section transition
-    try testing.expectEqualStrings("    10\tline1\n    11\tline2\n\n    10\tfoot1\n    11\tfoot2\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "    10\tline1\n    11\tline2\n\n    10\tfoot1\n    11\tfoot2\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 // F40: writeUnnumberedLine outputs separator char instead of spaces.
@@ -1218,12 +1614,22 @@ test "nl unnumbered line outputs spaces not separator" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
     // -b n means no numbering; default width=6, default separator=tab (1 char)
     // GNU outputs 7 spaces (6 for width + 1 for tab) then content
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "n", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "n", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("       hello\n       world\n", stdout_aw.writer.buffered());
 }
@@ -1238,12 +1644,22 @@ test "nl unnumbered line with custom separator outputs spaces" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
     // -b n, -s ": " (2-char separator), width=6
     // GNU outputs 8 spaces (6 + 2) then content
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "n", "-s", ": ", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "n", "-s", ": ", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("        hello\n        world\n", stdout_aw.writer.buffered());
 }
@@ -1260,14 +1676,27 @@ test "nl skipped blank lines have indent in default mode" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
     // Default mode (-b t): blank lines are not numbered but should be indented
     // GNU outputs 7 spaces (width=6 + tab=1) then newline for blank lines
-    const exit_code = try runNl(testing.allocator, io, &.{file_path}, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{file_path},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\thello\n       \n     2\tworld\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\thello\n       \n     2\tworld\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "nl skipped blank lines have indent in all mode with join" {
@@ -1282,15 +1711,28 @@ test "nl skipped blank lines have indent in all mode with join" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
     // -b a -l 2: number all lines, but need 2 consecutive blanks to number
     // The single blank line doesn't meet threshold, so it gets indent + newline
     // GNU: "     1\thello\n       \n     2\tworld\n"
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "a", "-l", "2", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "a", "-l", "2", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\thello\n       \n     2\tworld\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\thello\n       \n     2\tworld\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 // F42: -b p:REGEX not implemented.
@@ -1305,14 +1747,27 @@ test "nl -b pfoo numbers only matching lines" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
     // -b pfoo: number only lines matching regex "foo"
     // GNU output: foo and foo2 get numbered, bar and baz are unnumbered
-    const exit_code = try runNl(testing.allocator, io, &.{ "-b", "pfoo", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-b", "pfoo", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\tfoo\n       bar\n     2\tfoo2\n       baz\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\tfoo\n       bar\n     2\tfoo2\n       baz\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 // F43: -d '' (empty delimiter) rejected.
@@ -1328,11 +1783,24 @@ test "nl -d empty string disables section matching" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "test.txt",
+        testing.allocator,
+    );
     defer testing.allocator.free(file_path);
 
     // -d '' should disable section matching; all lines numbered normally
-    const exit_code = try runNl(testing.allocator, io, &.{ "-d", "", "-b", "a", file_path }, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runNl(
+        testing.allocator,
+        io,
+        &.{ "-d", "", "-b", "a", file_path },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\thello\n     2\t\\:\\:\\:\n     3\tworld\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "     1\thello\n     2\t\\:\\:\\:\n     3\tworld\n",
+        stdout_aw.writer.buffered(),
+    );
 }

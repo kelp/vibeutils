@@ -127,7 +127,10 @@ test "format: multi-column output by default" {
     defer env.deinit();
 
     // Create several files with different name lengths
-    const files = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg", "hhhhhhhh" };
+    const files = [_][]const u8{
+        "a",     "bb",     "ccc",     "dddd",
+        "eeeee", "ffffff", "ggggggg", "hhhhhhhh",
+    };
     for (files) |name| {
         try env.createFile(name, "");
     }
@@ -876,7 +879,10 @@ test "version_sort: -v sorts version numbers naturally" {
     try env.runLs(.{ .version_sort = true, .one_per_line = true });
 
     // Should be file1, file2, file10, file20
-    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "file1", "file2", "file10", "file20" });
+    try LsAssertions.expectOnePerLineOrder(
+        env.getStdout(),
+        &.{ "file1", "file2", "file10", "file20" },
+    );
 }
 
 // ============================================================================
@@ -894,7 +900,10 @@ test "sort_by_extension: -X sorts by file extension" {
     try env.runLs(.{ .sort_by_extension = true, .one_per_line = true });
 
     // Sorted by extension: .c, .md, .txt
-    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "main.c", "readme.md", "notes.txt" });
+    try LsAssertions.expectOnePerLineOrder(
+        env.getStdout(),
+        &.{ "main.c", "readme.md", "notes.txt" },
+    );
 }
 
 // ============================================================================
@@ -1097,10 +1106,16 @@ test "F50: . and .. are first entries in ls -a sorted output" {
     const second = line_iter.next() orelse "";
 
     if (!std.mem.eql(u8, first, ".")) {
-        std.debug.print("F50: Expected '.' as first entry, got '{s}'\nFull output:\n{s}\n", .{ first, output });
+        std.debug.print(
+            "F50: Expected '.' as first entry, got '{s}'\nFull output:\n{s}\n",
+            .{ first, output },
+        );
     }
     if (!std.mem.eql(u8, second, "..")) {
-        std.debug.print("F50: Expected '..' as second entry, got '{s}'\nFull output:\n{s}\n", .{ second, output });
+        std.debug.print(
+            "F50: Expected '..' as second entry, got '{s}'\nFull output:\n{s}\n",
+            .{ second, output },
+        );
     }
 
     try testing.expectEqualStrings(".", first);

@@ -27,9 +27,21 @@ fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16
 
         // Use the appropriate ioctl based on the OS
         const result = switch (builtin.os.tag) {
-            .linux => std.os.linux.ioctl(std.Io.File.stdout().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
-            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.Io.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
-            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.Io.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
+            .linux => std.os.linux.ioctl(
+                std.Io.File.stdout().handle,
+                std.os.linux.T.IOCGWINSZ,
+                @intFromPtr(&ws),
+            ),
+            .macos, .ios, .tvos, .watchos => std.c.ioctl(
+                std.Io.File.stdout().handle,
+                std.c.T.IOCGWINSZ,
+                &ws,
+            ),
+            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(
+                std.Io.File.stdout().handle,
+                std.c.T.IOCGWINSZ,
+                &ws,
+            ),
             else => @as(usize, 1), // Force fallback for unknown systems
         };
 
