@@ -30,7 +30,7 @@
       in {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "vibeutils";
-          version = "0.10.2";
+          version = "0.10.3";
 
           src = ./.;
 

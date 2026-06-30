@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.3 — 2026-06-29
 
 ### Fixed
 - **`ls` no longer panics on directories whose device id has the
