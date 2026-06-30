@@ -212,12 +212,15 @@ BEGIN {
     }
 
     # --- compound-assert ---------------------------------------------
-    # An assert( whose argument contains " and " or " or ". The assert
-    # may be qualified (std.debug.assert(...) or a bare assert(...)), so
-    # we allow a leading "." but not an identifier char before "assert".
+    # An assert( whose argument contains a top-level " and ". Tiger Style
+    # asks to split assert(a and b) into assert(a); assert(b); an
+    # assert(a or b) is a single disjunctive invariant that CANNOT be
+    # split without changing meaning, so " or " is not flagged. The assert
+    # may be qualified (std.debug.assert(...)) or bare (assert(...)), so we
+    # allow a leading "." but not an identifier char before "assert".
     if (code ~ /(^|[^A-Za-z0-9_])assert[ \t]*\(/) {
-        if (code ~ / and / || code ~ / or /) {
-            emit("compound-assert", lineno, "compound boolean in assert");
+        if (code ~ / and /) {
+            emit("compound-assert", lineno, "compound boolean (and) in assert");
         }
     }
 
@@ -576,17 +579,22 @@ sort_and_print() {
         | cut -f4-
 }
 
-TOTAL=$(wc -l < "$OUT_FILE" | tr -d ' ')
-[ -n "$TOTAL" ] || TOTAL=0
+# usize-arch is the accepted slice-index exception: in Zig, slice lengths and
+# indices are usize by language design (Tiger Style's "unless interfacing with
+# APIs that require it"). We REPORT usize-arch lines (informational) but do NOT
+# gate on them -- they are excluded from the SUMMARY total/new and the exit code.
+RAW_TOTAL=$(wc -l < "$OUT_FILE" | tr -d ' ')
+[ -n "$RAW_TOTAL" ] || RAW_TOTAL=0
+TOTAL=$(awk -F'\t' '$1!="usize-arch"{c++} END{print c+0}' "$OUT_FILE")
 
 if [ "$MODE" = base ] || [ "$MODE" = staged ]; then
-    NEW=$(awk -F'\t' '$3=="NEW"{c++} END{print c+0}' "$OUT_FILE")
+    NEW=$(awk -F'\t' '$3=="NEW" && $1!="usize-arch"{c++} END{print c+0}' "$OUT_FILE")
 else
     NEW=0
 fi
 
-# Print sorted violations then the summary.
-if [ "$TOTAL" -gt 0 ]; then
+# Print sorted violations (including informational usize-arch) then the summary.
+if [ "$RAW_TOTAL" -gt 0 ]; then
     sort_and_print < "$OUT_FILE"
 fi
 printf 'SUMMARY total=%s new=%s\n' "$TOTAL" "$NEW"

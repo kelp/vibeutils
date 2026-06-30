@@ -32,7 +32,7 @@ if [ -x scripts/tiger-check.sh ]; then
     tiger_status=$?
     if [ "$tiger_status" -eq 1 ]; then
         echo "pre-commit: this change introduces NEW Tiger Style violations:" >&2
-        printf '%s\n' "$tiger_output" | awk -F'\t' '$3 == "NEW" { print "  " $1 "  " $2 "  " $4 }' >&2
+        printf '%s\n' "$tiger_output" | awk -F'\t' '$3 == "NEW" && $1 != "usize-arch" { print "  " $1 "  " $2 "  " $4 }' >&2
         echo "" >&2
         echo "Fix them and re-commit. Pre-existing violations are not blocked -- only ones this" >&2
         echo "change introduces. If a flagged line is legitimate dual-use (a usize required by a" >&2
