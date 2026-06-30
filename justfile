@@ -172,6 +172,12 @@ lint-actions:
     @echo "Linting GitHub Actions workflows..."
     @actionlint .github/workflows/*.yml
 
+# Scan the whole source tree for Tiger Style gating violations.
+# The migration baseline is zero, so ANY violation fails. usize-arch
+# is reported but non-gating. Same scanner the pre-commit hook runs.
+tiger-check:
+    @./scripts/tiger-check.sh
+
 # Run CI validation checks
 ci-validate:
     zig build ci-validate -Dci=true

@@ -52,6 +52,11 @@
   now run on the shared bounded, iterative `common.walker`; no
   direct filesystem-walk recursion remains. Shared per-file copy
   leaves were extracted into `common/file_ops` for cp and mv.
+- **Tiger Style CI gate.** A `Tiger Style` workflow runs the
+  `tiger-check` scanner tree-wide on every PR and push to `main`,
+  failing on any gating violation (oversized function, long line,
+  recursion, compound assert, unbounded loop). Available locally as
+  `just tiger-check`.
 
 ## v0.10.2 — 2026-06-15
 

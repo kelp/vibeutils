@@ -1,0 +1,37 @@
+name: Tiger Style
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions (setup-just, etc.) to run on Node 24 regardless of
+# their action.yml-declared runtime.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: tiger-style-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tiger-check:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4
+      # Tree-wide gate, not a diff against the base. The Tiger Style
+      # migration brought every gating rule to zero, so the whole tree
+      # must stay clean. This is strictly stronger than `--base`: it also
+      # catches a function that crosses the 70-line limit on lines the PR
+      # did not touch (e.g. a body that grows past an unchanged signature),
+      # which a diff-only check would miss. usize-arch is reported but
+      # non-gating. Genuine dual-use lines use an inline `tiger:allow:<rule>`
+      # comment. The scanner needs no toolchain (POSIX sh + awk/grep) and
+      # no git history, so the default shallow checkout is fine.
+      - name: Scan for Tiger Style violations (tree-wide gating rules)
+        run: just tiger-check
