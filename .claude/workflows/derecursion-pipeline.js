@@ -534,8 +534,12 @@ async function runRed() {
     [
       '## YOUR TASK (green check — run and report only)',
       `Run, EXACTLY as given, the ${a.utility} tests on the real (restored) code:`,
-      `${a.util_test_cmd}, and ${a.it_cmd}. Confirm the build compiles and report whether all tests pass`,
-      '(the newly-added characterization tests included). Report facts only.',
+      `${a.privileged_test_cmd}, ${a.util_test_cmd}, and ${a.it_cmd}. Confirm the build compiles and`,
+      'report whether all tests pass (the newly-added characterization tests included). De-recursion',
+      'targets (find, rm, the walker) often have fakeroot `privileged:` characterization tests, so the',
+      'privileged suite must run here too. For a HYBRID migration with intentionally-RED tests (a real',
+      'behavior change, not a pure refactor), some new tests are expected to FAIL here until green —',
+      'report all_pass honestly. Report facts only.',
     ].join('\n'),
     { label: `green-check:${a.utility}`, phase: 'Green check', model: 'haiku', schema: GREEN_CHECK_SCHEMA },
   );
