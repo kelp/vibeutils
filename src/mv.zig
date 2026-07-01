@@ -2802,6 +2802,14 @@ test "walker-migration: cross-device fallback completes copy of read-only source
     if (std.c.chmod(sub_src_z, 0o555) != 0) return error.SkipZigTest;
     defer _ = std.c.chmod(sub_src_z, 0o755);
 
+    // The move preserves 0o555 onto dst/sub, leaving a read-only dest dir with
+    // f.txt inside. Restore u+w in defer so TmpDir cleanup can unlink the child;
+    // otherwise the leak lands in .zig-cache/tmp and fails CI's cache-purge
+    // (setup-zig post step) with EACCES. Registered before the move so it runs
+    // at scope exit (after the assertions), when dst/sub exists at 0o555.
+    const dest_sub_z = try std.fmt.allocPrintSentinel(allocator, "{s}/dst/sub", .{base_path}, 0);
+    defer _ = std.c.chmod(dest_sub_z, 0o755);
+
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 

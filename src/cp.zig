@@ -3595,6 +3595,19 @@ test "walker-migration: -rp preserves directory mode post-order (read-only sourc
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
     defer testing.allocator.free(dest_path);
 
+    // The copy preserves 0o555 onto dst, leaving a read-only dest dir holding
+    // inside.txt. Restore u+w in defer so TmpDir cleanup can unlink the child;
+    // otherwise the leaked file lands in .zig-cache/tmp and fails the CI
+    // cache-purge (setup-zig post step) with EACCES. Runs after the assertions.
+    const dest_path_z = try std.fmt.allocPrintSentinel(
+        testing.allocator,
+        "{s}/dst",
+        .{base_path},
+        0,
+    );
+    defer testing.allocator.free(dest_path_z);
+    defer _ = std.c.chmod(dest_path_z, 0o755);
+
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
