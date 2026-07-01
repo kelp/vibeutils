@@ -3415,6 +3415,13 @@ test "du -S in disk-usage mode includes the directory's own block allocation" {
     const file_bytes: u64 = @as(u64, @intCast(@max(0, file_stat.blocks))) * 512;
     const expected = dir_own_bytes + file_bytes;
 
+    // Some filesystems (notably macOS APFS/HFS+) store small directories in
+    // b-tree metadata and report st_blocks == 0 for them. On those, the
+    // directory has no own block allocation to include, so this regression
+    // cannot be exercised; skip rather than fail. On Linux (ext4/tmpfs) a
+    // directory always occupies at least one block, so the teeth below hold.
+    if (dir_own_bytes == 0) return error.SkipZigTest;
+
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
 

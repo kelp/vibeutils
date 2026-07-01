@@ -1429,10 +1429,19 @@ test "walker: symlink policy follow_all follows all symlinks" {
         .{ .path = "link_to_dir", .kind = .symlink, .symlink_target = "target_dir" },
     });
 
+    // The root holds BOTH the real target_dir and link_to_dir -> target_dir.
+    // With detect_cycles=true, whichever of the two is visited first is
+    // descended and the other is skipped as already-visited (same inode).
+    // Without sort_children the visit order is the filesystem's readdir order,
+    // which differs across platforms (it descended the link on x86_64 but the
+    // real dir on arm CI, making saw_via_link flaky). sort_children=true makes
+    // the order deterministic: "link_to_dir" sorts before "target_dir", so the
+    // symlink is descended first on every platform.
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
         .detect_cycles = true,
         .order = .pre,
+        .sort_children = true,
     });
     defer w.deinit(io);
 

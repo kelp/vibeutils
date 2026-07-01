@@ -279,11 +279,25 @@ test_id() {
 
     echo -e "${CYAN}Testing -F flag (full name / GECOS)...${NC}"
 
-    # -F should output a non-empty string (the GECOS field)
+    # -F prints the passwd GECOS field for the current user. That field is
+    # legitimately EMPTY for many service/CI accounts (e.g. the GitHub
+    # Actions `runner` user), so do not assume it is non-empty. Where an
+    # authoritative source exists (getent on Linux), assert id -F
+    # reproduces it exactly; otherwise (macOS has no getent) fall back to
+    # the non-empty expectation, which holds for normal interactive users.
     local f_output f_exit
     f_output=$("$binary" -F 2>/dev/null)
     f_exit=$?
-    if [[ $f_exit -eq 0 && -n "$f_output" ]]; then
+    if command -v getent >/dev/null 2>&1; then
+        local expected_gecos
+        expected_gecos=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f5)
+        if [[ $f_exit -eq 0 && "$f_output" == "$expected_gecos" ]]; then
+            print_test_result "id -F prints GECOS field" "PASS"
+        else
+            print_test_result "id -F prints GECOS field" "FAIL" \
+                "Exit: $f_exit, output: '$f_output', expected: '$expected_gecos'"
+        fi
+    elif [[ $f_exit -eq 0 && -n "$f_output" ]]; then
         print_test_result "id -F prints GECOS field" "PASS"
     else
         print_test_result "id -F prints GECOS field" "FAIL" \

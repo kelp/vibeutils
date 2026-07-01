@@ -1297,6 +1297,20 @@ test_find() {
     run_command cmd out err exit_code \
         "$binary" "$containsdelete_dir" "${containsdelete_args[@]}"
 
+    # The exprContainsDelete guard needs ~200k argv entries, which exceed
+    # the per-exec ARG_MAX on some platforms (notably macOS, ~1 MiB): the
+    # kernel rejects the exec with E2BIG ("Argument list too long") before
+    # find ever runs, so the no-overflow property cannot be exercised
+    # there. Skip rather than fail when the OS won't accept the args.
+    if [[ $exit_code -ne 0 && "$err" == *"Argument list too long"* ]]; then
+        print_test_result "find deep expression does not overflow exprContainsDelete" "SKIP" \
+            "OS ARG_MAX too low to exec ${#containsdelete_args[@]} args on this platform"
+        print_test_result "find deep expression applies implicit -print after exprContainsDelete" "SKIP" \
+            "OS ARG_MAX too low to exec ${#containsdelete_args[@]} args on this platform"
+        rm -rf "$containsdelete_dir"
+        return 0
+    fi
+
     # KEY RED 1: the parse-time exprContainsDelete tree-walk must run to
     # completion (exit 0), not abort with SIGABRT (134) on a depth-200000
     # expression.
