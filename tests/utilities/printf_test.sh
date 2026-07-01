@@ -422,4 +422,126 @@ test_printf() {
         print_test_result "printf audit: space-sign flag negative" "FAIL" \
             "Expected '-42', got '$output'"
     fi
+
+    # ========== FORMAT SPECIFIER BEHAVIORAL TESTS ==========
+
+    echo -e "${CYAN}Testing %f fixed float...${NC}"
+
+    test_command_output "printf %f 3.14" "3.140000" \
+        "$binary" '%f' 3.14
+
+    test_command_output "printf %f 0" "0.000000" \
+        "$binary" '%f' 0
+
+    test_command_output "printf %.2f 3.14159" "3.14" \
+        "$binary" '%.2f' 3.14159
+
+    echo -e "${CYAN}Testing %e scientific notation...${NC}"
+
+    test_command_output "printf %e 100000" "1.000000e+05" \
+        "$binary" '%e' 100000
+
+    test_command_output "printf %e 0.0025" "2.500000e-03" \
+        "$binary" '%e' 0.0025
+
+    echo -e "${CYAN}Testing %g general float...${NC}"
+
+    test_command_output "printf %g 3.14" "3.14" \
+        "$binary" '%g' 3.14
+
+    test_command_output "printf %g 100000" "100000" \
+        "$binary" '%g' 100000
+
+    test_command_output "printf %g 0.00001" "1e-05" \
+        "$binary" '%g' 0.00001
+
+    echo -e "${CYAN}Testing %c character...${NC}"
+
+    test_command_output "printf %c A" "A" \
+        "$binary" '%c' A
+
+    test_command_output "printf %c hello" "h" \
+        "$binary" '%c' hello
+
+    echo -e "${CYAN}Testing %u unsigned integer...${NC}"
+
+    test_command_output "printf %u 42" "42" \
+        "$binary" '%u' 42
+
+    test_command_output "printf %u 0" "0" \
+        "$binary" '%u' 0
+
+    echo -e "${CYAN}Testing %d with float argument (GNU truncation)...${NC}"
+
+    # GNU printf '%d' 3.9 outputs "3" (truncates float to integer)
+    output=$("$binary" '%d' 3.9)
+    if [[ "$output" == "3" ]]; then
+        print_test_result "printf %d with float 3.9 truncates to 3" "PASS"
+    else
+        print_test_result "printf %d with float 3.9 truncates to 3" "FAIL" \
+            "Expected '3', got '$output'"
+    fi
+
+    # GNU printf '%d' 1e2 outputs "100" (parse as float, truncate)
+    output=$("$binary" '%d' 1e2)
+    if [[ "$output" == "100" ]]; then
+        print_test_result "printf %d with float 1e2 = 100" "PASS"
+    else
+        print_test_result "printf %d with float 1e2 = 100" "FAIL" \
+            "Expected '100', got '$output'"
+    fi
+
+    # %d with float should exit 1 (not completely converted)
+    local float_exit
+    "$binary" '%d' 3.9 >/dev/null 2>/dev/null
+    float_exit=$?
+    if [[ $float_exit -eq 1 ]]; then
+        print_test_result "printf %d with float exits 1" "PASS"
+    else
+        print_test_result "printf %d with float exits 1" "FAIL" \
+            "Expected exit 1, got $float_exit"
+    fi
+
+    echo -e "${CYAN}Testing %b escape sequences...${NC}"
+
+    # %b with \n
+    output=$("$binary" '%b' 'a\nb')
+    expected=$'a\nb'
+    if [[ "$output" == "$expected" ]]; then
+        print_test_result "printf %b with newline escape" "PASS"
+    else
+        print_test_result "printf %b with newline escape" "FAIL" \
+            "Expected 'a<NL>b', got '$output'"
+    fi
+
+    # %b with \t
+    output=$("$binary" '%b' 'a\tb')
+    expected=$'a\tb'
+    if [[ "$output" == "$expected" ]]; then
+        print_test_result "printf %b with tab escape" "PASS"
+    else
+        print_test_result "printf %b with tab escape" "FAIL" \
+            "Expected 'a<TAB>b', got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing + sign flag...${NC}"
+
+    test_command_output "printf +sign flag positive" "+42" \
+        "$binary" '%+d' 42
+
+    test_command_output "printf +sign flag negative" "-42" \
+        "$binary" '%+d' -42
+
+    echo -e "${CYAN}Testing # alternate form...${NC}"
+
+    test_command_output "printf #flag hex" "0xff" \
+        "$binary" '%#x' 255
+
+    test_command_output "printf #flag octal" "010" \
+        "$binary" '%#o' 8
+
+    echo -e "${CYAN}Testing .* precision from argument...${NC}"
+
+    test_command_output "printf .* precision" "3.142" \
+        "$binary" '%.*f' 3 3.14159
 }

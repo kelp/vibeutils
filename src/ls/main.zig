@@ -81,54 +81,108 @@ const LsArgs = struct {
         .all = .{ .short = 'a', .desc = "Do not ignore entries starting with ." },
         .almost_all = .{ .short = 'A', .desc = "Do not list implied . and .." },
         .long_format = .{ .short = 'l', .desc = "Use a long listing format" },
-        .human_readable = .{ .short = 'h', .desc = "With -l, print sizes in human readable format" },
+        .human_readable = .{
+            .short = 'h',
+            .desc = "With -l, print sizes in human readable format",
+        },
         .kilobytes = .{ .short = 'k', .desc = "With -l, print sizes in kilobytes" },
         .one_per_line = .{ .short = '1', .desc = "List one file per line" },
         .directory = .{ .short = 'd', .desc = "List directories themselves, not their contents" },
-        .file_type_indicators = .{ .short = 'F', .desc = "Append indicator (one of */=>@|) to entries" },
-        .append_slash_dirs = .{ .short = 'p', .desc = "Write a slash (/) after each directory name" },
-        .non_printable_as_question = .{ .short = 'q', .desc = "Force non-printable characters to be written as '?'" },
+        .file_type_indicators = .{
+            .short = 'F',
+            .desc = "Append indicator (one of */=>@|) to entries",
+        },
+        .append_slash_dirs = .{
+            .short = 'p',
+            .desc = "Write a slash (/) after each directory name",
+        },
+        .non_printable_as_question = .{
+            .short = 'q',
+            .desc = "Force non-printable characters to be written as '?'",
+        },
         .omit_owner = .{ .short = 'g', .desc = "Like -l, but do not print the owner" },
         .omit_group = .{ .short = 'o', .desc = "Like -l, but do not print the group" },
         .show_inodes = .{ .short = 'i', .desc = "Print the index number of each file" },
-        .comma_format = .{ .short = 'm', .desc = "Fill width with a comma separated list of entries" },
+        .comma_format = .{
+            .short = 'm',
+            .desc = "Fill width with a comma separated list of entries",
+        },
         .numeric_ids = .{ .short = 'n', .desc = "With -l, show numeric user and group IDs" },
         .recursive = .{ .short = 'R', .desc = "List subdirectories recursively" },
         .sort_by_time = .{ .short = 't', .desc = "Sort by modification time, newest first" },
         .sort_by_size = .{ .short = 'S', .desc = "Sort by file size, largest first" },
         .reverse_sort = .{ .short = 'r', .desc = "Reverse order while sorting" },
-        .no_sort = .{ .short = 'f', .desc = "Do not sort; list entries in directory order (implies -a)" },
+        .no_sort = .{
+            .short = 'f',
+            .desc = "Do not sort; list entries in directory order (implies -a)",
+        },
         .show_blocks = .{ .short = 's', .desc = "Display number of filesystem blocks" },
         .use_atime = .{ .short = 'u', .desc = "Use access time instead of modification time" },
-        .use_ctime = .{ .short = 'c', .desc = "Use status change time instead of modification time" },
+        .use_ctime = .{
+            .short = 'c',
+            .desc = "Use status change time instead of modification time",
+        },
         .multi_column = .{ .short = 'C', .desc = "Force multi-column output sorted down columns" },
         .columns_across = .{ .short = 'x', .desc = "Multi-column output sorted across rows" },
         .full_time = .{ .short = 'T', .desc = "With -l, show complete time including seconds" },
         .follow_all_symlinks = .{ .short = 'L', .desc = "Follow all symbolic links" },
-        .follow_cmdline_symlinks = .{ .short = 'H', .desc = "Follow symbolic links on the command line" },
-        .escape_non_printable = .{ .short = 'b', .desc = "Print C-style escape sequences for non-printable characters" },
+        .follow_cmdline_symlinks = .{
+            .short = 'H',
+            .desc = "Follow symbolic links on the command line",
+        },
+        .escape_non_printable = .{
+            .short = 'b',
+            .desc = "Print C-style escape sequences for non-printable characters",
+        },
         .hide_backups = .{ .short = 'B', .desc = "Do not list entries ending with ~" },
         .dired = .{ .short = 'D', .desc = "Generate output suitable for Emacs dired mode" },
         .show_acls = .{ .short = 'e', .desc = "Display ACL information in long format" },
         .colorize = .{ .short = 'G', .desc = "Enable colorized output" },
-        .ignore_pattern = .{ .short = 'I', .desc = "Do not list entries matching shell PATTERN", .value_name = "PATTERN" },
+        .ignore_pattern = .{
+            .short = 'I',
+            .desc = "Do not list entries matching shell PATTERN",
+            .value_name = "PATTERN",
+        },
         .show_file_flags = .{ .short = 'O', .desc = "Display file flags in long format" },
         .no_follow_symlinks = .{ .short = 'P', .desc = "Do not follow symbolic links" },
         .unsorted = .{ .short = 'U', .desc = "Do not sort; list entries in directory order" },
         .version_sort = .{ .short = 'v', .desc = "Natural sort of version numbers within text" },
-        .output_width = .{ .short = 'w', .desc = "Set output width to COLS columns", .value_name = "COLS" },
+        .output_width = .{
+            .short = 'w',
+            .desc = "Set output width to COLS columns",
+            .value_name = "COLS",
+        },
         .show_whiteouts = .{ .short = 'W', .desc = "Display whiteout entries" },
         .sort_by_extension = .{ .short = 'X', .desc = "Sort alphabetically by entry extension" },
         .sort_by_name = .{ .short = 'y', .desc = "Sort by name (default behavior)" },
         .show_xattrs = .{ .short = '@', .desc = "Display extended attribute keys and sizes" },
         .show_sip = .{ .short = '%', .desc = "Display SIP protection information" },
-        .thousands_grouping = .{ .short = ',', .desc = "Format file sizes with thousands grouping" },
-        .color = .{ .short = 0, .desc = "When to use colors (valid: always, auto, never)", .value_name = "WHEN" },
+        .thousands_grouping = .{
+            .short = ',',
+            .desc = "Format file sizes with thousands grouping",
+        },
+        .color = .{
+            .short = 0,
+            .desc = "When to use colors (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
         .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
-        .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
+        .icons = .{
+            .short = 0,
+            .desc = "When to show icons (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
         .test_icons = .{ .short = 0, .desc = "Show sample icons to test Nerd Font support" },
-        .time_style = .{ .short = 0, .desc = "Time/date format (valid: default, relative, iso, long-iso)", .value_name = "STYLE" },
-        .git = .{ .short = 0, .desc = "when to show git status (valid: always, auto, never)", .value_name = "WHEN" },
+        .time_style = .{
+            .short = 0,
+            .desc = "Time/date format (valid: default, relative, iso, long-iso)",
+            .value_name = "STYLE",
+        },
+        .git = .{
+            .short = 0,
+            .desc = "when to show git status (valid: always, auto, never)",
+            .value_name = "WHEN",
+        },
     };
 };
 
@@ -147,7 +201,13 @@ pub fn runLs(
     stderr: *std.Io.Writer,
 ) !u8 {
     const parsed = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr, "ls", "argument parsing failed: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "ls",
+            "argument parsing failed: {s}",
+            .{common.posixErrorString(err)},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     };
     defer allocator.free(parsed.positionals);
@@ -155,9 +215,22 @@ pub fn runLs(
     return lsMain(io, stdout, stderr, parsed, allocator);
 }
 
+/// Resolved color, icon, and time-style modes derived from args + env.
+const ResolvedModes = struct {
+    color_mode: ColorMode,
+    icon_mode: common.icons.IconMode,
+    time_style: TimeStyle,
+};
+
 /// Core ls functionality.
 /// Returns exit code: 0 for success, 2 for serious errors (e.g. nonexistent path)
-fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, args: LsArgs, allocator: std.mem.Allocator) !u8 {
+fn lsMain(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+    allocator: std.mem.Allocator,
+) !u8 {
     // Handle help
     if (args.help) {
         try printHelp(allocator, writer);
@@ -179,6 +252,43 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     // Resolve display config from environment and terminal state
     const display_config = common.display_config.DisplayConfig.resolve(allocator);
 
+    // Build the consolidated options struct from args + resolved config.
+    const options = lsMain_buildOptions(io, stderr_writer, args, allocator, display_config);
+
+    // Initialize GitContext once if git status is requested
+    const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
+    var git_context: ?types.GitContext = null;
+    if (options.show_git_status) {
+        git_context = types.GitContext.init(allocator, io, ".");
+        if (git_context) |*ctx| {
+            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", git_explicit_always);
+        }
+    }
+    defer if (git_context) |*ctx| ctx.deinit();
+
+    const had_error = try lsMain_listOperands(
+        io,
+        args.positionals,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        if (git_context) |*ctx| ctx else null,
+    );
+
+    return if (had_error) 2 else 0;
+}
+
+/// Resolve ls-specific color/icon modes and time style from args + config.
+fn lsMain_buildOptions_resolveModes(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+    display_config: common.display_config.DisplayConfig,
+    allocator: std.mem.Allocator,
+) ResolvedModes {
+    std.debug.assert(args.help == false);
+    std.debug.assert(args.version == false);
     // Map resolved display config to ls-specific color/icon modes.
     var color_mode: ColorMode = if (display_config.color == .on) .always else .never;
     var icon_mode: common.icons.IconMode = blk: {
@@ -190,7 +300,14 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     // Explicit CLI flags override everything
     if (args.color) |color_arg| {
         const parsed = types.parseColorMode(color_arg) catch {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--color'\n" ++
+                    "Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'",
+                .{color_arg},
+            );
         };
         color_mode = parsed;
     }
@@ -200,24 +317,70 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     }
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--icons'\n" ++
+                    "Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'",
+                .{icons_arg},
+            );
         };
     }
 
+    lsMain_buildOptions_validateGit(io, stderr_writer, args);
+
+    const time_style = lsMain_buildOptions_resolveTimeStyle(io, stderr_writer, args);
+
+    return ResolvedModes{
+        .color_mode = color_mode,
+        .icon_mode = icon_mode,
+        .time_style = time_style,
+    };
+}
+
+/// Validate the --git argument, exiting fatally on an invalid value.
+fn lsMain_buildOptions_validateGit(io: std.Io, stderr_writer: *std.Io.Writer, args: LsArgs) void {
+    std.debug.assert(args.help == false);
+    std.debug.assert(args.version == false);
     if (args.git) |git_arg| {
         if (!std.mem.eql(u8, git_arg, "always") and
             !std.mem.eql(u8, git_arg, "auto") and
             !std.mem.eql(u8, git_arg, "never"))
         {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--git'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{git_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--git'\n" ++
+                    "Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'",
+                .{git_arg},
+            );
         }
     }
+}
 
+/// Resolve the time style from --time-style, -h, and -T, exiting on error.
+fn lsMain_buildOptions_resolveTimeStyle(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+) TimeStyle {
+    std.debug.assert(args.help == false);
+    std.debug.assert(args.version == false);
     // Parse time style
     var time_style = TimeStyle.default;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'default'\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--time-style'\n" ++
+                    "Valid arguments are:\n  - 'default'\n  - 'relative'\n" ++
+                    "  - 'iso'\n  - 'long-iso'",
+                .{time_style_arg},
+            );
         };
     } else if (args.human_readable) {
         time_style = .relative;
@@ -228,11 +391,30 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
         time_style = .full;
     }
 
+    return time_style;
+}
+
+/// Build the consolidated LsOptions from parsed args + resolved config.
+fn lsMain_buildOptions(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+    allocator: std.mem.Allocator,
+    display_config: common.display_config.DisplayConfig,
+) LsOptions {
+    const modes = lsMain_buildOptions_resolveModes(
+        io,
+        stderr_writer,
+        args,
+        display_config,
+        allocator,
+    );
+
     // Detect terminal status for icons and colors
     const is_terminal = std.c.isatty(std.Io.File.stdout().handle) != 0;
 
     // Create options struct by consolidating all parsed arguments
-    const options = LsOptions{
+    return LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
         .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
@@ -249,13 +431,13 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
         .non_printable_as_question = args.non_printable_as_question,
         .omit_owner = args.omit_owner,
         .omit_group = args.omit_group,
-        .color_mode = color_mode,
+        .color_mode = modes.color_mode,
         .group_directories_first = args.group_directories_first,
         .show_inodes = args.show_inodes,
         .numeric_ids = args.numeric_ids,
         .comma_format = args.comma_format,
-        .icon_mode = icon_mode,
-        .time_style = time_style,
+        .icon_mode = modes.icon_mode,
+        .time_style = modes.time_style,
         .show_git_status = resolveGitMode(io, args.git, display_config),
         .is_terminal = is_terminal,
         .no_sort = args.no_sort or args.unsorted,
@@ -276,73 +458,78 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
         .thousands_grouping = args.thousands_grouping,
         .terminal_width = args.output_width,
     };
+}
 
-    // Initialize GitContext once if git status is requested
-    const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
-    var git_context: ?types.GitContext = null;
-    if (options.show_git_status) {
-        git_context = types.GitContext.init(allocator, io, ".");
-        if (git_context) |*ctx| {
-            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", git_explicit_always);
-        }
-    }
-    defer if (git_context) |*ctx| ctx.deinit();
-
-    // Access positionals (the paths to list)
-    const paths = args.positionals;
+/// List all path operands, returning whether any listing error occurred.
+/// Mirrors GNU separation: file operands first (no headers), then
+/// directory operands with "dir:" headers.
+fn lsMain_listOperands(
+    io: std.Io,
+    paths: []const []const u8,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) !bool {
     var had_error = false;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
-        try listDirectory(io, ".", writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
+        try listDirectory(io, ".", writer, stderr_writer, options, allocator, git_context);
+        return had_error;
     } else if (paths.len == 1) {
         // Single path: no headers needed
-        listDirectory(io, paths[0], writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+        listDirectory(io, paths[0], writer, stderr_writer, options, allocator, git_context) catch {
             had_error = true;
         };
-    } else {
-        // Multiple operands: GNU-style separation.
-        // 1. List file operands first (no headers).
-        // 2. List directory operands with "dir:" headers.
-        var file_count: usize = 0;
+        return had_error;
+    }
 
-        for (paths) |path| {
-            const stat = common.file.FileInfo.stat(io, path) catch continue;
-            if (stat.kind != .directory) {
-                file_count += 1;
-            }
+    // Multiple operands: GNU-style separation.
+    // 1. List file operands first (no headers).
+    // 2. List directory operands with "dir:" headers.
+    var file_count: u64 = 0;
+
+    for (paths) |path| {
+        const stat = common.file.FileInfo.stat(io, path) catch continue;
+        if (stat.kind != .directory) {
+            file_count += 1;
         }
+    }
+    // file_count is incremented at most once per path element, so it can
+    // never exceed the number of operands.
+    std.debug.assert(file_count <= paths.len);
 
-        // First pass: list file operands (no headers)
-        for (paths) |path| {
-            const stat = common.file.FileInfo.stat(io, path) catch continue;
-            if (stat.kind != .directory) {
-                listDirectory(io, path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
-                    had_error = true;
-                };
-            }
-        }
-
-        // Second pass: list directory operands with headers
-        var dir_idx: usize = 0;
-        for (paths) |path| {
-            const is_dir = blk: {
-                const stat = common.file.FileInfo.stat(io, path) catch break :blk true;
-                break :blk stat.kind == .directory;
-            };
-            if (!is_dir) continue;
-
-            // Blank line separator between sections
-            if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
-            try writer.print("{s}:\n", .{path});
-            listDirectory(io, path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+    // First pass: list file operands (no headers)
+    for (paths) |path| {
+        const stat = common.file.FileInfo.stat(io, path) catch continue;
+        if (stat.kind != .directory) {
+            listDirectory(io, path, writer, stderr_writer, options, allocator, git_context) catch {
                 had_error = true;
             };
-            dir_idx += 1;
         }
     }
 
-    return if (had_error) 2 else 0;
+    // Second pass: list directory operands with headers
+    var dir_idx: u64 = 0;
+    for (paths) |path| {
+        const is_dir = blk: {
+            const stat = common.file.FileInfo.stat(io, path) catch break :blk true;
+            break :blk stat.kind == .directory;
+        };
+        if (!is_dir) continue;
+
+        // Blank line separator between sections
+        if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
+        try writer.print("{s}:\n", .{path});
+        listDirectory(io, path, writer, stderr_writer, options, allocator, git_context) catch {
+            had_error = true;
+        };
+        dir_idx += 1;
+    }
+
+    return had_error;
 }
 
 /// Print help message with usage examples
@@ -424,7 +611,9 @@ fn printIconTest(writer: anytype) !void {
     try writer.writeAll("Icon Test - Nerd Font Support Check\n");
     try writer.writeAll("====================================\n\n");
 
-    try writer.writeAll("If you can see the following icons correctly, your terminal supports Nerd Fonts:\n\n");
+    try writer.writeAll(
+        "If you can see the following icons correctly, your terminal supports Nerd Fonts:\n\n",
+    );
 
     // Test common file type icons
     try writer.print("  {s}  Directory\n", .{theme.directory});
@@ -460,7 +649,10 @@ fn printIconTest(writer: anytype) !void {
 
     try writer.writeAll("\n");
     try writer.writeAll("To configure icons in ls:\n");
-    try writer.writeAll("  ls --icons=auto                      # Show icons in terminal, hide in pipes (default)\n");
+    try writer.writeAll(
+        "  ls --icons=auto                      " ++
+            "# Show icons in terminal, hide in pipes (default)\n",
+    );
     try writer.writeAll("  ls --icons=always                    # Always show icons\n");
     try writer.writeAll("  ls --icons=never                     # Never show icons\n");
     try writer.writeAll("  export LS_ICONS=auto                 # Set default mode\n");
@@ -473,79 +665,169 @@ fn printIconTest(writer: anytype) !void {
 
 /// List a directory or file, handling both files and directories appropriately.
 /// Errors are printed but don't stop execution except for BrokenPipe.
-fn listDirectory(io: std.Io, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
+fn listDirectory(
+    io: std.Io,
+    path: []const u8,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "failed to initialize styling: {s}",
+            .{common.posixErrorString(err)},
+        );
         return err;
     };
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(io, path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: {s}",
+            .{ path, common.posixErrorString(err) },
+        );
         return err;
     };
 
     // If it's a file (not a directory), just print the file entry
     if (stat.kind != .directory) {
-        var entry = Entry{
-            .name = std.fs.path.basename(path),
-            .kind = stat.kind,
-            .stat = stat,
-            .symlink_target = null,
-        };
-
-        // Get Git status for the file if requested
-        if (options.show_git_status and git_context != null) {
-            entry.git_status = git_context.?.getFileStatus(io, entry.name) orelse .not_in_repo;
-        }
-
-        if (options.long_format) {
-            try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
-        } else {
-            try display.printEntryName(entry, writer, style, options);
-        }
-        try writer.writeAll("\n");
+        try listSingleFileEntry(io, path, writer, options, allocator, git_context, style, stat);
         return;
     }
 
     // If -d is specified, just list the directory itself
     if (options.directory) {
-        if (options.long_format) {
-            const entry = Entry{
-                .name = path,
-                .kind = .directory,
-                .stat = stat,
-                .symlink_target = null,
-            };
-
-            try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
-        } else {
-            try writer.print("{s}\n", .{path});
-        }
+        try listDirectoryItself(path, writer, options, allocator, style, stat);
         return;
     }
 
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "{s}: {s}",
+            .{ path, common.posixErrorString(err) },
+        );
         return err;
     };
     defer dir.close(io);
 
     // Call the shared implementation
-    try listDirectoryImpl(io, dir, path, writer, stderr_writer, options, allocator, style, git_context);
+    try listDirectoryImpl(
+        io,
+        dir,
+        path,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        style,
+        git_context,
+    );
+}
+
+/// Print a single non-directory operand as one entry, with optional git status.
+fn listSingleFileEntry(
+    io: std.Io,
+    path: []const u8,
+    writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+    style: anytype,
+    stat: common.file.FileInfo,
+) anyerror!void {
+    var entry = Entry{
+        .name = std.fs.path.basename(path),
+        .kind = stat.kind,
+        .stat = stat,
+        .symlink_target = null,
+    };
+
+    // Get Git status for the file if requested
+    if (options.show_git_status and git_context != null) {
+        entry.git_status = git_context.?.getFileStatus(io, entry.name) orelse .not_in_repo;
+    }
+
+    if (options.long_format) {
+        try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
+    } else {
+        try display.printEntryName(entry, writer, style, options);
+    }
+    try writer.writeAll("\n");
+}
+
+/// Print just the directory operand itself (the -d case), not its contents.
+fn listDirectoryItself(
+    path: []const u8,
+    writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+    stat: common.file.FileInfo,
+) anyerror!void {
+    if (options.long_format) {
+        const entry = Entry{
+            .name = path,
+            .kind = .directory,
+            .stat = stat,
+            .symlink_target = null,
+        };
+
+        try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
+    } else {
+        try writer.print("{s}\n", .{path});
+    }
 }
 
 /// Set up visited filesystem ID tracking for secure cycle detection in recursive mode
-fn listDirectoryImpl(io: std.Io, dir: std.Io.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*types.GitContext) anyerror!void {
-    var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
+fn listDirectoryImpl(
+    io: std.Io,
+    dir: std.Io.Dir,
+    path: []const u8,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+    git_context: ?*types.GitContext,
+) anyerror!void {
+    var visited_fs_ids = common.directory.FileSystemIdSet.initContext(
+        allocator,
+        common.directory.FileSystemId.Context{},
+    );
     defer visited_fs_ids.deinit();
 
-    try core.listDirectoryImplWithVisited(io, dir, path, writer, stderr_writer, options, allocator, style, &visited_fs_ids, git_context);
+    try core.listDirectoryImplWithVisited(
+        io,
+        dir,
+        path,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        style,
+        &visited_fs_ids,
+        git_context,
+    );
 }
 
 /// Determine whether to show git status indicators.
-fn resolveGitMode(io: std.Io, git_arg: ?[]const u8, disp: common.display_config.DisplayConfig) bool {
+fn resolveGitMode(
+    io: std.Io,
+    git_arg: ?[]const u8,
+    disp: common.display_config.DisplayConfig,
+) bool {
     if (git_arg) |value| {
         if (std.mem.eql(u8, value, "always")) return true;
         if (std.mem.eql(u8, value, "never")) return false;
@@ -566,7 +848,10 @@ fn isInGitRepo(io: std.Io) bool {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const cwd_len = std.process.currentPath(io, &buf) catch return false;
     var path: []const u8 = buf[0..cwd_len];
-    while (true) {
+    // Bounded by the absolute path's component count: each iteration strips one
+    // component (path = parent), and dirname's root fixed-point (parent == path)
+    // returns false, so the loop always terminates at the filesystem root.
+    while (true) { // tiger:allow:unbounded-loop terminates at filesystem root
         var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
         defer dir.close(io);
         if (dir.statFile(io, ".git", .{})) |_| {

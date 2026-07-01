@@ -74,14 +74,26 @@ pub const Entry = struct {
     file_type_indicator: ?u8 = null, // Cached file type indicator for performance
 
     /// Calculate the display width of this entry without caching
-    pub fn calculateDisplayWidth(self: *const Entry, file_type_indicators: bool, append_slash_dirs: bool, show_icons: bool, show_git_status: bool) usize {
+    pub fn calculateDisplayWidth(
+        self: *const Entry,
+        file_type_indicators: bool,
+        append_slash_dirs: bool,
+        show_icons: bool,
+        show_git_status: bool,
+    ) usize { // tiger:allow:usize-arch displayWidth returns usize
         // Calculate display width based on entry properties
         var width: usize = 0;
 
         // Add icon width if enabled (varies by icon glyph)
         if (show_icons) {
             const theme = common.icons.IconTheme{};
-            const icon = common.icons.getIcon(&theme, self.name, self.kind == .directory, self.kind == .sym_link, computeIsExecutable(self));
+            const icon = common.icons.getIcon(
+                &theme,
+                self.name,
+                self.kind == .directory,
+                self.kind == .sym_link,
+                computeIsExecutable(self),
+            );
             width += common.unicode.displayWidth(icon) + 1; // icon glyph + space
         }
 
@@ -107,12 +119,23 @@ pub const Entry = struct {
     }
 
     /// Get the display width of this entry, caching the result for future calls
-    pub fn getDisplayWidth(self: *Entry, file_type_indicators: bool, append_slash_dirs: bool, show_icons: bool, show_git_status: bool) usize {
+    pub fn getDisplayWidth(
+        self: *Entry,
+        file_type_indicators: bool,
+        append_slash_dirs: bool,
+        show_icons: bool,
+        show_git_status: bool,
+    ) usize { // tiger:allow:usize-arch displayWidth returns usize
         if (self.display_width) |cached_width| {
             return cached_width;
         }
 
-        const width = self.calculateDisplayWidth(file_type_indicators, append_slash_dirs, show_icons, show_git_status);
+        const width = self.calculateDisplayWidth(
+            file_type_indicators,
+            append_slash_dirs,
+            show_icons,
+            show_git_status,
+        );
 
         // Cache the calculated width
         self.display_width = width;
@@ -230,7 +253,11 @@ pub const GitContext = struct {
     }
 
     /// Get git status for a specific file
-    pub fn getFileStatus(self: *GitContext, io: std.Io, filename: []const u8) ?common.git.GitStatus {
+    pub fn getFileStatus(
+        self: *GitContext,
+        io: std.Io,
+        filename: []const u8,
+    ) ?common.git.GitStatus {
         if (self.repo) |*repo| {
             return repo.getFileStatus(io, filename);
         }
@@ -252,7 +279,13 @@ pub const GitContext = struct {
     ) void {
         if (warn_when_unavailable and self.init_error != null) {
             if (self.init_error) |err| {
-                common.printWarningWithProgram(allocator, stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
+                common.printWarningWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "git status unavailable: {s}",
+                    .{err.getMessage()},
+                );
             }
         }
     }

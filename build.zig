@@ -11,6 +11,11 @@ pub fn build(b: *std.Build) void {
     // Strip option - omit debug symbols for smaller release binaries
     const strip = b.option(bool, "strip", "Omit debug symbols") orelse false;
 
+    // Scope the unit-test step to a single utility for fast TDD iteration.
+    // When null (the default) the `test` step runs every utility plus the
+    // common library, exactly as before.
+    const test_util = b.option([]const u8, "test-util", "Run unit tests for only this utility (by name)");
+
     // Validate utilities exist before building
     utils.validateUtilities(b.graph.io) catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
@@ -49,7 +54,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // Unit tests
-    buildTests(b, target, optimize, common, build_options_module) catch |err| {
+    buildTests(b, target, optimize, common, build_options_module, test_util) catch |err| {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Abort build configuration
     };
@@ -117,11 +122,20 @@ fn buildTests(
     optimize: std.builtin.OptimizeMode,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
+    test_util: ?[]const u8,
 ) !void {
     const test_step = b.step("test", "Run unit tests");
 
+    // Track whether a `-Dtest-util=<name>` scope matched any utility so a
+    // typo fails loudly instead of producing an empty (silently passing) step.
+    var matched = false;
+
     // Test each utility
     for (utils.utilities) |util| {
+        // When scoping to a single utility, still build every test artifact
+        // (cheap, keeps the loop uniform) but only depend on the match.
+        const want = test_util == null or std.mem.eql(u8, util.name, test_util.?);
+
         const util_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(util.path),
@@ -140,7 +154,20 @@ fn buildTests(
         }
 
         const run_util_tests = b.addRunArtifact(util_tests);
-        test_step.dependOn(&run_util_tests.step);
+        if (want) {
+            test_step.dependOn(&run_util_tests.step);
+            matched = true;
+        }
+    }
+
+    // A scoped run that matched nothing is a user typo. Exit with a clean
+    // one-line error and a nonzero code. Returning an error here would be
+    // swallowed by build()'s `catch |err| return` convention (silent pass —
+    // the failure mode a TDD gate must never have); a panic prints a noisy
+    // stack trace. process.exit(1) is loud and tidy.
+    if (test_util != null and !matched) {
+        std.log.err("-Dtest-util: no utility named '{s}'", .{test_util.?});
+        std.process.exit(1);
     }
 
     // Common library tests
@@ -154,7 +181,10 @@ fn buildTests(
     common_tests.root_module.addImport("build_options", build_options_module);
 
     const run_common_tests = b.addRunArtifact(common_tests);
-    test_step.dependOn(&run_common_tests.step);
+    // Skip the whole common suite when scoped to a single utility.
+    if (test_util == null) {
+        test_step.dependOn(&run_common_tests.step);
+    }
 
     // Create a separate privileged test step
     const privileged_test_step = b.step("test-privileged", "Run tests that require privilege simulation (run under fakeroot)");
@@ -186,8 +216,13 @@ fn buildTests(
 
         // WORKAROUND: The --listen=- flag breaks under fakeroot
         // See: https://github.com/ziglang/zig/issues/15091
-        // Run tests directly without the server mode
-        const install_util_tests = b.addInstallArtifact(util_tests, .{});
+        // Run tests directly without the server mode.
+        // Install to test-bin/ (not the default bin/) so these test binaries
+        // never land beside the real utilities — the integration test runner
+        // scans zig-out/bin/ and would otherwise treat each as a utility.
+        const install_util_tests = b.addInstallArtifact(util_tests, .{
+            .dest_dir = .{ .override = .{ .custom = "test-bin" } },
+        });
         const run_util_tests = b.addSystemCommand(&.{
             b.getInstallPath(install_util_tests.dest_dir.?, util_tests.out_filename),
         });
@@ -214,8 +249,11 @@ fn buildTests(
     });
     common_tests_priv.root_module.addImport("build_options", build_options_module);
 
-    // Same workaround as above for common library tests
-    const install_common_tests_priv = b.addInstallArtifact(common_tests_priv, .{});
+    // Same workaround as above for common library tests; same test-bin/
+    // destination so it stays out of the utility bin dir.
+    const install_common_tests_priv = b.addInstallArtifact(common_tests_priv, .{
+        .dest_dir = .{ .override = .{ .custom = "test-bin" } },
+    });
     const run_common_tests_priv = b.addSystemCommand(&.{
         b.getInstallPath(install_common_tests_priv.dest_dir.?, common_tests_priv.out_filename),
     });

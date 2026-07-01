@@ -35,8 +35,16 @@ const WcOptions = struct {
         .bytes = .{ .short = 'c', .desc = "Print the byte counts" },
         .chars = .{ .short = 'm', .desc = "Print the character counts" },
         .max_line_length = .{ .short = 'L', .desc = "Print the maximum line length" },
-        .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
-        .libxo = .{ .short = 0, .desc = "Generate output via libxo (not supported)", .value_name = "FORMAT" },
+        .color = .{
+            .short = 0,
+            .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'",
+            .value_name = "WHEN",
+        },
+        .libxo = .{
+            .short = 0,
+            .desc = "Generate output via libxo (not supported)",
+            .value_name = "FORMAT",
+        },
     };
 };
 
@@ -120,9 +128,21 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Run the wc utility with given arguments
-pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runWc(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
-    const options = common.argparse.ArgParser.parseOrExit(WcOptions, allocator, args, "wc", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const options = common.argparse.ArgParser.parseOrExit(
+        WcOptions,
+        allocator,
+        args,
+        "wc",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(options.positionals);
 
     if (options.help) {
@@ -137,14 +157,55 @@ pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
 
     // Handle --libxo: not supported, print error and exit
     if (options.libxo != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, "wc", "libxo output is not supported", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "wc",
+            "libxo output is not supported",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     }
 
     // GNU wc: -c and -m are NOT mutually exclusive.
     // When both are specified, both columns are printed (chars before bytes).
     var opts = options;
+    runWc_applyDefaults(&opts);
 
+    // Resolve display configuration
+    const config = resolveConfig(allocator, opts) catch |err| switch (err) {
+        error.InvalidColorMode => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "wc",
+                "invalid argument '{s}' for '--color'\n" ++
+                    "Valid arguments are: 'always', 'auto', 'never'",
+                .{opts.color orelse ""},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+    };
+
+    // Initialize styling based on resolved display config
+    const style_inst = runWc_initStyle(allocator, stdout_writer, config);
+
+    // Count every requested input (stdin or files) and report the exit code.
+    return runWc_countAll(
+        allocator,
+        io,
+        options.positionals,
+        opts,
+        stdout_writer,
+        stderr_writer,
+        style_inst,
+    );
+}
+
+/// Apply GNU wc's default count selection in place: when no count flag is set,
+/// enable lines, words, and bytes. Asserts at least one count is requested after
+/// defaulting. Single caller: runWc.
+fn runWc_applyDefaults(opts: *WcOptions) void {
     // If no count options specified, default to lines, words, and bytes
     if (!opts.lines and !opts.words and !opts.bytes and !opts.chars and !opts.max_line_length) {
         opts.lines = true;
@@ -152,82 +213,163 @@ pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
         opts.bytes = true;
     }
 
-    // Resolve display configuration
-    const config = resolveConfig(allocator, opts) catch |err| switch (err) {
-        error.InvalidColorMode => {
-            common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
-            return @intFromEnum(common.ExitCode.misuse);
-        },
-    };
+    // Positive space: after defaulting, at least one count is always requested.
+    const any_count_requested = opts.lines or opts.words or opts.bytes or
+        opts.chars or opts.max_line_length;
+    std.debug.assert(any_count_requested);
+}
 
-    // Initialize styling based on resolved display config
+/// Count every requested input and print per-input and total stats, returning the
+/// wc exit code (1 if any file errored, else 0). Keeps the input dispatch branching
+/// in one place (stdin vs "-" vs real file). Single caller: runWc.
+fn runWc_countAll(
+    allocator: Allocator,
+    io: std.Io,
+    positionals: []const []const u8,
+    opts: WcOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    style_inst: common.style.Style(*std.Io.Writer),
+) !u8 {
+    var total_stats = FileStats{};
+    var has_error = false;
+
+    if (positionals.len == 0) {
+        // Read from stdin
+        const stats = try runWc_countStdin(io, opts);
+        try printStats(stdout_writer, stats, null, opts, style_inst);
+        std.debug.assert(!has_error); // Negative space: stdin-only path never errors here.
+        return 0;
+    }
+
+    std.debug.assert(positionals.len >= 1); // Positive space: handled the empty case above.
+
+    // Process each file
+    for (positionals) |file_path| {
+        if (std.mem.eql(u8, file_path, "-")) {
+            // Stdin
+            const stats = try runWc_countStdin(io, opts);
+            try printStats(stdout_writer, stats, file_path, opts, style_inst);
+            addStats(&total_stats, stats);
+        } else {
+            const stats = try runWc_processFile(
+                allocator,
+                io,
+                file_path,
+                opts,
+                stdout_writer,
+                stderr_writer,
+                style_inst,
+                &has_error,
+            );
+            if (stats) |s| {
+                addStats(&total_stats, s);
+            }
+        }
+    }
+
+    // Print total if multiple files were requested (not just successful ones)
+    if (positionals.len > 1) {
+        try printStats(stdout_writer, total_stats, "total", opts, style_inst);
+    }
+
+    // Postcondition: summed char count never exceeds summed byte count.
+    std.debug.assert(total_stats.chars <= total_stats.bytes);
+    return if (has_error) @as(u8, 1) else 0;
+}
+
+/// Count statistics from standard input using a streaming 8192-byte buffer. Single
+/// caller: runWc (both the no-positionals path and the "-" pseudo-file path).
+fn runWc_countStdin(io: std.Io, opts: WcOptions) !FileStats {
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
+    const stats = try countReader(&stdin_reader.interface, opts);
+
+    // Negative space: char count never exceeds raw byte count.
+    std.debug.assert(stats.chars <= stats.bytes);
+    return stats;
+}
+
+/// Build the styling instance for wc output from resolved display config. Color is
+/// off unless config requested it on, in which case the terminal's color mode is
+/// detected (falling back to basic). Single caller: runWc.
+fn runWc_initStyle(
+    allocator: Allocator,
+    stdout_writer: *std.Io.Writer,
+    config: WcConfig,
+) common.style.Style(*std.Io.Writer) {
     const StyleType = common.style.Style(@TypeOf(stdout_writer));
     var style_inst = StyleType{ .color_mode = .none, .writer = stdout_writer };
+
     if (config.display.color == .on) {
         const detected = StyleType.ColorMode.detect(allocator) catch .basic;
         style_inst.color_mode = if (detected == .none) .basic else detected;
     }
 
-    var total_stats = FileStats{};
-    var has_error = false;
+    // Negative space: color stays none whenever config did not request it on.
+    if (config.display.color == .off) {
+        std.debug.assert(style_inst.color_mode == .none);
+    }
+    return style_inst;
+}
 
-    if (options.positionals.len == 0) {
-        // Read from stdin
-        var stdin_buffer: [8192]u8 = undefined;
-        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-        const stats = try countReader(&stdin_reader.interface, opts);
-        try printStats(stdout_writer, stats, null, opts, style_inst);
-    } else {
-        // Process each file
-        for (options.positionals) |file_path| {
-            if (std.mem.eql(u8, file_path, "-")) {
-                // Stdin
-                var stdin_buffer: [8192]u8 = undefined;
-                var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-                const stats = try countReader(&stdin_reader.interface, opts);
-                try printStats(stdout_writer, stats, file_path, opts, style_inst);
-                addStats(&total_stats, stats);
-            } else {
-                // Check if it's a directory first
-                const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                    continue;
-                };
+/// Count one regular (non-stdin) file and print its stats. Returns its FileStats on
+/// success, or null if an error was already reported (has_error is set in that case,
+/// replacing the loop's `continue`). Single caller: runWc.
+fn runWc_processFile(
+    allocator: Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    opts: WcOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    style_inst: common.style.Style(*std.Io.Writer),
+    has_error: *bool,
+) !?FileStats {
+    std.debug.assert(!std.mem.eql(u8, file_path, "-")); // Negative space: not stdin.
 
-                if (stat.kind == .directory) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: Is a directory", .{file_path});
-                    has_error = true;
-                    continue;
-                }
+    // Check if it's a directory first
+    const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
+        const message = common.posixErrorString(err);
+        const args = .{ file_path, message };
+        common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", args);
+        has_error.* = true;
+        return null;
+    };
 
-                // Regular file
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                    continue;
-                };
-                defer file.close(io);
-
-                var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.readerStreaming(io, &file_buffer);
-                const stats = countReader(&file_reader.interface, opts) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                    continue;
-                };
-                try printStats(stdout_writer, stats, file_path, opts, style_inst);
-                addStats(&total_stats, stats);
-            }
-        }
-
-        // Print total if multiple files were requested (not just successful ones)
-        if (options.positionals.len > 1) {
-            try printStats(stdout_writer, total_stats, "total", opts, style_inst);
-        }
+    if (stat.kind == .directory) {
+        const args = .{file_path};
+        common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: Is a directory", args);
+        has_error.* = true;
+        return null;
     }
 
-    return if (has_error) @as(u8, 1) else 0;
+    // Regular file
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        const message = common.posixErrorString(err);
+        const args = .{ file_path, message };
+        common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", args);
+        has_error.* = true;
+        return null;
+    };
+    defer file.close(io);
+
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.readerStreaming(io, &file_buffer);
+    const stats = countReader(&file_reader.interface, opts) catch |err| {
+        const message = common.posixErrorString(err);
+        const args = .{ file_path, message };
+        common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", args);
+        has_error.* = true;
+        return null;
+    };
+    try printStats(stdout_writer, stats, file_path, opts, style_inst);
+
+    // Postcondition: a counted file yields chars no greater than its raw byte count.
+    std.debug.assert(stats.chars <= stats.bytes);
+    // Postcondition: each line requires a '\n' byte, so lines never exceed bytes.
+    std.debug.assert(stats.lines <= stats.bytes);
+    return stats;
 }
 
 /// Count statistics from a reader - POSIX compliant implementation
@@ -243,92 +385,111 @@ fn countReader(reader: *std.Io.Reader, options: WcOptions) !FileStats {
     var utf8_remaining: u3 = 0; // continuation bytes remaining
     var utf8_codepoint: u21 = 0; // accumulated codepoint
 
-    while (true) {
+    // Precondition: counting starts from a zeroed byte tally (positive space).
+    std.debug.assert(stats.bytes == 0);
+
+    // Streams an unbounded input (stdin or arbitrary-size file) in 8192-byte
+    // chunks. Termination: peekGreedy(1) returns error.EndOfStream at end of
+    // input, hitting the break; any other read error returns early. Each
+    // successful iteration tosses chunk.len >= 1 bytes, so the reader strictly
+    // advances toward EOF. No numeric cap: it would silently truncate valid
+    // long input and undercount.
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF (peekGreedy errs)
         const chunk = reader.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => break,
             else => |e| return e,
         };
 
-        // Process each byte in the chunk
-        for (chunk) |byte| {
-            // Count all bytes exactly
-            stats.bytes += 1;
-
-            // Count newlines (POSIX: this is what defines a "line")
-            if (byte == '\n') {
-                stats.lines += 1;
-                // Track max line length
-                if (current_line_length > stats.max_line_length) {
-                    stats.max_line_length = current_line_length;
-                }
-                current_line_length = 0;
-                utf8_remaining = 0; // reset UTF-8 state on newline
-                in_word = false; // newline breaks words
-            } else if (options.max_line_length) {
-                // Compute display width for -L flag
-                if (byte == '\t') {
-                    // Tab: advance to next 8-column tab stop
-                    current_line_length = (current_line_length + 8) & ~@as(u64, 7);
-                    utf8_remaining = 0;
-                } else if (utf8_remaining > 0) {
-                    // UTF-8 continuation byte
-                    utf8_codepoint = (utf8_codepoint << 6) | @as(u21, byte & 0x3F);
-                    utf8_remaining -= 1;
-                    if (utf8_remaining == 0) {
-                        // Codepoint complete - add its display width
-                        current_line_length += common.unicode.codepointWidth(utf8_codepoint);
-                    }
-                } else if (byte < 0x80) {
-                    // ASCII character
-                    if (byte >= 0x20 and byte != 0x7F) {
-                        current_line_length += 1;
-                    }
-                    // Control chars (except tab/newline handled above): width 0
-                } else {
-                    // UTF-8 start byte
-                    if (byte & 0xE0 == 0xC0) {
-                        // 2-byte sequence
-                        utf8_remaining = 1;
-                        utf8_codepoint = @as(u21, byte & 0x1F);
-                    } else if (byte & 0xF0 == 0xE0) {
-                        // 3-byte sequence
-                        utf8_remaining = 2;
-                        utf8_codepoint = @as(u21, byte & 0x0F);
-                    } else if (byte & 0xF8 == 0xF0) {
-                        // 4-byte sequence
-                        utf8_remaining = 3;
-                        utf8_codepoint = @as(u21, byte & 0x07);
-                    } else {
-                        // Invalid start byte - count as width 1
-                        current_line_length += 1;
-                    }
-                }
-            } else {
-                // No -L flag: simple byte count for line length
-                current_line_length += 1;
-            }
-
-            // Count UTF-8 characters (only if -m flag specified)
-            if (options.chars) {
-                // UTF-8 continuation bytes have pattern 10xxxxxx
-                if ((byte & 0b11000000) != 0b10000000) {
-                    stats.chars += 1;
-                }
-            }
-
-            // Word counting logic
-            const is_space = std.ascii.isWhitespace(byte);
-            if (!is_space and !in_word) {
-                stats.words += 1;
-                in_word = true;
-            } else if (is_space) {
-                in_word = false;
-            }
-        }
+        // Process each byte in the chunk into the running statistics.
+        countReader_processChunk(
+            chunk,
+            options,
+            &stats,
+            &in_word,
+            &current_line_length,
+            &utf8_remaining,
+            &utf8_codepoint,
+        );
 
         // Mark chunk as consumed
         reader.toss(chunk.len);
     }
+
+    // Finalize trailing line length and the default character count.
+    countReader_finalize(options, current_line_length, &stats);
+
+    // Postcondition: chars count non-continuation bytes (a subset), or equals bytes.
+    std.debug.assert(stats.chars <= stats.bytes);
+    // Postcondition: each line is counted on a '\n' byte already added to bytes.
+    std.debug.assert(stats.lines <= stats.bytes);
+    return stats;
+}
+
+/// Process one peeked chunk, folding every byte into the running statistics.
+/// Owns the per-byte classification dispatch (newline / -L width / plain count,
+/// -m char counting, and word boundaries) so countReader keeps only the
+/// streaming scaffold. All mutable decode/count state is passed by pointer so
+/// behavior is byte-identical to the inlined loop.
+fn countReader_processChunk(
+    chunk: []const u8,
+    options: WcOptions,
+    stats: *FileStats,
+    in_word: *bool,
+    current_line_length: *u64,
+    utf8_remaining: *u3,
+    utf8_codepoint: *u21,
+) void {
+    std.debug.assert(utf8_remaining.* <= 3); // State invariant: max continuation count.
+    std.debug.assert(stats.chars <= stats.bytes); // Positive space: invariant on entry.
+
+    // Process each byte in the chunk
+    for (chunk) |byte| {
+        // Count all bytes exactly
+        stats.bytes += 1;
+
+        // Count newlines (POSIX: this is what defines a "line")
+        if (byte == '\n') {
+            stats.lines += 1;
+            // Track max line length
+            if (current_line_length.* > stats.max_line_length) {
+                stats.max_line_length = current_line_length.*;
+            }
+            current_line_length.* = 0;
+            utf8_remaining.* = 0; // reset UTF-8 state on newline
+            in_word.* = false; // newline breaks words
+        } else if (options.max_line_length) {
+            // Compute display width for -L flag.
+            countReader_advanceLineWidth(
+                byte,
+                current_line_length,
+                utf8_remaining,
+                utf8_codepoint,
+            );
+        } else {
+            // No -L flag: simple byte count for line length
+            current_line_length.* += 1;
+        }
+
+        // Count UTF-8 characters (only if -m flag specified)
+        if (options.chars) {
+            // UTF-8 continuation bytes have pattern 10xxxxxx
+            if ((byte & 0b11000000) != 0b10000000) {
+                stats.chars += 1;
+            }
+        }
+
+        // Word counting logic.
+        countReader_countWord(byte, in_word, &stats.words);
+    }
+
+    std.debug.assert(stats.chars <= stats.bytes); // Negative space: never over-count chars.
+}
+
+/// Finalize counting after the stream ends: record the trailing line's length
+/// for files lacking a final newline, then default the character count to the
+/// byte count when -m was not requested. Read-only primitive passed by value.
+fn countReader_finalize(options: WcOptions, current_line_length: u64, stats: *FileStats) void {
+    std.debug.assert(stats.lines <= stats.bytes); // Positive space: invariant on entry.
 
     // Handle final line length (for files not ending with newline)
     if (current_line_length > stats.max_line_length) {
@@ -340,7 +501,79 @@ fn countReader(reader: *std.Io.Reader, options: WcOptions) !FileStats {
         stats.chars = stats.bytes;
     }
 
-    return stats;
+    std.debug.assert(stats.chars <= stats.bytes); // Negative space: chars never exceed bytes.
+}
+
+/// Advance the running display-width of the current line by one byte for the -L
+/// flag. Handles tab stops, UTF-8 continuation/start bytes, and ASCII printables.
+/// All mutable decode state is passed by pointer so behavior is byte-identical to
+/// the inlined version. Newlines are handled by the caller, never here.
+fn countReader_advanceLineWidth(
+    byte: u8,
+    current_line_length: *u64,
+    utf8_remaining: *u3,
+    utf8_codepoint: *u21,
+) void {
+    std.debug.assert(byte != '\n'); // Negative space: caller handles newlines.
+    std.debug.assert(utf8_remaining.* <= 3); // State invariant: max continuation count.
+
+    if (byte == '\t') {
+        // Tab: advance to next 8-column tab stop
+        current_line_length.* = (current_line_length.* + 8) & ~@as(u64, 7);
+        utf8_remaining.* = 0;
+    } else if (utf8_remaining.* > 0) {
+        // UTF-8 continuation byte
+        utf8_codepoint.* = (utf8_codepoint.* << 6) | @as(u21, byte & 0x3F);
+        utf8_remaining.* -= 1;
+        if (utf8_remaining.* == 0) {
+            // Codepoint complete - add its display width
+            current_line_length.* += common.unicode.codepointWidth(utf8_codepoint.*);
+        }
+    } else if (byte < 0x80) {
+        // ASCII character
+        if (byte >= 0x20 and byte != 0x7F) {
+            current_line_length.* += 1;
+        }
+        // Control chars (except tab/newline handled above): width 0
+    } else {
+        // UTF-8 start byte
+        if (byte & 0xE0 == 0xC0) {
+            // 2-byte sequence
+            utf8_remaining.* = 1;
+            utf8_codepoint.* = @as(u21, byte & 0x1F);
+        } else if (byte & 0xF0 == 0xE0) {
+            // 3-byte sequence
+            utf8_remaining.* = 2;
+            utf8_codepoint.* = @as(u21, byte & 0x0F);
+        } else if (byte & 0xF8 == 0xF0) {
+            // 4-byte sequence
+            utf8_remaining.* = 3;
+            utf8_codepoint.* = @as(u21, byte & 0x07);
+        } else {
+            // Invalid start byte - count as width 1
+            current_line_length.* += 1;
+        }
+    }
+
+    // Postcondition: no path raises remaining above 3 (max 4-byte sequence).
+    std.debug.assert(utf8_remaining.* <= 3);
+}
+
+/// Update word state for a single byte: a word starts at the first non-whitespace
+/// byte after whitespace. Mutates in_word and the word counter by pointer.
+fn countReader_countWord(byte: u8, in_word: *bool, words: *u64) void {
+    std.debug.assert(words.* < std.math.maxInt(u64)); // Positive space: no overflow.
+
+    const is_space = std.ascii.isWhitespace(byte);
+    if (!is_space and !in_word.*) {
+        words.* += 1;
+        in_word.* = true;
+    } else if (is_space) {
+        in_word.* = false;
+    }
+
+    // Postcondition: in_word reflects whether the last byte was non-whitespace.
+    std.debug.assert(in_word.* == !std.ascii.isWhitespace(byte));
 }
 
 /// Add stats together for totals
@@ -352,10 +585,21 @@ fn addStats(total: *FileStats, stats: FileStats) void {
     if (stats.max_line_length > total.max_line_length) {
         total.max_line_length = stats.max_line_length;
     }
+
+    // Postcondition: adding an operand never lowers the accumulated total.
+    std.debug.assert(total.lines >= stats.lines);
+    // Postcondition: max-update keeps total at least the added max_line_length.
+    std.debug.assert(total.max_line_length >= stats.max_line_length);
 }
 
 /// Print statistics for a file
-fn printStats(writer: *std.Io.Writer, stats: FileStats, filename: ?[]const u8, options: WcOptions, style_inst: anytype) !void {
+fn printStats(
+    writer: *std.Io.Writer,
+    stats: FileStats,
+    filename: ?[]const u8,
+    options: WcOptions,
+    style_inst: anytype,
+) !void {
     // Print counts in GNU column order: lines words chars bytes max_line_length filename
     // When both -c and -m are given, both columns appear (chars before bytes).
     if (options.lines) {
@@ -485,7 +729,8 @@ test "wc counts UTF-8 characters correctly" {
     defer tmp_dir.cleanup();
 
     const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
-    try test_file.writeStreamingAll(io, "hello \xe4\xb8\x96\xe7\x95\x8c\n"); // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
+    // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
+    try test_file.writeStreamingAll(io, "hello \xe4\xb8\x96\xe7\x95\x8c\n");
     test_file.close(io);
 
     const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
@@ -511,7 +756,8 @@ test "wc finds maximum line length" {
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .max_line_length = true });
-    try testing.expectEqual(@as(u64, 21), stats.max_line_length); // "this is a longer line" = 21 chars
+    // "this is a longer line" = 21 chars
+    try testing.expectEqual(@as(u64, 21), stats.max_line_length);
 }
 
 test "wc handles empty input" {
@@ -592,8 +838,20 @@ test "wc handles all counts together" {
 
 test "wc addStats combines statistics correctly" {
     var total = FileStats{};
-    const stats1 = FileStats{ .lines = 5, .words = 10, .bytes = 50, .chars = 45, .max_line_length = 20 };
-    const stats2 = FileStats{ .lines = 3, .words = 8, .bytes = 30, .chars = 28, .max_line_length = 25 };
+    const stats1 = FileStats{
+        .lines = 5,
+        .words = 10,
+        .bytes = 50,
+        .chars = 45,
+        .max_line_length = 20,
+    };
+    const stats2 = FileStats{
+        .lines = 3,
+        .words = 8,
+        .bytes = 30,
+        .chars = 28,
+        .max_line_length = 25,
+    };
 
     addStats(&total, stats1);
     addStats(&total, stats2);
@@ -630,7 +888,10 @@ test "wc output formatting" {
         .bytes = true,
     }, test_style);
 
-    try testing.expectEqualStrings("      10      50     250 test.txt\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "      10      50     250 test.txt\n",
+        stdout_aw.writer.buffered(),
+    );
     _ = io;
 }
 
@@ -695,7 +956,9 @@ test "wc with multiple files shows total" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "total") != null);
 
     // Total should be 2 lines, 5 words, 24 bytes
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "       2       5      24 total") != null);
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "       2       5      24 total") != null,
+    );
 }
 
 test "wc --help shows usage" {
@@ -862,7 +1125,9 @@ test "wc --libxo prints error and exits with code 1" {
     const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "libxo output is not supported") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "libxo output is not supported") != null,
+    );
 }
 
 test "wc --color=invalid exits with code 2" {

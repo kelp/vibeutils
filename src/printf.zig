@@ -23,9 +23,21 @@ pub fn main(init: std.process.Init) noreturn {
 ///
 /// printf does not use ArgParser since FORMAT is a positional argument.
 /// Only --help and --version are handled as special cases.
-pub fn runPrintf(allocator: Allocator, _: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runPrintf(
+    allocator: Allocator,
+    _: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     if (args.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "printf", "usage: printf FORMAT [ARGUMENT...]", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "printf",
+            "usage: printf FORMAT [ARGUMENT...]",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -47,15 +59,28 @@ pub fn runPrintf(allocator: Allocator, _: std.Io, args: []const []const u8, stdo
     var arg_idx: usize = 0;
 
     // Process format string, reusing it if arguments remain
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop terminates: breaks when no arg consumed or all used
         const start_arg_idx = arg_idx;
-        const halted = processFormat(format, arguments, &arg_idx, stdout_writer, stderr_writer, allocator, &had_error) catch blk: {
+        const halted = processFormat(
+            format,
+            arguments,
+            &arg_idx,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+            &had_error,
+        ) catch blk: {
             had_error = true;
             break :blk false;
         };
 
         // \c halts all output immediately
         if (halted) break;
+
+        // arg_idx is only ever advanced (never decremented) while consuming
+        // arguments, so after one pass it cannot fall below where it started.
+        // The loop-stop check below relies on this monotonicity.
+        std.debug.assert(arg_idx >= start_arg_idx);
 
         // If no arguments were consumed, or all arguments have been used, stop
         if (arg_idx <= start_arg_idx or arg_idx >= arguments.len) {
@@ -82,6 +107,8 @@ fn processFormat(
 ) !bool {
     var i: usize = 0;
     while (i < format.len) {
+        // Loop invariant: no branch advances i past the end of the format.
+        std.debug.assert(i <= format.len);
         if (format[i] == '\\') {
             // Escape sequence in format string
             const result = try processEscape(format, i, writer);
@@ -94,7 +121,16 @@ fn processFormat(
                 i += 2;
             } else {
                 // Format specifier
-                const result = try processSpecifier(format, i, arguments, arg_idx, writer, stderr_writer, allocator, had_error);
+                const result = try processSpecifier(
+                    format,
+                    i,
+                    arguments,
+                    arg_idx,
+                    writer,
+                    stderr_writer,
+                    allocator,
+                    had_error,
+                );
                 if (result.halt) return true;
                 i = result.pos;
             }
@@ -115,6 +151,9 @@ const EscapeResult = struct {
 /// Process a backslash escape sequence in the format string.
 /// Handles \n, \t, \r, \a, \b, \f, \v, \\, \0NNN, \xHH.
 fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult {
+    std.debug.assert(pos < format.len);
+    std.debug.assert(format[pos] == '\\');
+
     if (pos + 1 >= format.len) {
         // Trailing backslash, output literally
         try writer.writeByte('\\');
@@ -160,65 +199,118 @@ fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult 
         },
         '0' => {
             // Octal: \0NNN (up to 3 octal digits after the leading 0)
-            var value: u8 = 0;
-            var j: usize = pos + 2;
-            var count: usize = 0;
-            while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
-                j += 1;
-                count += 1;
-            }) {
-                value = value *% 8 +% (format[j] - '0');
-            }
-            try writer.writeByte(value);
-            return .{ .new_pos = j };
+            const new_pos = try processEscape_octalWithPrefix(format, pos + 2, writer);
+            return .{ .new_pos = new_pos };
         },
         '1'...'7' => {
             // Octal: \NNN (up to 3 octal digits, first digit included)
-            var value: u8 = 0;
-            var j: usize = pos + 1;
-            var count: usize = 0;
-            while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
-                j += 1;
-                count += 1;
-            }) {
-                value = value *% 8 +% (format[j] - '0');
-            }
-            try writer.writeByte(value);
-            return .{ .new_pos = j };
+            const new_pos = try processEscape_octalNoPrefix(format, pos + 1, writer);
+            return .{ .new_pos = new_pos };
         },
         'x' => {
             // Hex: \xHH (1-2 hex digits)
-            var value: u8 = 0;
-            var j: usize = pos + 2;
-            var hex_digits: usize = 0;
-            while (hex_digits < 2 and j < format.len) : ({
-                j += 1;
-                hex_digits += 1;
-            }) {
-                const c = format[j];
-                const digit: u8 = switch (c) {
-                    '0'...'9' => c - '0',
-                    'a'...'f' => c - 'a' + 10,
-                    'A'...'F' => c - 'A' + 10,
-                    else => break,
-                };
-                value = value * 16 + digit;
-            }
-            if (hex_digits > 0) {
-                try writer.writeByte(value);
-                return .{ .new_pos = j };
-            } else {
-                // No hex digits, output \x literally
-                try writer.writeByte('\\');
-                try writer.writeByte('x');
-                return .{ .new_pos = pos + 2 };
-            }
+            return try processEscape_hex(format, pos + 2, writer);
         },
         else => {
             // Unknown escape, output backslash literally
             try writer.writeByte('\\');
             return .{ .new_pos = pos + 1 };
         },
+    }
+}
+
+/// Scan up to 3 octal digits starting at value_start, accumulate into a byte,
+/// write it, and return the position after the consumed digits. Used for the
+/// \0NNN form where the leading '0' is a prefix, so digits begin past it.
+fn processEscape_octalWithPrefix(
+    format: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= format.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (format[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 3 octal digits starting at value_start, accumulate into a byte,
+/// write it, and return the position after the consumed digits. Used for the
+/// \NNN form where the first digit is part of the value. Kept separate from
+/// the prefixed variant so the start offset stays exact.
+fn processEscape_octalNoPrefix(
+    format: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= format.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (format[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 2 hex digits starting at value_start for the \xHH form. Writes
+/// the decoded byte and returns the new position; if no hex digit follows,
+/// outputs "\x" literally and returns value_start (just past the 'x').
+fn processEscape_hex(
+    format: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !EscapeResult {
+    std.debug.assert(value_start <= format.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var hex_digits: usize = 0; // tiger:allow:usize-arch loop counter
+    while (hex_digits < 2 and j < format.len) : ({
+        j += 1;
+        hex_digits += 1;
+    }) {
+        const c = format[j];
+        const digit: u8 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => break,
+        };
+        value = value * 16 + digit;
+    }
+    std.debug.assert(hex_digits <= 2);
+    // j is only ever incremented from value_start, so it cannot fall below it;
+    // pairs the lower bound with the existing upper-bound digit-count check.
+    std.debug.assert(j >= value_start);
+
+    if (hex_digits > 0) {
+        try writer.writeByte(value);
+        return .{ .new_pos = j };
+    } else {
+        // No hex digits, output \x literally
+        try writer.writeByte('\\');
+        try writer.writeByte('x');
+        return .{ .new_pos = value_start };
     }
 }
 
@@ -240,71 +332,21 @@ fn processSpecifier(
     allocator: Allocator,
     had_error: *bool,
 ) !SpecifierResult {
+    std.debug.assert(pos < format.len);
+    std.debug.assert(format[pos] == '%');
+    const arg_idx_entry = arg_idx.*;
+
     var i = pos + 1; // Skip the '%'
+    // The specifier consumes at least the '%', and the parse helpers only ever
+    // advance i, so forward progress in processFormat's loop is guaranteed.
+    std.debug.assert(i > pos);
 
-    // Parse flags: -, +, space, 0, #
-    var left_justify = false;
-    var plus_sign = false;
-    var space_sign = false;
-    var zero_pad = false;
-    var hash_flag = false;
-
-    while (i < format.len) {
-        switch (format[i]) {
-            '-' => left_justify = true,
-            '+' => plus_sign = true,
-            ' ' => space_sign = true,
-            '0' => zero_pad = true,
-            '#' => hash_flag = true,
-            else => break,
-        }
-        i += 1;
-    }
-
-    // Parse width
-    var width: ?usize = null;
-    if (i < format.len and format[i] == '*') {
-        // Width from argument
-        const w_str = getNextArg(arguments, arg_idx);
-        const w_val = std.fmt.parseInt(i64, w_str, 10) catch 0;
-        if (w_val < 0) {
-            // Negative width implies left-justify (GNU behavior)
-            left_justify = true;
-            width = @as(usize, @intCast(-w_val));
-        } else {
-            width = @as(usize, @intCast(w_val));
-        }
-        i += 1;
-    } else {
-        var w: usize = 0;
-        var has_width = false;
-        while (i < format.len and format[i] >= '0' and format[i] <= '9') {
-            w = w * 10 + (format[i] - '0');
-            has_width = true;
-            i += 1;
-        }
-        if (has_width) width = w;
-    }
-
-    // Parse precision
-    var precision: ?usize = null;
-    if (i < format.len and format[i] == '.') {
-        i += 1;
-        if (i < format.len and format[i] == '*') {
-            // Precision from argument
-            const p_str = getNextArg(arguments, arg_idx);
-            const p_val = std.fmt.parseInt(i64, p_str, 10) catch 0;
-            precision = if (p_val >= 0) @as(usize, @intCast(p_val)) else null;
-            i += 1;
-        } else {
-            var p: usize = 0;
-            while (i < format.len and format[i] >= '0' and format[i] <= '9') {
-                p = p * 10 + (format[i] - '0');
-                i += 1;
-            }
-            precision = p;
-        }
-    }
+    // Parse flags, then width and precision, accumulating into one spec.
+    // A '*' width can flip left_justify when negative, so parseWidth gets a
+    // pointer into the spec's flag.
+    var spec = processSpecifier_parseFlags(format, &i);
+    spec.width = processSpecifier_parseWidth(format, &i, arguments, arg_idx, &spec.left_justify);
+    spec.precision = processSpecifier_parsePrecision(format, &i, arguments, arg_idx);
 
     // Parse conversion character
     if (i >= format.len) {
@@ -315,16 +357,6 @@ fn processSpecifier(
 
     const conv = format[i];
     i += 1;
-
-    const spec = FormatSpec{
-        .left_justify = left_justify,
-        .plus_sign = plus_sign,
-        .space_sign = space_sign,
-        .zero_pad = zero_pad,
-        .hash_flag = hash_flag,
-        .width = width,
-        .precision = precision,
-    };
 
     switch (conv) {
         's' => {
@@ -342,69 +374,21 @@ fn processSpecifier(
                 try writer.writeByte(arg[0]);
             }
         },
-        'd', 'i' => {
+        'd', 'i', 'u', 'o', 'x', 'X' => {
             const arg = getNextArg(arguments, arg_idx);
-            const parse_result = parseIntArgEx(arg);
-            if (!parse_result.ok and arg.len > 0) {
-                common.printErrorWithProgram(allocator, stderr_writer, "printf", "'{s}': expected a numeric value", .{arg});
-                had_error.* = true;
-            }
-            try formatSignedInt(writer, parse_result.value, 10, false, spec);
+            try processSpecifier_dispatchInt(
+                writer,
+                conv,
+                arg,
+                spec,
+                allocator,
+                stderr_writer,
+                had_error,
+            );
         },
-        'u' => {
+        'f', 'F', 'e', 'E', 'g', 'G', 'a', 'A' => {
             const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatUnsignedInt(writer, val, 10, false, spec);
-        },
-        'o' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatUnsignedInt(writer, val, 8, spec.hash_flag, spec);
-        },
-        'x' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatHex(writer, val, false, spec);
-        },
-        'X' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatHex(writer, val, true, spec);
-        },
-        'f', 'F' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'f', spec);
-        },
-        'e' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'e', spec);
-        },
-        'E' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'E', spec);
-        },
-        'g' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'g', spec);
-        },
-        'G' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'G', spec);
-        },
-        'a' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatHexFloat(writer, val, false, spec);
-        },
-        'A' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatHexFloat(writer, val, true, spec);
+            try processSpecifier_dispatchFloat(writer, conv, arg, spec);
         },
         else => {
             // Unknown specifier, output literally
@@ -413,7 +397,181 @@ fn processSpecifier(
         },
     }
 
+    std.debug.assert(arg_idx.* >= arg_idx_entry);
+    std.debug.assert(i <= format.len);
     return .{ .pos = i };
+}
+
+/// Parse the leading flag characters (-, +, space, 0, #) of a format
+/// specifier, advancing i_ptr past them. Returns a FormatSpec with only the
+/// flag fields set; width and precision stay null for the caller to fill.
+fn processSpecifier_parseFlags(
+    format: []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch slice index
+) FormatSpec {
+    std.debug.assert(i_ptr.* <= format.len);
+    const i_entry = i_ptr.*;
+
+    var spec = FormatSpec{};
+    while (i_ptr.* < format.len) {
+        switch (format[i_ptr.*]) {
+            '-' => spec.left_justify = true,
+            '+' => spec.plus_sign = true,
+            ' ' => spec.space_sign = true,
+            '0' => spec.zero_pad = true,
+            '#' => spec.hash_flag = true,
+            else => break,
+        }
+        i_ptr.* += 1;
+    }
+
+    std.debug.assert(i_ptr.* >= i_entry);
+    std.debug.assert(i_ptr.* <= format.len);
+    return spec;
+}
+
+/// Parse a width field for a format specifier, advancing i_ptr past it. A '*'
+/// reads the width from the next argument; a negative '*' width flips
+/// left_justify_ptr (GNU behavior). Otherwise reads decimal digits in place.
+/// Returns the parsed width, or null if none is present.
+fn processSpecifier_parseWidth(
+    format: []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch slice index
+    arguments: []const []const u8,
+    arg_idx: *usize, // tiger:allow:usize-arch slice index
+    left_justify_ptr: *bool,
+) ?usize { // tiger:allow:usize-arch slice padding count
+    std.debug.assert(i_ptr.* <= format.len);
+    const i_entry = i_ptr.*;
+
+    var width: ?usize = null;
+    if (i_ptr.* < format.len and format[i_ptr.*] == '*') {
+        // Width from argument
+        const w_str = getNextArg(arguments, arg_idx);
+        const w_val = std.fmt.parseInt(i64, w_str, 10) catch 0;
+        if (w_val < 0) {
+            // Negative width implies left-justify (GNU behavior)
+            left_justify_ptr.* = true;
+            width = @as(usize, @intCast(-w_val));
+        } else {
+            width = @as(usize, @intCast(w_val));
+        }
+        i_ptr.* += 1;
+    } else {
+        var w: usize = 0;
+        var has_width = false;
+        while (i_ptr.* < format.len and format[i_ptr.*] >= '0' and format[i_ptr.*] <= '9') {
+            w = w * 10 + (format[i_ptr.*] - '0');
+            has_width = true;
+            i_ptr.* += 1;
+        }
+        if (has_width) width = w;
+    }
+
+    std.debug.assert(i_ptr.* >= i_entry);
+    std.debug.assert(i_ptr.* <= format.len);
+    return width;
+}
+
+/// Parse a precision field ('.' optionally followed by '*' or digits) for a
+/// format specifier, advancing i_ptr past it. A '*' reads precision from the
+/// next argument (negative becomes null). Returns the parsed precision, or null
+/// if no '.' is present.
+fn processSpecifier_parsePrecision(
+    format: []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch slice index
+    arguments: []const []const u8,
+    arg_idx: *usize, // tiger:allow:usize-arch slice index
+) ?usize { // tiger:allow:usize-arch slice precision count
+    std.debug.assert(i_ptr.* <= format.len);
+
+    var precision: ?usize = null;
+    if (i_ptr.* < format.len and format[i_ptr.*] == '.') {
+        std.debug.assert(format[i_ptr.*] == '.');
+        i_ptr.* += 1;
+        if (i_ptr.* < format.len and format[i_ptr.*] == '*') {
+            // Precision from argument
+            const p_str = getNextArg(arguments, arg_idx);
+            const p_val = std.fmt.parseInt(i64, p_str, 10) catch 0;
+            precision = if (p_val >= 0) @as(usize, @intCast(p_val)) else null;
+            i_ptr.* += 1;
+        } else {
+            var p: usize = 0;
+            while (i_ptr.* < format.len and format[i_ptr.*] >= '0' and format[i_ptr.*] <= '9') {
+                p = p * 10 + (format[i_ptr.*] - '0');
+                i_ptr.* += 1;
+            }
+            precision = p;
+        }
+    }
+    return precision;
+}
+
+/// Dispatch the integer conversions (d, i, u, o, x, X) for a parsed argument.
+/// The d/i path reports a non-numeric warning via had_error. Error sink params
+/// go last per Tiger Style.
+fn processSpecifier_dispatchInt(
+    writer: anytype,
+    conv: u8,
+    arg: []const u8,
+    spec: FormatSpec,
+    allocator: Allocator,
+    stderr_writer: anytype,
+    had_error: *bool,
+) !void {
+    // Membership in d/i/u/o/x/X is enforced positively by the switch's
+    // `else => unreachable`; assert the negative space we must never see here.
+    std.debug.assert(conv != 's');
+    std.debug.assert(conv != 'b');
+
+    switch (conv) {
+        'd', 'i' => {
+            const parse_result = parseIntArgEx(arg);
+            if (!parse_result.ok and arg.len > 0) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "printf",
+                    "'{s}': expected a numeric value",
+                    .{arg},
+                );
+                had_error.* = true;
+            }
+            try formatSignedInt(writer, parse_result.value, 10, false, spec);
+        },
+        'u' => try formatUnsignedInt(writer, parseUintArg(arg), 10, false, spec),
+        'o' => try formatUnsignedInt(writer, parseUintArg(arg), 8, spec.hash_flag, spec),
+        'x' => try formatHex(writer, parseUintArg(arg), false, spec),
+        'X' => try formatHex(writer, parseUintArg(arg), true, spec),
+        else => unreachable,
+    }
+}
+
+/// Dispatch the floating-point conversions (f, F, e, E, g, G, a, A) for a
+/// parsed argument. Each arm parses the float once and selects the formatter by
+/// conversion letter.
+fn processSpecifier_dispatchFloat(
+    writer: anytype,
+    conv: u8,
+    arg: []const u8,
+    spec: FormatSpec,
+) !void {
+    // Membership in f/F/e/E/g/G/a/A is enforced positively by the switch's
+    // `else => unreachable`; assert the negative space we must never see here.
+    std.debug.assert(conv != 'd');
+    std.debug.assert(conv != 's');
+
+    const val = parseFloatArg(arg);
+    switch (conv) {
+        'f', 'F' => try formatFloat(writer, val, 'f', spec),
+        'e' => try formatFloat(writer, val, 'e', spec),
+        'E' => try formatFloat(writer, val, 'E', spec),
+        'g' => try formatFloat(writer, val, 'g', spec),
+        'G' => try formatFloat(writer, val, 'G', spec),
+        'a' => try formatHexFloat(writer, val, false, spec),
+        'A' => try formatHexFloat(writer, val, true, spec),
+        else => unreachable,
+    }
 }
 
 /// Format specifier flags and modifiers
@@ -481,10 +639,20 @@ fn parseIntArgEx(s: []const u8) IntParseResult {
         return .{ .value = v, .ok = true };
     } else |_| {}
 
+    // Try float parse and truncate to integer (GNU behavior).
+    // GNU printf '%d' 3.9 outputs 3 (truncate), '%d' 1e2 outputs 100.
+    if (std.fmt.parseFloat(f64, s)) |fval| {
+        const truncated = @as(i64, @intFromFloat(@trunc(fval)));
+        return .{ .value = truncated, .ok = false };
+    } else |_| {}
+
     // Try partial parse: find longest leading numeric prefix
     var end: usize = 0;
     if (end < s.len and (s[end] == '-' or s[end] == '+')) end += 1;
     while (end < s.len and s[end] >= '0' and s[end] <= '9') : (end += 1) {}
+    // end is only advanced while end < s.len, so the slice s[0..end] below is
+    // always in bounds (holds for empty s, where end stays 0).
+    std.debug.assert(end <= s.len);
     if (end > 0 and !(end == 1 and (s[0] == '-' or s[0] == '+'))) {
         if (std.fmt.parseInt(i64, s[0..end], 10)) |v| {
             return .{ .value = v, .ok = false };
@@ -549,6 +717,8 @@ fn formatString(writer: anytype, s: []const u8, spec: FormatSpec) !void {
         s[0..@min(p, s.len)]
     else
         s;
+    // truncated is either s or a @min-bounded prefix of it, never longer.
+    std.debug.assert(truncated.len <= s.len);
 
     const w = spec.width orelse 0;
     if (truncated.len >= w) {
@@ -570,7 +740,9 @@ fn formatString(writer: anytype, s: []const u8, spec: FormatSpec) !void {
 fn formatBString(writer: anytype, s: []const u8) !bool {
     var i: usize = 0;
     while (i < s.len) {
+        std.debug.assert(i < s.len);
         if (s[i] == '\\' and i + 1 < s.len) {
+            std.debug.assert(s[i] == '\\');
             switch (s[i + 1]) {
                 'a' => {
                     try writer.writeByte('\x07');
@@ -610,57 +782,14 @@ fn formatBString(writer: anytype, s: []const u8) !bool {
                 },
                 '0' => {
                     // \0NNN: '0' is a prefix, read up to 3 octal digits after it
-                    var value: u8 = 0;
-                    var j: usize = i + 2; // skip past \ and 0
-                    var count: usize = 0;
-                    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
-                        j += 1;
-                        count += 1;
-                    }) {
-                        value = value *% 8 +% (s[j] - '0');
-                    }
-                    try writer.writeByte(value);
-                    i = j;
+                    i = try formatBString_octalWithPrefix(s, i + 2, writer);
                 },
                 '1'...'7' => {
                     // \NNN: first digit is part of the value, up to 3 digits total
-                    var value: u8 = 0;
-                    var j: usize = i + 1; // start at the first digit
-                    var count: usize = 0;
-                    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
-                        j += 1;
-                        count += 1;
-                    }) {
-                        value = value *% 8 +% (s[j] - '0');
-                    }
-                    try writer.writeByte(value);
-                    i = j;
+                    i = try formatBString_octalNoPrefix(s, i + 1, writer);
                 },
                 'x' => {
-                    var value: u8 = 0;
-                    var j: usize = 2;
-                    var hex_digits: usize = 0;
-                    while (hex_digits < 2 and i + j < s.len) : ({
-                        j += 1;
-                        hex_digits += 1;
-                    }) {
-                        const c = s[i + j];
-                        const digit: u8 = switch (c) {
-                            '0'...'9' => c - '0',
-                            'a'...'f' => c - 'a' + 10,
-                            'A'...'F' => c - 'A' + 10,
-                            else => break,
-                        };
-                        value = value * 16 + digit;
-                    }
-                    if (hex_digits > 0) {
-                        try writer.writeByte(value);
-                        i += j;
-                    } else {
-                        try writer.writeByte('\\');
-                        try writer.writeByte('x');
-                        i += 2;
-                    }
+                    i = try formatBString_hex(s, i, writer);
                 },
                 else => {
                     try writer.writeByte('\\');
@@ -675,6 +804,99 @@ fn formatBString(writer: anytype, s: []const u8) !bool {
     return false;
 }
 
+/// Scan up to 3 octal digits starting at value_start in a %b string, write the
+/// decoded byte, and return the new index. Used for the \0NNN form where the
+/// leading '0' is a prefix, so digits begin past it.
+fn formatBString_octalWithPrefix(
+    s: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= s.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (s[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 3 octal digits starting at value_start in a %b string, write the
+/// decoded byte, and return the new index. Used for the \NNN form where the
+/// first digit is part of the value. Kept separate from the prefixed variant so
+/// the start offset stays exact.
+fn formatBString_octalNoPrefix(
+    s: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= s.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (s[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 2 hex digits for the \xHH form in a %b string. escape_start is
+/// the index of the backslash; digits are read at escape_start+2 onward via the
+/// original `j`-from-2 offset to preserve identical indexing. Returns the new
+/// absolute index: escape_start+j on success, escape_start+2 when no hex digit
+/// follows (in which case "\x" is emitted literally).
+fn formatBString_hex(
+    s: []const u8,
+    escape_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(escape_start + 1 < s.len);
+
+    var value: u8 = 0;
+    var j: usize = 2; // tiger:allow:usize-arch slice index
+    var hex_digits: usize = 0; // tiger:allow:usize-arch loop counter
+    while (hex_digits < 2 and escape_start + j < s.len) : ({
+        j += 1;
+        hex_digits += 1;
+    }) {
+        const c = s[escape_start + j];
+        const digit: u8 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => break,
+        };
+        value = value * 16 + digit;
+    }
+    std.debug.assert(hex_digits <= 2);
+
+    if (hex_digits > 0) {
+        try writer.writeByte(value);
+        return escape_start + j;
+    } else {
+        try writer.writeByte('\\');
+        try writer.writeByte('x');
+        return escape_start + 2;
+    }
+}
+
 /// Format a signed integer with the given radix and spec
 fn formatSignedInt(
     writer: anytype,
@@ -683,6 +905,11 @@ fn formatSignedInt(
     _: bool,
     spec: FormatSpec,
 ) !void {
+    // formatUnsignedBuf divides by radix and maps digits 10..radix-1 to a-f, so
+    // the radix must be in [2, 16] for terminating, well-encoded output.
+    std.debug.assert(radix >= 2);
+    std.debug.assert(radix <= 16);
+
     var buf: [128]u8 = undefined;
     const negative = val < 0;
     const abs_val: u64 = if (negative) @intCast(-val) else @intCast(val);
@@ -750,6 +977,11 @@ fn formatSignedInt(
 
 /// Format an unsigned integer with the given radix and spec
 fn formatUnsignedInt(writer: anytype, val: u64, radix: u8, prefix: bool, spec: FormatSpec) !void {
+    // formatUnsignedBuf divides by radix and maps digits 10..radix-1 to a-f, so
+    // the radix must be in [2, 16] for terminating, well-encoded output.
+    std.debug.assert(radix >= 2);
+    std.debug.assert(radix <= 16);
+
     var buf: [128]u8 = undefined;
     var num_buf: [64]u8 = undefined;
     const num_str = formatUnsignedBuf(&num_buf, val, radix, false);
@@ -837,6 +1069,12 @@ fn formatHex(writer: anytype, val: u64, uppercase: bool, spec: FormatSpec) !void
 
 /// Format an unsigned integer into a buffer. Returns the formatted slice.
 fn formatUnsignedBuf(buf: []u8, val: u64, radix: u8, uppercase: bool) []const u8 {
+    // The loop computes v % radix and v /= radix; radix < 2 would be div-by-zero
+    // or a non-terminating loop. The val==0 branch writes buf[0], so at least one
+    // byte of space is required.
+    std.debug.assert(radix >= 2);
+    std.debug.assert(buf.len >= 1);
+
     if (val == 0) {
         buf[0] = '0';
         return buf[0..1];
@@ -905,6 +1143,9 @@ fn formatFloat(writer: anytype, val: f64, conv: u8, spec: FormatSpec) !void {
         sign_char = ' ';
     }
 
+    // formatted_start is 1 only when formatted[0] == '-' (so len >= 1), else 0;
+    // the content slice below is therefore always in bounds.
+    std.debug.assert(formatted_start <= formatted.len);
     const content = formatted[formatted_start..];
     const sign_len: usize = if (sign_char != null) 1 else 0;
     const content_len = sign_len + content.len;
@@ -933,6 +1174,9 @@ fn formatHexFloat(writer: anytype, val: f64, uppercase: bool, spec: FormatSpec) 
 
     // Use Zig's builtin hex float formatter
     const formatted = std.fmt.bufPrint(&buf, "{x}", .{val}) catch "0x0p+0";
+    // formatted is either a slice into buf or the short literal "0x0p+0", so it
+    // fits in buf; this guards the uppercase loop indexing upper_buf by its len.
+    std.debug.assert(formatted.len <= buf.len);
 
     if (uppercase) {
         // Convert to uppercase: 0x -> 0X, a-f -> A-F, p -> P
@@ -964,7 +1208,14 @@ fn applyFloatPadding(writer: anytype, formatted: []const u8, spec: FormatSpec) !
             try writePadding(writer, ' ', padding);
         } else if (spec.zero_pad) {
             // Insert zeros after sign/prefix
-            const prefix_end: usize = if (formatted.len > 1 and (formatted[1] == 'x' or formatted[1] == 'X')) 2 else if (formatted.len > 0 and formatted[0] == '-') 1 else 0;
+            const has_hex_prefix =
+                formatted.len > 1 and (formatted[1] == 'x' or formatted[1] == 'X');
+            const has_sign = formatted.len > 0 and formatted[0] == '-';
+            const prefix_end: usize = // tiger:allow:usize-arch slice index
+                if (has_hex_prefix) 2 else if (has_sign) 1 else 0;
+            // Each prefix_end value is guarded by the matching length check, so
+            // both slices of formatted below stay in bounds.
+            std.debug.assert(prefix_end <= formatted.len);
             try writer.writeAll(formatted[0..prefix_end]);
             try writePadding(writer, '0', padding);
             try writer.writeAll(formatted[prefix_end..]);
@@ -981,8 +1232,29 @@ fn formatFixedFloat(buf: []u8, val: f64, precision: usize) ![]const u8 {
     return std.fmt.float.render(buf, val, .{ .mode = .decimal, .precision = precision });
 }
 
+/// Format Inf/NaN per GNU printf semantics: "inf", "-inf", "nan",
+/// uppercased for %E / %G. The normalization loops in formatSciFloat
+/// and formatGeneralFloat don't terminate for non-finite input, so
+/// every float-formatting entry point handles those cases up front.
+fn formatNonFiniteFloat(buf: []u8, val: f64, uppercase: bool) ![]const u8 {
+    const s: []const u8 = if (std.math.isNan(val))
+        (if (uppercase) "NAN" else "nan")
+    else if (val < 0)
+        (if (uppercase) "-INF" else "-inf")
+    else if (uppercase) "INF" else "inf";
+    if (buf.len < s.len) return error.NoSpaceLeft;
+    // The early return above rules out buf.len < s.len, so the @memcpy fits.
+    std.debug.assert(s.len <= buf.len);
+    @memcpy(buf[0..s.len], s);
+    return buf[0..s.len];
+}
+
 /// Format a floating-point number in scientific notation (%e/%E).
 fn formatSciFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]const u8 {
+    if (!std.math.isFinite(val)) return formatNonFiniteFloat(buf, val, uppercase);
+    // Past the early return val is finite, which the normalization loops below
+    // (while abs_val >= 10.0 / < 1.0) require to terminate.
+    std.debug.assert(std.math.isFinite(val));
     if (val == 0.0) {
         var pos: usize = 0;
         buf[pos] = '0';
@@ -1051,7 +1323,14 @@ fn formatSciFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]con
 /// Uses %e if exponent < -4 or >= precision, otherwise %f.
 /// Trailing zeros are removed from the fractional part.
 fn formatGeneralFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]const u8 {
+    if (!std.math.isFinite(val)) return formatNonFiniteFloat(buf, val, uppercase);
+    // Past the early return val is finite, which the normalization loops below
+    // (while tmp >= 10.0 / < 1.0) require to terminate.
+    std.debug.assert(std.math.isFinite(val));
     const prec = if (precision == 0) 1 else precision;
+    // %g always keeps at least one significant digit, so prec is never 0; the
+    // @intCast(prec) comparison and decimal_places math rely on this.
+    std.debug.assert(prec >= 1);
 
     if (val == 0.0) {
         buf[0] = '0';
@@ -1105,6 +1384,8 @@ fn stripTrailingZerosFixed(s: []u8) []const u8 {
         }
     }
     if (dot_pos == null) return s;
+    // dot_pos was set from an index over s, so it is a valid in-bounds position.
+    std.debug.assert(dot_pos.? < s.len);
 
     var end = s.len;
     while (end > dot_pos.? + 1 and s[end - 1] == '0') {
@@ -1128,6 +1409,9 @@ fn stripTrailingZerosSci(s: []u8) []const u8 {
         }
     }
     if (e_pos == null) return s;
+    // e_pos was set from an index over s, so the s[0..e_pos.?] / s[e_pos.?..]
+    // slices below are in bounds.
+    std.debug.assert(e_pos.? < s.len);
 
     // Find the dot
     var dot_pos: ?usize = null;
@@ -1138,6 +1422,9 @@ fn stripTrailingZerosSci(s: []u8) []const u8 {
         }
     }
     if (dot_pos == null) return s;
+    // dot_pos was found only within the prefix before e_pos, so it is strictly
+    // less than e_pos; the strip loop seeded at e_pos relies on this ordering.
+    std.debug.assert(dot_pos.? < e_pos.?);
 
     // Strip zeros between dot and e
     var strip_end = e_pos.?;
@@ -1209,7 +1496,13 @@ test "printf basic string" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello", buffer_aw.writer.buffered());
 }
@@ -1219,7 +1512,13 @@ test "printf string with newline escape" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s\\n", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\n", buffer_aw.writer.buffered());
 }
@@ -1229,7 +1528,13 @@ test "printf integer formatting" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
@@ -1239,7 +1544,13 @@ test "printf negative integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "-7" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-7", buffer_aw.writer.buffered());
 }
@@ -1249,7 +1560,13 @@ test "printf octal" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%o", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("377", buffer_aw.writer.buffered());
 }
@@ -1259,7 +1576,13 @@ test "printf hex lowercase" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%x", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("ff", buffer_aw.writer.buffered());
 }
@@ -1269,7 +1592,13 @@ test "printf hex uppercase" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%X", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("FF", buffer_aw.writer.buffered());
 }
@@ -1279,7 +1608,13 @@ test "printf unsigned integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%u", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
@@ -1289,7 +1624,13 @@ test "printf character" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%c", "A" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1299,7 +1640,13 @@ test "printf float" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%f", "3.14" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3.140000", buffer_aw.writer.buffered());
 }
@@ -1309,7 +1656,13 @@ test "printf literal percent" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"100%%"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("100%", buffer_aw.writer.buffered());
 }
@@ -1319,7 +1672,13 @@ test "printf width right-aligned" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%10s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("     hello", buffer_aw.writer.buffered());
 }
@@ -1329,7 +1688,13 @@ test "printf width left-aligned" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%-10s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello     ", buffer_aw.writer.buffered());
 }
@@ -1339,7 +1704,13 @@ test "printf precision truncates string" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.3s", "hello" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hel", buffer_aw.writer.buffered());
 }
@@ -1349,7 +1720,13 @@ test "printf zero-padded integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%05d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("00042", buffer_aw.writer.buffered());
 }
@@ -1359,7 +1736,13 @@ test "printf format string reuse" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s\\n", "a", "b", "c" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\nb\nc\n", buffer_aw.writer.buffered());
 }
@@ -1369,7 +1752,13 @@ test "printf missing argument defaults to empty string" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%s"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1379,7 +1768,13 @@ test "printf missing argument defaults to zero for integers" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%d"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0", buffer_aw.writer.buffered());
 }
@@ -1389,7 +1784,13 @@ test "printf escape sequences in format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\t\\n\\r\\a"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\t\n\r\x07", buffer_aw.writer.buffered());
 }
@@ -1399,7 +1800,13 @@ test "printf octal escape in format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\0101"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1409,7 +1816,13 @@ test "printf hex escape in format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\x41"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1419,7 +1832,13 @@ test "printf backslash escape" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\\\"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\\", buffer_aw.writer.buffered());
 }
@@ -1429,7 +1848,13 @@ test "printf %b with escape sequences" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b", "hello\\nworld" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld", buffer_aw.writer.buffered());
 }
@@ -1441,7 +1866,13 @@ test "printf no arguments shows usage error" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, &stderr_aw.writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
 }
 
@@ -1450,7 +1881,13 @@ test "printf --help" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "Usage: printf") != null);
 }
@@ -1460,7 +1897,13 @@ test "printf --version" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "printf") != null);
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), common.version) != null);
@@ -1471,7 +1914,13 @@ test "printf multiple format specifiers" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "Name: %s Age: %d\\n", "Alice", "30" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("Name: Alice Age: 30\n", buffer_aw.writer.buffered());
 }
@@ -1481,7 +1930,13 @@ test "printf character from quote syntax" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "'A" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("65", buffer_aw.writer.buffered());
 }
@@ -1491,7 +1946,13 @@ test "printf hex argument prefix" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "0xff" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("255", buffer_aw.writer.buffered());
 }
@@ -1501,7 +1962,13 @@ test "printf octal argument prefix" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "010" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("8", buffer_aw.writer.buffered());
 }
@@ -1511,7 +1978,13 @@ test "printf scientific notation" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%e", "100000" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.000000e+05", buffer_aw.writer.buffered());
 }
@@ -1521,7 +1994,13 @@ test "printf plus sign flag" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%+d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("+42", buffer_aw.writer.buffered());
 }
@@ -1531,7 +2010,13 @@ test "printf hash flag for octal" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%#o", "8" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("010", buffer_aw.writer.buffered());
 }
@@ -1541,7 +2026,13 @@ test "printf hash flag for hex" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%#x", "255" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0xff", buffer_aw.writer.buffered());
 }
@@ -1551,7 +2042,13 @@ test "printf width with integer" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%8d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("      42", buffer_aw.writer.buffered());
 }
@@ -1561,7 +2058,13 @@ test "printf empty format" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{""};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1571,7 +2074,13 @@ test "printf plain text no specifiers" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"hello world"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello world", buffer_aw.writer.buffered());
 }
@@ -1581,7 +2090,13 @@ test "printf %g removes trailing zeros" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%g", "3.0" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3", buffer_aw.writer.buffered());
 }
@@ -1591,7 +2106,13 @@ test "printf %c with empty argument" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%c", "" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1601,7 +2122,13 @@ test "printf %c with missing argument" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%c"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1611,7 +2138,13 @@ test "printf float with precision" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "3.14159" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3.14", buffer_aw.writer.buffered());
 }
@@ -1621,7 +2154,13 @@ test "printf float zero" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%f", "0" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.000000", buffer_aw.writer.buffered());
 }
@@ -1649,7 +2188,13 @@ test "printf float carry propagation past decimal: 9.995 -> 10.00" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "9.995" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10.00", buffer_aw.writer.buffered());
 }
@@ -1659,7 +2204,13 @@ test "printf float carry propagation past decimal: 9.95 -> 10.0" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.1f", "9.95" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10.0", buffer_aw.writer.buffered());
 }
@@ -1669,7 +2220,13 @@ test "printf float carry propagation zero precision: 9.5 -> 10" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.0f", "9.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10", buffer_aw.writer.buffered());
 }
@@ -1679,7 +2236,13 @@ test "printf float carry propagation multi-digit integer: 99.999 -> 100.00" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "99.999" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("100.00", buffer_aw.writer.buffered());
 }
@@ -1689,7 +2252,13 @@ test "printf float simple rounding no carry overflow: 1.005 -> 1.01" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "1.005" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.01", buffer_aw.writer.buffered());
 }
@@ -1706,7 +2275,13 @@ test "F31: format string \\NNN octal without leading zero" {
 
     // \101 = octal 101 = 65 = 'A'
     const args = [_][]const u8{"\\101"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1717,7 +2292,13 @@ test "F31: format string \\NNN octal 1-digit" {
 
     // \7 = octal 7 = 0x07
     const args = [_][]const u8{"\\7"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\x07", buffer_aw.writer.buffered());
 }
@@ -1728,7 +2309,13 @@ test "F31: format string \\NNN octal 2-digit" {
 
     // \62 = octal 62 = 50 = '2'
     const args = [_][]const u8{"\\62"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("2", buffer_aw.writer.buffered());
 }
@@ -1739,7 +2326,13 @@ test "F31: format string \\NNN octal 3-digit" {
 
     // \110 = octal 110 = 72 = 'H'
     const args = [_][]const u8{"\\110"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("H", buffer_aw.writer.buffered());
 }
@@ -1754,7 +2347,13 @@ test "F32: percent-b octal \\0NNN produces correct byte" {
 
     // %b with \0101: the '0' is a prefix, '101' is octal = 65 = 'A'
     const args = [_][]const u8{ "%b", "\\0101" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
@@ -1766,7 +2365,13 @@ test "F32: percent-b octal \\0NNN 3-digit non-zero start" {
     // %b \0110: the '0' is a prefix, '110' is octal = 72 = 'H'
     // Bug: code re-reads the '0' prefix, processes '011' = 9 instead
     const args = [_][]const u8{ "%b", "\\0110" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("H", buffer_aw.writer.buffered());
 }
@@ -1778,7 +2383,13 @@ test "F32: percent-b octal \\0NNN followed by text" {
     // %b \0101X: octal 101 = 65 = 'A', then literal 'X'
     // Bug: code reads '010' = 8, then outputs char(8) + '1' + 'X'
     const args = [_][]const u8{ "%b", "\\0101X" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("AX", buffer_aw.writer.buffered());
 }
@@ -1792,7 +2403,13 @@ test "F33: format string \\c stops output" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"before\\cafter"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     // Should output only "before", nothing after \c
     try testing.expectEqualStrings("before", buffer_aw.writer.buffered());
@@ -1803,7 +2420,13 @@ test "F33: format string \\c at start produces no output" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\chello"};
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
@@ -1817,7 +2440,13 @@ test "F34: percent-b \\c halts format-string reuse" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b\\n", "hello\\c", "world" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     // Should output only "hello" -- \c stops everything, no newline, no "world"
     try testing.expectEqualStrings("hello", buffer_aw.writer.buffered());
@@ -1828,7 +2457,13 @@ test "F34: percent-b \\c halts even within single format pass" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b %b", "hi\\c", "bye" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     _ = result;
     // \c in first %b should halt all output; "bye" never printed
     try testing.expectEqualStrings("hi", buffer_aw.writer.buffered());
@@ -1843,7 +2478,13 @@ test "F35: percent-F uppercase float" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%F", "3.14" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3.140000", buffer_aw.writer.buffered());
 }
@@ -1853,7 +2494,13 @@ test "F35: percent-F with zero" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%F", "0" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.000000", buffer_aw.writer.buffered());
 }
@@ -1863,7 +2510,13 @@ test "F35: percent-a hex float" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%a", "1.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // GNU outputs "0xcp-3" for 1.5 -- hex float representation
     // Must start with "0x" and contain "p" (hex float format)
@@ -1877,7 +2530,13 @@ test "F35: percent-A hex float uppercase" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%A", "1.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // GNU outputs "0XCP-3" for 1.5
     try testing.expect(buffer_aw.writer.buffered().len > 0);
@@ -1897,7 +2556,13 @@ test "audit: printf %d with non-numeric input exits 1 and warns" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "%d\\n", "abc" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     // GNU outputs "0\n" to stdout
     try testing.expectEqualStrings("0\n", stdout_aw.writer.buffered());
     // Must exit 1 (not 0) when argument is not a valid number
@@ -1914,7 +2579,13 @@ test "audit: printf %d with partial numeric input warns" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "%d", "5abc" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     // GNU outputs "5" for partial numeric
     try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
     // Must exit 1 and warn
@@ -1929,7 +2600,13 @@ test "audit: printf %i format specifier" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%i", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
@@ -1940,7 +2617,13 @@ test "audit: printf %i negative" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%i", "-7" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-7", buffer_aw.writer.buffered());
 }
@@ -1952,7 +2635,13 @@ test "audit: printf %E uppercase scientific" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%E", "1234.5" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.234500E+03", buffer_aw.writer.buffered());
 }
@@ -1964,7 +2653,13 @@ test "audit: printf %G uppercase general" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%G", "0.00001" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // Must contain uppercase E, not lowercase e
     try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "E") != null);
@@ -1977,7 +2672,13 @@ test "audit: printf dynamic width with *" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%*d", "10", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("        42", buffer_aw.writer.buffered());
 }
@@ -1989,7 +2690,13 @@ test "audit: printf negative dynamic width implies left-justify" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%*d", "-5", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("42   ", buffer_aw.writer.buffered());
 }
@@ -2001,7 +2708,13 @@ test "audit: printf space-sign flag positive" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "% d", "42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(" 42", buffer_aw.writer.buffered());
 }
@@ -2012,9 +2725,134 @@ test "audit: printf space-sign flag negative" {
     defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "% d", "-42" };
-    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-42", buffer_aw.writer.buffered());
 }
 
 // %u is already tested in "printf unsigned integer" above -- no gap.
+
+// Regression: formatSciFloat and formatGeneralFloat normalize via
+// `while (abs_val >= 10.0) abs_val /= 10.0;`. For Inf, the condition is
+// always true and the loop never terminates. Verified by running with
+// `--test-timeout=10s` against printf.zig prior to the isFinite guard:
+// the test runner hangs. GNU printf outputs "inf" / "-inf" / "nan"
+// (uppercase for %E and %G).
+
+test "printf %e with positive infinity outputs inf" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%e", "inf" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("inf", buffer_aw.writer.buffered());
+}
+
+test "printf %e with negative infinity outputs -inf" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%e", "-inf" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-inf", buffer_aw.writer.buffered());
+}
+
+test "printf %e with NaN outputs nan" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%e", "nan" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("nan", buffer_aw.writer.buffered());
+}
+
+test "printf %E with positive infinity outputs INF (uppercase)" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%E", "inf" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("INF", buffer_aw.writer.buffered());
+}
+
+test "printf %g with positive infinity outputs inf" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%g", "inf" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("inf", buffer_aw.writer.buffered());
+}
+
+test "printf %g with NaN outputs nan" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%g", "nan" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("nan", buffer_aw.writer.buffered());
+}
+
+test "printf %G with NaN outputs NAN (uppercase)" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%G", "nan" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &buffer_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("NAN", buffer_aw.writer.buffered());
+}

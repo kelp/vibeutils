@@ -1,7 +1,12 @@
 const std = @import("std");
 
 /// Type alias for HashMap using FileSystemId as keys
-pub const FileSystemIdSet = std.HashMap(FileSystemId, void, FileSystemId.Context, std.hash_map.default_max_load_percentage);
+pub const FileSystemIdSet = std.HashMap(
+    FileSystemId,
+    void,
+    FileSystemId.Context,
+    std.hash_map.default_max_load_percentage,
+);
 
 /// Unique file system identifier combining device and inode for cycle detection.
 ///
@@ -80,6 +85,10 @@ pub const EntryFilter = struct {
     /// Filters out hidden files unless show_hidden or show_all is true.
     /// When skip_dots is true, excludes "." and ".." entries (for -A flag).
     pub fn shouldInclude(self: EntryFilter, name: []const u8) bool {
+        // Precondition: directory entry names from the OS are never empty, and
+        // the code below unconditionally indexes name[0].
+        std.debug.assert(name.len > 0);
+
         // Skip hidden files unless -a or -A is specified
         if (!self.show_all and !self.show_hidden and name[0] == '.') {
             return false;
@@ -154,12 +163,19 @@ pub fn collectSubdirectories(
                 continue;
             }
 
-            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, entry.name });
+            const full_path = try std.fmt.allocPrint(
+                allocator,
+                "{s}/{s}",
+                .{ base_path, entry.name },
+            );
             errdefer allocator.free(full_path);
             try subdirs.append(allocator, SubdirEntry{ .name = entry.name, .path = full_path });
         }
     }
 
+    // Postcondition: the loop appends at most one subdir per input entry, so
+    // the collected count can never exceed the number of entries.
+    std.debug.assert(subdirs.items.len <= entries.len);
     return subdirs;
 }
 

@@ -203,7 +203,7 @@ test "simple privileged operation simulation" {
 
     // Create file
     const file = try std.Io.Dir.cwd().createFile(io, test_file, .{});
-    try file.close(io);
+    file.close(io);
 
     // Under fakeroot, we can simulate changing ownership
     if (FakerootContext.isUnderFakeroot()) {
@@ -213,7 +213,7 @@ test "simple privileged operation simulation" {
 
         // Try to change ownership - this demonstrates the infrastructure
         // Note: fakeroot may not intercept all file operations through Zig's APIs
-        file_handle.chown(0, 0) catch |err| {
+        file_handle.setOwner(io, 0, 0) catch |err| {
             // This is expected - fakeroot doesn't always work with all APIs
             try testing.expect(err == error.AccessDenied or err == error.PermissionDenied);
         };

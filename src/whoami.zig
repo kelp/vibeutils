@@ -33,7 +33,13 @@ pub fn runWhoami(
 ) !u8 {
     _ = io;
     // Parse command-line arguments
-    const parsed_args = common.argparse.ArgParser.parseOrExit(WhoamiArgs, allocator, args, "whoami", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        WhoamiArgs,
+        allocator,
+        args,
+        "whoami",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -50,14 +56,26 @@ pub fn runWhoami(
 
     // Reject extra positional arguments
     if (parsed_args.positionals.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "whoami", "extra operand '{s}'", .{parsed_args.positionals[0]});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "whoami",
+            "extra operand '{s}'",
+            .{parsed_args.positionals[0]},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Look up the current user
     const uid = common.user_group.getCurrentUserId();
     const user_info = common.user_group.getUserById(uid, allocator) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "whoami", "cannot find name for user ID {d}", .{uid});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "whoami",
+            "cannot find name for user ID {d}",
+            .{uid},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(user_info.name);
@@ -100,7 +118,13 @@ test "whoami prints current username" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should return success
     try testing.expectEqual(@as(u8, 0), result);
@@ -122,7 +146,13 @@ test "whoami help flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: whoami") != null);
@@ -135,7 +165,13 @@ test "whoami short help flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: whoami") != null);
@@ -149,7 +185,13 @@ test "whoami version flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "whoami") != null);
@@ -163,7 +205,13 @@ test "whoami short version flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "whoami") != null);
@@ -177,7 +225,13 @@ test "whoami unknown flag returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
@@ -194,7 +248,13 @@ test "whoami unknown short flag returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-x"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
@@ -209,7 +269,13 @@ test "whoami extra arguments returns misuse" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"extra"};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
@@ -222,7 +288,13 @@ test "whoami output matches current user" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runWhoami(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 
     // Verify output matches what user_group reports

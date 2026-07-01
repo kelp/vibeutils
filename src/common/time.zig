@@ -45,12 +45,15 @@ pub const TimeUnit = enum {
     days,
 
     pub fn toNanos(self: TimeUnit) u64 {
-        return switch (self) {
+        const nanos: u64 = switch (self) {
             .seconds => std.time.ns_per_s,
             .minutes => std.time.ns_per_min,
             .hours => std.time.ns_per_hour,
             .days => std.time.ns_per_day,
         };
+        std.debug.assert(nanos > 0); // Negative: no unit maps to a zero multiplier.
+        std.debug.assert(nanos >= std.time.ns_per_s); // Positive: seconds is the floor.
+        return nanos;
     }
 };
 
@@ -61,11 +64,30 @@ pub fn parseTimeString(time_str: []const u8) !u64 {
     if (time_str.len == 0) {
         return error.InvalidTimeFormat;
     }
+    std.debug.assert(time_str.len > 0); // Positive: control reached here only with non-empty.
 
     // GNU sleep accepts 'inf' and 'infinity' to mean sleep forever.
     if (std.mem.eql(u8, time_str, "inf") or std.mem.eql(u8, time_str, "infinity")) {
         return std.math.maxInt(u64);
     }
+
+    const split = parseTimeString_splitSuffix(time_str);
+    std.debug.assert(split.number_part.len <= time_str.len); // Negative: split never grows input.
+
+    if (split.number_part.len == 0) {
+        return error.InvalidTimeFormat;
+    }
+
+    return parseTimeString_numberToNanos(split.number_part, split.unit);
+}
+
+/// Split the trailing unit suffix (if any) from a non-empty time string.
+/// Returns the number part (suffix removed) and the selected unit; a string
+/// with no recognized suffix keeps the whole input and defaults to seconds.
+fn parseTimeString_splitSuffix(
+    time_str: []const u8,
+) struct { number_part: []const u8, unit: TimeUnit } {
+    std.debug.assert(time_str.len > 0); // Positive precondition the caller guarantees.
 
     // Find the unit suffix (if any)
     var number_part = time_str;
@@ -96,9 +118,20 @@ pub fn parseTimeString(time_str: []const u8) !u64 {
         },
     }
 
-    if (number_part.len == 0) {
-        return error.InvalidTimeFormat;
-    }
+    std.debug.assert(number_part.len <= time_str.len); // Never grow the input.
+    // Negative: we removed at most one char (suffix), never more. Safe from
+    // underflow because the assert above guarantees number_part.len <= time_str.len.
+    std.debug.assert(time_str.len - number_part.len <= 1);
+
+    return .{ .number_part = number_part, .unit = unit };
+}
+
+/// Convert an already-sliced, non-empty number part plus its unit into
+/// nanoseconds. Rejects trailing '.', non-numeric input, NaN/Inf, negatives,
+/// and overflow.
+fn parseTimeString_numberToNanos(number_part: []const u8, unit: TimeUnit) !u64 {
+    std.debug.assert(number_part.len > 0); // Positive: parent guarantees via len==0 check.
+    std.debug.assert(unit.toNanos() > 0); // Negative: no zero-multiplier unit exists.
 
     // Parse the number part (support decimal values)
     // Check for invalid formats like "5." but allow ".5" (GNU compatible)
@@ -121,6 +154,7 @@ pub fn parseTimeString(time_str: []const u8) !u64 {
 
     // Convert to nanoseconds
     const nanos_per_unit = @as(f64, @floatFromInt(unit.toNanos()));
+    std.debug.assert(nanos_per_unit > 0); // Negative: int->float of >=1e9 stays positive.
     const total_nanos = parsed_value * nanos_per_unit;
 
     // Check for overflow
@@ -143,35 +177,62 @@ test "parseTimeString - basic integer seconds" {
 }
 
 test "parseTimeString - decimal seconds" {
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString("0.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_s)), try parseTimeString("1.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.25 * std.time.ns_per_s)), try parseTimeString("2.25"));
-    try testing.expectEqual(@as(u64, @intFromFloat(0.1 * std.time.ns_per_s)), try parseTimeString("0.1"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_s)),
+        try parseTimeString("0.5"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(1.5 * std.time.ns_per_s)),
+        try parseTimeString("1.5"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.25 * std.time.ns_per_s)),
+        try parseTimeString("2.25"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.1 * std.time.ns_per_s)),
+        try parseTimeString("0.1"),
+    );
 }
 
 test "parseTimeString - seconds with suffix" {
     try testing.expectEqual(@as(u64, 5 * std.time.ns_per_s), try parseTimeString("5s"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.5 * std.time.ns_per_s)), try parseTimeString("2.5s"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.5 * std.time.ns_per_s)),
+        try parseTimeString("2.5s"),
+    );
     try testing.expectEqual(@as(u64, 0), try parseTimeString("0s"));
 }
 
 test "parseTimeString - minutes" {
     try testing.expectEqual(@as(u64, 1 * std.time.ns_per_min), try parseTimeString("1m"));
     try testing.expectEqual(@as(u64, 5 * std.time.ns_per_min), try parseTimeString("5m"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.5 * std.time.ns_per_min)), try parseTimeString("2.5m"));
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_min)), try parseTimeString("0.5m"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.5 * std.time.ns_per_min)),
+        try parseTimeString("2.5m"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_min)),
+        try parseTimeString("0.5m"),
+    );
 }
 
 test "parseTimeString - hours" {
     try testing.expectEqual(@as(u64, 1 * std.time.ns_per_hour), try parseTimeString("1h"));
     try testing.expectEqual(@as(u64, 2 * std.time.ns_per_hour), try parseTimeString("2h"));
-    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_hour)), try parseTimeString("1.5h"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(1.5 * std.time.ns_per_hour)),
+        try parseTimeString("1.5h"),
+    );
 }
 
 test "parseTimeString - days" {
     try testing.expectEqual(@as(u64, 1 * std.time.ns_per_day), try parseTimeString("1d"));
     try testing.expectEqual(@as(u64, 2 * std.time.ns_per_day), try parseTimeString("2d"));
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_day)), try parseTimeString("0.5d"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_day)),
+        try parseTimeString("0.5d"),
+    );
 }
 
 test "parseTimeString - invalid formats" {
@@ -184,7 +245,10 @@ test "parseTimeString - invalid formats" {
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5x"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5."));
     // .5 is valid (GNU compatible, means 0.5 seconds)
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString(".5"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_s)),
+        try parseTimeString(".5"),
+    );
 }
 
 test "parseTimeString - reject NaN and Inf (except GNU-compatible inf/infinity)" {

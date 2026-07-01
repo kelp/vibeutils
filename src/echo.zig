@@ -17,7 +17,13 @@ const testing = std.testing;
 /// including -z, -foo, --unknown, is printed as a positional argument.
 /// Once a non-flag argument is encountered, all remaining arguments
 /// (including ones that look like flags) are treated as positional.
-pub fn runEcho(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runEcho(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = io;
     _ = stderr_writer;
     var suppress_newline = false;
@@ -68,6 +74,9 @@ pub fn runEcho(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
         positional_start = i + 1;
     }
 
+    // The slice below depends on this bound; positional_start only ever
+    // becomes i + 1 for a valid index i, so it never exceeds args.len.
+    std.debug.assert(positional_start <= args.len);
     const positionals = args[positional_start..];
 
     const options = EchoOptions{
@@ -154,99 +163,28 @@ pub fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOp
 fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
     var i: usize = 0;
     while (i < s.len) {
+        // Loop invariant: the index always points inside the string.
+        std.debug.assert(i < s.len);
+        const start = i;
         if (s[i] == '\\' and i + 1 < s.len) {
             switch (s[i + 1]) {
-                'a' => {
-                    try writer.writeByte('\x07'); // Alert (bell)
-                    i += 2;
-                },
-                'b' => {
-                    try writer.writeByte('\x08'); // Backspace
+                'a', 'b', 'e', 'f', 'n', 'r', 't', 'v', '\\' => {
+                    // Recognized single-byte escape: write the mapped byte and advance.
+                    _ = try writeWithEscapes_simpleEscape(writer, s[i + 1]);
                     i += 2;
                 },
                 'c' => {
                     // \c suppresses all further output, including the trailing newline
                     return true;
                 },
-                'e' => {
-                    try writer.writeByte('\x1b'); // Escape
-                    i += 2;
-                },
-                'f' => {
-                    try writer.writeByte('\x0c'); // Form feed
-                    i += 2;
-                },
-                'n' => {
-                    try writer.writeByte('\n'); // Newline
-                    i += 2;
-                },
-                'r' => {
-                    try writer.writeByte('\r'); // Carriage return
-                    i += 2;
-                },
-                't' => {
-                    try writer.writeByte('\t'); // Tab
-                    i += 2;
-                },
-                'v' => {
-                    try writer.writeByte('\x0b'); // Vertical tab
-                    i += 2;
-                },
-                '\\' => {
-                    try writer.writeByte('\\'); // Backslash
-                    i += 2;
-                },
                 '0' => {
-                    // Octal with \0 prefix: \0NNN (up to 3 octal digits after the 0 introducer)
-                    var octal_value: u8 = 0;
-                    var j: usize = 2; // skip past \ and 0 introducer
-                    var count: usize = 0;
-                    while (count < 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : ({
-                        j += 1;
-                        count += 1;
-                    }) {
-                        octal_value = octal_value *% 8 +% (s[i + j] - '0');
-                    }
-                    try writer.writeByte(octal_value);
-                    i += j;
+                    i = try writeWithEscapes_writeOctalZero(s, i, writer);
                 },
                 '1'...'7' => {
-                    // Octal sequence: \NNN (up to 3 octal digits, first digit is part of value)
-                    var octal_value: u8 = 0;
-                    var j: usize = 1;
-                    while (j <= 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : (j += 1) {
-                        octal_value = octal_value *% 8 +% (s[i + j] - '0');
-                    }
-                    try writer.writeByte(octal_value);
-                    i += j;
+                    i = try writeWithEscapes_writeOctalDigit(s, i, writer);
                 },
                 'x' => {
-                    // Hex sequence: \xH or \xHH (1-2 hex digits, GNU compatible)
-                    var hex_value: u8 = 0;
-                    var j: usize = 2; // skip \x
-                    var hex_digits: usize = 0;
-                    while (hex_digits < 2 and i + j < s.len) : ({
-                        j += 1;
-                        hex_digits += 1;
-                    }) {
-                        const c = s[i + j];
-                        const digit = switch (c) {
-                            '0'...'9' => c - '0',
-                            'a'...'f' => c - 'a' + 10,
-                            'A'...'F' => c - 'A' + 10,
-                            else => break,
-                        };
-                        hex_value = hex_value * 16 + digit;
-                    }
-                    if (hex_digits > 0) {
-                        try writer.writeByte(hex_value);
-                        i += j;
-                    } else {
-                        // No hex digits, output literally
-                        try writer.writeByte('\\');
-                        try writer.writeByte('x');
-                        i += 2;
-                    }
+                    i = try writeWithEscapes_writeHex(s, i, writer);
                 },
                 else => {
                     // Unknown escape sequence, output literally
@@ -258,8 +196,131 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
             try writer.writeByte(s[i]);
             i += 1;
         }
+        // Negative space: the index must strictly advance so the loop terminates.
+        std.debug.assert(i > start);
     }
     return false;
+}
+
+/// Write the single mapped byte for a recognized one-byte escape sequence.
+///
+/// Returns true when escape_char names a recognized simple escape (in which
+/// case a byte was written), false otherwise. The caller advances the index.
+fn writeWithEscapes_simpleEscape(writer: anytype, escape_char: u8) !bool {
+    // Positive space: only the recognized simple-escape chars reach this helper.
+    std.debug.assert(escape_char != 'c');
+    // Negative space: the introducer byte itself is never a simple escape arg.
+    std.debug.assert(escape_char != 'x');
+    switch (escape_char) {
+        'a' => try writer.writeByte('\x07'), // Alert (bell)
+        'b' => try writer.writeByte('\x08'), // Backspace
+        'e' => try writer.writeByte('\x1b'), // Escape
+        'f' => try writer.writeByte('\x0c'), // Form feed
+        'n' => try writer.writeByte('\n'), // Newline
+        'r' => try writer.writeByte('\r'), // Carriage return
+        't' => try writer.writeByte('\t'), // Tab
+        'v' => try writer.writeByte('\x0b'), // Vertical tab
+        '\\' => try writer.writeByte('\\'), // Backslash
+        else => return false,
+    }
+    return true;
+}
+
+/// Handle the \0NNN octal escape (up to 3 octal digits after the 0 introducer).
+///
+/// Writes the resulting byte and returns the new absolute index after the run.
+fn writeWithEscapes_writeOctalZero(
+    s: []const u8,
+    i: usize, // tiger:allow:usize-arch slice index type
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch returns slice index
+    // Positive space: the caller only dispatches here on a backslash-zero pair.
+    std.debug.assert(i + 1 < s.len);
+    std.debug.assert(s[i] == '\\');
+    // The \0NNN arm of the caller's switch routes here exclusively on a '0'.
+    std.debug.assert(s[i + 1] == '0');
+    // Octal with \0 prefix: \0NNN (up to 3 octal digits after the 0 introducer)
+    var octal_value: u8 = 0;
+    var j: usize = 2; // tiger:allow:usize-arch slice index type
+    var count: usize = 0; // tiger:allow:usize-arch slice index bound
+    while (count < 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        octal_value = octal_value *% 8 +% (s[i + j] - '0');
+    }
+    // Negative space: at most three digits are consumed past the introducer.
+    std.debug.assert(count <= 3);
+    try writer.writeByte(octal_value);
+    return i + j;
+}
+
+/// Handle the \NNN octal escape where the first digit is part of the value.
+///
+/// Writes the resulting byte and returns the new absolute index after the run.
+fn writeWithEscapes_writeOctalDigit(
+    s: []const u8,
+    i: usize, // tiger:allow:usize-arch slice index type
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch returns slice index
+    // Positive space: the caller only dispatches here on a backslash-digit pair.
+    std.debug.assert(i + 1 < s.len);
+    std.debug.assert(s[i] == '\\');
+    // The '1'...'7' arm of the caller's switch bounds the first octal digit.
+    std.debug.assert(s[i + 1] >= '1');
+    std.debug.assert(s[i + 1] <= '7');
+    // Octal sequence: \NNN (up to 3 octal digits, first digit is part of value)
+    var octal_value: u8 = 0;
+    var j: usize = 1; // tiger:allow:usize-arch slice index type
+    while (j <= 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : (j += 1) {
+        octal_value = octal_value *% 8 +% (s[i + j] - '0');
+    }
+    // Negative space: never more than three octal digits are consumed.
+    std.debug.assert(j <= 4);
+    try writer.writeByte(octal_value);
+    return i + j;
+}
+
+/// Handle the \xHH hex escape (1-2 hex digits, GNU compatible).
+///
+/// Writes the resulting byte, or the literal "\x" when no hex digit follows,
+/// and returns the new absolute index after the run.
+fn writeWithEscapes_writeHex(
+    s: []const u8,
+    i: usize, // tiger:allow:usize-arch slice index type
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch returns slice index
+    // Positive space: the caller only dispatches here on a backslash-x pair.
+    std.debug.assert(i + 1 < s.len);
+    std.debug.assert(s[i] == '\\');
+    std.debug.assert(s[i + 1] == 'x');
+    // Hex sequence: \xH or \xHH (1-2 hex digits, GNU compatible)
+    var hex_value: u8 = 0;
+    var j: usize = 2; // tiger:allow:usize-arch slice index type
+    var hex_digits: usize = 0; // tiger:allow:usize-arch slice index bound
+    while (hex_digits < 2 and i + j < s.len) : ({
+        j += 1;
+        hex_digits += 1;
+    }) {
+        const c = s[i + j];
+        const digit = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => break,
+        };
+        hex_value = hex_value * 16 + digit;
+    }
+    // Negative space: at most two hex digits contribute to the value.
+    std.debug.assert(hex_digits <= 2);
+    if (hex_digits > 0) {
+        try writer.writeByte(hex_value);
+        return i + j;
+    }
+    // No hex digits, output literally
+    try writer.writeByte('\\');
+    try writer.writeByte('x');
+    return i + 2;
 }
 
 test "echo outputs single argument" {
@@ -358,7 +419,10 @@ test "echo -e handles multiple escape sequences" {
     const args = [_][]const u8{ "-e", "\\t\\tindented\\nline\\ttwo\\\\backslash" };
     const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\t\tindented\nline\ttwo\\backslash\n", buffer.writer.buffered());
+    try testing.expectEqualStrings(
+        "\t\tindented\nline\ttwo\\backslash\n",
+        buffer.writer.buffered(),
+    );
 }
 
 test "echo -e with octal sequences" {

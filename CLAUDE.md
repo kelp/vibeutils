@@ -94,13 +94,22 @@ zig build -Doptimize=ReleaseFast # Optimized build
 
 ## Git Hooks
 
-The project includes a pre-commit hook that automatically:
-- Runs `just fmt` to format code before every commit
-- Adds any formatting changes to the commit
-- Runs tests to ensure code integrity
+The repo ships a tracked pre-commit hook at
+`.githooks/pre-commit` that **blocks any commit unless
+`zig fmt` is clean**. When formatting is not clean it runs
+`zig build fmt` to fix it and then aborts, so you review the
+reformatted files and re-commit. When the tree is already
+clean (the common case — the dev and the TDD workflow run
+`just fmt`), it is a fast no-op and the commit proceeds.
 
-The hook is located at `.git/hooks/pre-commit` and is
-automatically set up for this repository.
+Install it once per clone:
+
+```bash
+just install-hooks   # sets core.hooksPath to .githooks
+```
+
+The hook does NOT run the test suite (kept fast); run
+`zig build test` yourself, or rely on CI.
 
 ## Commit Signing
 
@@ -360,35 +369,78 @@ diagnose and fix the root cause. If the root cause is an upstream
 bug, document it explicitly and create a proper workaround — do not
 just comment out the test.
 
-### MANDATORY: Red-Green TDD for All Code Changes
+### MANDATORY: Test-First Discipline for All Code Changes
 
-**Every bug fix and feature MUST follow strict red-green TDD.
-No exceptions. No shortcuts. No parallel test+fix agents.**
+The goal is not ceremony — it is that **no change lands
+without a test that provably catches a regression in the
+behavior being changed.** Two things are STRICTLY enforced;
+everything else is judgment.
 
-#### Bug Fixes
-1. **Write the failing test FIRST** — commit it alone
-2. **Verify RED** — run locally on macOS AND Linux (via
-   `orb -m ubuntu`), push to CI, confirm failure
-3. **ONLY THEN write the fix** — apply minimal change
-4. **Verify GREEN** — same platforms, same CI
-5. **Never write tests and fixes in the same commit**
+#### Strictly enforced (no exceptions)
 
-#### New Features
-1. Write tests that define expected behavior
-2. Verify they fail (RED)
-3. Implement until tests pass (GREEN)
-4. Refactor if needed (keep GREEN)
+1. **For a single unit of work, tests and implementation are
+   written by SEPARATE agents** — never the same agent. A
+   fix-writing agent must not author or alter the test that
+   guards its fix; that contaminates the verification.
+   Parallelism is fine and encouraged ACROSS independent
+   units (different utilities, unrelated areas) to move
+   faster — the only prohibition is test-writing and
+   code-writing the SAME thing at the same time. If, during
+   implementation, the implementer concludes a TEST (not the
+   code) is wrong, it must NOT edit the test — it routes the
+   change back to the test-writer with instructions. The
+   test-writer adjudicates judge-first: it fixes the test
+   (keeping it toothful) only if the test is genuinely wrong,
+   otherwise it refuses and the implementer fixes the code.
+   This keeps the separation intact instead of letting a
+   fix-writer dodge a real bug by rewriting the test that
+   caught it.
+2. **A test must be proven able to fail before its change is
+   trusted.** How you prove it depends on the kind of work
+   (below). A test that can never fail is a bug in the test;
+   fix it.
 
-#### Rules
-- **Never run test-writing and fix-writing agents in
-  parallel.** The fix contaminates the test verification.
-- Tests must fail for the RIGHT reason — verify the error
-  message matches the bug, not a compile error or skip.
+#### Bug fixes — classic red→green
+
+1. Write the failing test FIRST (separate agent).
+2. **Verify RED** — run it and SEE it fail for the RIGHT
+   reason (the assertion matching the bug, not a compile
+   error or a skip). Validate on macOS AND Linux (via
+   `orb -m ubuntu`); push to CI and confirm failure.
+3. ONLY THEN write the fix (separate agent), minimal change.
+4. **Verify GREEN** — same platforms, same CI.
+
+#### New features — define behavior, then build
+
+1. Write tests that define the expected behavior.
+2. Verify they fail (RED) for the right reason.
+3. Implement until they pass (GREEN).
+4. Refactor if needed (stay GREEN).
+
+#### Refactors — behavior-preserving (e.g. the walker migration)
+
+A refactor changes structure, not behavior, so its tests
+*should not* fail on the real code — demanding a red here is
+theater. Instead, **prove the tests have teeth by transient
+sabotage** (manual mutation testing):
+
+1. Write/identify characterization tests for the behavior
+   being preserved.
+2. Confirm they pass on the REAL, unchanged code (GREEN).
+3. **Prove red-ability:** temporarily mutate the
+   implementation to break the asserted behavior, run the
+   tests, confirm they go RED — then REVERT the mutation
+   (never commit it) and confirm GREEN again. A test that
+   stays green under sabotage is worthless; fix it.
+4. Perform the refactor; all tests stay GREEN throughout.
+
+#### Always
+
 - Integration tests must actually RUN in CI — verify the
-  test runner picks them up (check for binary name
-  matching, bash version requirements, etc.).
-- Always validate on both macOS and Linux before pushing.
-  Use `orb -m ubuntu` for Linux validation.
+  runner picks them up (binary-name matching, bash version
+  requirements, etc.).
+- Validate on both macOS and Linux before pushing. Use
+  `orb -m ubuntu` for Linux validation.
 
 ### ⚠️ CRITICAL: Filter Utilities Testing
 **Before implementing any utility, read `docs/TESTING_STRATEGY.md` section "Filter Utilities and Stdin-Dependent Testing"**

@@ -10,6 +10,9 @@ const Dimension = enum {
 
 /// Generic helper function to get terminal dimensions
 fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16 {
+    // Fallback dimensions must be usable (nonzero) column/row counts.
+    std.debug.assert(@import("constants.zig").DEFAULT_TERMINAL_WIDTH > 0);
+    std.debug.assert(@import("constants.zig").DEFAULT_TERMINAL_HEIGHT > 0);
     if (builtin.os.tag == .windows) {
         // TODO: Windows implementation would use GetConsoleScreenBufferInfo
         return switch (dimension) {
@@ -24,9 +27,21 @@ fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16
 
         // Use the appropriate ioctl based on the OS
         const result = switch (builtin.os.tag) {
-            .linux => std.os.linux.ioctl(std.Io.File.stdout().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
-            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.Io.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
-            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.Io.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
+            .linux => std.os.linux.ioctl(
+                std.Io.File.stdout().handle,
+                std.os.linux.T.IOCGWINSZ,
+                @intFromPtr(&ws),
+            ),
+            .macos, .ios, .tvos, .watchos => std.c.ioctl(
+                std.Io.File.stdout().handle,
+                std.c.T.IOCGWINSZ,
+                &ws,
+            ),
+            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(
+                std.Io.File.stdout().handle,
+                std.c.T.IOCGWINSZ,
+                &ws,
+            ),
             else => @as(usize, 1), // Force fallback for unknown systems
         };
 

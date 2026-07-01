@@ -22,10 +22,17 @@ const lib = @import("lib.zig");
 /// The run function signature must be:
 ///   fn(std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8
 ///
-/// Where the parameters are: allocator, io, args (without program name), stdout_writer, stderr_writer
+/// Where the parameters are: allocator, io, args (without program name),
+/// stdout_writer, stderr_writer
 pub fn utilityMain(
     init: std.process.Init,
-    comptime runFn: fn (std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8,
+    comptime runFn: fn (
+        std.mem.Allocator,
+        std.Io,
+        []const []const u8,
+        *std.Io.Writer,
+        *std.Io.Writer,
+    ) anyerror!u8,
 ) noreturn {
     const io = init.io;
     const allocator = init.arena.allocator();
@@ -35,10 +42,17 @@ pub fn utilityMain(
         var stderr_buf: [256]u8 = undefined;
         var stderr_w = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
         const stderr = &stderr_w.interface;
-        stderr.print("error: failed to allocate arguments: {s}\n", .{lib.posixErrorString(err)}) catch {};
+        stderr.print(
+            "error: failed to allocate arguments: {s}\n",
+            .{lib.posixErrorString(err)},
+        ) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
+
+    // Every OS-launched process supplies argv[0], so the parsed slice always
+    // has at least one element; the args[1..] slice below depends on this.
+    std.debug.assert(args.len >= 1);
 
     // Set up 8KB buffered writers for stdout and stderr
     var stdout_buffer: [8192]u8 = undefined;
@@ -48,6 +62,10 @@ pub fn utilityMain(
     var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
+
+    // Keep the documented "8KB buffered stdout/stderr" intent in sync: a future
+    // edit must change both buffer sizes together, not just one.
+    std.debug.assert(stdout_buffer.len == stderr_buffer.len);
 
     // Call the run function (skip program name: args[1..])
     const exit_code = runFn(allocator, io, args[1..], stdout, stderr) catch |err| {
@@ -69,13 +87,23 @@ pub fn utilityMain(
 /// caller-supplied writers.  Does NOT call `std.process.exit`; returns the
 /// exit code instead.
 pub fn runWithBufferedIO(
-    comptime runFn: fn (std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8,
+    comptime runFn: fn (
+        std.mem.Allocator,
+        std.Io,
+        []const []const u8,
+        *std.Io.Writer,
+        *std.Io.Writer,
+    ) anyerror!u8,
     allocator: std.mem.Allocator,
     io: std.Io,
     args: []const []const u8, // args[0] is the program name and is stripped
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) u8 {
+    // Documented contract: args[0] is the program name; the args[1..] slice
+    // below requires at least that one element.
+    std.debug.assert(args.len >= 1);
+
     // Skip program name (mirrors utilityMain's args[1..] call)
     const exit_code = runFn(allocator, io, args[1..], stdout_writer, stderr_writer) catch |err| {
         stderr_writer.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
@@ -168,7 +196,14 @@ test "runWithBufferedIO: program name is stripped from args" {
     defer stderr_aw.deinit();
 
     const argv = [_][]const u8{ "/usr/bin/myprog", "arg1", "arg2" };
-    _ = runWithBufferedIO(runEchoArgs, testing.allocator, io, &argv, &stdout_aw.writer, &stderr_aw.writer);
+    _ = runWithBufferedIO(
+        runEchoArgs,
+        testing.allocator,
+        io,
+        &argv,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     const out = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, out, "myprog") == null);

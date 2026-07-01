@@ -62,7 +62,11 @@ const TimeoutArgs = struct {
 
     pub const meta = .{
         .signal = .{ .short = 's', .desc = "Signal to send on timeout", .value_name = "SIGNAL" },
-        .@"kill-after" = .{ .short = 'k', .desc = "Send KILL after DURATION if still running", .value_name = "DURATION" },
+        .@"kill-after" = .{
+            .short = 'k',
+            .desc = "Send KILL after DURATION if still running",
+            .value_name = "DURATION",
+        },
         .@"preserve-status" = .{ .desc = "Exit with same status as COMMAND" },
         .foreground = .{ .desc = "run in the foreground process group" },
         .verbose = .{ .short = 'v', .desc = "Diagnose to stderr any signal sent" },
@@ -98,18 +102,41 @@ fn parseSignal(signal_str: []const u8) ?u8 {
 }
 
 /// Map a spawn/exec error to the appropriate exit code (127, 126, or 125).
-fn handleSpawnError(allocator: Allocator, stderr_writer: *std.Io.Writer, cmd: []const u8, err: std.process.SpawnError) u8 {
+fn handleSpawnError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    cmd: []const u8,
+    err: std.process.SpawnError,
+) u8 {
     switch (err) {
         error.FileNotFound => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': No such file or directory", .{cmd});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "failed to run command '{s}': No such file or directory",
+                .{cmd},
+            );
             return 127;
         },
         error.AccessDenied => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': Permission denied", .{cmd});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "failed to run command '{s}': Permission denied",
+                .{cmd},
+            );
             return 126;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': {s}", .{ cmd, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "failed to run command '{s}': {s}",
+                .{ cmd, common.posixErrorString(err) },
+            );
             return 125;
         },
     }
@@ -126,6 +153,9 @@ fn extractExitCode(pid: std.c.pid_t, status: c_int) ?u8 {
     }
     // WIFSIGNALED: ((status & 0x7f) + 1) >> 1 > 0
     const sig_val = status & 0x7f;
+    // The 0x7f mask bounds sig_val to [0, 127] for any c_int status, so the
+    // later `sig_val + 128` cannot overflow the returned u8.
+    std.debug.assert(sig_val <= 0x7f);
     if (((sig_val + 1) >> 1) > 0) {
         return @intCast(sig_val + 128);
     }
@@ -158,6 +188,9 @@ fn waitChild(pid: std.c.pid_t) u8 {
 /// Case-insensitive ASCII comparison
 fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
+    // The guard above ensures equal lengths, which the parallel iteration
+    // below relies on.
+    std.debug.assert(a.len == b.len);
     for (a, b) |ac, bc| {
         if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
     }
@@ -224,6 +257,9 @@ fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []con
     var positional_count: usize = 0;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
+        // Reaching DURATION (the first positional) breaks the loop, so no
+        // iteration ever starts with more than one positional counted.
+        std.debug.assert(positional_count <= 1);
         const arg = args[i];
 
         // If we already hit --, pass everything through
@@ -284,11 +320,23 @@ fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []con
 }
 
 /// Run the timeout utility with given arguments
-pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runTimeout(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     const processed_args = try preprocessArgs(allocator, args);
     defer allocator.free(processed_args);
 
-    const parsed = common.argparse.ArgParser.parseOrExit(TimeoutArgs, allocator, processed_args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        TimeoutArgs,
+        allocator,
+        processed_args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -303,41 +351,181 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
 
     // Need at least DURATION and COMMAND
     if (parsed.positionals.len < 2) {
-        if (parsed.positionals.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
-        } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'", .{parsed.positionals[0]});
-        }
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "Try 'timeout --help' for more information.", .{});
+        runTimeout_reportMissingOperand(allocator, stderr_writer, parsed.positionals);
         return 125;
     }
 
+    // Resolve durations and signal, reporting and returning 125 on bad input.
+    const options = switch (runTimeout_resolveOptions(allocator, stderr_writer, parsed)) {
+        .ok => |opts| opts,
+        .fail => |code| return code,
+    };
+
+    // Build argv for child process and run the child under the timeout.
+    const cmd_args = parsed.positionals[1..];
+    // positionals.len >= 2 (guarded above), so cmd_args is non-empty.
+    std.debug.assert(cmd_args.len > 0);
+    // Every valid signal that survives parsing (named or numeric) is < 64.
+    std.debug.assert(options.timeout_signal < 64);
+    return runTimeout_spawnAndWait(allocator, io, stderr_writer, cmd_args, options);
+}
+
+/// Resolve durations and signal from parsed arguments into RunOptions.
+/// Reports the diagnostic and returns exit code 125 on invalid input.
+/// Single caller: runTimeout.
+fn runTimeout_resolveOptions(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    parsed: anytype,
+) ParseResult(RunOptions) {
+    std.debug.assert(parsed.positionals.len >= 2);
+
     // Parse timeout duration
-    const timeout_nanos = time.parseTimeString(parsed.positionals[0]) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid time interval '{s}'", .{parsed.positionals[0]});
-        return 125;
+    const timeout_nanos = switch (runTimeout_parseDuration(
+        allocator,
+        stderr_writer,
+        parsed.positionals[0],
+    )) {
+        .ok => |nanos| nanos,
+        .fail => |code| return .{ .fail = code },
     };
 
     // Parse signal
-    const timeout_signal: u8 = if (parsed.signal) |sig_str|
-        parseSignal(sig_str) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid signal '{s}'", .{sig_str});
-            return 125;
-        }
-    else
-        15; // SIGTERM
+    const timeout_signal: u8 = switch (runTimeout_parseSignal(
+        allocator,
+        stderr_writer,
+        parsed.signal,
+    )) {
+        .ok => |sig| sig,
+        .fail => |code| return .{ .fail = code },
+    };
 
     // Parse kill-after duration
     const kill_after_nanos: ?u64 = if (parsed.@"kill-after") |ka_str|
-        time.parseTimeString(ka_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid time interval '{s}'", .{ka_str});
-            return 125;
+        switch (runTimeout_parseDuration(allocator, stderr_writer, ka_str)) {
+            .ok => |nanos| nanos,
+            .fail => |code| return .{ .fail = code },
         }
     else
         null;
 
-    // Build argv for child process
-    const cmd_args = parsed.positionals[1..];
+    return .{ .ok = .{
+        .timeout_nanos = timeout_nanos,
+        .kill_after_nanos = kill_after_nanos,
+        .timeout_signal = timeout_signal,
+        .foreground = parsed.foreground,
+        .verbose = parsed.verbose,
+        .preserve_status = parsed.@"preserve-status",
+    } };
+}
+
+/// Result of parsing a CLI value: either the resolved value or the exit
+/// code that runTimeout must return when parsing fails.
+fn ParseResult(comptime T: type) type {
+    return union(enum) {
+        ok: T,
+        fail: u8,
+    };
+}
+
+/// Report the missing-operand diagnostic for fewer than two positionals.
+/// Single caller: runTimeout. The caller returns 125 afterward.
+fn runTimeout_reportMissingOperand(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    positionals: []const []const u8,
+) void {
+    std.debug.assert(positionals.len < 2);
+
+    if (positionals.len == 0) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
+    } else {
+        // len < 2 and len != 0 leaves exactly 1, so [0] is in bounds.
+        std.debug.assert(positionals.len == 1);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "missing operand after '{s}'",
+            .{positionals[0]},
+        );
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "Try 'timeout --help' for more information.",
+        .{},
+    );
+}
+
+/// Parse a duration string to nanoseconds, reporting the diagnostic and
+/// returning exit code 125 on failure. Single caller: runTimeout.
+fn runTimeout_parseDuration(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    duration_str: []const u8,
+) ParseResult(u64) {
+    const nanos = time.parseTimeString(duration_str) catch {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid time interval '{s}'",
+            .{duration_str},
+        );
+        return .{ .fail = 125 };
+    };
+    return .{ .ok = nanos };
+}
+
+/// Resolve the timeout signal from the optional --signal argument,
+/// defaulting to SIGTERM (15). Reports the diagnostic and returns exit
+/// code 125 on an invalid name. Single caller: runTimeout.
+fn runTimeout_parseSignal(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    signal_opt: ?[]const u8,
+) ParseResult(u8) {
+    const sig_str = signal_opt orelse return .{ .ok = 15 }; // SIGTERM
+    const sig = parseSignal(sig_str) orelse {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid signal '{s}'",
+            .{sig_str},
+        );
+        return .{ .fail = 125 };
+    };
+    return .{ .ok = sig };
+}
+
+/// Timeout run options resolved from parsed arguments. Grouped into a
+/// struct so the three booleans and the durations cannot be transposed
+/// at the call site (Tiger Style named-argument guidance).
+const RunOptions = struct {
+    timeout_nanos: u64,
+    kill_after_nanos: ?u64,
+    timeout_signal: u8,
+    foreground: bool,
+    verbose: bool,
+    preserve_status: bool,
+};
+
+/// Spawn the child command and wait for it under the timeout policy.
+/// Returns the resolved exit code (the child's own code, 124 on timeout,
+/// 125/126/127 on spawn failure, or 137 when killed by SIGKILL).
+fn runTimeout_spawnAndWait(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    cmd_args: []const []const u8,
+    options: RunOptions,
+) u8 {
+    std.debug.assert(cmd_args.len > 0);
+    std.debug.assert(options.timeout_signal > 0);
+    std.debug.assert(options.timeout_signal < 64);
 
     // Spawn child process
     const child = std.process.spawn(io, .{
@@ -346,7 +534,7 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
         .stdout = .inherit,
         .stderr = .inherit,
         // Set pgid=0 to put child in its own process group (for group kill)
-        .pgid = if (parsed.foreground) null else @as(?std.posix.pid_t, 0),
+        .pgid = if (options.foreground) null else @as(?std.posix.pid_t, 0),
     }) catch |err| {
         return handleSpawnError(allocator, stderr_writer, cmd_args[0], err);
     };
@@ -354,15 +542,146 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
     const child_pid = child.id orelse return 125;
 
     // If timeout is 0, just wait for the command (no timeout)
-    if (timeout_nanos == 0) {
+    if (options.timeout_nanos == 0) {
         return waitChild(child_pid);
     }
 
     // Wait with timeout using polling approach
     // Poll at intervals until either the child exits or timeout expires
     const poll_interval_ns: u64 = 10 * std.time.ns_per_ms; // 10ms
-    var elapsed_ns: u64 = 0;
+    // Compile-time-constant product of positive literals; the pollers require
+    // a positive interval.
+    std.debug.assert(poll_interval_ns > 0);
 
+    if (runTimeout_pollUntilTimeout(
+        child_pid,
+        options.timeout_nanos,
+        poll_interval_ns,
+        io,
+    )) |exit_code| {
+        return exit_code;
+    }
+
+    runTimeout_spawnAndWait_sendTimeoutSignal(
+        allocator,
+        stderr_writer,
+        child_pid,
+        options.timeout_signal,
+        options.foreground,
+        options.verbose,
+        cmd_args[0],
+    );
+
+    // If --kill-after is set, wait for that duration then send KILL
+    if (options.kill_after_nanos) |ka_nanos| {
+        if (ka_nanos > 0) {
+            return runTimeout_spawnAndWait_killAfter(
+                allocator,
+                io,
+                stderr_writer,
+                cmd_args,
+                child_pid,
+                ka_nanos,
+                poll_interval_ns,
+                options,
+            );
+        }
+    }
+
+    // Wait for child to actually finish after signal
+    const final_exit = waitChild(child_pid);
+
+    return runTimeout_resolveExitCode(final_exit, options.preserve_status, options.timeout_signal);
+}
+
+/// Emit the optional verbose diagnostic and send the timeout signal once the
+/// timeout window has elapsed. Single caller: runTimeout_spawnAndWait.
+fn runTimeout_spawnAndWait_sendTimeoutSignal(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    child_pid: std.c.pid_t,
+    timeout_signal: u8,
+    foreground: bool,
+    verbose: bool,
+    cmd_name: []const u8,
+) void {
+    // A real signal is sent (never a probe), within POSIX range.
+    std.debug.assert(timeout_signal > 0);
+    std.debug.assert(timeout_signal < 64);
+
+    // Timeout expired - send the signal.
+    if (verbose) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "sending signal {d} to command '{s}'",
+            .{ timeout_signal, cmd_name },
+        );
+    }
+
+    sendSignal(child_pid, @intCast(timeout_signal), !foreground);
+}
+
+/// Handle the --kill-after window after the timeout signal was sent.
+/// Polls for early exit, otherwise sends SIGKILL and waits. Returns the
+/// resolved exit code. Single caller: runTimeout_spawnAndWait.
+fn runTimeout_spawnAndWait_killAfter(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    cmd_args: []const []const u8,
+    child_pid: std.c.pid_t,
+    kill_after_nanos: u64,
+    poll_interval_ns: u64,
+    options: RunOptions,
+) u8 {
+    std.debug.assert(cmd_args.len > 0);
+    std.debug.assert(kill_after_nanos > 0);
+    std.debug.assert(poll_interval_ns > 0);
+
+    if (runTimeout_pollKillAfter(
+        child_pid,
+        kill_after_nanos,
+        poll_interval_ns,
+        options.preserve_status,
+        io,
+    )) |exit_code| {
+        return exit_code;
+    }
+
+    // Still running - send KILL
+    if (options.verbose) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "sending signal KILL to command '{s}'",
+            .{cmd_args[0]},
+        );
+    }
+
+    sendSignal(child_pid, 9, !options.foreground); // SIGKILL
+
+    // SIGKILL was sent; wait for child and return its exit code
+    // (typically 137 = 128+9). GNU timeout does this too,
+    // regardless of --preserve-status.
+    return waitChild(child_pid);
+}
+
+/// Poll the child until it exits or the timeout window elapses.
+/// Returns the child's exit code if it exits within the window, or null
+/// if the timeout expired while the child was still running.
+fn runTimeout_pollUntilTimeout(
+    child_pid: std.c.pid_t,
+    timeout_nanos: u64,
+    poll_interval_ns: u64,
+    io: std.Io,
+) ?u8 {
+    std.debug.assert(timeout_nanos > 0);
+    std.debug.assert(poll_interval_ns > 0);
+
+    var elapsed_ns: u64 = 0;
     while (elapsed_ns < timeout_nanos) {
         // Try to collect the child status without blocking
         if (tryWaitChild(child_pid)) |exit_code| {
@@ -370,73 +689,78 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
         }
 
         // Sleep for the poll interval, but don't overshoot the timeout
+        // The loop condition guarantees this, so the subtraction can't underflow.
+        std.debug.assert(elapsed_ns < timeout_nanos);
         const remaining = timeout_nanos - elapsed_ns;
         const sleep_time = @min(poll_interval_ns, remaining);
+        // @min keeps sleep_time bounded by remaining, so the accumulation below
+        // never overshoots timeout_nanos.
+        std.debug.assert(sleep_time <= remaining);
         io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
         elapsed_ns += sleep_time;
     }
+    return null;
+}
 
-    // Timeout expired - send the signal
-    if (parsed.verbose) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal {d} to command '{s}'", .{ timeout_signal, cmd_args[0] });
-    }
+/// Poll the child during the --kill-after window after the timeout signal.
+/// Returns an exit code if the child exits within the window (the child's
+/// own code when preserve_status is set, otherwise 124), or null if the
+/// child is still running after the window so the caller must send KILL.
+fn runTimeout_pollKillAfter(
+    child_pid: std.c.pid_t,
+    kill_after_nanos: u64,
+    poll_interval_ns: u64,
+    preserve_status: bool,
+    io: std.Io,
+) ?u8 {
+    std.debug.assert(kill_after_nanos > 0);
+    std.debug.assert(poll_interval_ns > 0);
 
-    sendSignal(child_pid, @intCast(timeout_signal), !parsed.foreground);
-
-    // If --kill-after is set, wait for that duration then send KILL
-    if (kill_after_nanos) |ka_nanos| {
-        if (ka_nanos > 0) {
-            var ka_elapsed: u64 = 0;
-            while (ka_elapsed < ka_nanos) {
-                if (tryWaitChild(child_pid)) |exit_code| {
-                    if (parsed.@"preserve-status") {
-                        return exit_code;
-                    }
-                    return 124;
-                }
-
-                const remaining = ka_nanos - ka_elapsed;
-                const sleep_time = @min(poll_interval_ns, remaining);
-                io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
-                ka_elapsed += sleep_time;
+    var ka_elapsed: u64 = 0;
+    while (ka_elapsed < kill_after_nanos) {
+        if (tryWaitChild(child_pid)) |exit_code| {
+            if (preserve_status) {
+                return exit_code;
             }
-
-            // Still running - send KILL
-            if (parsed.verbose) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal KILL to command '{s}'", .{cmd_args[0]});
-            }
-
-            sendSignal(child_pid, 9, !parsed.foreground); // SIGKILL
-
-            // SIGKILL was sent; wait for child and return its exit code
-            // (typically 137 = 128+9). GNU timeout does this too.
-            const kill_exit = waitChild(child_pid);
-            if (parsed.@"preserve-status") {
-                return kill_exit;
-            }
-            return kill_exit;
+            return 124;
         }
+
+        // The loop condition guarantees this, so the subtraction can't underflow.
+        std.debug.assert(ka_elapsed < kill_after_nanos);
+        const remaining = kill_after_nanos - ka_elapsed;
+        const sleep_time = @min(poll_interval_ns, remaining);
+        // @min keeps sleep_time bounded by remaining, so the accumulation below
+        // never overshoots kill_after_nanos.
+        std.debug.assert(sleep_time <= remaining);
+        io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
+        ka_elapsed += sleep_time;
     }
+    return null;
+}
 
-    // Wait for child to actually finish after signal
-    const final_exit = waitChild(child_pid);
+/// Resolve the final exit code after the child finishes following a signal.
+/// With preserve_status the child's own code is returned. SIGKILL (9)
+/// cannot be caught, so the child always dies via signal and GNU timeout
+/// returns the signal exit code (137 = 128+9) rather than 124.
+fn runTimeout_resolveExitCode(final_exit: u8, preserve_status: bool, timeout_signal: u8) u8 {
+    std.debug.assert(timeout_signal > 0);
+    std.debug.assert(timeout_signal < 64);
 
-    if (parsed.@"preserve-status") {
+    if (preserve_status) {
         return final_exit;
     }
-
-    // SIGKILL (9) cannot be caught, so the child always dies via signal.
-    // GNU timeout returns the signal exit code (137 = 128+9) in this case
-    // rather than the generic timeout code (124).
     if (timeout_signal == 9) {
         return final_exit;
     }
-
     return 124;
 }
 
 /// Send a signal to a process or process group
 fn sendSignal(pid: std.c.pid_t, sig: c_int, use_process_group: bool) void {
+    // Callers send a real signal (timeout_signal in [1,63] or literal 9),
+    // never signal 0 (a probe) and never out of POSIX range.
+    std.debug.assert(sig > 0);
+    std.debug.assert(sig < 64);
     if (use_process_group) {
         _ = kill(-pid, sig);
     } else {
@@ -460,9 +784,18 @@ test "parseTimeString - basic integer seconds" {
 }
 
 test "parseTimeString - decimal seconds" {
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try time.parseTimeString("0.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_s)), try time.parseTimeString("1.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.25 * std.time.ns_per_s)), try time.parseTimeString("2.25"));
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(0.5 * std.time.ns_per_s)),
+        try time.parseTimeString("0.5"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(1.5 * std.time.ns_per_s)),
+        try time.parseTimeString("1.5"),
+    );
+    try testing.expectEqual(
+        @as(u64, @intFromFloat(2.25 * std.time.ns_per_s)),
+        try time.parseTimeString("2.25"),
+    );
 }
 
 test "parseTimeString - suffixes" {
@@ -531,7 +864,13 @@ test "runTimeout - help option" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{"--help"}, &stdout_aw.writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{"--help"},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: timeout") != null);
@@ -541,7 +880,13 @@ test "runTimeout - version option" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{"--version"}, &stdout_aw.writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{"--version"},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "timeout") != null);
@@ -551,7 +896,13 @@ test "runTimeout - missing operand" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{}, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
@@ -561,7 +912,13 @@ test "runTimeout - missing command" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{"5"}, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{"5"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
@@ -571,17 +928,30 @@ test "runTimeout - invalid duration" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "abc", "true" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "abc", "true" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval") != null);
+    const found = std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval");
+    try testing.expect(found != null);
 }
 
 test "runTimeout - invalid signal" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "-s", "INVALID", "5", "true" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "-s", "INVALID", "5", "true" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid signal") != null);
@@ -591,7 +961,13 @@ test "runTimeout - command not found" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "1", "this_command_surely_does_not_exist_xyz123" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "1", "this_command_surely_does_not_exist_xyz123" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // Should exit non-zero; exact code depends on how the OS reports exec failure.
     // On Linux, spawn() returns FileNotFound -> 127.
@@ -600,22 +976,46 @@ test "runTimeout - command not found" {
 }
 
 test "runTimeout - command completes before timeout" {
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "10", "true" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "10", "true" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runTimeout - command fails before timeout" {
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "10", "false" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "10", "false" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "runTimeout - zero timeout disables timeout" {
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "0", "true" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "0", "true" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runTimeout - command times out" {
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "1", "sleep", "100" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "1", "sleep", "100" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 124), result);
 }
 
@@ -626,7 +1026,13 @@ test "runTimeout - preserve-status on timeout" {
     // This hangs indefinitely on Linux, blocking the test suite.
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "--preserve-status", "1", "sleep", "100" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "--preserve-status", "1", "sleep", "100" },
+        common.null_writer,
+        common.null_writer,
+    );
     // With preserve-status, exit code is 128 + signal (15 for TERM = 143)
     try testing.expectEqual(@as(u8, 143), result);
 }
@@ -686,7 +1092,13 @@ test "runTimeout - no arguments returns 125" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{}, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
 }
@@ -696,7 +1108,13 @@ test "runTimeout - unknown flag returns misuse exit code" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{"--invalid-flag"}, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{"--invalid-flag"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
 }
@@ -706,7 +1124,13 @@ test "runTimeout - missing command after duration returns 125" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{"5"}, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{"5"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
 }
@@ -718,7 +1142,13 @@ test "runTimeout - missing command after duration returns 125" {
 test "runTimeout - --kill-after with quick command exits 0" {
     // Verify --kill-after is accepted and does not interfere when
     // the command completes before the timeout.
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "-k", "5", "10", "true" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "-k", "5", "10", "true" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -727,10 +1157,17 @@ test "runTimeout - --kill-after invalid duration exits 125" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "--kill-after", "abc", "10", "true" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "--kill-after", "abc", "10", "true" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 125), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval") != null);
+    const found = std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval");
+    try testing.expect(found != null);
 }
 
 test "runTimeout - --verbose emits signal diagnostic on timeout" {
@@ -742,7 +1179,13 @@ test "runTimeout - --verbose emits signal diagnostic on timeout" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "--verbose", "1", "sleep", "100" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "--verbose", "1", "sleep", "100" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 124), result);
     // --verbose should produce a diagnostic mentioning "sending signal"
@@ -752,6 +1195,12 @@ test "runTimeout - --verbose emits signal diagnostic on timeout" {
 test "runTimeout - --foreground with quick command exits 0" {
     // Verify --foreground is accepted and does not interfere when
     // the command completes before the timeout.
-    const result = try runTimeout(testing.allocator, testing.io, &.{ "--foreground", "10", "true" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(
+        testing.allocator,
+        testing.io,
+        &.{ "--foreground", "10", "true" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 }

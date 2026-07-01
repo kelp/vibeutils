@@ -2,14 +2,20 @@ const std = @import("std");
 const testing = std.testing;
 const privilege_test = @import("privilege_test.zig");
 
-/// Shared test utilities for privilege simulation integration tests
+/// Shared test utilities for privilege simulation integration tests.
+///
+/// Wraps a temp directory, the test allocator, and an `Io` so each test
+/// can spawn built utilities and inspect their output without repeating
+/// boilerplate.
 pub const TestUtils = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     temp_dir: ?std.testing.TmpDir = null,
 
-    pub fn init(allocator: std.mem.Allocator) TestUtils {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) TestUtils {
         return .{
             .allocator = allocator,
+            .io = io,
             .temp_dir = null,
         };
     }
@@ -27,63 +33,26 @@ pub const TestUtils = struct {
         return self.temp_dir.?;
     }
 
-    pub fn runCommand(self: *TestUtils, argv: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !std.process.Child.RunResult {
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = argv,
-        }) catch |err| {
-            try stderr_writer.print("Failed to run command: {s}\n", .{@errorName(err)});
-            return err;
-        };
-
-        if (result.stdout.len > 0) {
-            try stdout_writer.writeAll(result.stdout);
-        }
-        if (result.stderr.len > 0) {
-            try stderr_writer.writeAll(result.stderr);
-        }
-
-        return result;
+    /// Run `argv` and return the result. Caller owns `result.stdout` and
+    /// `result.stderr`.
+    pub fn runCommand(
+        self: *TestUtils,
+        argv: []const []const u8,
+    ) !std.process.RunResult {
+        return std.process.run(self.allocator, self.io, .{ .argv = argv });
     }
 
-    pub fn runCommandExpectError(self: *TestUtils, argv: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !void {
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = argv,
-        }) catch {
-            // Any error is acceptable - we expect the command to fail
-            return;
-        };
-        defer {
-            self.allocator.free(result.stdout);
-            self.allocator.free(result.stderr);
-        }
-
-        // Write output for debugging
-        if (result.stdout.len > 0) {
-            try stdout_writer.writeAll(result.stdout);
-        }
-        if (result.stderr.len > 0) {
-            try stderr_writer.writeAll(result.stderr);
-        }
-
-        // Check if exit code indicates failure
-        switch (result.term) {
-            .Exited => |code| {
-                if (code != 0) return; // Non-zero exit code is expected
-            },
-            else => {},
-        }
-
-        return error.TestUnexpectedSuccess;
-    }
-
-    /// Run a built utility from zig-out/bin
-    pub fn runBuiltUtility(self: *TestUtils, utility: []const u8, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !std.process.Child.RunResult {
+    /// Run the named built utility from `zig-out/bin` with the given args.
+    /// Caller owns `result.stdout` and `result.stderr`.
+    pub fn runBuiltUtility(
+        self: *TestUtils,
+        utility: []const u8,
+        args: []const []const u8,
+    ) !std.process.RunResult {
         const bin_path = try getBinaryPath(self.allocator, utility);
         defer self.allocator.free(bin_path);
 
-        var argv = try self.allocator.alloc([]const u8, args.len + 1);
+        const argv = try self.allocator.alloc([]const u8, args.len + 1);
         defer self.allocator.free(argv);
 
         argv[0] = bin_path;
@@ -91,23 +60,40 @@ pub const TestUtils = struct {
             argv[i] = arg;
         }
 
-        return self.runCommand(argv, stdout_writer, stderr_writer);
+        return self.runCommand(argv);
     }
 
-    /// Create a test subdirectory with a unique name
-    pub fn createTestSubdir(self: *TestUtils, temp_dir: std.testing.TmpDir, test_name: []const u8) !std.fs.Dir {
-        // Create a unique subdirectory for this test
+    /// Join `parent` and `name` into a freshly-allocated path. Caller frees.
+    pub fn safePath(
+        self: *TestUtils,
+        parent: []const u8,
+        name: []const u8,
+    ) ![]u8 {
+        return std.fs.path.join(self.allocator, &.{ parent, name });
+    }
+
+    /// Create a uniquely-named subdirectory under `temp_dir`.
+    pub fn createTestSubdir(
+        self: *TestUtils,
+        temp_dir: std.testing.TmpDir,
+        test_name: []const u8,
+    ) !std.Io.Dir {
         const timestamp = std.time.timestamp();
-        const subdir_name = try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ test_name, timestamp });
+        const subdir_name = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}_{d}",
+            .{ test_name, timestamp },
+        );
         defer self.allocator.free(subdir_name);
 
-        return temp_dir.dir.makeOpenPath(subdir_name, .{});
+        return temp_dir.dir.createDirPathOpen(self.io, subdir_name, .{});
     }
 };
 
-/// Get the path to a built binary - standalone function with explicit allocator
+/// Get the path to a built binary. Tries several common build-output
+/// locations relative to the current working directory, then falls back
+/// to `BUILD_ROOT` if set.
 pub fn getBinaryPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    // Try multiple possible build paths
     const possible_paths = [_][]const u8{
         "zig-out/bin",
         "../zig-out/bin",
@@ -116,11 +102,13 @@ pub fn getBinaryPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
         "../bin",
     };
 
+    // Use the testing io — these helpers are only called from tests.
+    const io = std.testing.io;
+
     for (possible_paths) |bin_dir| {
         const full_path = std.fs.path.join(allocator, &.{ bin_dir, name }) catch continue;
 
-        // Check if the binary exists
-        std.fs.cwd().access(full_path, .{}) catch {
+        std.Io.Dir.cwd().access(io, full_path, .{}) catch {
             allocator.free(full_path);
             continue;
         };
@@ -128,17 +116,16 @@ pub fn getBinaryPath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
         return full_path;
     }
 
-    // Fallback: try BUILD_ROOT environment variable
-    if (std.process.getEnvVarOwned(allocator, "BUILD_ROOT")) |build_root| {
-        defer allocator.free(build_root);
+    // Fallback: try BUILD_ROOT environment variable.
+    if (@import("env.zig").getEnv("BUILD_ROOT")) |build_root| {
         return std.fs.path.join(allocator, &.{ build_root, "zig-out", "bin", name });
-    } else |_| {
-        // Final fallback: assume current directory structure
-        return std.fs.path.join(allocator, &.{ "zig-out", "bin", name });
     }
+
+    // Final fallback: assume current directory structure.
+    return std.fs.path.join(allocator, &.{ "zig-out", "bin", name });
 }
 
-/// Parse ls -la output into structured permissions
+/// Parse ls -la output into structured permissions.
 pub const FilePermissions = struct {
     user: Perms,
     group: Perms,
@@ -149,7 +136,7 @@ pub const FilePermissions = struct {
         write: bool,
         execute: bool,
 
-        pub fn format(self: Perms, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(self: Perms, writer: *std.Io.Writer) std.Io.Writer.Error!void {
             try writer.writeByte(if (self.read) 'r' else '-');
             try writer.writeByte(if (self.write) 'w' else '-');
             try writer.writeByte(if (self.execute) 'x' else '-');
@@ -191,10 +178,10 @@ pub const FilePermissions = struct {
     }
 };
 
-/// Parse ls output to extract file permissions (prefers regular files)
+/// Parse ls output to extract file permissions (prefers regular files).
 pub fn parseLsPermissions(output: []const u8) !FilePermissions {
     // ls -la output format: -rw-r--r-- 1 user group size date time filename
-    // Single pass: prefer regular files, fallback to any file type
+    // Single pass: prefer regular files, fallback to any file type.
     var lines = std.mem.tokenizeScalar(u8, output, '\n');
     var fallback_permissions: ?FilePermissions = null;
 
@@ -204,11 +191,11 @@ pub fn parseLsPermissions(output: []const u8) !FilePermissions {
         const first_char = line[0];
         switch (first_char) {
             '-' => {
-                // Regular file - preferred, return immediately
+                // Regular file — preferred, return immediately.
                 return FilePermissions.parse(line[1..10]);
             },
             'd', 'l', 'c', 'b', 'p', 's' => {
-                // Directory, symlink, or special file - save as fallback
+                // Directory, symlink, or special file — save as fallback.
                 if (fallback_permissions == null) {
                     fallback_permissions = FilePermissions.parse(line[1..10]) catch continue;
                 }
@@ -241,15 +228,15 @@ test "parseLsPermissions basic functionality" {
 }
 
 test "FilePermissions.parse with special bits" {
-    // Test setuid
+    // Test setuid.
     const setuid = try FilePermissions.parse("rws------");
     try testing.expectEqual(true, setuid.user.execute);
 
-    // Test setgid
+    // Test setgid.
     const setgid = try FilePermissions.parse("rwxrws---");
     try testing.expectEqual(true, setgid.group.execute);
 
-    // Test sticky bit
+    // Test sticky bit.
     const sticky = try FilePermissions.parse("rwxrwxrwt");
     try testing.expectEqual(true, sticky.other.execute);
 }
@@ -257,30 +244,13 @@ test "FilePermissions.parse with special bits" {
 test "getBinaryPath finds existing binary" {
     const allocator = testing.allocator;
 
-    // Test with a known binary (should exist after build)
+    // Test with a known binary (should exist after build).
     const path = getBinaryPath(allocator, "echo") catch {
-        // It's OK if binary doesn't exist in test environment
+        // It's OK if binary doesn't exist in test environment.
         return;
     };
     defer allocator.free(path);
 
-    // If we got a path, it should contain the binary name
+    // If we got a path, it should contain the binary name.
     try testing.expect(std.mem.endsWith(u8, path, "echo"));
-}
-
-test "TestUtils with writer API" {
-    const allocator = testing.allocator;
-    var utils = TestUtils.init(allocator);
-    defer utils.deinit();
-
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf.deinit(allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stderr_buf.deinit(allocator);
-
-    // Test that runCommandExpectError works with writers
-    try utils.runCommandExpectError(&.{"false"}, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
-
-    // The command should have failed (that's expected)
-    // This test just verifies the API works
 }

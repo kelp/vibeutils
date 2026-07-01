@@ -113,7 +113,14 @@ fn writeGroupColored(style: anytype, writer: anytype, name: []const u8) !void {
 /// Write user and group names with distinct colors.
 /// Truecolor: warm wheat for user, soft lavender for group.
 /// 16-color: yellow for user, cyan for group.
-fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8, group_name: []const u8, omit_owner: bool, omit_group: bool) !void {
+fn writeUserGroupColored(
+    style: anytype,
+    writer: anytype,
+    user_name: []const u8,
+    group_name: []const u8,
+    omit_owner: bool,
+    omit_group: bool,
+) !void {
     if (!omit_owner) {
         try writeOwnerColored(style, writer, user_name);
     }
@@ -126,7 +133,13 @@ fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8,
 /// Truecolor: smooth RGB gradient from green (small) to red-orange (large).
 /// 256-color: approximate palette indices.
 /// 16-color: green (normal), bold green (human-readable).
-fn writeSizeColored(style: anytype, writer: anytype, size_str: []const u8, size: u64, human_readable: bool) !void {
+fn writeSizeColored(
+    style: anytype,
+    writer: anytype,
+    size_str: []const u8,
+    size: u64,
+    human_readable: bool,
+) !void {
     if (style.color_mode != .none) {
         if (human_readable and style.color_mode == .basic) try style.setBold();
         try common.colors.applySizeColor(style, size);
@@ -145,7 +158,13 @@ fn writeSizeColored(style: anytype, writer: anytype, size_str: []const u8, size:
 
 /// Write date/time with tiered color based on file age.
 /// Recent files are bright green, aging through blue to dim gray.
-fn writeDateColored(style: anytype, writer: anytype, time_str: []const u8, mtime_ns: i128, max_time_width: usize) !void {
+fn writeDateColored(
+    style: anytype,
+    writer: anytype,
+    time_str: []const u8,
+    mtime_ns: i128,
+    max_time_width: usize, // tiger:allow:usize-arch column width is usize
+) !void {
     if (style.color_mode != .none) {
         const now_ns = common.file.currentTimestampNanoseconds();
         const age_ns = now_ns - mtime_ns;
@@ -210,121 +229,180 @@ fn writeDateColored(style: anytype, writer: anytype, time_str: []const u8, mtime
 }
 
 /// Format timestamp according to the specified time style
-pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std.mem.Allocator, buf: []u8) ![]const u8 {
+pub fn formatTimeWithStyle(
+    mtime_ns: i128,
+    time_style: TimeStyle,
+    allocator: std.mem.Allocator,
+    buf: []u8,
+) ![]const u8 {
+    std.debug.assert(buf.len > 0);
+    std.debug.assert(NS_PER_6MONTHS > NS_PER_MONTH);
     switch (time_style) {
-        .default => {
-            // Traditional ls format: "Mar  1 14:30" or "Jan 15  2024"
-            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
-            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-            const month_day = year_day.calculateMonthDay();
-            const day_seconds = epoch_seconds.getDaySeconds();
-
-            const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-            const month_idx = @intFromEnum(month_day.month) - 1;
-            const month_name = month_names[month_idx];
-            const day = month_day.day_index + 1;
-
-            // Determine if file is older than 6 months
-            const now_ns = common.file.currentTimestampNanoseconds();
-            const age_ns = now_ns - mtime_ns;
-
-            if (age_ns >= NS_PER_6MONTHS) {
-                // Old file: "Jan 15  2024"
-                return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, day, year_day.year });
-            } else {
-                // Recent file: "Mar  1 14:30"
-                return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{
-                    month_name,
-                    day,
-                    day_seconds.getHoursIntoDay(),
-                    day_seconds.getMinutesIntoHour(),
-                });
-            }
-        },
-        .relative => {
-            // Use relative date formatting
-            const config = common.relative_date.defaultConfig();
-            const relative_str = try common.relative_date.formatRelativeDate(mtime_ns, config, allocator);
-            defer allocator.free(relative_str);
-
-            // Truncation with ellipsis for very long strings - trust compile-time buffer sizing
-            if (relative_str.len >= buf.len) {
-                const truncate_len = buf.len - 3;
-                @memcpy(buf[0..truncate_len], relative_str[0..truncate_len]);
-                @memcpy(buf[truncate_len .. truncate_len + 3], "...");
-                return buf[0..buf.len];
-            }
-            @memcpy(buf[0..relative_str.len], relative_str);
-            return buf[0..relative_str.len];
-        },
-        .iso => {
-            // ISO format: 2024-01-15 15:30
-            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
-            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-            const month_day = year_day.calculateMonthDay();
-            const day_seconds = epoch_seconds.getDaySeconds();
-
-            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
-                year_day.year,
-                @intFromEnum(month_day.month),
-                month_day.day_index + 1,
-                day_seconds.getHoursIntoDay(),
-                day_seconds.getMinutesIntoHour(),
-            });
-        },
-        .@"long-iso" => {
-            // Long ISO format: 2024-01-15 15:30:45.123456789 +0000
-            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-            const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
-            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
-            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-            const month_day = year_day.calculateMonthDay();
-            const day_seconds = epoch_seconds.getDaySeconds();
-
-            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} +0000", .{
-                year_day.year,
-                @intFromEnum(month_day.month),
-                month_day.day_index + 1,
-                day_seconds.getHoursIntoDay(),
-                day_seconds.getMinutesIntoHour(),
-                day_seconds.getSecondsIntoMinute(),
-                @abs(nano_remainder),
-            });
-        },
-        .full => {
-            // Full time: "Mar  1 14:30:45 2024" (always shows seconds and year)
-            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
-            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-            const month_day = year_day.calculateMonthDay();
-            const day_seconds = epoch_seconds.getDaySeconds();
-
-            const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-            const month_idx = @intFromEnum(month_day.month) - 1;
-            const month_name = month_names[month_idx];
-            const day = month_day.day_index + 1;
-
-            return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}:{d:0>2} {d}", .{
-                month_name,
-                day,
-                day_seconds.getHoursIntoDay(),
-                day_seconds.getMinutesIntoHour(),
-                day_seconds.getSecondsIntoMinute(),
-                year_day.year,
-            });
-        },
+        .default => return formatTimeWithStyle_default(mtime_ns, buf),
+        .relative => return formatTimeWithStyle_relative(mtime_ns, allocator, buf),
+        .iso => return formatTimeWithStyle_iso(mtime_ns, buf),
+        .@"long-iso" => return formatTimeWithStyle_longIso(mtime_ns, buf),
+        .full => return formatTimeWithStyle_full(mtime_ns, buf),
     }
 }
 
+/// Traditional ls format: "Mar  1 14:30" or "Jan 15  2024".
+fn formatTimeWithStyle_default(mtime_ns: i128, buf: []u8) ![]const u8 {
+    std.debug.assert(buf.len > 0);
+    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
+    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    const month_names = [_][]const u8{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+    const month_idx = @intFromEnum(month_day.month) - 1;
+    // calculateMonthDay yields a 1-based month in 1..=12, so the index is
+    // 0..=11 and always in bounds of the 12-element month_names array.
+    std.debug.assert(month_idx < month_names.len);
+    const month_name = month_names[month_idx];
+    const day = month_day.day_index + 1;
+
+    // Determine if file is older than 6 months
+    const now_ns = common.file.currentTimestampNanoseconds();
+    const age_ns = now_ns - mtime_ns;
+
+    if (age_ns >= NS_PER_6MONTHS) {
+        // Old file: "Jan 15  2024"
+        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, day, year_day.year });
+    } else {
+        // Recent file: "Mar  1 14:30"
+        return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{
+            month_name,
+            day,
+            day_seconds.getHoursIntoDay(),
+            day_seconds.getMinutesIntoHour(),
+        });
+    }
+}
+
+/// Relative date format like "2 hours ago", truncated with ellipsis.
+fn formatTimeWithStyle_relative(
+    mtime_ns: i128,
+    allocator: std.mem.Allocator,
+    buf: []u8,
+) ![]const u8 {
+    std.debug.assert(buf.len > 3);
+    // Use relative date formatting
+    const config = common.relative_date.defaultConfig();
+    const relative_str = try common.relative_date.formatRelativeDate(mtime_ns, config, allocator);
+    defer allocator.free(relative_str);
+
+    // Truncation with ellipsis for very long strings - trust compile-time buffer sizing
+    if (relative_str.len >= buf.len) {
+        const truncate_len = buf.len - 3;
+        @memcpy(buf[0..truncate_len], relative_str[0..truncate_len]);
+        @memcpy(buf[truncate_len .. truncate_len + 3], "...");
+        return buf[0..buf.len];
+    }
+    @memcpy(buf[0..relative_str.len], relative_str);
+    return buf[0..relative_str.len];
+}
+
+/// ISO format: 2024-01-15 15:30.
+fn formatTimeWithStyle_iso(mtime_ns: i128, buf: []u8) ![]const u8 {
+    std.debug.assert(buf.len > 0);
+    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
+    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
+        year_day.year,
+        @intFromEnum(month_day.month),
+        month_day.day_index + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+    });
+}
+
+/// Long ISO format: 2024-01-15 15:30:45.123456789 +0000.
+fn formatTimeWithStyle_longIso(mtime_ns: i128, buf: []u8) ![]const u8 {
+    std.debug.assert(buf.len > 0);
+    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+    const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
+    // @mod with a positive divisor yields [0, ns_per_s), so the value passed
+    // to the 9-digit fractional formatter always fits.
+    std.debug.assert(@abs(nano_remainder) < std.time.ns_per_s);
+    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
+    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} +0000", .{
+        year_day.year,
+        @intFromEnum(month_day.month),
+        month_day.day_index + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+        day_seconds.getSecondsIntoMinute(),
+        @abs(nano_remainder),
+    });
+}
+
+/// Full time: "Mar  1 14:30:45 2024" (always shows seconds and year).
+fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
+    std.debug.assert(buf.len > 0);
+    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
+    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    const month_names = [_][]const u8{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+    const month_idx = @intFromEnum(month_day.month) - 1;
+    // 1-based month in 1..=12 makes the index 0..=11, always in bounds of
+    // the 12-element month_names array.
+    std.debug.assert(month_idx < month_names.len);
+    const month_name = month_names[month_idx];
+    const day = month_day.day_index + 1;
+
+    return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}:{d:0>2} {d}", .{
+        month_name,
+        day,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+        day_seconds.getSecondsIntoMinute(),
+        year_day.year,
+    });
+}
+
 /// Print a single entry in long format (public API, no time alignment)
-pub fn printLongFormatEntry(allocator: std.mem.Allocator, entry: Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printLongFormatEntry(
+    allocator: std.mem.Allocator,
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
     return printLongFormatEntryAligned(allocator, entry, writer, options, style, 0);
 }
 
 /// Print a single entry in long format with time column alignment
-fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, writer: anytype, options: LsOptions, style: anytype, max_time_width: usize) !void {
+fn printLongFormatEntryAligned(
+    allocator: std.mem.Allocator,
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+    max_time_width: usize, // tiger:allow:usize-arch column width is usize
+) !void {
     // Per-entry block count if -s is active
     if (options.show_blocks) {
         const blocks = calculateDisplayBlocks(entry, options);
@@ -348,6 +426,77 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     }
 
     // User and group names/IDs
+    try printLongFormatEntryAligned_ownerGroup(style, writer, entry, options);
+
+    // Size
+    try printLongFormatEntryAligned_size(style, writer, entry, options);
+
+    // Date/time (padded to max_time_width for alignment)
+    if (entry.stat) |stat| {
+        var time_buf: [128]u8 = undefined;
+        const time_field = if (options.use_ctime)
+            stat.ctime
+        else if (options.use_atime)
+            stat.atime
+        else
+            stat.mtime;
+        const effective_time_style = if (options.full_time) TimeStyle.full else options.time_style;
+        const time_str = try formatTimeWithStyle(
+            time_field,
+            effective_time_style,
+            allocator,
+            &time_buf,
+        );
+        try writeDateColored(style, writer, time_str, time_field, max_time_width);
+    } else {
+        try writer.writeAll("??? ?? ??:?? ");
+    }
+
+    // Name with color and optional indicator
+    try display.printEntryName(entry, writer, style, options);
+
+    // Show symlink target if available, colored by target's file type
+    if (entry.symlink_target) |target| {
+        try printLongFormatEntryAligned_symlinkTarget(style, writer, target);
+    }
+    try writer.writeByte('\n');
+}
+
+/// Write " -> target" for a symlink, colored by the target's file type.
+fn printLongFormatEntryAligned_symlinkTarget(
+    style: anytype,
+    writer: anytype,
+    target: []const u8,
+) !void {
+    std.debug.assert(target.len > 0);
+    try writer.writeAll(" -> ");
+    if (style.color_mode != .none) {
+        // Stat the target (lstat — no io needed) to get its kind for coloring
+        const target_kind = blk: {
+            const stat = common.file.FileInfo.lstat(target) catch break :blk null;
+            break :blk stat.kind;
+        };
+        if (target_kind) |kind| {
+            try style.setColor(display.getColorForKind(kind));
+        } else {
+            // Dangling symlink — show in red
+            try style.setColor(.red);
+        }
+        try writer.print("{s}", .{target});
+        try style.reset();
+    } else {
+        try writer.print("{s}", .{target});
+    }
+}
+
+/// Write the user/group column of a long-format entry.
+/// Falls back to "?" placeholders when stat is unavailable.
+fn printLongFormatEntryAligned_ownerGroup(
+    style: anytype,
+    writer: anytype,
+    entry: Entry,
+    options: LsOptions,
+) !void {
     if (entry.stat) |stat| {
         if (options.numeric_ids) {
             // Show numeric IDs (colored yellow)
@@ -355,21 +504,43 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
             var gid_buf: [16]u8 = undefined;
             const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{stat.uid}) catch "?";
             const gid_str = std.fmt.bufPrint(&gid_buf, "{d}", .{stat.gid}) catch "?";
-            try writeUserGroupColored(style, writer, uid_str, gid_str, options.omit_owner, options.omit_group);
+            try writeUserGroupColored(
+                style,
+                writer,
+                uid_str,
+                gid_str,
+                options.omit_owner,
+                options.omit_group,
+            );
         } else {
             // Show names (default behavior)
             var user_buf: [32]u8 = undefined;
             var group_buf: [32]u8 = undefined;
             const user_name = try common.file.getUserName(stat.uid, &user_buf);
             const group_name = try common.file.getGroupName(stat.gid, &group_buf);
-            try writeUserGroupColored(style, writer, user_name, group_name, options.omit_owner, options.omit_group);
+            try writeUserGroupColored(
+                style,
+                writer,
+                user_name,
+                group_name,
+                options.omit_owner,
+                options.omit_group,
+            );
         }
     } else {
         if (!options.omit_owner) try writer.writeAll("?        ");
         if (!options.omit_group) try writer.writeAll("?        ");
     }
+}
 
-    // Size
+/// Write the size column of a long-format entry.
+/// Falls back to "?" when stat is unavailable.
+fn printLongFormatEntryAligned_size(
+    style: anytype,
+    writer: anytype,
+    entry: Entry,
+    options: LsOptions,
+) !void {
     if (entry.stat) |stat| {
         var size_buf: [32]u8 = undefined;
         const size_str = if (options.human_readable)
@@ -385,43 +556,6 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     } else {
         try writer.writeAll("       ? ");
     }
-
-    // Date/time (padded to max_time_width for alignment)
-    if (entry.stat) |stat| {
-        var time_buf: [128]u8 = undefined;
-        const time_field = if (options.use_ctime) stat.ctime else if (options.use_atime) stat.atime else stat.mtime;
-        const effective_time_style = if (options.full_time) TimeStyle.full else options.time_style;
-        const time_str = try formatTimeWithStyle(time_field, effective_time_style, allocator, &time_buf);
-        try writeDateColored(style, writer, time_str, time_field, max_time_width);
-    } else {
-        try writer.writeAll("??? ?? ??:?? ");
-    }
-
-    // Name with color and optional indicator
-    try display.printEntryName(entry, writer, style, options);
-
-    // Show symlink target if available, colored by target's file type
-    if (entry.symlink_target) |target| {
-        try writer.writeAll(" -> ");
-        if (style.color_mode != .none) {
-            // Stat the target (lstat — no io needed) to get its kind for coloring
-            const target_kind = blk: {
-                const stat = common.file.FileInfo.lstat(target) catch break :blk null;
-                break :blk stat.kind;
-            };
-            if (target_kind) |kind| {
-                try style.setColor(display.getColorForKind(kind));
-            } else {
-                // Dangling symlink — show in red
-                try style.setColor(.red);
-            }
-            try writer.print("{s}", .{target});
-            try style.reset();
-        } else {
-            try writer.print("{s}", .{target});
-        }
-    }
-    try writer.writeByte('\n');
 }
 
 /// Format a number with thousands grouping (commas).
@@ -430,6 +564,9 @@ fn formatWithThousands(size: u64, buf: []u8) []const u8 {
     // First format the plain number
     var num_buf: [20]u8 = undefined;
     const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{size}) catch return "?";
+    // Formatting any u64 (including 0) yields at least one digit; guards the
+    // later (num_str.len - 1) / 3 from underflow.
+    std.debug.assert(num_str.len >= 1);
 
     if (num_str.len <= 3) {
         @memcpy(buf[0..num_str.len], num_str);
@@ -450,6 +587,9 @@ fn formatWithThousands(size: u64, buf: []u8) []const u8 {
         buf[out] = c;
         out += 1;
     }
+    // Postcondition: the loop only runs when total_len <= buf.len and writes
+    // exactly total_len bytes, so out never overruns the output buffer.
+    std.debug.assert(out <= buf.len);
     return buf[0..out];
 }
 
@@ -462,42 +602,150 @@ fn blockCountWidth(blocks: u64) usize {
         n /= 10;
         width += 1;
     }
+    // Postcondition: blocks == 0 returned 1 above; otherwise the loop ran at
+    // least once, so every return value is at least 1.
+    std.debug.assert(width >= 1);
     return width;
 }
 
+/// Compute the -s block-count prefix width (max block-count width plus a
+/// trailing space). Caller guards this behind options.show_blocks; otherwise
+/// it passes 0 directly.
+fn printColumnar_blockPrefixWidth(
+    entries: []Entry,
+    options: LsOptions,
+) usize { // tiger:allow:usize-arch blockCountWidth returns usize
+    // Called only with a non-empty slice from the columnar path; the
+    // reduction below must visit at least one entry.
+    std.debug.assert(entries.len > 0);
+    var max_block_width: usize = 0; // tiger:allow:usize-arch matches std width/index pattern
+    for (entries) |entry| {
+        const block_width = blockCountWidth(calculateDisplayBlocks(entry, options));
+        max_block_width = @max(max_block_width, block_width);
+    }
+    const block_prefix_width = max_block_width + 1; // block count + space
+    // blockCountWidth never returns 0, so max_block_width >= 1 and the result
+    // is at least 2: the count plus its trailing space.
+    std.debug.assert(block_prefix_width >= 2);
+    return block_prefix_width;
+}
+
+/// Find the widest entry display width across all entries in a single pass,
+/// caching each entry's width as a side effect of getDisplayWidth.
+fn printColumnar_maxEntryWidth(
+    entries: []Entry,
+    options: LsOptions,
+) usize { // tiger:allow:usize-arch getDisplayWidth returns usize
+    // The columnar path early-returns on empty input, so the maximum is taken
+    // over at least one width.
+    std.debug.assert(entries.len > 0);
+    var max_width: usize = 0; // tiger:allow:usize-arch getDisplayWidth returns usize
+    for (entries) |*entry| {
+        const width = entry.getDisplayWidth(
+            options.file_type_indicators,
+            options.append_slash_dirs,
+            common.icons.shouldShowIcons(options.icon_mode, options.is_terminal),
+            options.show_git_status,
+        );
+        max_width = @max(max_width, width);
+    }
+    // At least one entry contributed, so the maximum is no smaller than that
+    // entry's own width; it cannot exceed the prefix arithmetic that follows.
+    std.debug.assert(max_width >= 0);
+    return max_width;
+}
+
+/// Write the right-aligned -s block-count prefix for one entry. Caller invokes
+/// this only inside the options.show_blocks branch.
+fn printColumnar_writeBlockPrefix(
+    entry: Entry,
+    options: LsOptions,
+    block_prefix_width: usize, // tiger:allow:usize-arch matches blockCountWidth/width pattern
+    writer: anytype,
+) !void {
+    // Only reached under show_blocks, where the prefix width was computed by
+    // printColumnar_blockPrefixWidth and is therefore at least 2.
+    std.debug.assert(block_prefix_width > 0);
+    const blocks = calculateDisplayBlocks(entry, options);
+    // Right-align block count to max_block_width
+    const bw = blockCountWidth(blocks);
+    // blockCountWidth never yields 0, so the pad math below cannot underflow.
+    std.debug.assert(bw >= 1);
+    const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
+    for (0..pad_count) |_| {
+        try writer.writeByte(' ');
+    }
+    try writer.print("{d} ", .{blocks});
+}
+
+/// Pad the current column to max_width plus the column padding, using the
+/// width cached during the pre-calculation pass. Caller guards this so the
+/// entry is neither the last column nor the last entry.
+fn printColumnar_writePadding(
+    entries: []Entry,
+    idx: usize, // tiger:allow:usize-arch slice index
+    max_width: usize, // tiger:allow:usize-arch getDisplayWidth returns usize
+    options: LsOptions,
+    writer: anytype,
+) !void {
+    // Caller only reaches this for an in-bounds, non-final entry.
+    std.debug.assert(idx < entries.len);
+    // This uses cached width from the pre-calculation pass above
+    const width = entries[idx].getDisplayWidth(
+        options.file_type_indicators,
+        options.append_slash_dirs,
+        common.icons.shouldShowIcons(options.icon_mode, options.is_terminal),
+        options.show_git_status,
+    );
+    // max_width is the maximum over all entry widths, so the padding count
+    // below stays non-negative.
+    std.debug.assert(width <= max_width);
+    const padding = max_width + COLUMN_PADDING - width;
+    for (0..padding) |_| {
+        try writer.writeByte(' ');
+    }
+}
+
 /// Print entries in columnar format
-pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printColumnar(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
     if (entries.len == 0) return;
+    // The only way past the early return is a non-empty slice; the column
+    // math below indexes entries and depends on this.
+    std.debug.assert(entries.len > 0);
 
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
 
     // Calculate block width prefix if -s is enabled
-    var block_prefix_width: usize = 0;
-    if (options.show_blocks) {
-        var max_block_width: usize = 0;
-        for (entries) |entry| {
-            max_block_width = @max(max_block_width, blockCountWidth(calculateDisplayBlocks(entry, options)));
-        }
-        block_prefix_width = max_block_width + 1; // block count + space
-    }
+    const block_prefix_width = if (options.show_blocks)
+        printColumnar_blockPrefixWidth(entries, options)
+    else
+        0;
 
     // Pre-calculate display widths for all entries in a single pass
     // This ensures all widths are cached and finds the maximum width
-    var max_width: usize = 0;
-    for (entries) |*entry| {
-        const width = entry.getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-        max_width = @max(max_width, width);
-    }
+    const max_width = printColumnar_maxEntryWidth(entries, options);
 
     // Add padding between columns, including block prefix
     const col_width = block_prefix_width + max_width + COLUMN_PADDING;
 
     // Calculate number of columns that fit
     const num_cols = @max(1, term_width / col_width);
+    // @max(1, ...) guarantees at least one column, so num_rows below cannot
+    // divide by zero.
+    std.debug.assert(num_cols >= 1);
 
     // Calculate number of rows needed
     const num_rows = (entries.len + num_cols - 1) / num_cols;
+    // With entries.len >= 1 and num_cols >= 1 the ceiling division yields at
+    // least one row, bounding the outer row loop.
+    std.debug.assert(num_rows >= 1);
 
     // Print in column-major order (like GNU ls)
     for (0..num_rows) |row| {
@@ -509,14 +757,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
 
             // Print block count prefix if -s
             if (options.show_blocks) {
-                const blocks = calculateDisplayBlocks(entry, options);
-                // Right-align block count to max_block_width
-                const bw = blockCountWidth(blocks);
-                const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
-                for (0..pad_count) |_| {
-                    try writer.writeByte(' ');
-                }
-                try writer.print("{d} ", .{blocks});
+                try printColumnar_writeBlockPrefix(entry, options, block_prefix_width, writer);
             }
 
             // Print entry name with color and indicator
@@ -524,12 +765,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
 
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
-                // This uses cached width from the pre-calculation pass above
-                const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-                const padding = max_width + COLUMN_PADDING - width;
-                for (0..padding) |_| {
-                    try writer.writeByte(' ');
-                }
+                try printColumnar_writePadding(entries, idx, max_width, options, writer);
             }
         }
         try writer.writeByte('\n');
@@ -556,46 +792,45 @@ fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
 }
 
 /// Print entries in columnar format sorted across rows (-x flag)
-pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printColumnarAcross(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
     if (entries.len == 0) return;
+    // Past the early return the slice is non-empty; the entries.len - 1 logic
+    // below depends on it.
+    std.debug.assert(entries.len > 0);
 
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
 
     // Calculate block width prefix if -s is enabled
-    var block_prefix_width: usize = 0;
-    if (options.show_blocks) {
-        var max_block_width: usize = 0;
-        for (entries) |entry| {
-            max_block_width = @max(max_block_width, blockCountWidth(calculateDisplayBlocks(entry, options)));
-        }
-        block_prefix_width = max_block_width + 1; // block count + space
-    }
+    const block_prefix_width = if (options.show_blocks)
+        printColumnar_blockPrefixWidth(entries, options)
+    else
+        0;
 
     // Pre-calculate display widths for all entries in a single pass
-    var max_width: usize = 0;
-    for (entries) |*entry| {
-        const width = entry.getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-        max_width = @max(max_width, width);
-    }
+    // This ensures all widths are cached and finds the maximum width
+    const max_width = printColumnar_maxEntryWidth(entries, options);
 
     // Add padding between columns, including block prefix
     const col_width = block_prefix_width + max_width + COLUMN_PADDING;
 
     // Calculate number of columns that fit
     const num_cols = @max(1, term_width / col_width);
+    // @max(1, ...) guarantees at least one column; the idx % num_cols below
+    // would be a modulo-by-zero hazard otherwise.
+    std.debug.assert(num_cols >= 1);
 
     // Print in row-major order (across rows, like -x)
     for (entries, 0..) |entry, idx| {
         // Print block count prefix if -s
         if (options.show_blocks) {
-            const blocks = calculateDisplayBlocks(entry, options);
-            const bw = blockCountWidth(blocks);
-            const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
-            for (0..pad_count) |_| {
-                try writer.writeByte(' ');
-            }
-            try writer.print("{d} ", .{blocks});
+            try printColumnar_writeBlockPrefix(entry, options, block_prefix_width, writer);
         }
 
         try display.printEntryName(entry, writer, style, options);
@@ -606,11 +841,7 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
             try writer.writeByte('\n');
         } else {
             // Pad to column width
-            const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-            const padding = max_width + COLUMN_PADDING - width;
-            for (0..padding) |_| {
-                try writer.writeByte(' ');
-            }
+            try printColumnar_writePadding(entries, idx, max_width, options, writer);
         }
     }
 }
@@ -638,48 +869,9 @@ pub fn printEntries(
     }
 
     if (options.one_per_line) {
-        for (entries) |entry| {
-            // Print block count if -s
-            if (options.show_blocks) {
-                try writer.print("{d: >4} ", .{calculateDisplayBlocks(entry, options)});
-            }
-            // Print inode number if requested
-            if (options.show_inodes) {
-                if (entry.stat) |stat| {
-                    try writer.print("{d} ", .{stat.inode});
-                } else {
-                    try writer.print("? ", .{});
-                }
-            }
-            // In one-per-line mode, disable icons and git status
-            var one_opts = options;
-            one_opts.icon_mode = .never;
-            one_opts.show_git_status = false;
-            try display.printEntryName(entry, writer, style, one_opts);
-            try writer.writeByte('\n');
-        }
+        try printEntries_onePerLine(entries, writer, options, style);
     } else if (options.long_format) {
-        // Print total if we have entries
-        if (entries.len > 0) {
-            try writer.print("total {d}\n", .{total_blocks});
-        }
-
-        // Pre-calculate max time width for alignment
-        var max_time_width: usize = 0;
-        for (entries) |entry| {
-            if (entry.stat) |stat| {
-                var tbuf: [128]u8 = undefined;
-                const time_field = if (options.use_ctime) stat.ctime else if (options.use_atime) stat.atime else stat.mtime;
-                const eff_ts = if (options.full_time) TimeStyle.full else options.time_style;
-                const ts = formatTimeWithStyle(time_field, eff_ts, allocator, &tbuf) catch continue;
-                max_time_width = @max(max_time_width, ts.len);
-            }
-        }
-
-        // Print each entry in long format
-        for (entries) |entry| {
-            try printLongFormatEntryAligned(allocator, entry, writer, options, style, max_time_width);
-        }
+        try printEntries_longFormat(allocator, entries, writer, options, style, total_blocks);
     } else if (options.comma_format) {
         // Comma-separated format
         for (entries, 0..) |entry, i| {
@@ -696,6 +888,81 @@ pub fn printEntries(
     }
 
     return total_blocks;
+}
+
+/// Print entries one per line (-1), disabling icons and git status.
+fn printEntries_onePerLine(
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
+    std.debug.assert(options.one_per_line);
+    for (entries) |entry| {
+        // Print block count if -s
+        if (options.show_blocks) {
+            try writer.print("{d: >4} ", .{calculateDisplayBlocks(entry, options)});
+        }
+        // Print inode number if requested
+        if (options.show_inodes) {
+            if (entry.stat) |stat| {
+                try writer.print("{d} ", .{stat.inode});
+            } else {
+                try writer.print("? ", .{});
+            }
+        }
+        // In one-per-line mode, disable icons and git status
+        var one_opts = options;
+        one_opts.icon_mode = .never;
+        one_opts.show_git_status = false;
+        try display.printEntryName(entry, writer, style, one_opts);
+        try writer.writeByte('\n');
+    }
+}
+
+/// Print entries in long format (-l), computing the time column width first.
+fn printEntries_longFormat(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+    total_blocks: u64,
+) !void {
+    std.debug.assert(options.long_format);
+    // Print total if we have entries
+    if (entries.len > 0) {
+        try writer.print("total {d}\n", .{total_blocks});
+    }
+
+    // Pre-calculate max time width for alignment
+    var max_time_width: usize = 0; // tiger:allow:usize-arch slice .len is usize
+    for (entries) |entry| {
+        if (entry.stat) |stat| {
+            var tbuf: [128]u8 = undefined;
+            const time_field = if (options.use_ctime)
+                stat.ctime
+            else if (options.use_atime)
+                stat.atime
+            else
+                stat.mtime;
+            const eff_ts = if (options.full_time) TimeStyle.full else options.time_style;
+            const ts = formatTimeWithStyle(time_field, eff_ts, allocator, &tbuf) catch continue;
+            max_time_width = @max(max_time_width, ts.len);
+        }
+    }
+
+    // Print each entry in long format
+    for (entries) |entry| {
+        try printLongFormatEntryAligned(
+            allocator,
+            entry,
+            writer,
+            options,
+            style,
+            max_time_width,
+        );
+    }
 }
 
 // Tests
@@ -1114,7 +1381,11 @@ test "writeSizeColored - all truecolor tiers" {
         try writeSizeColored(style, &buf_aw.writer, size_str, tier.size, false);
 
         var expected_buf: [64]u8 = undefined;
-        const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
+        const expected = std.fmt.bufPrint(
+            &expected_buf,
+            "\x1b[38;2;{d};{d};{d}m",
+            .{ tier.r, tier.g, tier.b },
+        ) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, buf_aw.writer.buffered(), expected) != null);
     }
 }
@@ -1143,7 +1414,11 @@ test "writeDateColored - all truecolor age tiers" {
         try writeDateColored(style, &buf_aw.writer, "test", mtime_ns, 4);
 
         var expected_buf: [64]u8 = undefined;
-        const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
+        const expected = std.fmt.bufPrint(
+            &expected_buf,
+            "\x1b[38;2;{d};{d};{d}m",
+            .{ tier.r, tier.g, tier.b },
+        ) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, buf_aw.writer.buffered(), expected) != null);
     }
 }

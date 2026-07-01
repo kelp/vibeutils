@@ -37,9 +37,18 @@ const ReadlinkArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .canonicalize = .{ .short = 'f', .desc = "canonicalize path; all but the last component must exist" },
-        .@"canonicalize-existing" = .{ .short = 'e', .desc = "canonicalize path; all components must exist" },
-        .@"canonicalize-missing" = .{ .short = 'm', .desc = "canonicalize path; components need not exist" },
+        .canonicalize = .{
+            .short = 'f',
+            .desc = "canonicalize path; all but the last component must exist",
+        },
+        .@"canonicalize-existing" = .{
+            .short = 'e',
+            .desc = "canonicalize path; all components must exist",
+        },
+        .@"canonicalize-missing" = .{
+            .short = 'm',
+            .desc = "canonicalize path; components need not exist",
+        },
         .@"no-newline" = .{ .short = 'n', .desc = "Do not output trailing newline" },
         .zero = .{ .short = 'z', .desc = "End each output line with NUL, not newline" },
         .verbose = .{ .short = 'v', .desc = "Report error messages" },
@@ -69,9 +78,21 @@ fn getCanonicalizeMode(args: ReadlinkArgs) CanonicalizeMode {
 }
 
 /// Main entry point for the readlink utility
-pub fn runReadlink(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runReadlink(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse command-line arguments
-    const parsed = common.argparse.ArgParser.parseOrExit(ReadlinkArgs, allocator, args, "readlink", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        ReadlinkArgs,
+        allocator,
+        args,
+        "readlink",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     // Handle help
@@ -92,38 +113,79 @@ pub fn runReadlink(allocator: Allocator, io: std.Io, args: []const []const u8, s
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // The empty-operand case returned above, so the loop below always has work.
+    std.debug.assert(parsed.positionals.len > 0);
+
     const canon_mode = getCanonicalizeMode(parsed);
     const quiet = parsed.quiet or parsed.silent;
     const verbose = parsed.verbose and !quiet;
+    // verbose is `parsed.verbose and !quiet`, so quiet forces verbose off.
+    if (quiet) std.debug.assert(!verbose);
     var has_error = false;
 
     for (parsed.positionals) |path| {
-        const result = resolveLink(allocator, io, path, canon_mode);
-        if (result) |resolved| {
-            defer allocator.free(resolved);
-            try stdout_writer.writeAll(resolved);
-            if (parsed.zero) {
-                try stdout_writer.writeByte(0);
-            } else if (!parsed.@"no-newline") {
-                try stdout_writer.writeByte('\n');
-            }
-        } else |err| {
-            has_error = true;
-            if (verbose) {
-                const err_msg = switch (err) {
-                    error.FileNotFound => "No such file or directory",
-                    error.NotLink => "Invalid argument",
-                    error.AccessDenied => "Permission denied",
-                    error.NameTooLong => "File name too long",
-                    error.NotDir => "Not a directory",
-                    else => "cannot read link",
-                };
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "{s}: {s}", .{ path, err_msg });
-            }
-        }
+        const path_failed = try runReadlink_process_path(
+            allocator,
+            io,
+            path,
+            parsed,
+            canon_mode,
+            verbose,
+            stdout_writer,
+            stderr_writer,
+        );
+        if (path_failed) has_error = true;
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    if (has_error) {
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Resolve and emit one path for `runReadlink`. Returns `true` if the path
+/// could not be resolved (so the caller can set its aggregate error flag),
+/// emitting a verbose diagnostic when `verbose` is set.
+fn runReadlink_process_path(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    parsed: ReadlinkArgs,
+    canon_mode: CanonicalizeMode,
+    verbose: bool,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !bool {
+    const result = resolveLink(allocator, io, path, canon_mode);
+    if (result) |resolved| {
+        defer allocator.free(resolved);
+        try stdout_writer.writeAll(resolved);
+        if (parsed.zero) {
+            try stdout_writer.writeByte(0);
+        } else if (!parsed.@"no-newline") {
+            try stdout_writer.writeByte('\n');
+        }
+        return false;
+    } else |err| {
+        if (verbose) {
+            const err_msg = switch (err) {
+                error.FileNotFound => "No such file or directory",
+                error.NotLink => "Invalid argument",
+                error.AccessDenied => "Permission denied",
+                error.NameTooLong => "File name too long",
+                error.NotDir => "Not a directory",
+                else => "cannot read link",
+            };
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "readlink",
+                "{s}: {s}",
+                .{ path, err_msg },
+            );
+        }
+        return true;
+    }
 }
 
 /// Resolve an absolute path to its canonical form, returning a heap-allocated
@@ -133,6 +195,8 @@ pub fn runReadlink(allocator: Allocator, io: std.Io, args: []const []const u8, s
 fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    // Bytes written into buf cannot exceed its capacity; guards buf[0..len] below.
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -141,6 +205,8 @@ fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u
 fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    // Bytes written into buf cannot exceed its capacity; guards buf[0..len] below.
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -151,6 +217,8 @@ fn resolveLink(allocator: Allocator, io: std.Io, path: []const u8, mode: Canonic
             // Just read the symlink target, no canonicalization
             var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const len = try std.Io.Dir.cwd().readLink(io, path, &buf);
+            // Bytes written into buf cannot exceed its capacity; guards buf[0..len].
+            std.debug.assert(len <= buf.len);
             return try allocator.dupe(u8, buf[0..len]);
         },
         .canonical_missing_ok => {
@@ -181,6 +249,8 @@ fn resolveCanonicalMissingOk(allocator: Allocator, io: std.Io, path: []const u8)
     // Check if path is a symlink (even a dangling one)
     var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     if (std.Io.Dir.cwd().readLink(io, path, &link_buf)) |link_len| {
+        // Bytes written into link_buf cannot exceed its capacity; guards the slice.
+        std.debug.assert(link_len <= link_buf.len);
         const link_target = link_buf[0..link_len];
         // It's a symlink. Resolve the target path.
         // If target is relative, make it relative to the symlink's directory.
@@ -263,7 +333,13 @@ test "readlink basic symlink" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{link_path};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("target.txt\n", stdout_aw.writer.buffered());
 }
@@ -291,7 +367,13 @@ test "readlink not a symlink" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{file_path};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
@@ -304,7 +386,13 @@ test "readlink nonexistent file" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp/definitely_nonexistent_readlink_test"};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
@@ -317,9 +405,17 @@ test "readlink verbose error" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-v", "/tmp/definitely_nonexistent_readlink_test" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
 }
 
 test "readlink quiet suppresses errors" {
@@ -330,7 +426,13 @@ test "readlink quiet suppresses errors" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-v", "-q", "/tmp/definitely_nonexistent_readlink_test" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
     // -q overrides -v, so no error output
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
@@ -353,7 +455,11 @@ test "readlink canonicalize (-f)" {
     defer testing.allocator.free(dir_path);
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(link_path);
-    const expected_path = try std.fmt.allocPrint(testing.allocator, "{s}/real_file.txt\n", .{dir_path});
+    const expected_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/real_file.txt\n",
+        .{dir_path},
+    );
     defer testing.allocator.free(expected_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -362,7 +468,13 @@ test "readlink canonicalize (-f)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected_path, stdout_aw.writer.buffered());
 }
@@ -390,7 +502,13 @@ test "readlink canonicalize regular file (-f)" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", file_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
@@ -418,7 +536,13 @@ test "readlink canonicalize-existing (-e)" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-e", file_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
@@ -433,7 +557,13 @@ test "readlink canonicalize nonexistent succeeds with -f when parent exists (GNU
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", "/tmp/definitely_nonexistent_readlink_test" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -448,14 +578,24 @@ test "readlink canonicalize-missing (-m) with nonexistent path" {
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
-    const test_path = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent/file.txt", .{dir_path});
+    const test_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/nonexistent/file.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(test_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", test_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // Should contain the directory path and end with the filename
     const out = stdout_aw.writer.buffered();
@@ -485,7 +625,13 @@ test "readlink no-newline (-n)" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-n", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     // Should NOT end with newline
     try testing.expectEqualStrings("target.txt", stdout_aw.writer.buffered());
@@ -513,7 +659,13 @@ test "readlink zero delimiter (-z)" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-z", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
     try testing.expectEqual(@as(usize, 11), out.len);
@@ -548,7 +700,13 @@ test "readlink multiple files" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ l1_path, l2_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("t1.txt\nt2.txt\n", stdout_aw.writer.buffered());
 }
@@ -578,7 +736,13 @@ test "readlink mixed success and failure" {
 
     // One valid symlink, one nonexistent
     const args = [_][]const u8{ l1_path, "/tmp/definitely_nonexistent_readlink_test" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     // Should fail because one path failed
     try testing.expectEqual(@as(u8, 1), result);
     // But should still output the successful one
@@ -593,7 +757,13 @@ test "readlink missing operand" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
@@ -604,7 +774,13 @@ test "readlink help" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, out, "Usage: readlink") != null);
@@ -617,7 +793,13 @@ test "readlink version" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, out, "readlink") != null);
@@ -632,9 +814,17 @@ test "readlink unknown flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid-flag"};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
+    );
 }
 
 test "readlink dangling symlink" {
@@ -659,7 +849,13 @@ test "readlink dangling symlink" {
 
     // Without canonicalize, readlink should still return the target
     const args = [_][]const u8{link_path};
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("nonexistent_target\n", stdout_aw.writer.buffered());
 }
@@ -681,14 +877,24 @@ test "readlink dangling symlink with -f succeeds (GNU compat)" {
     defer testing.allocator.free(dir_path);
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dangling.txt", .{dir_path});
     defer testing.allocator.free(link_path);
-    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent_target\n", .{dir_path});
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/nonexistent_target\n",
+        .{dir_path},
+    );
     defer testing.allocator.free(expected);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     // GNU -f exits 0 for dangling symlinks when parent exists
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
@@ -714,7 +920,13 @@ test "readlink canonicalize-missing with dangling symlink (-m)" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     // -m should succeed even for dangling symlinks
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(stdout_aw.writer.buffered().len > 0);
@@ -749,7 +961,13 @@ test "readlink -m dotdot past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", path_buf.items };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
 }
@@ -782,7 +1000,13 @@ test "readlink -m multi-level dotdot past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", path_buf.items };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
 }
@@ -793,7 +1017,13 @@ test "readlink -m single component dotdot returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/nonexistent_vibeutils_test/.." };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
 }
@@ -813,16 +1043,30 @@ test "readlink -f nonexistent last component exits 0 (GNU compat)" {
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
-    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/no_such_file.txt", .{dir_path});
+    const nonexistent_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/no_such_file.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(nonexistent_path);
-    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/no_such_file.txt\n", .{dir_path});
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/no_such_file.txt\n",
+        .{dir_path},
+    );
     defer testing.allocator.free(expected);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", nonexistent_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
@@ -842,14 +1086,24 @@ test "readlink -f dangling symlink exits 0 (GNU compat)" {
     defer testing.allocator.free(dir_path);
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dangling.txt", .{dir_path});
     defer testing.allocator.free(link_path);
-    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent_target\n", .{dir_path});
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/nonexistent_target\n",
+        .{dir_path},
+    );
     defer testing.allocator.free(expected);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
@@ -866,20 +1120,38 @@ test "readlink -f dangling symlink with absolute target exits 0 (GNU compat)" {
     };
     defer testing.allocator.free(dir_path);
 
-    const abs_target = try std.fmt.allocPrint(testing.allocator, "{s}/abs_nonexistent", .{dir_path});
+    const abs_target = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/abs_nonexistent",
+        .{dir_path},
+    );
     defer testing.allocator.free(abs_target);
     try tmp_dir.dir.symLink(io, abs_target, "dangling_abs.txt", .{});
 
-    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dangling_abs.txt", .{dir_path});
+    const link_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/dangling_abs.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(link_path);
-    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/abs_nonexistent\n", .{dir_path});
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/abs_nonexistent\n",
+        .{dir_path},
+    );
     defer testing.allocator.free(expected);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", link_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
@@ -890,7 +1162,13 @@ test "readlink -f intermediate missing should fail" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", "/tmp/no_such_dir_vibeutils/no_such_file" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
@@ -906,14 +1184,24 @@ test "readlink -e nonexistent last component should fail" {
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
-    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/no_such_file.txt", .{dir_path});
+    const nonexistent_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/no_such_file.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(nonexistent_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-e", nonexistent_path };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
@@ -935,12 +1223,24 @@ test "readlink -f vs -e diverge on missing last component" {
     var stdout_f: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_f.deinit();
     const args_f = [_][]const u8{ "-f", missing_path };
-    const result_f = try runReadlink(testing.allocator, io, &args_f, &stdout_f.writer, common.null_writer);
+    const result_f = try runReadlink(
+        testing.allocator,
+        io,
+        &args_f,
+        &stdout_f.writer,
+        common.null_writer,
+    );
 
     var stdout_e: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_e.deinit();
     const args_e = [_][]const u8{ "-e", missing_path };
-    const result_e = try runReadlink(testing.allocator, io, &args_e, &stdout_e.writer, common.null_writer);
+    const result_e = try runReadlink(
+        testing.allocator,
+        io,
+        &args_e,
+        &stdout_e.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result_f);
     try testing.expectEqual(@as(u8, 1), result_e);
@@ -962,7 +1262,11 @@ test "readlink -f resolves canonical path when parent exists and last component 
     };
     defer testing.allocator.free(dir_path);
 
-    const nonexistent = try std.fmt.allocPrint(testing.allocator, "{s}/e7_missing.txt", .{dir_path});
+    const nonexistent = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/e7_missing.txt",
+        .{dir_path},
+    );
     defer testing.allocator.free(nonexistent);
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/e7_missing.txt\n", .{dir_path});
     defer testing.allocator.free(expected);
@@ -971,7 +1275,13 @@ test "readlink -f resolves canonical path when parent exists and last component 
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", nonexistent };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
@@ -983,7 +1293,13 @@ test "readlink -f uses canonicalizeMissing: result is canonical not raw input" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", "/tmp/e7_vibeutils_canonical_test" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -1008,7 +1324,13 @@ test "readlink -f dotdot past root is clamped (security)" {
     defer testing.allocator.free(expected);
 
     const args = [_][]const u8{ "-f", "/../../tmp" };
-    const result = try runReadlink(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());

@@ -35,9 +35,8 @@ test:
 test-util util:
     @echo "Testing {{util}} utility..."
     @echo "----------------------------------------"
-    @echo "Note: Unit tests require the full build system."
-    @echo "Running: zig build test 2>&1 | grep {{util}}"
-    @{{test_cmd}} 2>&1 | grep -E "{{util}}\.zig|All.*tests passed" || echo "See full output with: just test"
+    @echo "Running: zig build test -Dtest-util={{util}}"
+    @{{test_cmd}} -Dtest-util={{util}}
     @echo "----------------------------------------"
     @echo "Binary smoke test:"
     @if [ -f zig-out/bin/{{util}} ]; then \
@@ -148,6 +147,11 @@ fmt:
 fmt-check:
     zig build fmt-check
 
+# Install git hooks (pre-commit fmt gate). Run once after cloning.
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "Installed git hooks from .githooks (pre-commit fmt gate)."
+
 # Lint man pages
 lint-man:
     @echo "Linting man pages..."
@@ -167,6 +171,12 @@ lint-man-verbose:
 lint-actions:
     @echo "Linting GitHub Actions workflows..."
     @actionlint .github/workflows/*.yml
+
+# Scan the whole source tree for Tiger Style gating violations.
+# The migration baseline is zero, so ANY violation fails. usize-arch
+# is reported but non-gating. Same scanner the pre-commit hook runs.
+tiger-check:
+    @./scripts/tiger-check.sh
 
 # Run CI validation checks
 ci-validate:

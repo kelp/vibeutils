@@ -42,7 +42,8 @@ pub const null_writer = lib.null_writer;
 
 /// Generate a unique test file name based on test name, timestamp, and random number
 pub fn uniqueTestName(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
-    const timestamp: i64 = @intCast(@divTrunc(lib.file.currentTimestampNanoseconds(), std.time.ns_per_s));
+    const now_ns = lib.file.currentTimestampNanoseconds();
+    const timestamp: i64 = @intCast(@divTrunc(now_ns, std.time.ns_per_s));
     var prng = std.Random.DefaultPrng.init(@as(u64, @bitCast(timestamp)));
     const random_num = prng.random().int(u32);
     return try std.fmt.allocPrint(allocator, "{s}_{d}_{d}", .{ base_name, timestamp, random_num });
@@ -56,7 +57,13 @@ pub fn createTestFile(io: std.Io, dir: std.Io.Dir, name: []const u8, content: []
 }
 
 /// Create a uniquely named test file with content
-pub fn createUniqueTestFile(io: std.Io, dir: std.Io.Dir, allocator: std.mem.Allocator, base_name: []const u8, content: []const u8) ![]u8 {
+pub fn createUniqueTestFile(
+    io: std.Io,
+    dir: std.Io.Dir,
+    allocator: std.mem.Allocator,
+    base_name: []const u8,
+    content: []const u8,
+) ![]u8 {
     const unique_name = try uniqueTestName(allocator, base_name);
     try createTestFile(io, dir, unique_name, content);
     return unique_name;
@@ -467,7 +474,8 @@ test "stripAnsiCodes Fe and Fs sequences" {
 
 test "stripAnsiCodes mixed sequence types" {
     // Test a mix of CSI, OSC, and other sequences
-    const input = "\x1b[31mRed\x1b]0;Title\x07\x1b[0m\x1bDNormal\x1b[32mGreen\x1b]1;Icon\x1b\\\x1b[0m";
+    const input = "\x1b[31mRed\x1b]0;Title\x07\x1b[0m\x1bDNormal" ++
+        "\x1b[32mGreen\x1b]1;Icon\x1b\\\x1b[0m";
     const expected = "RedNormalGreen";
 
     const result = try stripAnsiCodes(testing.allocator, input);

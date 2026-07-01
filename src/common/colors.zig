@@ -15,6 +15,13 @@ const style = @import("style.zig");
 /// - 16-color: green
 /// - None: no-op
 pub fn applySizeColor(s: anytype, size_bytes: u64) !void {
+    // The size-tier ladder used by both the .truecolor and .extended branches
+    // assumes each threshold is strictly larger than the previous one. Assert
+    // the compile-time ordering of those magnitudes as a sanity check.
+    comptime std.debug.assert(1024 < 100 * 1024);
+    comptime std.debug.assert(100 * 1024 < 1024 * 1024);
+    comptime std.debug.assert(1024 * 1024 < 10 * 1024 * 1024);
+
     switch (s.color_mode) {
         .truecolor => {
             if (size_bytes < 1024) {

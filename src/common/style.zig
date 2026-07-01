@@ -2,71 +2,162 @@ const std = @import("std");
 const builtin = @import("builtin");
 const env = @import("env.zig");
 
+/// Color capability of the terminal.
+///
+/// Defined at file scope (not nested inside the `Style` factory) so the
+/// generic `Style(Writer)` body stays under Tiger Style's 70-line limit.
+/// `Style(Writer).ColorMode` aliases this type, so call sites referencing
+/// `Style(W).ColorMode` and `Style(W).ColorMode.detect` are unchanged. The
+/// file-scope name is `TerminalColorMode` (not `ColorMode`) so the struct's
+/// own `pub const ColorMode` alias does not collide with it inside the
+/// generic body.
+pub const TerminalColorMode = enum {
+    none, // NO_COLOR or dumb terminal
+    basic, // 16 colors
+    extended, // 256 colors
+    truecolor, // 24-bit RGB
+
+    /// Detect color mode from environment
+    pub fn detect(_: std.mem.Allocator) !TerminalColorMode {
+        // Check NO_COLOR standard (just check existence)
+        if (env.getEnv("NO_COLOR") != null) {
+            return .none;
+        }
+
+        // Check TERM
+        if (env.getEnv("TERM")) |term| {
+            if (std.mem.eql(u8, term, "dumb")) return .none;
+            if (std.mem.find(u8, term, "256color") != null) return .extended;
+            if (std.mem.find(u8, term, "truecolor") != null) return .truecolor;
+
+            // Check COLORTERM for true color
+            if (env.getEnv("COLORTERM")) |colorterm| {
+                if (std.mem.eql(u8, colorterm, "truecolor") or
+                    std.mem.eql(u8, colorterm, "24bit"))
+                {
+                    return .truecolor;
+                }
+            }
+
+            return .basic;
+        } else {
+            return .none;
+        }
+    }
+};
+
+/// ANSI color codes.
+///
+/// Defined at file scope for the same reason as `TerminalColorMode`;
+/// `Style(Writer).Color` aliases this type so call sites are unchanged.
+pub const TerminalColor = enum(u8) {
+    black = 30,
+    red = 31,
+    green = 32,
+    yellow = 33,
+    blue = 34,
+    magenta = 35,
+    cyan = 36,
+    white = 37,
+    default = 39,
+
+    // Bright colors
+    bright_black = 90,
+    bright_red = 91,
+    bright_green = 92,
+    bright_yellow = 93,
+    bright_blue = 94,
+    bright_magenta = 95,
+    bright_cyan = 96,
+    bright_white = 97,
+};
+
+/// Emit an SGR foreground-color escape sequence for `color_int`.
+///
+/// File-scope helper for `Style(Writer).setColor` so the generic factory
+/// body stays under Tiger Style's 70-line limit. SGR foreground codes
+/// occupy two disjoint bands: standard 30..39 and bright 90..97. The Color
+/// enum only declares values in those bands; assert the code lands in one
+/// so a future bad variant cannot leak a malformed escape sequence.
+fn style_write_color(writer: anytype, color_int: u8) !void {
+    std.debug.assert(color_int >= 30);
+    std.debug.assert(color_int <= 97);
+    try writer.print("\x1b[{d}m", .{color_int});
+}
+
+/// Emit the SGR bold escape sequence.
+///
+/// File-scope helper for `Style(Writer).setBold`. `none` is the
+/// least-capable mode; capability is encoded by ordinal order, an
+/// assumption shared with set256's numeric guard. Assert that ordering
+/// holds so a future enum reorder that broke the model would trip here,
+/// not silently misbehave.
+fn style_write_bold(writer: anytype) !void {
+    const none = @intFromEnum(TerminalColorMode.none);
+    const basic = @intFromEnum(TerminalColorMode.basic);
+    std.debug.assert(none == 0);
+    std.debug.assert(none < basic);
+    try writer.writeAll("\x1b[1m");
+}
+
+/// Emit the SGR truecolor (24-bit RGB) escape sequence.
+///
+/// File-scope helper for `Style(Writer).setRgb`. Truecolor is the richest
+/// capability and must outrank the palette modes; the no-op fallbacks
+/// across this file depend on that ordinal ordering. Assert it as a
+/// relationship of compile-time constants.
+fn style_write_rgb(writer: anytype, r: u8, g: u8, b: u8) !void {
+    const truecolor = @intFromEnum(TerminalColorMode.truecolor);
+    const extended = @intFromEnum(TerminalColorMode.extended);
+    const basic = @intFromEnum(TerminalColorMode.basic);
+    std.debug.assert(truecolor > extended);
+    std.debug.assert(truecolor > basic);
+    try writer.print("\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
+}
+
+/// Emit the SGR 256-color palette escape sequence for `index`.
+///
+/// File-scope helper for `Style(Writer).set256`. The numeric guard in the
+/// caller treats higher ordinals as richer capabilities, so the enum must
+/// be declared least- to most-capable. Assert that ordinal ordering:
+/// basic < extended < truecolor. The compiler does not enforce declaration
+/// order, so a reorder would silently break the `< extended` guard.
+fn style_write_256(writer: anytype, index: u8) !void {
+    const basic = @intFromEnum(TerminalColorMode.basic);
+    const extended = @intFromEnum(TerminalColorMode.extended);
+    const truecolor = @intFromEnum(TerminalColorMode.truecolor);
+    std.debug.assert(basic < extended);
+    std.debug.assert(extended < truecolor);
+    try writer.print("\x1b[38;5;{d}m", .{index});
+}
+
+/// Emit the SGR reset escape sequence.
+///
+/// File-scope helper for `Style(Writer).reset`. The reset sequence is
+/// meaningful only when some style could have been emitted, i.e. when
+/// color is enabled. Mirror the capability ordering setBold/set256 rely on
+/// so all three trip together if the enum model is ever broken.
+fn style_write_reset(writer: anytype) !void {
+    const none = @intFromEnum(TerminalColorMode.none);
+    const truecolor = @intFromEnum(TerminalColorMode.truecolor);
+    std.debug.assert(none == 0);
+    std.debug.assert(none < truecolor);
+    try writer.writeAll("\x1b[0m");
+}
+
 /// Terminal capability detection and styling
 pub fn Style(comptime Writer: type) type {
     return struct {
         const Self = @This();
-        /// Color capability of the terminal
-        pub const ColorMode = enum {
-            none, // NO_COLOR or dumb terminal
-            basic, // 16 colors
-            extended, // 256 colors
-            truecolor, // 24-bit RGB
 
-            /// Detect color mode from environment
-            pub fn detect(_: std.mem.Allocator) !ColorMode {
-                // Check NO_COLOR standard (just check existence)
-                if (env.getEnv("NO_COLOR") != null) {
-                    return .none;
-                }
-
-                // Check TERM
-                if (env.getEnv("TERM")) |term| {
-                    if (std.mem.eql(u8, term, "dumb")) return .none;
-                    if (std.mem.find(u8, term, "256color") != null) return .extended;
-                    if (std.mem.find(u8, term, "truecolor") != null) return .truecolor;
-
-                    // Check COLORTERM for true color
-                    if (env.getEnv("COLORTERM")) |colorterm| {
-                        if (std.mem.eql(u8, colorterm, "truecolor") or
-                            std.mem.eql(u8, colorterm, "24bit"))
-                        {
-                            return .truecolor;
-                        }
-                    }
-
-                    return .basic;
-                } else {
-                    return .none;
-                }
-            }
-        };
+        /// Color capability of the terminal (file-scope alias).
+        pub const ColorMode = TerminalColorMode;
 
         color_mode: ColorMode,
         writer: Writer,
 
-        /// ANSI color codes
-        pub const Color = enum(u8) {
-            black = 30,
-            red = 31,
-            green = 32,
-            yellow = 33,
-            blue = 34,
-            magenta = 35,
-            cyan = 36,
-            white = 37,
-            default = 39,
-
-            // Bright colors
-            bright_black = 90,
-            bright_red = 91,
-            bright_green = 92,
-            bright_yellow = 93,
-            bright_blue = 94,
-            bright_magenta = 95,
-            bright_cyan = 96,
-            bright_white = 97,
-        };
+        /// ANSI color codes (file-scope alias).
+        pub const Color = TerminalColor;
 
         /// Initialize with auto-detection
         pub fn init(allocator: std.mem.Allocator, writer: Writer) !Self {
@@ -81,31 +172,31 @@ pub fn Style(comptime Writer: type) type {
         /// Set foreground color
         pub fn setColor(self: Self, color: Color) !void {
             if (self.color_mode == .none) return;
-            try self.writer.print("\x1b[{d}m", .{@intFromEnum(color)});
+            try style_write_color(self.writer, @intFromEnum(color));
         }
 
         /// Set bold text
         pub fn setBold(self: Self) !void {
             if (self.color_mode == .none) return;
-            try self.writer.writeAll("\x1b[1m");
+            try style_write_bold(self.writer);
         }
 
         /// Set foreground to RGB color (truecolor only, no-op otherwise)
         pub fn setRgb(self: Self, r: u8, g: u8, b: u8) !void {
             if (self.color_mode != .truecolor) return;
-            try self.writer.print("\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
+            try style_write_rgb(self.writer, r, g, b);
         }
 
         /// Set foreground to 256-color palette (extended+ only, no-op otherwise)
         pub fn set256(self: Self, index: u8) !void {
             if (@intFromEnum(self.color_mode) < @intFromEnum(ColorMode.extended)) return;
-            try self.writer.print("\x1b[38;5;{d}m", .{index});
+            try style_write_256(self.writer, index);
         }
 
         /// Reset all styling
         pub fn reset(self: Self) !void {
             if (self.color_mode == .none) return;
-            try self.writer.writeAll("\x1b[0m");
+            try style_write_reset(self.writer);
         }
     };
 }

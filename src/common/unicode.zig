@@ -61,6 +61,10 @@ fn calculateUnicodeWidth(str: []const u8) usize {
     var i: usize = 0;
 
     while (i < str.len) {
+        // Loop invariant: the index never reaches or passes the end here,
+        // because the `while` condition guards entry on every iteration.
+        std.debug.assert(i < str.len);
+
         const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch {
             // Invalid UTF-8 sequence - count as width 1 and advance by 1 byte
             width += 1;
@@ -68,11 +72,21 @@ fn calculateUnicodeWidth(str: []const u8) usize {
             continue;
         };
 
+        // utf8ByteSequenceLength only ever succeeds with a length in 1..4;
+        // assert both ends so a future API change cannot silently break the
+        // advance arithmetic below.
+        std.debug.assert(cp_len >= 1);
+        std.debug.assert(cp_len <= 4);
+
         if (i + cp_len > str.len) {
             // Truncated UTF-8 sequence - count as width 1
             width += 1;
             break;
         }
+
+        // The truncation guard above already broke out when the sequence ran
+        // past the end, so a full codepoint fits within the buffer here.
+        std.debug.assert(i + cp_len <= str.len);
 
         const codepoint = std.unicode.utf8Decode(str[i .. i + cp_len]) catch {
             // Invalid UTF-8 sequence - count as width 1
@@ -84,6 +98,16 @@ fn calculateUnicodeWidth(str: []const u8) usize {
         width += codepointWidth(codepoint);
         i += cp_len;
     }
+
+    // Index postcondition: every path advances `i` by at most the bytes it
+    // consumed and never past the end, so the cursor lands within bounds for
+    // empty, all-invalid, truncated, and well-formed input alike.
+    std.debug.assert(i <= str.len);
+
+    // Width postcondition: each codepoint contributes at most its byte length
+    // (width-2 codepoints all encode to >=3 UTF-8 bytes; invalid/truncated
+    // bytes add exactly 1 each), so the total never exceeds the byte count.
+    std.debug.assert(width <= str.len);
 
     return width;
 }
@@ -248,7 +272,8 @@ test "displayWidth: control characters" {
     try testing.expectEqual(@as(usize, 0), displayWidth("\x00"));
     try testing.expectEqual(@as(usize, 0), displayWidth("\x1F"));
     try testing.expectEqual(@as(usize, 0), displayWidth("\x7F"));
-    try testing.expectEqual(@as(usize, 10), displayWidth("hello\x00world")); // control chars don't add width
+    // Control chars don't add width.
+    try testing.expectEqual(@as(usize, 10), displayWidth("hello\x00world"));
 }
 
 test "displayWidth: full-width ASCII" {
@@ -284,10 +309,13 @@ test "displayWidth: empty and whitespace" {
 test "displayWidth: real filename examples" {
     // Common filename patterns that might contain Unicode
     try testing.expectEqual(@as(usize, 8), displayWidth("test.txt"));
-    try testing.expectEqual(@as(usize, 12), displayWidth("测试文件.txt")); // 4 CJK × 2 + 4 ASCII = 12
-    try testing.expectEqual(@as(usize, 15), displayWidth("プロジェクト.md")); // 6 katakana × 2 + 3 ASCII = 15
+    // 4 CJK × 2 + 4 ASCII = 12.
+    try testing.expectEqual(@as(usize, 12), displayWidth("测试文件.txt"));
+    // 6 katakana × 2 + 3 ASCII = 15.
+    try testing.expectEqual(@as(usize, 15), displayWidth("プロジェクト.md"));
     try testing.expectEqual(@as(usize, 15), displayWidth("문서-파일명.pdf"));
-    try testing.expectEqual(@as(usize, 18), displayWidth("混合-mixed-名前.js")); // 4 CJK × 2 + 10 ASCII = 18
+    // 4 CJK × 2 + 10 ASCII = 18.
+    try testing.expectEqual(@as(usize, 18), displayWidth("混合-mixed-名前.js"));
 }
 
 test "isAscii helper function" {

@@ -21,7 +21,10 @@ const PwdArgs = struct {
     pub const meta = .{
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .logical = .{ .short = 'L', .desc = "Use PWD from environment, even if it contains symlinks" },
+        .logical = .{
+            .short = 'L',
+            .desc = "Use PWD from environment, even if it contains symlinks",
+        },
         .physical = .{ .short = 'P', .desc = "Resolve all symbolic links (default)" },
     };
 };
@@ -37,15 +40,33 @@ pub fn runPwd(
     const parsed_args = common.argparse.ArgParser.parse(PwdArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "unrecognized option", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "pwd",
+                    "unrecognized option",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "option requires an argument", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "pwd",
+                    "option requires an argument",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "invalid option value", .{});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "pwd",
+                    "invalid option value",
+                    .{},
+                );
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -64,7 +85,13 @@ pub fn runPwd(
     }
 
     const cwd = getWorkingDirectory(allocator, io, parsed_args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "pwd",
+            "failed to get current directory: {s}",
+            .{common.posixErrorString(err)},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(cwd);
@@ -104,6 +131,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
 fn getCwdAlloc(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try std.process.currentPath(io, &buf);
+    std.debug.assert(n <= buf.len);
+    std.debug.assert(n >= 1);
     return allocator.dupe(u8, buf[0..n]);
 }
 
@@ -114,6 +143,8 @@ pub fn getWorkingDirectory(allocator: std.mem.Allocator, io: std.Io, args: PwdAr
     const use_logical = args.logical and !args.physical;
 
     if (use_logical) {
+        std.debug.assert(args.logical);
+        std.debug.assert(!args.physical);
         // Try to use PWD environment variable in logical mode
         const pwd_env = common.env.getEnv("PWD") orelse {
             // PWD not set, fall back to physical mode
@@ -148,19 +179,27 @@ fn isValidPwd(io: std.Io, pwd_env: []const u8, physical_cwd: []const u8) bool {
     if (pwd_env.len == 0 or pwd_env[0] != '/') {
         return false;
     }
+    std.debug.assert(pwd_env.len > 0);
+    std.debug.assert(pwd_env[0] == '/');
 
-    const pwd_stat = std.Io.Dir.cwd().statFile(io, pwd_env, .{}) catch return false;
-    const cwd_stat = std.Io.Dir.cwd().statFile(io, physical_cwd, .{}) catch return false;
+    const pwd_info = common.file.FileInfo.stat(io, pwd_env) catch return false;
+    const cwd_info = common.file.FileInfo.stat(io, physical_cwd) catch return false;
 
-    if (pwd_stat.inode != cwd_stat.inode) {
+    if (pwd_info.kind != .directory) {
         return false;
     }
+    std.debug.assert(pwd_info.kind == .directory);
 
-    if (pwd_stat.kind != .directory) {
-        return false;
-    }
+    return samePathByInodeAndDev(pwd_info, cwd_info);
+}
 
-    return true;
+/// Return true if two FileInfo records point at the same filesystem object,
+/// using BOTH inode and device ID. Inode numbers are only unique within a
+/// single filesystem, so a stale `$PWD` on another mount can have a colliding
+/// inode with the real cwd. Comparing (inode, dev) is the standard way to
+/// detect "same file" across mounts (see coreutils sys-stat.h SAME_INODE).
+pub fn samePathByInodeAndDev(a: common.file.FileInfo, b: common.file.FileInfo) bool {
+    return a.inode == b.inode and a.dev == b.dev;
 }
 
 // ============================================================================
@@ -218,6 +257,27 @@ test "getWorkingDirectory logical mode with valid PWD" {
     // Should return an absolute path
     try testing.expect(cwd.len > 0);
     try testing.expect(cwd[0] == '/');
+}
+
+test "samePathByInodeAndDev compares inode AND device for same path" {
+    // Audit G2 regression: PWD validation must compare BOTH inode and device,
+    // not inode alone. Two different filesystems can share inode numbers, so
+    // a stale $PWD pointing at another mount can pass an inode-only check.
+    //
+    // Method: stat the same path twice — both records must compare equal
+    // across (inode, dev). A stub that ignores dev (or returns a constant)
+    // will fail this assertion.
+    const io = testing.io;
+    const a = try common.file.FileInfo.stat(io, ".");
+    const b = try common.file.FileInfo.stat(io, ".");
+    try testing.expect(samePathByInodeAndDev(a, b));
+
+    // Negative space: a record with a deliberately altered dev must compare
+    // unequal even when the inode matches. This catches an inode-only impl
+    // that ignores the dev field entirely.
+    var b_other_dev = b;
+    b_other_dev.dev = a.dev +% 1;
+    try testing.expect(!samePathByInodeAndDev(a, b_other_dev));
 }
 
 test "isValidPwd security validation" {
