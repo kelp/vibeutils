@@ -10,7 +10,7 @@ than the full test suite for rapid iteration.
 
 ## Steps
 
-1. Build the utility: `make build UTIL=<utility>`
+1. Build the utility: `just build-util <utility>`
 2. Run these checks against `./zig-out/bin/<utility>`:
    - `--version` exits 0 and prints a version string
    - `--help` exits 0 and prints usage text
@@ -30,9 +30,9 @@ All checks passed.
 
 ## Notes
 
-- If the binary doesn't exist, run `make build UTIL=<name>`
+- If the binary doesn't exist, run `just build-util <name>`
   first
 - Some utilities (cat, tee, sort, etc.) read stdin when given
   no arguments — that's expected, not a failure
 - This is a quick sanity check, not a substitute for
-  `make test` or `make it UTIL=<name>`
+  `just test` or `just it-util <name>`

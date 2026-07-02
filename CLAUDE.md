@@ -40,24 +40,16 @@ plan mode for any non-trivial coding task.**
 
 ## Pre-1.0 Development Philosophy
 
-**This is pre-1.0 software with zero external users. We prioritize getting the design right over backward compatibility.**
+**This is pre-1.0 software with zero external users. We
+prioritize getting the design right over backward
+compatibility.**
 
-### Migration Principles:
-- **NEVER maintain backwards compatibility**: Delete old code immediately when replacing it
-- **Break things to fix them**: If the current API is wrong, change it completely
-- **No deprecated code**: Remove old patterns entirely rather than maintaining compatibility layers
-- **Full migrations only**: When changing a pattern, update ALL code to use the new pattern
-- **Zero external users assumption**: We can make breaking changes without concern for downstream impact
-- **Simplicity over compatibility**: Choose the simpler, cleaner design even if it requires rewriting existing code
-
-### When NOT to maintain compatibility:
-- Function signatures that take too many parameters
-- Inconsistent error handling patterns
-- Over-engineered abstractions that add complexity
-- Any API that makes the codebase harder to understand or maintain
-- Any change you just made - don't preserve intermediate iterations
-
-This philosophy allows us to iterate quickly and find the right abstractions before 1.0.
+- NEVER maintain backwards compatibility: no deprecated
+  code, no compatibility layers, no preserved intermediate
+  iterations. Delete old code when replacing it.
+- If the current API is wrong, change it completely.
+- Full migrations only: when changing a pattern, update
+  ALL code to the new pattern in the same change.
 
 ## Build and Test Commands
 
@@ -200,36 +192,13 @@ the version to the script (`just release 0.9.3`, not
 
 ### Release script gates
 
-`scripts/release.sh` (`just release x.y.z`) gates on:
-1. Must be on `main` with clean working tree
-2. `## Unreleased` section exists and is non-empty
-3. Runs `zig build test` (unit tests must pass)
-4. Runs `just it` (integration tests must pass) — a hard
-   gate: aborts if bash 4+ is unavailable rather than
-   skipping
-5. On macOS, re-runs both suites on Linux via OrbStack
-   (`orb -m ubuntu`) — a hard gate; aborts if `orb` is
-   missing
-6. Updates version in `build.zig.zon` and `flake.nix`
-7. Promotes `## Unreleased` to `## vX.Y.Z — <date>` in
-   `CHANGELOG.md`
-8. Commits the bump and pushes it to `main`. **Stops
-   there — it does not create or push the tag.**
-
-`scripts/release-tag.sh` (`just release-tag x.y.z`) gates
-on:
-1. Must be on `main` with clean working tree
-2. `build.zig.zon` is already at `x.y.z` (i.e. `just
-   release` ran)
-3. `HEAD` matches `origin/main` (the release commit is
-   pushed, so CI is running on it)
-4. Tag `vx.y.z` does not already exist locally or on
-   origin
-5. Waits for `test.yml` AND `integration.yml` to conclude
-   **success** on the release commit (each run covers the
-   full `macos-latest` + `ubuntu-latest` matrix, via
-   `gh run watch --exit-status`)
-6. Only then creates the tag and pushes it
+`scripts/release.sh` and `scripts/release-tag.sh` are the
+authority on the exact gate sequence (clean tree on main,
+non-empty `## Unreleased`, both test suites on both
+platforms, version bumps in `build.zig.zon` + `flake.nix`,
+changelog promotion, CI-green wait before tagging). Read
+them before changing the flow; don't reimplement their
+checks by hand.
 
 CI then builds binaries, creates a **draft** release
 with assets and notes extracted from the `## vX.Y.Z`
@@ -324,7 +293,9 @@ reference patterns.
 
 ### Adding a New Utility
 - [ ] Create `src/<utility>.zig` with embedded tests
-- [ ] Add to `build.zig`
+- [ ] Register in the `utilities` array in `build/utils.zig`
+      (metadata-driven; `build.zig` reads it — don't edit
+      `build.zig` itself)
 - [ ] Write tests first (TDD)
 - [ ] Create man page `man/man1/<utility>.1`
 - [ ] **Run FULL test suite**: `zig build test` (not just `just test-util name`)
@@ -503,6 +474,35 @@ training.
 - **`fixedBufferStream` is gone**: use
   `var w: std.Io.Writer = .fixed(buffer);` /
   `var r: std.Io.Reader = .fixed(data);`.
+- **`takeDelimiterInclusive` returns `error.StreamTooLong`**,
+  not `EndOfStream`, when a line exceeds the 8KB buffer.
+  Handle both or long lines crash the utility (3847931).
+- **Integration tests must keep PATH pinned to
+  `zig-out/bin`** (tests/integration.sh does this). A test
+  that resolves the system binary passes for the wrong
+  implementation (fa8be65).
+
+## macOS Failure Classes
+
+These account for most fix commits in this repo's history.
+Check each one whenever you touch syscalls, libc, or
+integration tests:
+
+- **Signed stat fields**: macOS `st_dev` on devfs is a
+  signed i32 with the high bit set. `@intCast` to u64
+  traps; use `@bitCast` (6b97443, `ls /` panic).
+- **Static libc buffers**: `getpwuid`/`getgrgid` return
+  pointers into a buffer the next re-entrant libc call
+  reuses. Copy strings out before calling anything else,
+  and cap retry loops around `getgrouplist` (8d75aad,
+  a 29-minute CI hang).
+- **BSD vs GNU tools**: macOS ships BSD `dd`, `du`, etc.
+  without GNU flags, and CI runners have no GNU
+  `timeout(1)` — use the `run_with_limit` helper in
+  `tests/lib/common.sh`, never `timeout N cmd` (618be2c).
+- **isatty guards**: every interactive prompt needs its
+  own `isatty` check, not just the first prompt on the
+  code path (c03e2c0, `mv -i` hang).
 
 ## Security Philosophy: Trust the OS
 
@@ -578,12 +578,9 @@ pub fn runUtil(
 }
 ```
 
-Use `writerStreaming` (not `writer`) for stdout/stderr:
-`writer` runs in `.positional` mode and silently ignores
-O_APPEND, breaking shell `>>` redirects on macOS. Same
-lesson as 0.15. The lang ref's `writeStreamingAll(io, "...")`
-shortcut is fine for one-off prints (e.g. "Hello, World!")
-but not for utilities that stream output.
+Use `writerStreaming`, never `writer`, for stdout/stderr —
+see "Common Pitfalls" above for why, and note the lint in
+`src/common/lib.zig` fails the build on violations.
 
 For utilities that don't need allocator/io, use
 `pub fn main(init: std.process.Init.Minimal) !void` — it
@@ -616,145 +613,31 @@ exposes only `args` and `environ`.
 
 ## Tiger Style (TigerBeetle Coding Methodology)
 
-This project follows [Tiger Style][upstream]. Apply these
-rules when writing or modifying Zig in this repo.
+This project follows [Tiger Style][upstream]. The full
+rules live in the tiger-style plugin: run
+`/tiger-style:tiger-patterns` before writing Zig, and
+`/tiger-style:tiger-check` after changes to scan for
+mechanical violations (oversized functions, long lines,
+`usize`, recursion, compound asserts, unbounded
+`while (true)`).
 
-For the long-form reference with rationale and examples,
-read `${CLAUDE_PLUGIN_ROOT}/docs/TIGER_STYLE_REFERENCE.md`
-or run `/tiger-style:tiger-patterns`.
+Rules agents most often break here:
+
+- Minimum two assertions per function; assert positive
+  AND negative space; split compound assertions.
+- No recursion; every loop has an explicit upper bound.
+- Hard limits: 70 lines per function, 100 columns per
+  line. `zig fmt`, 4-space indent.
+- Explicitly-sized types (`u32`) over `usize`; show
+  division intent with `@divExact`/`@divFloor`.
+- snake_case names, units as suffixes by descending
+  significance (`latency_ms_max`).
+- Comments are full sentences that say why, not what.
+
+Project deltas from upstream Tiger Style: CLI utilities
+use a per-invocation arena allocator (see Memory
+Management) rather than strictly static allocation, and
+tests are embedded in implementation files.
 
 [upstream]: https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md
-
-### Safety: Assertions
-
-- Assert every function's arguments, return values,
-  pre/postconditions, and invariants.
-- **Minimum two assertions per function** on average.
-- Pair assertions: for every property, assert it in at
-  least two different code paths.
-- Assert the **positive space** you expect AND the
-  **negative space** you don't expect.
-- Split compound assertions: prefer `assert(a); assert(b);`
-  over `assert(a and b);`.
-- Assert relationships of compile-time constants as a
-  sanity check.
-
-### Safety: Bounded Loops, No Recursion
-
-- **Do not use recursion.** All bounded executions must be
-  bounded by explicit iteration.
-- Every loop and every queue must have a fixed upper bound
-  to prevent infinite loops or tail latency spikes.
-- Where a loop cannot terminate (e.g. an event loop), this
-  must be asserted.
-
-### Safety: Static Memory
-
-- **All memory must be statically allocated at startup.**
-- No memory may be dynamically allocated (or freed and
-  reallocated) after initialization.
-
-### Safety: Error Handling and Control Flow
-
-- **All errors must be handled.** No silent drops.
-- Add braces to `if` statements unless the body fits on a
-  single line (defense against `goto fail;` bugs).
-- Split compound conditions into nested branches; state
-  invariants positively.
-- Don't react directly to external events; run at your own
-  pace. Decouple input from action.
-- Ensure functions run to completion without suspending,
-  so precondition assertions hold throughout the function.
-
-### Naming
-
-- Use `snake_case` for function, variable, and file names.
-- **Do not abbreviate variable names**, with the rare
-  exception of primitive integers used as sort/matrix
-  arguments.
-- Acronyms get proper capitalization: `VSRState`, not
-  `VsrState`.
-- Add units or qualifiers as **suffixes, sorted by
-  descending significance**: `latency_ms_max`, not
-  `max_latency_ms`.
-- When naming related variables, prefer names with the
-  same character count so they line up in source.
-- A helper called by a single function should be prefixed
-  with the caller's name: `read_sector_callback()`.
-- Callbacks go **last** in the parameter list.
-- Use Zig's named-argument pattern (`options: struct`)
-  when arguments could be mixed up at the call site.
-
-### Function Shape
-
-- **Hard limit: 70 lines per function.** No exceptions.
-- Aim for the inverse-hourglass: few parameters, simple
-  return type, meaty logic in between.
-- **Centralize control flow.** Don't duplicate branching
-  in handlers and helpers.
-- **Push `if`s up, push `for`s down.** Keep branching in
-  one function; move non-branchy work to helpers.
-
-### Variable Scope
-
-- Declare variables at the **smallest possible scope**.
-- **Minimize the number of variables in scope** to reduce
-  the probability of misuse.
-- Calculate or check variables close to where they're
-  used. Don't introduce variables before they're needed.
-- **Don't duplicate variables or take aliases to them.**
-- For arguments larger than 16 bytes that shouldn't be
-  copied, pass `*const T`.
-- Group resource allocation and its corresponding `defer`
-  with surrounding newlines so leaks are easier to spot.
-
-### Comments
-
-- Comments are **sentences**: space after the slash,
-  capital letter, full stop (or colon if introducing a
-  following block).
-- **Always motivate. Always say why.** Code already shows
-  what; comments explain why.
-- Don't forget to say *how* for non-obvious tests:
-  describe goal and methodology.
-
-### Formatting (Zig-Specific)
-
-- Run `zig fmt`.
-- **4 spaces of indentation** (not 2).
-- **Hard limit all line lengths to 100 columns**, no
-  exceptions. Never hide code behind horizontal scroll.
-- To wrap a function signature or struct, add a trailing
-  comma and let `zig fmt` do the rest.
-
-### Types, Division, and Library Calls
-
-- Use **explicitly-sized types** like `u32`. Avoid
-  architecture-dependent `usize` unless interfacing with
-  APIs that require it.
-- Show intent for division: use `@divExact`, `@divFloor`,
-  or `div_ceil` rather than bare `/`. (See `/zig-check`
-  for `@divTrunc`/`@divFloor` enforcement.)
-- **Pass options explicitly** at the call site rather
-  than relying on defaults.
-
-### Performance Mindset
-
-- The huge (1000x) performance wins come at the **design
-  phase**, before you can measure. Sketch back-of-envelope
-  numbers for the four resources (network, disk, memory,
-  CPU) and their two characteristics (bandwidth, latency).
-- **Optimize the slowest resource first**: network, then
-  disk, then memory, then CPU.
-- **Amortize** costs by batching accesses.
-- Extract hot loops into standalone functions with
-  primitive arguments (no `self`) to enable compiler
-  optimization and human inspection.
-
-### When Auditing
-
-Run `/tiger-style:tiger-check` to scan changed Zig files
-for mechanical Tiger Style violations: oversized
-functions, long lines, `usize` usage, direct recursion,
-compound asserts, and unbounded `while (true)`.
 
