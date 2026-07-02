@@ -88,11 +88,12 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []con
 /// parts with `.` and `..` cleaned logically.
 pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     if (path.len == 0) {
-        // Empty path: return current directory
-        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const len = try std.Io.Dir.cwd().realPath(io, &buf);
-        return try allocator.dupe(u8, buf[0..len]);
+        // GNU realpath -m / readlink -m report "No such file or directory" for
+        // an empty operand rather than resolving it to the cwd (issue #51
+        // addendum, matching canonicalizeParentMustExist and realPathDupe).
+        return error.FileNotFound;
     }
+    std.debug.assert(path.len > 0);
 
     const abs_path = try canonicalizeMissing_absolutePath(allocator, io, path);
     defer allocator.free(abs_path);
@@ -148,8 +149,12 @@ fn canonicalizeMissing_absolutePath(
     const result = if (std.fs.path.isAbsolute(path))
         try allocator.dupe(u8, path)
     else blk: {
+        // cwd().realPathFile(".", ...) resolves the cwd via a real dir handle.
+        // Avoid cwd().realPath (issue #51: broken under Threaded io; it
+        // readlinks the AT_FDCWD pseudo-fd and fails with ENOENT).
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buf);
+        const cwd_len = try std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf);
+        std.debug.assert(cwd_len > 0);
         std.debug.assert(cwd_len <= cwd_buf.len);
         const cwd = cwd_buf[0..cwd_len];
         break :blk try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, path });

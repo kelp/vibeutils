@@ -78,12 +78,24 @@ const RealpathArgs = struct {
 /// Resolve a path without following symlinks, just cleaning . and .. components.
 /// Makes the path absolute and removes redundant separators and dot components.
 fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    // GNU realpath -s reports "No such file or directory" for an empty operand
+    // rather than resolving it to the cwd. Reject it here so an empty
+    // --relative-to= base routed through this path errors like GNU.
+    if (path.len == 0) {
+        return error.FileNotFound;
+    }
+    std.debug.assert(path.len > 0);
+
     // Get absolute path by prepending cwd if relative
     const abs_path = if (std.fs.path.isAbsolute(path))
         try allocator.dupe(u8, path)
     else blk: {
+        // cwd().realPathFile(".", ...) resolves the cwd via a real dir handle.
+        // Avoid cwd().realPath (issue #51: broken under Threaded io; it
+        // readlinks the AT_FDCWD pseudo-fd and fails with ENOENT).
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return error.FileNotFound;
+        const cwd_len = std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch
+            return error.FileNotFound;
         break :blk try std.fs.path.join(allocator, &.{ cwd_buf[0..cwd_len], path });
     };
     defer allocator.free(abs_path);
