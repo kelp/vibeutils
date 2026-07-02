@@ -148,7 +148,7 @@ jobs:
           done
 
           # Create vibebin symlinks (unprefixed -> prefixed)
-          for f in bottle/vibeutils/${VERSION}/bin/v*; do
+          for f in "bottle/vibeutils/${VERSION}/bin"/v*; do
             name=$(basename "$f" | sed 's/^v//')
             ln -s "../../bin/v${name}" "bottle/vibeutils/${VERSION}/libexec/vibebin/${name}"
           done
@@ -242,7 +242,6 @@ jobs:
         run: |
           FORMULA="homebrew-tap/Formula/vibeutils.rb"
           TAG="${{ steps.version.outputs.tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
           SOURCE_SHA="${{ steps.sha.outputs.sha256 }}"
           BOTTLE_SHA="${{ steps.bottle.outputs.sha256 }}"
 
