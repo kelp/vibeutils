@@ -1819,6 +1819,7 @@ fn searchTree(
     stderr_writer: *std.Io.Writer,
     use_color: bool,
     found_any: *bool,
+    walk_config: common.walker.WalkConfig,
 ) void {
     assert(root_path.len > 0);
     // Cannot split: "or" means either flag suffices, not both.
@@ -1826,11 +1827,7 @@ fn searchTree(
 
     var search = TreeSearch{
         .allocator = allocator,
-        .walker = common.walker.Walker.init(allocator, .{
-            .order = .pre,
-            .symlinks = .no_follow,
-            .detect_cycles = false,
-        }) catch return,
+        .walker = common.walker.Walker.init(allocator, walk_config) catch return,
         .visited_dirs = if (opts.dereference_recursive)
             common.directory.FileSystemIdSet.init(allocator)
         else
@@ -1851,6 +1848,9 @@ fn searchTree(
             // An unreadable directory (or other per-entry I/O failure) is
             // non-fatal: report it and let the walker resume at siblings.
             reportWalkError(io, root_path, err, opts, stderr_writer, &search);
+            // The entry-count cap is terminal: next() latches this error and
+            // re-returns it forever, so stop the walk instead of spinning.
+            if (err == error.EntryLimitExceeded) break;
             continue;
         };
         const entry = maybe_entry orelse break;
@@ -2322,6 +2322,7 @@ fn runGrep_dispatchInputs(d: DispatchInputs) bool {
             d.stderr_writer,
             d.use_color,
             d.found_any_ptr,
+            .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
         );
     } else {
         for (opts.files.items) |file_path| {
@@ -2449,6 +2450,7 @@ fn runGrep_processOneOperand(
                 stderr_writer,
                 use_color,
                 found_any_ptr,
+                .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
             );
             return false;
         }
@@ -4322,4 +4324,74 @@ test "walker-migration: traversal entry point is the bounded walker after migrat
         try testing.expect(@hasDecl(common.walker.Walker, "next"));
         try testing.expect(@hasDecl(common.walker.Walker, "addRoot"));
     }
+}
+
+test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)" {
+    // Regression for issue #45. The bounded walker's entry cap is PERMANENT:
+    // once entries_emitted >= max_entries, walker.next() returns
+    // error.EntryLimitExceeded on EVERY subsequent call. The pre-fix searchTree
+    // loop reported that error and `continue`d, so it re-hit the permanent cap
+    // forever — a genuine infinite loop (a diagnostics storm, not a clean halt).
+    //
+    // Methodology: drive the REAL searchTree with a tiny max_entries (injected
+    // through the walk_config seam; production keeps the 1<<24 default) against a
+    // tree that exceeds the cap, and require it to (a) return at all and (b)
+    // report the entry-limit condition EXACTLY once. Pre-fix the call never
+    // returns, so an external wall-clock timeout must catch the run — that hang
+    // IS the RED evidence, because control never comes back to check an assert.
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Ten flat files guarantee the pre-order walk (root dir + files) blows past
+    // a max_entries=3 cap while entries remain, so the permanent cap re-fires.
+    inline for (.{
+        "f01.txt", "f02.txt", "f03.txt", "f04.txt", "f05.txt",
+        "f06.txt", "f07.txt", "f08.txt", "f09.txt", "f10.txt",
+    }) |name| {
+        const f = try tmp.dir.createFile(io, name, .{});
+        try f.writeStreamingAll(io, "needle\n");
+        f.close(io);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const root = try allocator.dupe(u8, root_buf[0..root_len]);
+
+    const patterns = [_]CompiledPattern{
+        .{ .fixed = .{ .text = "needle", .lower = null } },
+    };
+    const opts = GrepOptions{ .recursive = true };
+
+    // Capture stderr in a FIXED buffer so a pre-fix storm cannot grow memory
+    // without bound: once the buffer fills, further writes fail silently and the
+    // loop just spins — a clean hang for the timeout to catch. One entry-limit
+    // diagnostic fits easily in 4 KiB post-fix.
+    var stderr_buf: [4096]u8 = undefined;
+    var stderr_w: std.Io.Writer = .fixed(&stderr_buf);
+
+    var found_any = false;
+    searchTree(
+        allocator,
+        io,
+        root,
+        &patterns,
+        &opts,
+        common.null_writer,
+        &stderr_w,
+        false,
+        &found_any,
+        .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false, .max_entries = 3 },
+    );
+
+    // Returning here at all is the core regression proof: the walk halted
+    // instead of spinning. The entry-limit error must be reported EXACTLY once
+    // (report-then-break), not once per remaining entry.
+    const reported = std.mem.count(u8, stderr_w.buffered(), "EntryLimitExceeded");
+    try testing.expectEqual(@as(usize, 1), reported);
 }
