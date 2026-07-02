@@ -10,13 +10,28 @@ const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-/// Resolve an absolute path to its canonical form, returning a heap-allocated
-/// `[]u8` (not sentinel-terminated). Using a stack buffer + `allocator.dupe`
-/// avoids the debug-allocator size mismatch from `realPathFileAbsoluteAlloc`
-/// returning `[:0]u8` which when freed as `[]u8` reports the wrong size.
-fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+/// Resolve a path to its canonical form, returning a heap-allocated `[]u8` (not
+/// sentinel-terminated). Handles all three input classes: an empty path is
+/// rejected as ENOENT (GNU parity), while relative and absolute paths both route
+/// through `cwd().realPathFile`. Using a stack buffer + `allocator.dupe` avoids
+/// the debug-allocator size mismatch from `realPathFileAbsoluteAlloc` returning
+/// `[:0]u8` which when freed as `[]u8` reports the wrong size.
+fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    // GNU realpath reports "No such file or directory" for an empty operand
+    // rather than treating it as the cwd. Rejecting it here also keeps it away
+    // from realPathFileAbsolute, whose isAbsolute assert would abort the process.
+    if (path.len == 0) {
+        return error.FileNotFound;
+    }
+    std.debug.assert(path.len > 0);
+
+    // cwd().realPathFile resolves absolute paths (the dir handle is ignored) and
+    // paths relative to the cwd, without asserting isAbsolute. Avoid
+    // cwd().realPath (issue #51: broken under Threaded io; readlinks AT_FDCWD).
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    std.debug.assert(len > 0);
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -165,7 +180,7 @@ fn processPath_resolveTarget(
         };
     } else if (opts.canonicalize_existing) {
         // -e: all components must exist
-        return realPathAbsoluteDupe(allocator, io, path) catch |err| {
+        return realPathDupe(allocator, io, path) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, path, err);
             }
@@ -183,7 +198,8 @@ fn processPath_resolveTarget(
 }
 
 /// Resolve the relative base directory. Distinct from `processPath_resolveTarget`:
-/// the default branch uses `realPathAbsoluteDupe` (no parent-must-exist mode).
+/// the default branch uses `realPathDupe` (no parent-must-exist mode). An empty
+/// base surfaces as ENOENT via `realPathDupe`, matching GNU realpath.
 /// Returns the owned resolved slice, or null when an error was already reported.
 fn processPath_resolveBase(
     allocator: Allocator,
@@ -207,7 +223,7 @@ fn processPath_resolveBase(
             return null;
         };
     } else {
-        return realPathAbsoluteDupe(allocator, io, base_dir) catch |err| {
+        return realPathDupe(allocator, io, base_dir) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, base_dir, err);
             }
