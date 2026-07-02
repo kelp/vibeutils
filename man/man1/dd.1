@@ -73,6 +73,30 @@ Map lowercase characters to uppercase.
 Do not truncate the output file.
 .It Cm noerror
 Continue processing after read errors.
+Unlike GNU
+.Nm ,
+which retries a failing region without bound, each failed read
+consumes one block of the
+.Cm count
+budget, so
+.Cm count Ns = Ns Ar n
+bounds the number of attempts.
+On a seekable input the bad block is skipped by seeking forward one
+.Cm ibs .
+Both failure modes are bounded so that, even with no
+.Cm count ,
+.Nm
+always terminates rather than spinning forever.
+An input that can be neither read nor seeked past (such as a pipe)
+aborts after a small bounded number of consecutive zero-progress
+attempts.
+An input that seeks past every bad block yet never reads a single
+block successfully aborts after a much larger bounded number of
+consecutive skipped blocks.
+Where GNU
+.Nm
+would retry such a region without bound, bound it explicitly with
+.Cm count Ns = Ns Ar n .
 .It Cm sync
 Pad each input block with NUL bytes to
 .Cm ibs

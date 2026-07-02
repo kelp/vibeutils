@@ -392,7 +392,7 @@ test_dd() {
         conv=noerror bs=512 count=5 status=none 2>"$noerror_err"
     local noerror_rc=$?
     local noerror_lines
-    noerror_lines=$(grep -c "read error" "$noerror_err" 2>/dev/null || echo 0)
+    noerror_lines=$(grep -c "read error" "$noerror_err" 2>/dev/null || true)
     if [[ "$noerror_rc" -ne 124 ]] && [[ "$noerror_lines" -le 10 ]]; then
         print_test_result "dd conv=noerror terminates on persistent read error" "PASS"
     else
@@ -409,7 +409,7 @@ test_dd() {
         conv=noerror,sync bs=512 count=5 status=none 2>"$noerror_sync_err"
     local noerror_sync_rc=$?
     local noerror_sync_lines
-    noerror_sync_lines=$(grep -c "read error" "$noerror_sync_err" 2>/dev/null || echo 0)
+    noerror_sync_lines=$(grep -c "read error" "$noerror_sync_err" 2>/dev/null || true)
     if [[ "$noerror_sync_rc" -ne 124 ]] && [[ "$noerror_sync_lines" -le 10 ]]; then
         print_test_result "dd conv=noerror,sync count= bounds read-error retries" "PASS"
     else
