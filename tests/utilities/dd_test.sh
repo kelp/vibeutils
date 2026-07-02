@@ -250,6 +250,34 @@ test_dd() {
             "rc=$fdcombo_rc content='$fdcombo_content'"
     fi
 
+    echo -e "${CYAN}Testing conv=fdatasync on a pipe (issue #43, round 2)...${NC}"
+
+    # Adversarial regression: conv=fdatasync with a pipe as the output must
+    # NEVER abort the process. fdatasync(2) on a pipe returns EINVAL, and
+    # the Zig std marks that errno path unreachable, so the naive
+    # implementation panics (SIGABRT, rc=134). GNU coreutils 9.7 instead
+    # falls back and prints "dd: fsync failed for 'standard output':
+    # Invalid argument" and exits 1 (verified against GNU dd 9.7 on this
+    # host). Contract: rc is 0 or 1 (never >=128, never a signal), and any
+    # nonzero exit carries a sync-failure diagnostic on stderr with no
+    # "panic" text. On Linux fsync/fdatasync on a pipe fails EINVAL, so the
+    # pinned expectation is rc=1 plus a diagnostic.
+    local fdatasync_pipe_err="$TEMP_DIR/dd_fdatasync_pipe.err"
+    "$binary" if=/dev/zero count=1 conv=fdatasync status=none \
+        2>"$fdatasync_pipe_err" | cat >/dev/null
+    local fdatasync_pipe_rc=${PIPESTATUS[0]}
+    local fdatasync_pipe_err_text
+    fdatasync_pipe_err_text=$(cat "$fdatasync_pipe_err")
+    if [[ "$fdatasync_pipe_rc" -eq 1 ]] \
+        && ! grep -qi 'panic' "$fdatasync_pipe_err" \
+        && grep -qi 'sync' "$fdatasync_pipe_err" \
+        && grep -qiE 'fail|invalid' "$fdatasync_pipe_err"; then
+        print_test_result "dd conv=fdatasync on pipe does not panic" "PASS"
+    else
+        print_test_result "dd conv=fdatasync on pipe does not panic" "FAIL" \
+            "rc=$fdatasync_pipe_rc (expected 1, never >=128) stderr='$fdatasync_pipe_err_text'"
+    fi
+
     echo -e "${CYAN}Testing exit codes...${NC}"
 
     # Success exit code
