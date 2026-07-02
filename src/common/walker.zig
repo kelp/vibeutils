@@ -1464,6 +1464,210 @@ test "walker: symlink policy follow_all follows all symlinks" {
     try testing.expect(saw_via_link);
 }
 
+test "walker: follow_all emits a symlink-to-file as a file leaf" {
+    // Issue #47: follow_all must stat the symlink target and classify by the
+    // target's real kind. A symlink -> regular file must be emitted as a
+    // .file leaf, NOT mapped to .directory (which makes the walker try
+    // openDir and raise error.NotDir out of next(), poisoning the walk).
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "real_file.txt", .kind = .file },
+        .{ .path = "link_to_file", .kind = .symlink, .symlink_target = "real_file.txt" },
+    });
+
+    var w = try Walker.init(testing.allocator, .{
+        .symlinks = .follow_all,
+        .detect_cycles = true,
+        .order = .pre,
+        .sort_children = true,
+    });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    defer {
+        for (entries.items) |e| testing.allocator.free(e.path);
+        entries.deinit(testing.allocator);
+    }
+    // RED: the symlink-to-file is mapped to .directory, so next() calls
+    // openDir which fails with error.NotDir; the `try` in drainEntries
+    // propagates it and this line fails the test.
+    try drainEntries(&w, io, testing.allocator, &entries);
+
+    var saw_link_entry = false;
+    for (entries.items) |e| {
+        if (std.mem.eql(u8, e.basename, "link_to_file")) {
+            saw_link_entry = true;
+            // GREEN pins the target kind: symlink -> file is a .file leaf.
+            try testing.expectEqual(std.Io.File.Kind.file, e.kind);
+        }
+    }
+    // The walker must actually emit the link, not silently drop it.
+    try testing.expect(saw_link_entry);
+}
+
+test "walker: follow_all descends symlink-to-dir and leafs symlink-to-file" {
+    // Issue #47: the stat-based resolveKind must still descend a
+    // symlink-to-directory while leafing a symlink-to-file in the same dir.
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "target_dir", .kind = .dir },
+        .{ .path = "target_dir/inside.txt", .kind = .file },
+        .{ .path = "real_file.txt", .kind = .file },
+        .{ .path = "link_to_dir", .kind = .symlink, .symlink_target = "target_dir" },
+        .{ .path = "link_to_file", .kind = .symlink, .symlink_target = "real_file.txt" },
+    });
+
+    var w = try Walker.init(testing.allocator, .{
+        .symlinks = .follow_all,
+        .detect_cycles = true,
+        .order = .pre,
+        .sort_children = true,
+    });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    defer {
+        for (entries.items) |e| testing.allocator.free(e.path);
+        entries.deinit(testing.allocator);
+    }
+    // RED: link_to_file mapped to .directory -> openDir NotDir out of next().
+    try drainEntries(&w, io, testing.allocator, &entries);
+
+    var descended_dir_link = false;
+    var leafed_file_link = false;
+    for (entries.items) |e| {
+        // Dir symlink was followed: we see inside.txt under the link path.
+        if (std.mem.eql(u8, e.basename, "inside.txt") and
+            std.mem.find(u8, e.path, "link_to_dir") != null)
+        {
+            descended_dir_link = true;
+        }
+        // File symlink leafs correctly as a .file.
+        if (std.mem.eql(u8, e.basename, "link_to_file")) {
+            leafed_file_link = true;
+            try testing.expectEqual(std.Io.File.Kind.file, e.kind);
+        }
+    }
+    try testing.expect(descended_dir_link);
+    try testing.expect(leafed_file_link);
+}
+
+test "walker: follow_all emits a broken symlink as a sym_link leaf" {
+    // Issue #47: a dangling symlink under follow_all must not poison the
+    // walk. It is emitted as the link itself (.sym_link) and the walk
+    // continues past it.
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "good.txt", .kind = .file },
+        .{ .path = "broken_link", .kind = .symlink, .symlink_target = "no_such_target" },
+    });
+
+    var w = try Walker.init(testing.allocator, .{
+        .symlinks = .follow_all,
+        .detect_cycles = true,
+        .order = .pre,
+        .sort_children = true,
+    });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    defer {
+        for (entries.items) |e| testing.allocator.free(e.path);
+        entries.deinit(testing.allocator);
+    }
+    // RED: broken link mapped to .directory -> openDir ENOENT out of next().
+    try drainEntries(&w, io, testing.allocator, &entries);
+
+    var saw_good = false;
+    var saw_broken = false;
+    for (entries.items) |e| {
+        if (std.mem.eql(u8, e.basename, "good.txt")) saw_good = true;
+        if (std.mem.eql(u8, e.basename, "broken_link")) {
+            saw_broken = true;
+            try testing.expectEqual(std.Io.File.Kind.sym_link, e.kind);
+        }
+    }
+    // Walk not aborted: good.txt still emitted; broken link surfaced as link.
+    try testing.expect(saw_good);
+    try testing.expect(saw_broken);
+}
+
+test "walker: follow_all does not hang or error on a symlink loop" {
+    // Issue #47: mutually-referential symlinks must not hang or raise an
+    // error out of next(). The kernel ELOOP is swallowed and each link is
+    // emitted as a .sym_link leaf. max_depth is set small as a bound-hitting
+    // safety knob so any cycle terminates fast and deterministically.
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "plain.txt", .kind = .file },
+        .{ .path = "loop_a", .kind = .symlink, .symlink_target = "loop_b" },
+        .{ .path = "loop_b", .kind = .symlink, .symlink_target = "loop_a" },
+    });
+
+    var w = try Walker.init(testing.allocator, .{
+        .symlinks = .follow_all,
+        .detect_cycles = true,
+        .order = .pre,
+        .sort_children = true,
+        .max_depth = 8,
+    });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    defer {
+        for (entries.items) |e| testing.allocator.free(e.path);
+        entries.deinit(testing.allocator);
+    }
+    // RED: openDir follows the chain -> error.SymLinkLoop out of next().
+    try drainEntries(&w, io, testing.allocator, &entries);
+
+    var saw_plain = false;
+    var saw_loop_a = false;
+    var saw_loop_b = false;
+    for (entries.items) |e| {
+        if (std.mem.eql(u8, e.basename, "plain.txt")) saw_plain = true;
+        if (std.mem.eql(u8, e.basename, "loop_a")) {
+            saw_loop_a = true;
+            try testing.expectEqual(std.Io.File.Kind.sym_link, e.kind);
+        }
+        if (std.mem.eql(u8, e.basename, "loop_b")) {
+            saw_loop_b = true;
+            try testing.expectEqual(std.Io.File.Kind.sym_link, e.kind);
+        }
+    }
+    try testing.expect(saw_plain);
+    try testing.expect(saw_loop_a);
+    try testing.expect(saw_loop_b);
+}
+
 test "walker: sort_children emits directory entries in alphabetical order" {
     // §5.1 #14: With sort_children=true, sibling entries must be emitted in
     // ascending lexicographic order by basename. Only file-kind entries
