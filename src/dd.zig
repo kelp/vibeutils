@@ -10,6 +10,37 @@ const common = @import("common");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
+/// Upper bound on consecutive conv=noerror read errors on an input that
+/// cannot even be seeked past (a pipe or other non-seekable, wholly
+/// unreadable fd), before dd aborts. Such a read error never returns EOF and
+/// the bad block cannot be skipped, so without a cap the copy loop would spin
+/// forever when no count= is given. The counter resets only on a successful
+/// READ, so this measures a run of pure zero-progress attempts: no data read
+/// and no forward seek. count= usually bounds the retries first; this is the
+/// safety net for the no-count, zero-progress case and satisfies Tiger
+/// Style's "every loop is bounded" rule. Kept small because a wholly
+/// unseekable input never recovers, so there is nothing to be gained by
+/// retrying long.
+const dd_read_error_stall_max: usize = 4096; // tiger:allow:usize-arch counts loop retries
+
+/// Upper bound on consecutive conv=noerror read errors that DO seek past the
+/// bad block (forward progress on seekable media) but never read a single
+/// good block, before dd aborts. This is the seekable-but-unreadable case
+/// (e.g. a directory fd or a dead device that lseeks fine but fails every
+/// read): GNU dd spins on it forever, we bound it. Chosen far larger than
+/// dd_read_error_stall_max so a realistic run of clustered bad blocks on
+/// otherwise-recoverable media still completes the skip, while keeping the
+/// loop finite per Tiger Style. At bs=512 this tolerates ~2 GiB of
+/// consecutive unreadable region before aborting.
+const dd_read_error_skip_max: usize = 1 << 22; // tiger:allow:usize-arch counts loop retries
+
+comptime {
+    // The zero-progress stall cap must fire well before the skip cap: an
+    // input that never advances is hopeless, while a skipping input is
+    // making progress and earns the far larger budget.
+    std.debug.assert(dd_read_error_stall_max < dd_read_error_skip_max);
+}
+
 /// dd operand configuration parsed from command-line arguments
 const DdConfig = struct {
     input_file: ?[]const u8 = null,
@@ -514,6 +545,16 @@ const ReadErrorOutcome = union(enum) {
     fatal: u8,
 };
 
+/// Outcome of one copy-loop read attempt. `eof` ends the loop, `retry`
+/// resumes it after a recovered conv=noerror error, `bytes` carries the
+/// count read, and `fatal` carries an exit code the caller must return.
+const ReadOutcome = union(enum) {
+    eof,
+    retry,
+    bytes: usize, // tiger:allow:usize-arch byte count uses slice index type
+    fatal: u8,
+};
+
 /// The pair of files dd copies between, returned by runDd_openFiles.
 const DdFiles = struct {
     input_file: std.Io.File,
@@ -853,12 +894,18 @@ fn runDd_handleReadError(
             "read error: {s}",
             .{read_message},
         );
+        // Consume the count= budget on every failed read attempt. A
+        // persistent, non-advancing read (e.g. a directory fd returning
+        // EISDIR with zero bytes consumed) otherwise never increments
+        // blocks_read, so count= could not bound the loop and dd spun
+        // forever. Incrementing here makes count= bound the retries, as
+        // the sync path already did.
+        blocks_read.* += 1;
         if (config.conv_sync) {
             // Fill with NULs when sync is specified
             @memset(in_buf, 0);
             // Count as a full block
             ctx.stats.full_blocks_in += 1;
-            blocks_read.* += 1;
             if (simple_copy) {
                 // Write the NUL-filled block
                 ctx.output_file.writeStreamingAll(ctx.io, in_buf) catch |werr| {
@@ -1264,6 +1311,111 @@ fn runDd_copy(
     return runDd_finish(&ctx, config, &plan, &positions);
 }
 
+/// Advance past a conv=noerror read error and enforce the two retry bounds.
+/// Called only after a read has already failed, so every call is one more
+/// consecutive non-reading retry: the counter is incremented here and reset
+/// ONLY on a successful READ back in the copy loop, so it measures how long
+/// the input has gone without yielding data. Two finite bounds keep every
+/// no-count run terminating:
+///   - Seek past the bad block SUCCEEDS (seekable media): this is the
+///     seekable-but-unreadable case GNU dd spins on forever; we cap it at
+///     the large dd_read_error_skip_max with a "while skipping" diagnostic.
+///   - Seek FAILS (non-seekable input such as a pipe, ESPIPE): no progress
+///     at all, so cap it at the small dd_read_error_stall_max with the
+///     "without progress" diagnostic.
+/// Returns a fatal exit code at the matching bound, or null to continue.
+fn runDd_advanceAfterReadError(
+    ctx: *const DdWriteCtx,
+    input_file: std.Io.File,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    read_errors_stalled: *usize, // tiger:allow:usize-arch counts loop retries
+) ?u8 {
+    std.debug.assert(ibs > 0);
+    // The caller aborts at whichever bound fires and never continues past
+    // it, so on entry the counter is always still below the larger cap.
+    std.debug.assert(read_errors_stalled.* < dd_read_error_skip_max);
+
+    // Every failed read is one more consecutive non-reading retry. The reset
+    // lives on the successful-read path in the copy loop, so this counter
+    // only ever grows here.
+    read_errors_stalled.* += 1;
+
+    // Try to skip past the bad block on seekable inputs. A successful seek is
+    // forward progress (GNU dd keeps skipping bad blocks on damaged seekable
+    // media), so continue; only the large skip cap bounds this path.
+    if (ctx.io.vtable.fileSeekBy(ctx.io.userdata, input_file, @intCast(ibs))) |_| {
+        if (read_errors_stalled.* >= dd_read_error_skip_max) {
+            common.printErrorWithProgram(
+                ctx.allocator,
+                ctx.stderr,
+                "dd",
+                "too many consecutive read errors while skipping; aborting",
+                .{},
+            );
+            printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        }
+        return null;
+    } else |_| {
+        // Seek failed (non-seekable input): neither the read nor the seek
+        // advanced, so this is a genuine zero-progress stall. Abort at the
+        // small bound rather than spinning forever.
+        if (read_errors_stalled.* >= dd_read_error_stall_max) {
+            common.printErrorWithProgram(
+                ctx.allocator,
+                ctx.stderr,
+                "dd",
+                "too many consecutive read errors without progress; aborting",
+                .{},
+            );
+            printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        }
+        return null;
+    }
+}
+
+/// Read one input block for the copy loop, folding EOF, recovered
+/// conv=noerror errors (print, count, seek past, retry-bound), and fatal
+/// errors into a single outcome. Mutates blocks_read on the noerror error
+/// path and increments read_errors_stalled on every failed read.
+fn runDd_readBlock(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    blocks_read: *usize, // tiger:allow:usize-arch block counter uses slice index type
+    read_errors_stalled: *usize, // tiger:allow:usize-arch counts loop retries
+) ReadOutcome {
+    std.debug.assert(plan.in_buf.len == plan.ibs);
+    std.debug.assert(plan.ibs > 0);
+
+    const read_result = plan.input_file.readStreaming(ctx.io, &.{plan.in_buf});
+    const bytes_read = read_result catch |err| switch (err) {
+        error.EndOfStream => return .eof,
+        else => switch (runDd_handleReadError(
+            ctx,
+            config,
+            plan.in_buf,
+            plan.ibs,
+            plan.simple_copy,
+            blocks_read,
+            err,
+        )) {
+            .continue_loop => {
+                if (runDd_advanceAfterReadError(
+                    ctx,
+                    plan.input_file,
+                    plan.ibs,
+                    read_errors_stalled,
+                )) |code| return .{ .fatal = code };
+                return .retry;
+            },
+            .fatal => |code| return .{ .fatal = code },
+        },
+    };
+    return .{ .bytes = bytes_read };
+}
+
 /// The main dd copy loop: read a block, account it, sync-pad, convert,
 /// and dispatch to the matching per-mode write helper. Position state
 /// is carried via pointers so the tail-flush phase can finish records.
@@ -1281,31 +1433,27 @@ fn runDd_copyLoop(
     std.debug.assert(plan.ibs > 0);
 
     const in_buf = plan.in_buf;
-    const input_file = plan.input_file;
     var blocks_read: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
-    while (true) { // tiger:allow:unbounded-loop ends at EOF, the count= limit, or a fatal I/O error
+    // Consecutive conv=noerror read errors that made no forward progress,
+    // neither reading data nor seeking past the bad block. Reset on any
+    // good read or successful skip; bounds a truly non-advancing spin.
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+    while (true) { // tiger:allow:unbounded-loop bounded by EOF, count=/stall, or fatal I/O
         // Check count limit
         if (config.count) |count| {
             if (blocks_read >= count) break;
         }
 
-        // Read one input block
-        const bytes_read = input_file.readStreaming(ctx.io, &.{in_buf}) catch |err| switch (err) {
-            error.EndOfStream => break, // EOF
-            else => switch (runDd_handleReadError(
-                ctx,
-                config,
-                in_buf,
-                plan.ibs,
-                plan.simple_copy,
-                &blocks_read,
-                err,
-            )) {
-                .continue_loop => continue,
-                .fatal => |code| return code,
-            },
+        const outcome = runDd_readBlock(ctx, config, plan, &blocks_read, &read_errors_stalled);
+        const bytes_read = switch (outcome) {
+            .eof => break,
+            .retry => continue,
+            .fatal => |code| return code,
+            .bytes => |count| count,
         };
 
+        // A successful read means forward progress: clear the stall count.
+        read_errors_stalled = 0;
         blocks_read += 1;
 
         // Track input block statistics
@@ -2884,4 +3032,191 @@ test "audit G5: runDd rejects conv=parset with diagnostic" {
 
 test "audit G5: runDd rejects files= operand with diagnostic" {
     try expectDdRejectsOperand("files=3", "files");
+}
+
+// Regression tests for issue #44 (round 3 semantics): the conv=noerror
+// stall counter resets ONLY on a successful READ, never on a successful
+// seek. Two finite bounds keep every no-count path terminating:
+//   - Seek FAILED (cannot advance; pipes/ESPIPE): abort at the small
+//     dd_read_error_stall_max with the "without progress" diagnostic.
+//   - Seek SUCCEEDED but reads never succeed (seekable-but-unreadable,
+//     e.g. a directory fd or a dead device): abort at the much larger
+//     dd_read_error_skip_max with a distinct "while skipping" diagnostic.
+// GNU dd spins forever in the second case; we deliberately bound it. These
+// three tests pin all three halves of that decision (small-bound exemption
+// for seeks, small-bound abort on seek failure, large-bound abort on
+// endless skip).
+
+test "successful seeks are exempt from the small stall bound" {
+    // Goal: a seekable input whose seek always succeeds must NOT trip the
+    // small dd_read_error_stall_max bound, no matter how many consecutive
+    // read errors occur; that small bound is reserved for the seek-failure
+    // (zero-progress) case. Method: drive runDd_advanceAfterReadError
+    // against a real regular file (fileSeekBy succeeds) one past the small
+    // bound and require every call to return null (no abort). Because the
+    // stall counter now resets only on a good READ (never on seek success),
+    // it grows monotonically with each call; assert it equals the iteration
+    // count to pin that monotonic growth. Against round-2 code, which reset
+    // the counter on every successful seek, that final equality fails
+    // (counter stayed 0), which is part of the round-3 red evidence.
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // An empty regular file is seekable: lseek(SEEK_CUR, +ibs) past EOF
+    // succeeds, so every advance reports forward progress.
+    var seekable_file = try tmp_dir.dir.createFile(io, "seekable.bin", .{});
+    defer seekable_file.close(io);
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = common.null_writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+    };
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+
+    // One iteration past the small bound proves the small bound never fires
+    // while seeks keep succeeding.
+    const iterations = dd_read_error_stall_max + 1;
+    var i: usize = 0; // tiger:allow:usize-arch loop index
+    while (i < iterations) : (i += 1) {
+        const result = runDd_advanceAfterReadError(&ctx, seekable_file, ibs, &read_errors_stalled);
+        try testing.expectEqual(@as(?u8, null), result);
+    }
+    // The counter resets only on a good read, so with only successful seeks
+    // it grows once per call, staying far below the large skip bound.
+    try testing.expectEqual(iterations, read_errors_stalled);
+    try testing.expect(read_errors_stalled < dd_read_error_skip_max);
+}
+
+test "stall bound aborts when seek cannot advance" {
+    // Goal: a non-seekable input with persistent read errors (issue #44's
+    // class, where GNU dd spins forever) must abort at the bound with the
+    // distinct diagnostic. Method: drive runDd_advanceAfterReadError against
+    // a pipe read end, whose fileSeekBy fails (ESPIPE), so no call reports
+    // progress; assert the fatal exit arrives exactly at the
+    // dd_read_error_stall_max'th consecutive stall with the diagnostic.
+    const io = testing.io;
+
+    // A pipe read end is not seekable, so the advance's fileSeekBy fails and
+    // the stall counter must accumulate on every call.
+    const pipe_fds = try std.Io.Threaded.pipe2(.{});
+    const pipe_read = std.Io.File{ .handle = pipe_fds[0], .flags = .{ .nonblocking = false } };
+    const pipe_write = std.Io.File{ .handle = pipe_fds[1], .flags = .{ .nonblocking = false } };
+    defer pipe_read.close(io);
+    defer pipe_write.close(io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = &stderr_aw.writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+    };
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+
+    var result: ?u8 = null;
+    var calls: usize = 0; // tiger:allow:usize-arch counts calls
+    while (calls < dd_read_error_stall_max) : (calls += 1) {
+        result = runDd_advanceAfterReadError(&ctx, pipe_read, ibs, &read_errors_stalled);
+        if (result != null) break;
+    }
+
+    // The bound fires, returning a fatal general_error exit code...
+    try testing.expect(result != null);
+    try testing.expectEqual(@intFromEnum(common.ExitCode.general_error), result.?);
+    // ...exactly at the dd_read_error_stall_max'th consecutive stall...
+    try testing.expectEqual(dd_read_error_stall_max, read_errors_stalled);
+    try testing.expectEqual(dd_read_error_stall_max, calls + 1);
+    // ...and prints the distinct non-advancing-read diagnostic.
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "too many consecutive read errors",
+    ) != null);
+}
+
+test "skip bound aborts a seekable input that never reads" {
+    // Goal: a seekable-but-unreadable input (seek always succeeds, read
+    // always fails, e.g. a directory fd or dead device) must not spin
+    // forever; it must abort at the large dd_read_error_skip_max bound with
+    // a distinct "while skipping" diagnostic. GNU dd loops here without
+    // bound; we deliberately diverge and cap it. Method: drive
+    // runDd_advanceAfterReadError against a real regular file (fileSeekBy
+    // succeeds every call, modelling the endless-skip path since the read
+    // failure that precedes each advance has already happened) up to the
+    // skip bound and require the fatal general_error at exactly that bound.
+    //
+    // RED under round-2 code: seek success there resets the counter, so the
+    // helper returns null on every one of the dd_read_error_skip_max calls
+    // and NEVER aborts; the result != null assertion below fails. The
+    // implementer makes it GREEN by counting successful seeks toward
+    // dd_read_error_skip_max and emitting the "while skipping" diagnostic.
+    //
+    // DIAGNOSTIC CONTRACT for the implementer: the seek-succeeds-but-never-
+    // reads abort must print a message containing "while skipping" so it is
+    // distinguishable from the seek-fails "without progress" stall message.
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // An empty regular file is seekable: lseek(SEEK_CUR, +ibs) past EOF
+    // succeeds on every advance, so no seek ever fails and only the large
+    // skip bound can terminate the run.
+    var seekable_file = try tmp_dir.dir.createFile(io, "endless_skip.bin", .{});
+    defer seekable_file.close(io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = &stderr_aw.writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+    };
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+
+    var result: ?u8 = null;
+    var calls: usize = 0; // tiger:allow:usize-arch counts calls
+    while (calls < dd_read_error_skip_max) : (calls += 1) {
+        result = runDd_advanceAfterReadError(&ctx, seekable_file, ibs, &read_errors_stalled);
+        if (result != null) break;
+    }
+
+    // The large skip bound fires, returning a fatal general_error exit
+    // code...
+    try testing.expect(result != null);
+    try testing.expectEqual(@intFromEnum(common.ExitCode.general_error), result.?);
+    // ...exactly at the dd_read_error_skip_max'th consecutive skipped
+    // block...
+    try testing.expectEqual(dd_read_error_skip_max, read_errors_stalled);
+    try testing.expectEqual(dd_read_error_skip_max, calls + 1);
+    // ...and prints the distinct endless-skip diagnostic (not the stall
+    // one).
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "while skipping",
+    ) != null);
 }
