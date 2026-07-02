@@ -1040,6 +1040,61 @@ test "realpath: --relative-to without -s resolves existing paths" {
 }
 
 // ============================================================================
+// Issue #46: empty --relative-to= / --relative-base= base must error, not panic
+// ============================================================================
+
+// An empty --relative-to= value must produce a clean error (exit 1) matching
+// GNU realpath ("realpath: '': No such file or directory"), not an
+// unreachable-code panic from realPathFileAbsolute asserting isAbsolute.
+test "realpath: empty --relative-to= errors instead of panicking" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-to=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// Same guard for the --relative-base= spelling: an empty base must not be
+// forwarded to realPathFileAbsolute (which asserts an absolute path).
+test "realpath: empty --relative-base= errors instead of panicking" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-base=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// ============================================================================
 // E7: Behavioral tests — all-but-last-exist semantics (GNU default mode)
 // ============================================================================
 
