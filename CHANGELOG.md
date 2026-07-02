@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.11.0 — 2026-07-02
+
 ### Added
 - **dd `count=`/`skip=`/`seek=` accept size suffixes and
   `conv=fdatasync` is supported.** The count-like operands now
@@ -36,10 +38,6 @@
   `count=`, dd seeks past bad blocks on seekable inputs, and two
   finite retry bounds terminate cases where GNU dd retries
   without bound (documented in the man page).
-
-## v0.11.0 — 2026-07-01
-
-### Fixed
 - **realpath no longer aborts on relative or empty path inputs.**
   An empty or relative `--relative-to=`/`--relative-base=` value,
   an empty `-e` operand, or a relative `-e` operand tripped a
