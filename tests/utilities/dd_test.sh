@@ -187,6 +187,69 @@ test_dd() {
         print_test_result "dd bs=1K suffix" "FAIL" "Expected 1024 bytes, got $file_size"
     fi
 
+    # Issue #43: count= must accept the same suffixes bs= does. This is
+    # the exact command from the issue: bs=512 count=1k -> 512*1024 bytes.
+    local count_suffix_output="$TEMP_DIR/dd_count_suffix.txt"
+    "$binary" if=/dev/zero of="$count_suffix_output" bs=512 count=1k status=none 2>/dev/null
+    local count_suffix_size
+    count_suffix_size=$(get_file_size "$count_suffix_output")
+    if [[ "$count_suffix_size" -eq 524288 ]]; then
+        print_test_result "dd count=1k suffix" "PASS"
+    else
+        print_test_result "dd count=1k suffix" "FAIL" \
+            "Expected 524288 bytes, got $count_suffix_size"
+    fi
+
+    # Issue #43: skip= suffix seeks the input by the suffixed block count.
+    # Build a >1KiB input where byte at offset 1024 is known, copy 1 byte.
+    local skip_suffix_input="$TEMP_DIR/dd_skip_suffix_in.txt"
+    printf '%01024d' 0 > "$skip_suffix_input"
+    printf 'Z' >> "$skip_suffix_input"
+    local skip_suffix_output="$TEMP_DIR/dd_skip_suffix_out.txt"
+    "$binary" if="$skip_suffix_input" of="$skip_suffix_output" \
+        bs=1 skip=1k count=1 status=none 2>/dev/null
+    local skip_suffix_content
+    skip_suffix_content=$(cat "$skip_suffix_output")
+    if [[ "$skip_suffix_content" == "Z" ]]; then
+        print_test_result "dd skip=1k suffix" "PASS"
+    else
+        print_test_result "dd skip=1k suffix" "FAIL" \
+            "Expected 'Z', got '$skip_suffix_content'"
+    fi
+
+    echo -e "${CYAN}Testing conv=fdatasync...${NC}"
+
+    # Issue #43: conv=fdatasync flushes data before exit and copies
+    # normally. Exact second command from the issue.
+    local fdatasync_input=$(create_temp_file "fdatasync payload")
+    local fdatasync_output="$TEMP_DIR/dd_fdatasync.txt"
+    "$binary" if="$fdatasync_input" of="$fdatasync_output" \
+        conv=fdatasync status=none 2>/dev/null
+    local fdatasync_rc=$?
+    local fdatasync_content
+    fdatasync_content=$(cat "$fdatasync_output")
+    if [[ "$fdatasync_rc" -eq 0 && "$fdatasync_content" == "fdatasync payload" ]]; then
+        print_test_result "dd conv=fdatasync" "PASS"
+    else
+        print_test_result "dd conv=fdatasync" "FAIL" \
+            "rc=$fdatasync_rc content='$fdatasync_content'"
+    fi
+
+    # conv=fdatasync,fsync combo: both syncs coexist, data intact.
+    local fdcombo_input=$(create_temp_file "combo payload")
+    local fdcombo_output="$TEMP_DIR/dd_fdcombo.txt"
+    "$binary" if="$fdcombo_input" of="$fdcombo_output" \
+        conv=fdatasync,fsync status=none 2>/dev/null
+    local fdcombo_rc=$?
+    local fdcombo_content
+    fdcombo_content=$(cat "$fdcombo_output")
+    if [[ "$fdcombo_rc" -eq 0 && "$fdcombo_content" == "combo payload" ]]; then
+        print_test_result "dd conv=fdatasync,fsync" "PASS"
+    else
+        print_test_result "dd conv=fdatasync,fsync" "FAIL" \
+            "rc=$fdcombo_rc content='$fdcombo_content'"
+    fi
+
     echo -e "${CYAN}Testing exit codes...${NC}"
 
     # Success exit code

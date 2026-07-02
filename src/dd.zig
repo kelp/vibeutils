@@ -57,6 +57,7 @@ const DdConfig = struct {
     conv_noerror: bool = false,
     conv_sync: bool = false,
     conv_fsync: bool = false,
+    conv_fdatasync: bool = false,
     conv_osync: bool = false,
     conv_swab: bool = false,
     conv_ascii: bool = false,
@@ -1643,6 +1644,83 @@ test "parseOperands - count skip seek" {
     try testing.expectEqual(@as(usize, 3), config.seek);
 }
 
+// Issue #43: count=/skip=/seek= must accept the same K/M/G/b suffix
+// grammar that bs= already honors. GNU applies the multiplicative
+// suffix table to both N (count/skip/seek) and BYTES (bs) operands.
+test "parseOperands - count suffix k" {
+    const args = [_][]const u8{"count=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 1024), config.count);
+    // Sibling operands must remain at their defaults.
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - count suffix M" {
+    const args = [_][]const u8{"count=2M"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 2 * 1048576), config.count);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - count suffix b block" {
+    const args = [_][]const u8{"count=1b"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 512), config.count);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - skip suffix k" {
+    const args = [_][]const u8{"skip=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.skip);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - seek suffix k" {
+    const args = [_][]const u8{"seek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.seek);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - iseek suffix maps to skip" {
+    const args = [_][]const u8{"iseek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.skip);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - oseek suffix maps to seek" {
+    const args = [_][]const u8{"oseek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.seek);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+// Regression guard: plain integer counts must parse identically after
+// routing through parseByteSize. Must be GREEN before and after the fix.
+test "parseOperands - plain integer count skip seek unchanged" {
+    const args = [_][]const u8{ "count=2", "skip=3", "seek=4" };
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 2), config.count);
+    try testing.expectEqual(@as(usize, 3), config.skip);
+    try testing.expectEqual(@as(usize, 4), config.seek);
+}
+
+test "parseOperands - count zero stays zero" {
+    const args = [_][]const u8{"count=0"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 0), config.count);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+// Lowercase 'm' is not in the bs= suffix table; count= must reject it
+// exactly as bs= does. Pins that we did not loosen the grammar.
+test "parseOperands - count lowercase m rejected" {
+    const args = [_][]const u8{"count=1m"};
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
+}
+
 test "parseOperands - conversions" {
     const args = [_][]const u8{"conv=lcase,notrunc,sync"};
     const config = try parseOperands(&args);
@@ -2249,6 +2327,22 @@ test "parseOperands - cbs default is null" {
 test "parseConversions - fsync" {
     const args = [_][]const u8{"conv=fsync"};
     const config = try parseOperands(&args);
+    try testing.expect(config.conv_fsync);
+}
+
+// Issue #43: conv=fdatasync flushes output data before exit, like
+// conv=fsync but data-only. Must parse to its own independent flag.
+test "parseConversions - fdatasync" {
+    const args = [_][]const u8{"conv=fdatasync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fdatasync);
+    try testing.expect(!config.conv_fsync);
+}
+
+test "parseConversions - fdatasync and fsync independent" {
+    const args = [_][]const u8{"conv=fdatasync,fsync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fdatasync);
     try testing.expect(config.conv_fsync);
 }
 
