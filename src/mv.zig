@@ -686,9 +686,9 @@ fn copyDirectoryTree(
 
     var had_copy_error = false;
     // The bounded walker drives termination: next() yields null when the
-    // traversal is exhausted (the `orelse break` below), and a per-entry error
-    // drives `continue`, so only exhaustion ends this loop. No numeric cap: the
-    // tree depth/breadth is unbounded a priori and a cap would truncate it.
+    // traversal is exhausted (the `orelse break` below); a per-entry error
+    // drives `continue`; and a terminal cap error (EntryLimitExceeded) breaks,
+    // since next() latches it and would otherwise re-fire forever.
     while (true) { // tiger:allow:unbounded-loop terminates when walker.next() returns null
         const maybe_entry = dir_walker.next(io) catch |err| {
             // A per-entry error (e.g. opening an unreadable subdir) is reported
@@ -696,6 +696,9 @@ fn copyDirectoryTree(
             // failing child path on error, so recover it from the parent.
             recoverDescendError(allocator, io, &dir_walker, source, dest, stderr_writer, err);
             had_copy_error = true;
+            // The entry-count cap is terminal: next() latches this error and
+            // re-returns it forever, so stop the walk instead of spinning.
+            if (err == error.EntryLimitExceeded) break;
             continue;
         };
         const entry = maybe_entry orelse break;

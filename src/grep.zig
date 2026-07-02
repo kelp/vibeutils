@@ -1848,6 +1848,9 @@ fn searchTree(
             // An unreadable directory (or other per-entry I/O failure) is
             // non-fatal: report it and let the walker resume at siblings.
             reportWalkError(io, root_path, err, opts, stderr_writer, &search);
+            // The entry-count cap is terminal: next() latches this error and
+            // re-returns it forever, so stop the walk instead of spinning.
+            if (err == error.EntryLimitExceeded) break;
             continue;
         };
         const entry = maybe_entry orelse break;
