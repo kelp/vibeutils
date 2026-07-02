@@ -1278,6 +1278,287 @@ test "realpath: -e resolves a relative existing file to an absolute path (issue 
 }
 
 // ============================================================================
+// Issue #51: -s / -m with relative paths must resolve against the cwd.
+// cwd().realPath is broken under 0.16 Threaded io (it readlinks the AT_FDCWD
+// pseudo-fd /proc/self/fd/-100), so resolveLogical (-s) and canonicalizeMissing
+// (-m) fail with ENOENT for existing relative paths where GNU succeeds. We chdir
+// into a tmp dir so "." is deterministic and independent of the repo cwd; the
+// original cwd handle is restored via setCurrentDir on exit.
+// ============================================================================
+
+// -s on a relative existing path must resolve to its absolute form via the cwd.
+// Before the fix resolveLogical's relative branch calls cwd().realPath and
+// aborts with ENOENT; GNU prints the absolute path and exits 0.
+test "realpath: -s relative existing path resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "motd", .{});
+        file.close(io);
+    }
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/motd\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "./motd" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// -s on a relative path carrying "." and ".." exercises resolveLogical's
+// relative-branch cleanup, not just a bare relative name. ./sub/./../sub must
+// clean to <cwd>/sub.
+test "realpath: -s relative path with dot components resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/sub\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "./sub/./../sub" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// -m on a relative path with a missing tail must resolve the whole thing
+// against the cwd. Before the fix canonicalizeMissing_absolutePath calls
+// cwd().realPath and aborts with ENOENT; GNU prints <cwd>/nosuch/dir, exit 0.
+test "realpath: -m relative path with missing tail resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/dir\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "nosuch/dir" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// -m on a relative path whose components all exist must resolve to the
+// canonical absolute path via the cwd.
+test "realpath: -m relative path with existing components resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/sub\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "sub" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// ----------------------------------------------------------------------------
+// Issue #51 addendum: once cwd().realPath works, the empty-as-cwd special cases
+// masked by the breakage must still reject a zero-length operand with ENOENT to
+// match GNU (`realpath -s ''` / `-m ''` -> "No such file or directory", exit 1),
+// rather than silently resolving to the cwd. These guard against a naive fix
+// that drops the empty-path guards; they must stay green before AND after.
+// ----------------------------------------------------------------------------
+
+test "realpath: -s empty operand errors, not resolves to cwd (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+test "realpath: -m empty operand errors, not resolves to cwd (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// -s with an empty --relative-to= routes the empty base through resolveLogical
+// (processPath_resolveBase's no_symlinks branch); it must error, not resolve
+// the base to the cwd.
+test "realpath: -s empty --relative-to= errors (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "--relative-to=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// -m with an empty --relative-base= routes the empty base through
+// canonicalizeMissing (processPath_resolveBase's canonicalize_missing branch);
+// it must error, not resolve the base to the cwd.
+test "realpath: -m empty --relative-base= errors (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "--relative-base=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// ============================================================================
 // E7: Behavioral tests — all-but-last-exist semantics (GNU default mode)
 // ============================================================================
 
