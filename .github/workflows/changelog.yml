@@ -1,0 +1,41 @@
+name: Changelog
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions (setup-just, etc.) to run on Node 24 regardless of
+# their action.yml-declared runtime.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-changelog:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Invariant B diffs each released CHANGELOG section against
+          # its git tag (`git show vX.Y.Z:CHANGELOG.md`), which needs
+          # full tag history — the default shallow checkout has none.
+          fetch-depth: 0
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4
+      # Catches the class of bug where a PR merges cleanly (no textual
+      # conflict) but lands unreleased entries inside an already-tagged
+      # section, or drops the "## Unreleased" heading entirely. Git's
+      # line-based merge can't see that a released section is frozen,
+      # so this gate checks it explicitly: Unreleased heading present
+      # (except during the release-promotion window), every released
+      # section byte-identical to its tag, and no leftover conflict
+      # markers.
+      - name: Lint CHANGELOG structure
+        run: just lint-changelog
