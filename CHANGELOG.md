@@ -53,6 +53,11 @@
   to its git tag, and no merge-conflict markers may remain. Catches
   clean-but-wrong automerges that file unreleased entries into an
   already-tagged section. Available locally as `just lint-changelog`.
+- Add `actionlint` to the project gale deps so `just lint-actions`
+  runs everywhere, and fix the three shellcheck findings its first
+  run surfaced in `test.yml` and `release.yml` (unquoted `$(nproc)`,
+  an unquoted `${VERSION}` glob, a dead `VERSION` assignment). All
+  behavior-preserving; the workflow lint is now clean.
 
 ## v0.10.3 — 2026-06-29
 
