@@ -2,7 +2,20 @@
 
 ## Unreleased
 
+### Added
+- **dd `count=`/`skip=`/`seek=` accept size suffixes and
+  `conv=fdatasync` is supported.** The count-like operands now
+  honor the same K/M/G suffix grammar as `bs=` (as block-count
+  multipliers, matching GNU), and `conv=fdatasync` performs a
+  data-only flush before exit (full fsync on non-Linux and when
+  combined with `conv=fsync`).
+
 ### Fixed
+- **dd `conv=fdatasync`/`conv=fsync` report sync failures
+  instead of aborting.** Syncing a pipe (for example dd in a
+  pipeline) previously crashed with SIGABRT; it now reports
+  `fsync failed for 'standard output'` and exits 1, matching
+  GNU.
 - **realpath/readlink resolve relative paths again with `-s` and
   `-m`.** A Zig 0.16 Threaded-io regression made `cwd().realPath`
   fail on the AT_FDCWD pseudo-fd, so `realpath -s <relative>`,
