@@ -101,6 +101,26 @@ would retry such a region without bound, bound it explicitly with
 Pad each input block with NUL bytes to
 .Cm ibs
 size.
+.It Cm fsync
+Synchronize output data and metadata to disk before closing.
+.It Cm fdatasync
+Synchronize output data to disk before closing.
+Unlike
+.Cm fsync ,
+file metadata need not be flushed.
+On platforms other than Linux a full
+.Cm fsync
+is performed instead.
+When both
+.Cm fsync
+and
+.Cm fdatasync
+are given, a single full
+.Cm fsync
+is performed.
+If the output cannot be synchronized (for example, it is a pipe),
+.Nm
+reports the failure and exits with a nonzero status.
 .El
 .It Cm status Ns = Ns Ar level
 Control the information printed to standard error:
@@ -126,6 +146,19 @@ Sizes may also use
 .Ql x
 for multiplication (e.g.,
 .Dq 1024x1024 ) .
+The block-count operands
+.Cm count ,
+.Cm skip ,
+and
+.Cm seek
+(and the aliases
+.Cm iseek
+and
+.Cm oseek )
+accept the same suffixes, where the suffix multiplies the block count
+(e.g.,
+.Cm count Ns = Ns Cm 1k
+copies 1024 blocks).
 .Sh EXIT STATUS
 .Ex -std dd
 .Sh EXAMPLES
