@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **grep `-r` and mv now halt cleanly at the walker entry cap.**
+  Hitting the 16M-entry safety cap previously re-fired the same
+  error on every subsequent iteration, an infinite storm of
+  identical diagnostics; the cap is now reported once, the walk
+  stops, and the usual error exit status is preserved.
 - **grep `-R` now descends symbolic links to directories.**
   Following a directory symlink under `-R` previously did nothing
   (opening the symlink read-only succeeded, so grep treated it as a
