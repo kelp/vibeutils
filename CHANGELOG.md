@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Fixed
+- **dd `conv=noerror` no longer spins forever on persistent read
+  errors.** A failed read never consumed the `count=` budget and
+  never advanced the input. Failed reads now count against
+  `count=`, dd seeks past bad blocks on seekable inputs, and two
+  finite retry bounds terminate cases where GNU dd retries
+  without bound (documented in the man page).
+
+## v0.11.0 — 2026-07-01
+
+### Fixed
 - **realpath no longer aborts on relative or empty path inputs.**
   An empty or relative `--relative-to=`/`--relative-base=` value,
   an empty `-e` operand, or a relative `-e` operand tripped a
