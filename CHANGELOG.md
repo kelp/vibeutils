@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **realpath/readlink resolve relative paths again with `-s` and
+  `-m`.** A Zig 0.16 Threaded-io regression made `cwd().realPath`
+  fail on the AT_FDCWD pseudo-fd, so `realpath -s <relative>`,
+  `realpath -m <relative>`, and `readlink -m <relative>` reported
+  "No such file or directory" for paths that exist. Empty
+  operands now also error with exit 1 under `-s`/`-m`, matching
+  GNU, instead of resolving to the working directory.
 - **The directory walker follows symlinks correctly under
   `follow_all`, fixing `chown -RL` and `du -L` on symlinked
   files.** Every symlink was classified as a directory without
