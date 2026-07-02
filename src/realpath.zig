@@ -10,13 +10,28 @@ const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-/// Resolve an absolute path to its canonical form, returning a heap-allocated
-/// `[]u8` (not sentinel-terminated). Using a stack buffer + `allocator.dupe`
-/// avoids the debug-allocator size mismatch from `realPathFileAbsoluteAlloc`
-/// returning `[:0]u8` which when freed as `[]u8` reports the wrong size.
-fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+/// Resolve a path to its canonical form, returning a heap-allocated `[]u8` (not
+/// sentinel-terminated). Handles all three input classes: an empty path is
+/// rejected as ENOENT (GNU parity), while relative and absolute paths both route
+/// through `cwd().realPathFile`. Using a stack buffer + `allocator.dupe` avoids
+/// the debug-allocator size mismatch from `realPathFileAbsoluteAlloc` returning
+/// `[:0]u8` which when freed as `[]u8` reports the wrong size.
+fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    // GNU realpath reports "No such file or directory" for an empty operand
+    // rather than treating it as the cwd. Rejecting it here also keeps it away
+    // from realPathFileAbsolute, whose isAbsolute assert would abort the process.
+    if (path.len == 0) {
+        return error.FileNotFound;
+    }
+    std.debug.assert(path.len > 0);
+
+    // cwd().realPathFile resolves absolute paths (the dir handle is ignored) and
+    // paths relative to the cwd, without asserting isAbsolute. Avoid
+    // cwd().realPath (issue #51: broken under Threaded io; readlinks AT_FDCWD).
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    std.debug.assert(len > 0);
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -165,7 +180,7 @@ fn processPath_resolveTarget(
         };
     } else if (opts.canonicalize_existing) {
         // -e: all components must exist
-        return realPathAbsoluteDupe(allocator, io, path) catch |err| {
+        return realPathDupe(allocator, io, path) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, path, err);
             }
@@ -183,7 +198,8 @@ fn processPath_resolveTarget(
 }
 
 /// Resolve the relative base directory. Distinct from `processPath_resolveTarget`:
-/// the default branch uses `realPathAbsoluteDupe` (no parent-must-exist mode).
+/// the default branch uses `realPathDupe` (no parent-must-exist mode). An empty
+/// base surfaces as ENOENT via `realPathDupe`, matching GNU realpath.
 /// Returns the owned resolved slice, or null when an error was already reported.
 fn processPath_resolveBase(
     allocator: Allocator,
@@ -207,7 +223,7 @@ fn processPath_resolveBase(
             return null;
         };
     } else {
-        return realPathAbsoluteDupe(allocator, io, base_dir) catch |err| {
+        return realPathDupe(allocator, io, base_dir) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, base_dir, err);
             }
@@ -1037,6 +1053,228 @@ test "realpath: --relative-to without -s resolves existing paths" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin\n", stdout_aw.writer.buffered());
+}
+
+// ============================================================================
+// Issue #46: empty --relative-to= / --relative-base= base must error, not panic
+// ============================================================================
+
+// An empty --relative-to= value must produce a clean error (exit 1) matching
+// GNU realpath ("realpath: '': No such file or directory"), not an
+// unreachable-code panic from realPathFileAbsolute asserting isAbsolute.
+test "realpath: empty --relative-to= errors instead of panicking" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-to=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// Same guard for the --relative-base= spelling: an empty base must not be
+// forwarded to realPathFileAbsolute (which asserts an absolute path).
+test "realpath: empty --relative-base= errors instead of panicking" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-base=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// ============================================================================
+// Issue #46 (round 2): non-absolute paths must be resolved, not forwarded raw
+// to realPathFileAbsolute (which asserts isAbsolute and aborts the process).
+// The round-1 fix only guarded the EMPTY base in processPath_resolveBase; these
+// pin the still-uncovered cases: a relative (but non-empty) base, an empty
+// target operand, and a relative target operand.
+// ============================================================================
+
+// A RELATIVE --relative-to base must be resolved against the cwd. Before the
+// fix the default (symlink-following) base branch calls realPathAbsoluteDupe(".")
+// -> realPathFileAbsolute, which asserts isAbsolute and aborts (SIGABRT / exit
+// 134), killing the in-process test runner. GNU prints the target relative to
+// the resolved base. We chdir into a tmp dir so "." is deterministic and does
+// not depend on the repo cwd; the cwd handle is restored via fchdir on exit.
+test "realpath: relative --relative-to=. resolves against cwd (issue #46)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    // Absolute target under the resolved base; expected relative form is "sub".
+    const target = try std.fmt.allocPrint(testing.allocator, "{s}/sub", .{tmp_abs});
+    defer testing.allocator.free(target);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-to=.", target };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("sub\n", stdout_aw.writer.buffered());
+}
+
+// A RELATIVE --relative-base value hits the same crashing default branch of
+// processPath_resolveBase. GNU resolves the base against the cwd and, since the
+// target is under it, prints the relative form ("child").
+test "realpath: relative --relative-base=sub resolves against cwd (issue #46)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub/child");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const target = try std.fmt.allocPrint(testing.allocator, "{s}/sub/child", .{tmp_abs});
+    defer testing.allocator.free(target);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-base=sub", target };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("child\n", stdout_aw.writer.buffered());
+}
+
+// An empty TARGET operand under -e reaches processPath_resolveTarget's
+// canonicalize_existing branch, which the round-1 base guard does not cover.
+// realPathAbsoluteDupe("") aborts on the isAbsolute assert; GNU reports ENOENT.
+test "realpath: -e with empty operand errors instead of panicking (issue #46)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-e", "" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// A RELATIVE existing TARGET under -e must be resolved to its absolute canonical
+// path. Before the fix realPathAbsoluteDupe("existing.txt") aborts on the
+// isAbsolute assert. GNU prints the absolute resolved path and exits 0.
+test "realpath: -e resolves a relative existing file to an absolute path (issue #46)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "existing.txt", .{});
+        file.close(io);
+    }
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/existing.txt\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-e", "existing.txt" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 // ============================================================================

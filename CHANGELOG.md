@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **realpath no longer aborts on relative or empty path inputs.**
+  An empty or relative `--relative-to=`/`--relative-base=` value,
+  an empty `-e` operand, or a relative `-e` operand tripped a
+  std-library assertion and killed the process (SIGABRT, exit
+  134). Relative paths now resolve against the working directory
+  and empty paths report `No such file or directory` with exit 1,
+  matching GNU.
 - **grep `-r` and mv now halt cleanly at the walker entry cap.**
   Hitting the 16M-entry safety cap previously re-fired the same
   error on every subsequent iteration, an infinite storm of
