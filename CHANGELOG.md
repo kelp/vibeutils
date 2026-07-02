@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.11.0 — 2026-07-01
 
 ### Fixed
+- **realpath no longer aborts on relative or empty path inputs.**
+  An empty or relative `--relative-to=`/`--relative-base=` value,
+  an empty `-e` operand, or a relative `-e` operand tripped a
+  std-library assertion and killed the process (SIGABRT, exit
+  134). Relative paths now resolve against the working directory
+  and empty paths report `No such file or directory` with exit 1,
+  matching GNU.
 - **grep `-r` and mv now halt cleanly at the walker entry cap.**
   Hitting the 16M-entry safety cap previously re-fired the same
   error on every subsequent iteration, an infinite storm of
@@ -53,6 +60,11 @@
   to its git tag, and no merge-conflict markers may remain. Catches
   clean-but-wrong automerges that file unreleased entries into an
   already-tagged section. Available locally as `just lint-changelog`.
+- Add `actionlint` to the project gale deps so `just lint-actions`
+  runs everywhere, and fix the three shellcheck findings its first
+  run surfaced in `test.yml` and `release.yml` (unquoted `$(nproc)`,
+  an unquoted `${VERSION}` glob, a dead `VERSION` assignment). All
+  behavior-preserving; the workflow lint is now clean.
 
 ## v0.10.3 — 2026-06-29
 

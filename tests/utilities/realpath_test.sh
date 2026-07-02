@@ -357,4 +357,42 @@ test_realpath() {
             "Expected 'subdir/file.txt', got '$rel_out'"
     fi
     rm -rf "$rel_dir"
+
+    # Issue #46: a RELATIVE --relative-to base must be resolved against the cwd,
+    # not forwarded verbatim to realPathFileAbsolute (which asserts isAbsolute
+    # and aborts with SIGABRT / exit 134). GNU prints the target relative to the
+    # resolved base. We cd into a tmp dir so "." is deterministic.
+    echo -e "${CYAN}Testing relative --relative-to base (issue #46)...${NC}"
+
+    local rel_base_dir="$TEMP_DIR/realpath_rel_base_test"
+    mkdir -p "$rel_base_dir/sub"
+
+    local rel_base_out rel_base_rc
+    rel_base_out=$(cd "$rel_base_dir" && "$binary" --relative-to=. "$rel_base_dir/sub" 2>/dev/null)
+    rel_base_rc=$?
+    if [[ "$rel_base_rc" -eq 0 && "$rel_base_out" == "sub" ]]; then
+        print_test_result "relative --relative-to=. resolves against cwd" "PASS"
+    else
+        print_test_result "relative --relative-to=. resolves against cwd" "FAIL" \
+            "Expected exit 0 and 'sub', got exit=$rel_base_rc out='$rel_base_out'"
+    fi
+    rm -rf "$rel_base_dir"
+
+    # Issue #46: an empty --relative-to= value must produce a clean ENOENT error
+    # (exit 1), never a SIGABRT (exit 134) from the isAbsolute assert.
+    local empty_rt_err empty_rt_rc
+    empty_rt_err=$("$binary" --relative-to= /tmp 2>&1 >/dev/null)
+    empty_rt_rc=$?
+    if [[ "$empty_rt_rc" -eq 1 ]]; then
+        print_test_result "empty --relative-to= exits 1 (not 134)" "PASS"
+    else
+        print_test_result "empty --relative-to= exits 1 (not 134)" "FAIL" \
+            "Expected exit 1, got $empty_rt_rc"
+    fi
+    if [[ "$empty_rt_err" == *"No such file or directory"* ]]; then
+        print_test_result "empty --relative-to= reports No such file or directory" "PASS"
+    else
+        print_test_result "empty --relative-to= reports No such file or directory" "FAIL" \
+            "Error: $empty_rt_err"
+    fi
 }
