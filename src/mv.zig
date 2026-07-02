@@ -580,6 +580,7 @@ fn crossFilesystemMove(
             options,
             stdout_writer,
             stderr_writer,
+            .{ .order = .both, .symlinks = .no_follow, .detect_cycles = true },
         );
     } else {
         errdefer std.Io.Dir.cwd().deleteFile(io, dest) catch {};
@@ -674,15 +675,11 @@ fn copyDirectoryTree(
     options: MoveOptions,
     stdout_writer: anytype,
     stderr_writer: anytype,
+    walk_config: common.walker.WalkConfig,
 ) !void {
     assert(source.len > 0);
     assert(dest.len > 0);
 
-    const walk_config = common.walker.WalkConfig{
-        .order = .both,
-        .symlinks = .no_follow,
-        .detect_cycles = true,
-    };
     var dir_walker = try common.walker.Walker.init(allocator, walk_config);
     defer dir_walker.deinit(io);
     try dir_walker.addRoot(source);
@@ -2974,4 +2971,56 @@ test "walker-migration: cross-device fallback continues past unreadable subdir (
     _ = std.c.chmod(locked_path_z, 0o755);
     try testing.expect(test_dir.fileExists("src/locked"));
     try test_dir.inner.expectFileContent("src/open/f.txt", "open body");
+}
+
+test "copyDirectoryTree halts on EntryLimitExceeded instead of looping (issue #45)" {
+    // Regression for issue #45 (mv side). Same permanent-cap bug as grep: once
+    // the bounded walker trips max_entries, walker.next() returns
+    // error.EntryLimitExceeded on every subsequent call. The pre-fix
+    // copyDirectoryTree loop reported via recoverDescendError and `continue`d,
+    // so it re-hit the permanent cap forever — an infinite loop.
+    //
+    // Methodology: inject a tiny max_entries through the walk_config seam
+    // (production keeps the 1<<24 default) against a tree that exceeds the cap,
+    // and require the copy to RETURN promptly with error.SomeCopyFailed rather
+    // than spin. Pre-fix the call never returns; that hang, caught by an
+    // external wall-clock timeout, is the RED evidence.
+    const io = testing.io;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // A source tree with well over three entries so the .both walk blows past a
+    // max_entries=3 cap while entries remain, making the permanent cap re-fire.
+    try test_dir.inner.createDir("src");
+    inline for (.{ "f01", "f02", "f03", "f04", "f05", "f06" }) |name| {
+        try test_dir.createFile("src/" ++ name ++ ".txt", "body\n");
+    }
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    // Fixed stderr buffer so any pre-fix diagnostics storm stays bounded and the
+    // loop degrades to a pure spin — a clean hang for the timeout to catch.
+    var stderr_buf: [4096]u8 = undefined;
+    var stderr_w: std.Io.Writer = .fixed(&stderr_buf);
+
+    // Post-fix: the catch arm sets had_copy_error then breaks, so the tree copy
+    // returns error.SomeCopyFailed. Pre-fix: never returns (infinite loop).
+    const result = copyDirectoryTree(
+        allocator,
+        io,
+        source,
+        dest,
+        .{},
+        common.null_writer,
+        &stderr_w,
+        .{ .order = .both, .symlinks = .no_follow, .detect_cycles = true, .max_entries = 3 },
+    );
+    try testing.expectError(error.SomeCopyFailed, result);
 }
