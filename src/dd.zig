@@ -57,6 +57,7 @@ const DdConfig = struct {
     conv_noerror: bool = false,
     conv_sync: bool = false,
     conv_fsync: bool = false,
+    conv_fdatasync: bool = false,
     conv_osync: bool = false,
     conv_swab: bool = false,
     conv_ascii: bool = false,
@@ -189,26 +190,25 @@ fn parseOperands_applyKeyValue(config: *DdConfig, key: []const u8, value: []cons
     } else if (std.mem.eql(u8, key, "obs")) {
         config.obs = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "count")) {
-        config.count = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
-            return error.InvalidValue;
+        // Issue #43: count/skip/seek take the same multiplicative suffix
+        // grammar as bs=. Here the suffix is a pure block-count multiplier
+        // (count=1k means 1024 blocks), so parseByteSize's number is used
+        // verbatim without any byte conversion.
+        config.count = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "skip")) {
-        config.skip = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
-            return error.InvalidValue;
+        config.skip = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "seek")) {
-        config.seek = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
-            return error.InvalidValue;
+        config.seek = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "cbs")) {
         config.cbs = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "conv")) {
         try parseConversions(config, value);
     } else if (std.mem.eql(u8, key, "iseek")) {
-        // Alias for skip
-        config.skip = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
-            return error.InvalidValue;
+        // Alias for skip; same suffix grammar as skip=.
+        config.skip = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "oseek")) {
-        // Alias for seek
-        config.seek = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
-            return error.InvalidValue;
+        // Alias for seek; same suffix grammar as seek=.
+        config.seek = try parseByteSize(value);
     } else if (std.mem.eql(u8, key, "fillchar")) {
         if (value.len != 1) return error.InvalidValue;
         config.fillchar = value[0];
@@ -259,6 +259,8 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_sync = true;
         } else if (std.mem.eql(u8, conv, "fsync")) {
             config.conv_fsync = true;
+        } else if (std.mem.eql(u8, conv, "fdatasync")) {
+            config.conv_fdatasync = true;
         } else if (std.mem.eql(u8, conv, "osync")) {
             config.conv_osync = true;
         } else if (std.mem.eql(u8, conv, "swab")) {
@@ -494,6 +496,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  noerror   continue after read errors
         \\  sync      pad input blocks with NULs to ibs size
         \\  fsync     fsync output file before closing
+        \\  fdatasync fdatasync output data before closing
         \\  osync     pad final output block with NULs to obs size
         \\
         \\Examples:
@@ -1557,24 +1560,91 @@ fn runDd_finish(
         if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
-    // fsync the output file if requested
-    if (config.conv_fsync) {
-        ctx.output_file.sync(ctx.io) catch |err| {
-            const message = common.posixErrorString(err);
-            common.printErrorWithProgram(
-                ctx.allocator,
-                ctx.stderr,
-                "dd",
-                "fsync error: {s}",
-                .{message},
-            );
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    }
+    // Sync the output file if conv=fsync or conv=fdatasync was requested.
+    const sync_code = runDd_finish_sync(ctx, config);
+    if (sync_code != @intFromEnum(common.ExitCode.success)) return sync_code;
 
     // Print statistics
     printStats(ctx.io, ctx.stderr, ctx.stats.*, config.status);
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the output file to disk for conv=fsync and/or conv=fdatasync.
+/// conv=fdatasync flushes data only via fdatasync(2); conv=fsync flushes
+/// data and metadata. A full fsync subsumes a data-only sync, so when both
+/// are requested a single fsync suffices (matching GNU dd). fdatasync is
+/// Linux-only; on other platforms a full fsync is performed instead.
+///
+/// We issue the raw syscalls and inspect errno directly rather than call
+/// std.posix.fdatasync / File.sync: those mark EINVAL "unreachable" and so
+/// panic (SIGABRT) when the output is a pipe or other object that cannot be
+/// synced. Like gnulib's fdatasync replacement, EINVAL/ENOSYS from
+/// fdatasync fall back to a full fsync; a genuine fsync failure (e.g. the
+/// output is a pipe) is reported GNU-style and exits nonzero.
+fn runDd_finish_sync(ctx: *const DdWriteCtx, config: *const DdConfig) u8 {
+    const want_full = config.conv_fsync;
+    const want_data = config.conv_fdatasync;
+    if (!want_full and !want_data) return @intFromEnum(common.ExitCode.success);
+
+    const fd = ctx.output_file.handle;
+    const target = config.output_file orelse "standard output";
+    const use_fdatasync = want_data and !want_full and builtin.os.tag == .linux;
+    if (use_fdatasync) {
+        // A data-only sync is chosen only when no full fsync was requested.
+        std.debug.assert(!want_full);
+        // The fdatasync(2) path is reachable on Linux alone.
+        std.debug.assert(builtin.os.tag == .linux);
+        switch (std.posix.errno(std.posix.system.fdatasync(fd))) {
+            .SUCCESS => return @intFromEnum(common.ExitCode.success),
+            // No fdatasync for this fd/filesystem: fall through to fsync.
+            .INVAL, .NOSYS => {},
+            else => |err| return runDd_finish_sync_fail(ctx, "fdatasync", target, err),
+        }
+    }
+
+    // Full fsync: conv=fsync, the fdatasync fallback, or non-Linux fdatasync.
+    switch (std.posix.errno(std.posix.system.fsync(fd))) {
+        .SUCCESS => return @intFromEnum(common.ExitCode.success),
+        else => |err| return runDd_finish_sync_fail(ctx, "fsync", target, err),
+    }
+}
+
+/// Report a failed output sync GNU-style ("dd: fsync failed for
+/// 'standard output': Invalid argument") and map it to dd's fatal exit
+/// code. `op` names the syscall and `target` names the output operand.
+fn runDd_finish_sync_fail(
+    ctx: *const DdWriteCtx,
+    op: []const u8,
+    target: []const u8,
+    err: std.posix.E,
+) u8 {
+    std.debug.assert(op.len > 0);
+    std.debug.assert(err != .SUCCESS);
+
+    const detail = runDd_finish_sync_errnoString(err);
+    common.printErrorWithProgram(
+        ctx.allocator,
+        ctx.stderr,
+        "dd",
+        "{s} failed for '{s}': {s}",
+        .{ op, target, detail },
+    );
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+/// Human-readable text for the errno values an output sync can report, so
+/// dd's diagnostics read like GNU's rather than exposing raw errno tags.
+fn runDd_finish_sync_errnoString(err: std.posix.E) []const u8 {
+    std.debug.assert(err != .SUCCESS);
+    return switch (err) {
+        .INVAL => "Invalid argument",
+        .BADF => "Bad file descriptor",
+        .IO => "Input/output error",
+        .NOSPC => "No space left on device",
+        .DQUOT => "Disk quota exceeded",
+        .ROFS => "Read-only file system",
+        else => @tagName(err),
+    };
 }
 
 /// Process files or stdin with dd operands
@@ -1641,6 +1711,83 @@ test "parseOperands - count skip seek" {
     try testing.expectEqual(@as(?usize, 10), config.count);
     try testing.expectEqual(@as(usize, 5), config.skip);
     try testing.expectEqual(@as(usize, 3), config.seek);
+}
+
+// Issue #43: count=/skip=/seek= must accept the same K/M/G/b suffix
+// grammar that bs= already honors. GNU applies the multiplicative
+// suffix table to both N (count/skip/seek) and BYTES (bs) operands.
+test "parseOperands - count suffix k" {
+    const args = [_][]const u8{"count=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 1024), config.count);
+    // Sibling operands must remain at their defaults.
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - count suffix M" {
+    const args = [_][]const u8{"count=2M"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 2 * 1048576), config.count);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - count suffix b block" {
+    const args = [_][]const u8{"count=1b"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 512), config.count);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - skip suffix k" {
+    const args = [_][]const u8{"skip=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.skip);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - seek suffix k" {
+    const args = [_][]const u8{"seek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.seek);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - iseek suffix maps to skip" {
+    const args = [_][]const u8{"iseek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.skip);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - oseek suffix maps to seek" {
+    const args = [_][]const u8{"oseek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.seek);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+// Regression guard: plain integer counts must parse identically after
+// routing through parseByteSize. Must be GREEN before and after the fix.
+test "parseOperands - plain integer count skip seek unchanged" {
+    const args = [_][]const u8{ "count=2", "skip=3", "seek=4" };
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 2), config.count);
+    try testing.expectEqual(@as(usize, 3), config.skip);
+    try testing.expectEqual(@as(usize, 4), config.seek);
+}
+
+test "parseOperands - count zero stays zero" {
+    const args = [_][]const u8{"count=0"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 0), config.count);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+// Lowercase 'm' is not in the bs= suffix table; count= must reject it
+// exactly as bs= does. Pins that we did not loosen the grammar.
+test "parseOperands - count lowercase m rejected" {
+    const args = [_][]const u8{"count=1m"};
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
 }
 
 test "parseOperands - conversions" {
@@ -2249,6 +2396,22 @@ test "parseOperands - cbs default is null" {
 test "parseConversions - fsync" {
     const args = [_][]const u8{"conv=fsync"};
     const config = try parseOperands(&args);
+    try testing.expect(config.conv_fsync);
+}
+
+// Issue #43: conv=fdatasync flushes output data before exit, like
+// conv=fsync but data-only. Must parse to its own independent flag.
+test "parseConversions - fdatasync" {
+    const args = [_][]const u8{"conv=fdatasync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fdatasync);
+    try testing.expect(!config.conv_fsync);
+}
+
+test "parseConversions - fdatasync and fsync independent" {
+    const args = [_][]const u8{"conv=fdatasync,fsync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fdatasync);
     try testing.expect(config.conv_fsync);
 }
 
