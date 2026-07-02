@@ -41,6 +41,13 @@
   failing on any gating violation (oversized function, long line,
   recursion, compound assert, unbounded loop). Available locally as
   `just tiger-check`.
+- **Changelog CI gate.** A `Changelog` workflow lints CHANGELOG.md
+  structure on every PR and push to `main`: the `## Unreleased`
+  heading must be present (except during the release-promotion
+  window), every released `## vX.Y.Z` section must be byte-identical
+  to its git tag, and no merge-conflict markers may remain. Catches
+  clean-but-wrong automerges that file unreleased entries into an
+  already-tagged section. Available locally as `just lint-changelog`.
 
 ## v0.10.3 — 2026-06-29
 

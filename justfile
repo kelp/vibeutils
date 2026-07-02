@@ -178,6 +178,11 @@ lint-actions:
 tiger-check:
     @./scripts/tiger-check.sh
 
+# Lint CHANGELOG structure: ## Unreleased present, released sections
+# byte-identical to their git tags, no conflict markers.
+lint-changelog:
+    @./scripts/lint-changelog.sh
+
 # Run CI validation checks
 ci-validate:
     zig build ci-validate -Dci=true
