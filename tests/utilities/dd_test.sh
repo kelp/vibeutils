@@ -366,4 +366,54 @@ test_dd() {
         print_test_result "dd ibs/obs separate path preserves data" "FAIL" \
             "Expected 'ABCDEFGHIJKLMNOP', got '$content'"
     fi
+
+    # ==================================================================
+    #   ISSUE #44: conv=noerror must not spin on a persistent read error
+    # ==================================================================
+    # A directory fd yields a persistent, non-progressing read error
+    # (EISDIR on Linux, ENOTSUP/EISDIR on macOS BSD read(2)) with zero
+    # bytes ever consumed -- a portable stand-in for a device whose read
+    # keeps failing without advancing. With conv=noerror the old copy
+    # loop returned .continue_loop and re-issued the same read from the
+    # same position forever, never incrementing blocks_read, so even
+    # count= could not bound it. dd must terminate promptly instead of
+    # spinning. We bound the run at 5s via run_with_limit (portable to
+    # macOS CI, which lacks GNU timeout(1)); exit 124 is the timeout
+    # sentinel, so a passing dd must exit with anything but 124.
+    echo -e "${CYAN}Testing conv=noerror read-error termination (issue #44)...${NC}"
+
+    local noerror_baddir="$TEMP_DIR/dd_noerror_baddir"
+    mkdir -p "$noerror_baddir"
+
+    # Primary case: conv=noerror WITHOUT sync. This spins forever at HEAD
+    # (blocks_read never increments, so count=5 cannot bound the loop).
+    local noerror_err="$TEMP_DIR/dd_noerror_err.txt"
+    run_with_limit 5 "$binary" if="$noerror_baddir" of=/dev/null \
+        conv=noerror bs=512 count=5 status=none 2>"$noerror_err"
+    local noerror_rc=$?
+    local noerror_lines
+    noerror_lines=$(grep -c "read error" "$noerror_err" 2>/dev/null || echo 0)
+    if [[ "$noerror_rc" -ne 124 ]] && [[ "$noerror_lines" -le 10 ]]; then
+        print_test_result "dd conv=noerror terminates on persistent read error" "PASS"
+    else
+        print_test_result "dd conv=noerror terminates on persistent read error" "FAIL" \
+            "expected non-124 exit and <=10 read-error lines, got rc=$noerror_rc lines=$noerror_lines"
+    fi
+
+    # Secondary case: conv=noerror,sync with count=5 must also terminate
+    # promptly and emit a bounded number of read-error lines. This
+    # distinguishes the count= budget bounding the loop from the
+    # spin-forever path above.
+    local noerror_sync_err="$TEMP_DIR/dd_noerror_sync_err.txt"
+    run_with_limit 5 "$binary" if="$noerror_baddir" of=/dev/null \
+        conv=noerror,sync bs=512 count=5 status=none 2>"$noerror_sync_err"
+    local noerror_sync_rc=$?
+    local noerror_sync_lines
+    noerror_sync_lines=$(grep -c "read error" "$noerror_sync_err" 2>/dev/null || echo 0)
+    if [[ "$noerror_sync_rc" -ne 124 ]] && [[ "$noerror_sync_lines" -le 10 ]]; then
+        print_test_result "dd conv=noerror,sync count= bounds read-error retries" "PASS"
+    else
+        print_test_result "dd conv=noerror,sync count= bounds read-error retries" "FAIL" \
+            "expected non-124 exit and <=10 read-error lines, got rc=$noerror_sync_rc lines=$noerror_sync_lines"
+    fi
 }
