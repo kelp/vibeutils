@@ -91,7 +91,11 @@ pub const Entry = struct {
     /// Basename within the parent directory. Slice into `path`; same lifetime.
     basename: []const u8,
 
-    /// File kind, resolved via lstat (no_follow) or stat (follow_*) per policy.
+    /// File kind. For no_follow/follow_cmdline it is the readdir dtype (a
+    /// symlink stays .sym_link). For follow_all a symlink's kind is the
+    /// STATTED target kind (target dir -> .directory and descended, non-dir
+    /// -> the target's kind as a leaf); when the target cannot be statted
+    /// (broken link or chain loop) the kind is .sym_link.
     kind: std.Io.File.Kind,
 
     /// Depth from the walk root. Root operand is depth 0.
@@ -487,8 +491,10 @@ pub const Walker = struct {
         const child_path_len = self.path_buf.items.len;
         const bn_start = parent_path_len + 1;
         const child_depth = frame.depth + 1;
-        // Resolve effective kind based on symlink policy.
-        const eff_kind = resolveKind(de.kind, self.config.symlinks);
+        // Resolve effective kind based on symlink policy. For follow_all this
+        // stats the symlink target via frame.dir so a link-to-file becomes a
+        // leaf and only a link-to-dir descends.
+        const eff_kind = resolveKind(frame.dir, de.name, de.kind, self.config.symlinks);
         const is_dir = (eff_kind == .directory);
         const stay = self.shouldStayAbove(de.kind, frame);
         if (!is_dir or stay) {
@@ -647,23 +653,88 @@ pub const Walker = struct {
 // ============================================================================
 
 /// Resolve the effective kind of an entry based on symlink policy.
-/// For no_follow: symlinks stay as .sym_link.
-/// For follow_all: .sym_link becomes .directory (caller opens it).
-/// For follow_cmdline: symlinks during traversal are never followed; the
-/// root operand is handled by startNextRoot using follow_initial=true.
+/// For no_follow / follow_cmdline: symlinks stay as .sym_link during
+/// traversal (the follow_cmdline root is handled by startNextRoot with
+/// follow_initial=true).
+/// For follow_all: a symlink is classified by statting its target (following
+/// the link). A target directory becomes .directory (the caller descends via
+/// openDir, which follows the link); a non-directory target becomes that
+/// target's kind (a leaf). When the target cannot be statted — broken link
+/// (ENOENT) or a symlink chain loop (ELOOP) — the link itself is emitted as
+/// a .sym_link leaf so the walk continues. Never returns an error.
+///
+/// `raw_kind` comes from the dirent's d_type. On filesystems that report
+/// DT_UNKNOWN (no d_type support), a symlink arrives here as .unknown rather
+/// than .sym_link, so it is passed through unfollowed even under follow_all;
+/// such targets are not statted.
 fn resolveKind(
+    dir: std.Io.Dir,
+    name: []const u8,
     raw_kind: std.Io.File.Kind,
     policy: SymlinkPolicy,
 ) std.Io.File.Kind {
+    assert(name.len > 0);
+    assert(name.len <= std.Io.Dir.max_path_bytes);
     if (raw_kind != .sym_link) return raw_kind;
-    const should_follow = switch (policy) {
-        .no_follow => false,
-        .follow_cmdline => false, // root handled by startNextRoot; never follow during traversal
-        .follow_all => true,
+    switch (policy) {
+        .no_follow, .follow_cmdline => return .sym_link,
+        .follow_all => return statTargetKind(dir, name),
+    }
+}
+
+/// Stat the symlink `name` under `dir` following the link and return the
+/// target's kind. On any stat failure (broken link, ELOOP chain loop, access
+/// denied) return .sym_link so follow_all emits the link itself as a leaf.
+/// Takes no io: this is an fd-relative syscall, mirroring
+/// directory.FileSystemId.fromDir.
+fn statTargetKind(dir: std.Io.Dir, name: []const u8) std.Io.File.Kind {
+    assert(name.len > 0);
+    assert(name.len <= std.Io.Dir.max_path_bytes);
+    var name_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    @memcpy(name_buf[0..name.len], name);
+    name_buf[name.len] = 0;
+    const name_z: [:0]const u8 = name_buf[0..name.len :0];
+    const mode = statModeAt(dir.handle, name_z) catch return .sym_link;
+    return kindFromMode(mode);
+}
+
+/// fstatat/statx the entry `name_z` relative to `fd`, following symlinks
+/// (flags=0), and return its st_mode. Mirrors the statx/fstatat pattern in
+/// src/common/file.zig. Returns an error on any syscall failure.
+fn statModeAt(fd: std.posix.fd_t, name_z: [*:0]const u8) !u32 {
+    assert(fd >= 0);
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var sx: linux.Statx = undefined;
+        const rc = linux.statx(fd, name_z, 0, linux.STATX.BASIC_STATS, &sx);
+        if (linux.errno(rc) != .SUCCESS) return error.StatFailed;
+        const mode: u32 = sx.mode;
+        return mode;
+    } else {
+        var stat_buf: std.c.Stat = undefined;
+        const result = std.c.fstatat(fd, name_z, &stat_buf, 0);
+        if (result != 0) return error.StatFailed;
+        const mode: u32 = @intCast(stat_buf.mode);
+        return mode;
+    }
+}
+
+/// Map a stat st_mode to std.Io.File.Kind via the S_IFMT type bits. Mirrors
+/// the switch in src/common/file.zig.
+fn kindFromMode(mode: u32) std.Io.File.Kind {
+    // No precondition: `mode` is OS-returned data, not an internal invariant, and
+    // the else branch maps any unrecognized S_IFMT value (including 0) to
+    // .unknown, so this mapping is total over all u32 inputs.
+    return switch (mode & std.c.S.IFMT) {
+        std.c.S.IFREG => .file,
+        std.c.S.IFDIR => .directory,
+        std.c.S.IFCHR => .character_device,
+        std.c.S.IFBLK => .block_device,
+        std.c.S.IFIFO => .named_pipe,
+        std.c.S.IFLNK => .sym_link,
+        std.c.S.IFSOCK => .unix_domain_socket,
+        else => .unknown,
     };
-    if (!should_follow) return .sym_link;
-    // Signal to caller to open as directory. Caller will try openDir.
-    return .directory;
 }
 
 /// Free sorted entries for a frame.
