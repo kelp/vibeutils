@@ -1,15 +1,6 @@
 # Changelog
 
-## v0.10.3 — 2026-06-29
-
-### Fixed
-- **`ls` no longer panics on directories whose device id has the
-  high bit set (e.g. `ls /`).** macOS `stat.st_dev` is a signed
-  `i32`, and filesystems such as devfs (`/dev`) report an id that
-  reads as negative. `statToFileInfo` `@intCast` that value into a
-  `u64` field, which trapped with "integer does not fit in
-  destination type" and aborted the process. The conversion now
-  reinterprets the bits with `@bitCast`.
+## Unreleased
 
 ### Fixed
 - **grep `-R` now descends symbolic links to directories.**
@@ -40,6 +31,29 @@
   continues with siblings.
 
 ### Infrastructure
+- **Tiger Style Phase 2: bounded directory walker.** All eight
+  recursive tree-walkers (chmod, chown, rm, du, grep, cp, mv, find)
+  now run on the shared bounded, iterative `common.walker`; no
+  direct filesystem-walk recursion remains. Shared per-file copy
+  leaves were extracted into `common/file_ops` for cp and mv.
+- **Tiger Style CI gate.** A `Tiger Style` workflow runs the
+  `tiger-check` scanner tree-wide on every PR and push to `main`,
+  failing on any gating violation (oversized function, long line,
+  recursion, compound assert, unbounded loop). Available locally as
+  `just tiger-check`.
+
+## v0.10.3 — 2026-06-29
+
+### Fixed
+- **`ls` no longer panics on directories whose device id has the
+  high bit set (e.g. `ls /`).** macOS `stat.st_dev` is a signed
+  `i32`, and filesystems such as devfs (`/dev`) report an id that
+  reads as negative. `statToFileInfo` `@intCast` that value into a
+  `u64` field, which trapped with "integer does not fit in
+  destination type" and aborted the process. The conversion now
+  reinterprets the bits with `@bitCast`.
+
+### Infrastructure
 - Make the release workflow's GitHub-release steps idempotent
   so the `release` job can be safely re-run to recover a failed
   downstream step (e.g. the Homebrew tap update) without
@@ -56,16 +70,6 @@
   honors for the Node 20 to 24 cutover, replacing the
   ineffective `ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION` and
   silencing the `setup-zig` Node 20 deprecation warning.
-- **Tiger Style Phase 2: bounded directory walker.** All eight
-  recursive tree-walkers (chmod, chown, rm, du, grep, cp, mv, find)
-  now run on the shared bounded, iterative `common.walker`; no
-  direct filesystem-walk recursion remains. Shared per-file copy
-  leaves were extracted into `common/file_ops` for cp and mv.
-- **Tiger Style CI gate.** A `Tiger Style` workflow runs the
-  `tiger-check` scanner tree-wide on every PR and push to `main`,
-  failing on any gating violation (oversized function, long line,
-  recursion, compound assert, unbounded loop). Available locally as
-  `just tiger-check`.
 
 ## v0.10.2 — 2026-06-15
 
