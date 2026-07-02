@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0 — 2026-07-01
 
 ### Fixed
 - **realpath no longer aborts on relative or empty path inputs.**
