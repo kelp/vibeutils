@@ -658,4 +658,8 @@ test {
     _ = @import("git.zig");
     _ = @import("walker.zig");
     _ = @import("prompt.zig");
+    // path.zig tests were dormant (never force-imported here), so its coverage
+    // (canonicalizeMissing / canonicalizeParentMustExist) never ran. Include it
+    // so the issue #51 canonicalizeMissing regression tests actually execute.
+    _ = @import("path.zig");
 }

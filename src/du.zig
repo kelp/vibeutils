@@ -639,11 +639,15 @@ fn walkDirectoryOperand(
         .direct_file_sizes = [_]u64{0} ** accumulation_stack_len,
     };
 
-    // Under -L/-H the walker resolves every followed symlink as a directory and
-    // tries to openDir it; a symlink pointing at a non-directory therefore
-    // surfaces as error.NotDir. That is benign (the recursion counted the target
-    // once, and an aliased target is deduped to zero anyway), so it must not set
-    // the error flag. NotDir under -P is a genuine error and is reported.
+    // The walker now classifies every entry's kind before descending: under a
+    // follow policy it stats each symlink's target (resolveKind), so a symlink
+    // to a non-directory is emitted as a leaf and never openDir'd. The only way
+    // next() can still surface error.NotDir is a TOCTOU race, where an entry
+    // classified as a directory (a real subdir, or a symlink whose target stat'd
+    // as one) is replaced by a non-directory before openDir. Under a follow
+    // policy the raced target is typically still reachable by another path and
+    // deduped to zero, so a transient race is suppressed rather than failing the
+    // walk; under -P it is surfaced like any other iteration error.
     const follow_any = config.dereference_mode != .none;
 
     return walkDirectoryOperand_drainLoop(
@@ -724,7 +728,17 @@ fn walkDirectoryOperand_drainLoop(
             }
             continue;
         }
-        processWalkEntry(entry, config, state, seen_inodes, stdout, style, has_error);
+        processWalkEntry(
+            allocator,
+            entry,
+            config,
+            state,
+            seen_inodes,
+            stdout,
+            style,
+            stderr,
+            has_error,
+        );
         if (entry.depth == 0 and entry.visit == .post) {
             root_total = state.subtree_sizes[0];
         }
@@ -738,12 +752,14 @@ fn walkDirectoryOperand_drainLoop(
 /// (print + roll up) visits; everything else is a leaf accounted into its
 /// parent. Centralizes the branching so the helpers stay branch-light.
 fn processWalkEntry(
+    allocator: Allocator,
     entry: common.walker.Entry,
     config: DuConfig,
     state: *WalkState,
     seen_inodes: *std.AutoHashMap(u128, void),
     stdout: *std.Io.Writer,
     style: anytype,
+    stderr: *std.Io.Writer,
     has_error: *bool,
 ) void {
     const depth = entry.depth;
@@ -756,7 +772,7 @@ fn processWalkEntry(
         }
         return;
     }
-    handleLeafEntry(entry, config, state, seen_inodes, stdout, style);
+    handleLeafEntry(allocator, entry, config, state, seen_inodes, stdout, style, stderr, has_error);
 }
 
 /// Pre-order directory visit: reset this depth's accumulators and seed the
@@ -822,17 +838,33 @@ fn handleDirPost(
 /// depth >= 1: a depth-0 non-directory operand is intercepted in
 /// walkDirectoryOperand (unreadable/raced directory) before dispatch.
 fn handleLeafEntry(
+    allocator: Allocator,
     entry: common.walker.Entry,
     config: DuConfig,
     state: *WalkState,
     seen_inodes: *std.AutoHashMap(u128, void),
     stdout: *std.Io.Writer,
     style: anytype,
+    stderr: *std.Io.Writer,
+    has_error: *bool,
 ) void {
     const depth = entry.depth;
     assert(depth < accumulation_stack_len);
+    assert(entry.path.len > 0);
     const follow = shouldFollowAtDepth(config.dereference_mode, depth);
-    const stat_buf = doStat(entry.path, follow) catch return;
+    const stat_buf = doStat(entry.path, follow) catch |err| {
+        // Under a follow policy the walker resolves each symlink by statting its
+        // target; a link whose target cannot be resolved (dangling ENOENT or an
+        // ELOOP chain) surfaces here as a .sym_link leaf. GNU du reports such a
+        // link ("cannot access '<path>': <reason>") and exits 1 rather than
+        // dropping it silently. -P/-H leaves (follow == false) keep the prior
+        // silent-skip behavior: their lstat only fails on a rare TOCTOU race.
+        if (follow and entry.kind == .sym_link) {
+            printStatError(allocator, stderr, entry.path, err);
+            has_error.* = true;
+        }
+        return;
+    };
 
     const is_duplicate = checkAndRecordInode(stat_buf, config, seen_inodes);
     const file_size = if (is_duplicate)
@@ -3603,6 +3635,81 @@ test "du -L follows symlinked directory and counts the target subtree" {
 
     const buf = out.writer.buffered();
     try testing.expectEqual(@as(usize, 2), countLinesWithPath(buf, "inside.txt"));
+}
+
+test "du -aL reports a dangling symlink and exits 1 (issue #47)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A readable regular file plus a dangling symlink (points at a name that
+    // does not exist). Under -L du must dereference "broken", fail to stat its
+    // target, emit a diagnostic, and exit 1 -- while still tallying real.txt.
+    // GNU coreutils 9.7: "du: cannot access '<dir>/broken'" + exit 1.
+    const fr = try tmp_dir.dir.createFile(io, "real.txt", .{});
+    try fr.writeStreamingAll(io, "hello\n");
+    fr.close(io);
+    tmp_dir.dir.symLink(io, "does_not_exist", "broken", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    var err_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer err_out.deinit();
+
+    const args = &[_][]const u8{ "-a", "-b", "-L", root_path };
+    const exit_code = try runDu(testing.allocator, io, args, &out.writer, &err_out.writer);
+
+    // The unstattable symlink must not be silently dropped: diagnostic naming
+    // the path, nonzero exit, and the walk still completes for real.txt.
+    try testing.expect(std.mem.find(u8, err_out.writer.buffered(), "cannot access") != null);
+    try testing.expect(std.mem.find(u8, err_out.writer.buffered(), "broken") != null);
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.find(u8, out.writer.buffered(), "real.txt") != null);
+}
+
+test "du -L reports a symlink loop (ELOOP) and exits 1 (issue #47)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A mutually-referential symlink pair: loop_a -> loop_b -> loop_a. Under -L
+    // du dereferences each and the OS returns ELOOP; du must report it and exit
+    // 1, not silently skip. GNU coreutils 9.7:
+    // "du: cannot access '<dir>/loop_a': Too many levels of symbolic links" + 1.
+    const fr = try tmp_dir.dir.createFile(io, "real.txt", .{});
+    try fr.writeStreamingAll(io, "hi\n");
+    fr.close(io);
+    tmp_dir.dir.symLink(io, "loop_b", "loop_a", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+    tmp_dir.dir.symLink(io, "loop_a", "loop_b", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    var err_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer err_out.deinit();
+
+    const args = &[_][]const u8{ "-a", "-b", "-L", root_path };
+    const exit_code = try runDu(testing.allocator, io, args, &out.writer, &err_out.writer);
+
+    // The ELOOP entry must surface a diagnostic and a nonzero exit; the walk
+    // still finishes and tallies the readable file.
+    try testing.expect(std.mem.find(u8, err_out.writer.buffered(), "cannot access") != null);
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.find(u8, out.writer.buffered(), "real.txt") != null);
 }
 
 test "du -H follows an operand symlink but not symlinks discovered during the walk" {

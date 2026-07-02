@@ -88,11 +88,12 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []con
 /// parts with `.` and `..` cleaned logically.
 pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     if (path.len == 0) {
-        // Empty path: return current directory
-        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const len = try std.Io.Dir.cwd().realPath(io, &buf);
-        return try allocator.dupe(u8, buf[0..len]);
+        // GNU realpath -m / readlink -m report "No such file or directory" for
+        // an empty operand rather than resolving it to the cwd (issue #51
+        // addendum, matching canonicalizeParentMustExist and realPathDupe).
+        return error.FileNotFound;
     }
+    std.debug.assert(path.len > 0);
 
     const abs_path = try canonicalizeMissing_absolutePath(allocator, io, path);
     defer allocator.free(abs_path);
@@ -148,8 +149,12 @@ fn canonicalizeMissing_absolutePath(
     const result = if (std.fs.path.isAbsolute(path))
         try allocator.dupe(u8, path)
     else blk: {
+        // cwd().realPathFile(".", ...) resolves the cwd via a real dir handle.
+        // Avoid cwd().realPath (issue #51: broken under Threaded io; it
+        // readlinks the AT_FDCWD pseudo-fd and fails with ENOENT).
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buf);
+        const cwd_len = try std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf);
+        std.debug.assert(cwd_len > 0);
         std.debug.assert(cwd_len <= cwd_buf.len);
         const cwd = cwd_buf[0..cwd_len];
         break :blk try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, path });
@@ -351,11 +356,49 @@ test "canonicalizeMissing: dotdot past root returns root" {
     try testing.expectEqualStrings("/", result);
 }
 
-test "canonicalizeMissing: empty path returns cwd" {
-    const result = try canonicalizeMissing(testing.allocator, testing.io, "");
+test "canonicalizeMissing: empty path returns FileNotFound (issue #51)" {
+    // GNU realpath -m '' reports "No such file or directory"; it does not treat
+    // an empty operand as the cwd. canonicalizeMissing must reject a zero-length
+    // path with FileNotFound to match (issue #51 addendum). This replaces the
+    // old "empty path returns cwd" assertion, which contradicted GNU parity and
+    // was only ever masked by the AT_FDCWD cwd().realPath breakage.
+    const result = canonicalizeMissing(testing.allocator, testing.io, "");
+    try testing.expectError(error.FileNotFound, result);
+}
+
+// A relative path with a missing tail must resolve against the cwd. Before the
+// #51 fix canonicalizeMissing_absolutePath calls cwd().realPath, which is broken
+// under 0.16 Threaded io (readlinks the AT_FDCWD pseudo-fd) and fails with
+// ENOENT. We chdir into a tmp dir so "." is deterministic; the original cwd is
+// restored via setCurrentDir on exit. Pins the shared helper independently of
+// its realpath/readlink callers.
+test "canonicalizeMissing: relative path resolves against cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/relmissing/tail",
+        .{tmp_abs},
+    );
+    defer testing.allocator.free(expected);
+
+    const result = try canonicalizeMissing(testing.allocator, io, "relmissing/tail");
     defer testing.allocator.free(result);
-    try testing.expect(result.len > 0);
-    try testing.expectEqual(@as(u8, '/'), result[0]);
+
+    try testing.expectEqualStrings(expected, result);
 }
 
 test "canonicalizeMissing: root only returns root" {
@@ -452,7 +495,7 @@ test "canonicalizeParentMustExist: file as parent fails with NotDir" {
     const io = testing.io;
     const f = try tmp.dir.createFile(io, "real_file", .{});
     try f.writeStreamingAll(io, "x");
-    try f.close(io);
+    f.close(io);
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const dir_len = try tmp.dir.realPath(io, &path_buf);
     const dir_path = path_buf[0..dir_len];

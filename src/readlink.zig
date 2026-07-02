@@ -603,6 +603,47 @@ test "readlink canonicalize-missing (-m) with nonexistent path" {
     try testing.expect(std.mem.endsWith(u8, out, "nonexistent/file.txt\n"));
 }
 
+// readlink -m shares canonicalizeMissing with realpath -m, so it inherits the
+// #51 relative-path breakage: cwd().realPath (broken under 0.16 Threaded io,
+// readlinks the AT_FDCWD pseudo-fd) fails with ENOENT for a relative operand.
+// GNU resolves it against the cwd. We chdir into a tmp dir so "." is
+// deterministic; the original cwd is restored via setCurrentDir on exit. This
+// is the "other caller of canonicalizeMissing" the issue calls out.
+test "readlink -m relative path with missing tail resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/child\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "nosuch/child" };
+    const result = try runReadlink(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
 test "readlink no-newline (-n)" {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
