@@ -269,6 +269,63 @@ test_du() {
     fi
     rm -rf "$f24_dir"
 
+    # ================================================================
+    # F25: du -L must report unstattable symlinks (issue #47)
+    # A dangling symlink under -L cannot be dereferenced; du must emit a
+    # diagnostic and exit 1, while still tallying the readable file. The
+    # walker regression silently dropped it (no message, exit 0).
+    # GNU coreutils 9.7: "du: cannot access '<dir>/broken'" + exit 1.
+    # ================================================================
+    echo -e "${CYAN}Testing -L dangling symlink diagnostic (F25, issue #47)...${NC}"
+
+    local f25_dir
+    f25_dir=$(mktemp -d)
+    echo -n "hello" > "$f25_dir/real.txt"
+    ln -s does_not_exist "$f25_dir/broken"
+
+    local f25_out f25_err f25_exit
+    f25_out=$("$binary" -a -b -L "$f25_dir" 2>"$f25_dir.stderr")
+    f25_exit=$?
+    f25_err=$(cat "$f25_dir.stderr")
+
+    if [[ $f25_exit -eq 1 ]] && echo "$f25_err" | grep -q "cannot access" \
+        && echo "$f25_err" | grep -q "broken" \
+        && echo "$f25_out" | grep -q "real.txt"; then
+        print_test_result "du -L reports dangling symlink and exits 1" "PASS"
+    else
+        print_test_result "du -L reports dangling symlink and exits 1" "FAIL" \
+            "exit=$f25_exit stderr='$f25_err' stdout='$f25_out'"
+    fi
+    rm -rf "$f25_dir" "$f25_dir.stderr"
+
+    # ================================================================
+    # F26: du -L must report a symlink loop (ELOOP) (issue #47)
+    # loop_a -> loop_b -> loop_a: dereferencing yields ELOOP. du must
+    # report it and exit 1, not silently skip. GNU coreutils 9.7:
+    # "du: cannot access '<dir>/loop_a': Too many levels of symbolic links".
+    # ================================================================
+    echo -e "${CYAN}Testing -L symlink loop diagnostic (F26, issue #47)...${NC}"
+
+    local f26_dir
+    f26_dir=$(mktemp -d)
+    echo -n "hi" > "$f26_dir/real.txt"
+    ln -s loop_b "$f26_dir/loop_a"
+    ln -s loop_a "$f26_dir/loop_b"
+
+    local f26_out f26_err f26_exit
+    f26_out=$("$binary" -a -b -L "$f26_dir" 2>"$f26_dir.stderr")
+    f26_exit=$?
+    f26_err=$(cat "$f26_dir.stderr")
+
+    if [[ $f26_exit -eq 1 ]] && echo "$f26_err" | grep -q "cannot access" \
+        && echo "$f26_out" | grep -q "real.txt"; then
+        print_test_result "du -L reports symlink loop and exits 1" "PASS"
+    else
+        print_test_result "du -L reports symlink loop and exits 1" "FAIL" \
+            "exit=$f26_exit stderr='$f26_err' stdout='$f26_out'"
+    fi
+    rm -rf "$f26_dir" "$f26_dir.stderr"
+
     # Cleanup
     rm -rf "$tmpdir"
 }
