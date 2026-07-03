@@ -75,9 +75,69 @@ const RealpathArgs = struct {
     };
 };
 
+/// Join collected path components into an absolute "/c0/c1/..." slice, or "/"
+/// when empty. Caller owns the returned slice.
+fn joinComponentsAbsolute(allocator: Allocator, components: []const []const u8) ![]u8 {
+    if (components.len == 0) {
+        return try allocator.dupe(u8, "/");
+    }
+    // Leading '/' plus one '/' separator and the bytes for each component.
+    var total_len: usize = 0;
+    for (components) |comp| {
+        std.debug.assert(comp.len > 0);
+        total_len += 1 + comp.len;
+    }
+    std.debug.assert(total_len >= components.len);
+
+    const result = try allocator.alloc(u8, total_len);
+    var pos: usize = 0;
+    for (components) |comp| {
+        result[pos] = '/';
+        pos += 1;
+        @memcpy(result[pos .. pos + comp.len], comp);
+        pos += comp.len;
+    }
+    // The build loop writes exactly total_len bytes, so pos lands on total_len.
+    std.debug.assert(pos == total_len);
+    return result;
+}
+
+/// Stat the accumulated prefix that precedes a `..` and confirm it is a
+/// directory (following symlinks, matching GNU realpath -s). Errors with
+/// FileNotFound when the prefix is absent and NotDir when it resolves to a
+/// non-directory. `components` are the path parts collected so far, all
+/// non-empty and never `.`/`..`.
+fn checkDotDotPrefix(
+    allocator: Allocator,
+    io: std.Io,
+    components: []const []const u8,
+) !void {
+    std.debug.assert(components.len > 0);
+    const prefix = try joinComponentsAbsolute(allocator, components);
+    defer allocator.free(prefix);
+    std.debug.assert(prefix.len > 0);
+    const info = try std.Io.Dir.cwd().statFile(io, prefix, .{});
+    if (info.kind != .directory) {
+        return error.NotDir;
+    }
+}
+
+/// Textual logical resolution: clean . and .. purely as text, no filesystem
+/// check. Convenience wrapper used by the pure-algorithm unit tests.
+fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    return resolveLogicalWithMode(allocator, io, path, true);
+}
+
 /// Resolve a path without following symlinks, just cleaning . and .. components.
 /// Makes the path absolute and removes redundant separators and dot components.
-fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+/// When `allow_missing` is false (plain -s), each `..` requires the component
+/// it pops to exist and be a directory; -m -s passes true to skip that check.
+fn resolveLogicalWithMode(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    allow_missing: bool,
+) ![]u8 {
     // GNU realpath -s reports "No such file or directory" for an empty operand
     // rather than resolving it to the cwd. Reject it here so an empty
     // --relative-to= base routed through this path errors like GNU.
@@ -114,6 +174,10 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
             continue;
         } else if (std.mem.eql(u8, component, "..")) {
             if (components.items.len > 0) {
+                // Under plain -s the popped prefix must exist as a directory.
+                if (!allow_missing) {
+                    try checkDotDotPrefix(allocator, io, components.items);
+                }
                 _ = components.pop();
             }
         } else {
@@ -121,29 +185,8 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
         }
     }
 
-    // Build result path
-    if (components.items.len == 0) {
-        return try allocator.dupe(u8, "/");
-    }
-
-    // Calculate total length: leading / + each component + separators
-    var total_len: usize = 0;
-    for (components.items) |comp| {
-        total_len += 1 + comp.len; // '/' + component
-    }
-
-    const result = try allocator.alloc(u8, total_len);
-    var pos: usize = 0;
-    for (components.items) |comp| {
-        result[pos] = '/';
-        pos += 1;
-        @memcpy(result[pos .. pos + comp.len], comp);
-        pos += comp.len;
-    }
-    // The build loop writes exactly total_len bytes, so pos lands on total_len.
-    std.debug.assert(pos == total_len);
-
-    return result;
+    // Build result path from the cleaned components.
+    return try joinComponentsAbsolute(allocator, components.items);
 }
 
 /// Print a "name: message" resolution error with the program prefix. Shared by
@@ -177,7 +220,7 @@ fn processPath_resolveTarget(
     stderr_writer: *std.Io.Writer,
 ) !?[]u8 {
     if (opts.no_symlinks) {
-        return resolveLogical(allocator, io, path) catch |err| {
+        return resolveLogicalWithMode(allocator, io, path, opts.canonicalize_missing) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, path, err);
             }
@@ -221,7 +264,8 @@ fn processPath_resolveBase(
     stderr_writer: *std.Io.Writer,
 ) !?[]u8 {
     if (opts.no_symlinks) {
-        return resolveLogical(allocator, io, base_dir) catch |err| {
+        const allow_missing = opts.canonicalize_missing;
+        return resolveLogicalWithMode(allocator, io, base_dir, allow_missing) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, base_dir, err);
             }
@@ -1680,4 +1724,314 @@ test "realpath: -m dotdot past root is clamped" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// ============================================================================
+// Issue #62: `-s` must verify the component preceding a `..` exists and is a
+// directory before popping it, instead of popping purely textually. Pinned
+// against GNU coreutils 9.5 on Linux. Under plain `-s`, a missing preceding
+// component -> ENOENT rc=1; a non-directory preceding component (real file or
+// symlink-to-file) -> ENOTDIR rc=1. Under `-m -s`, the check is skipped. The
+// final component of the whole path need not exist under plain `-s`.
+// ============================================================================
+
+// `-s nosuch/../x`: the component before `..` does not exist, so GNU errors
+// "No such file or directory" rc=1 instead of printing <cwd>/x rc=0. This is
+// the primary red for the textual-pop bug.
+test "realpath: -s pop of dotdot past missing component errors ENOENT (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "nosuch/../x" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// `-s file.txt/../x`: the component before `..` exists but is a regular file,
+// so GNU errors "Not a directory" rc=1 instead of printing <cwd>/x rc=0.
+test "realpath: -s pop of dotdot past non-directory errors ENOTDIR (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "file.txt", .{});
+        file.close(io);
+    }
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "file.txt/../x" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "Not a directory") != null,
+    );
+}
+
+// Absolute path variant: `<tmp>/nosuch/../x` with a missing prefix must fail
+// the same way, proving the check applies to the isAbsolute branch too.
+test "realpath: -s absolute dotdot past missing component errors ENOENT (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/../x", .{tmp_abs});
+    defer testing.allocator.free(path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", path };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// `-m -s nosuch/../x`: `-m` (canonicalize_missing) permits missing components,
+// so the per-component check is skipped and the textual result is printed.
+// Guards against a fix that applies the check unconditionally under `-m -s`.
+test "realpath: -m -s pop of dotdot past missing component succeeds (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/x\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "-s", "nosuch/../x" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// `-s sub/../nosuch_final` with `sub` an existing directory: the pop of `..`
+// past `sub` is legal (sub is a directory), and the final component after
+// cleanup need not exist. GNU prints <cwd>/nosuch_final rc=0. Guards against a
+// fix that over-rejects the valid case or that checks the final component.
+test "realpath: -s pop past existing dir with missing final component succeeds (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch_final\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "sub/../nosuch_final" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// `-s slink/../file.txt` where `slink` is a symlink to a directory: GNU stat
+// follows the symlink, sees a directory, and pops the `slink` name textually
+// (logical mode never substitutes the target). Result <cwd>/file.txt rc=0.
+test "realpath: -s pop past symlink-to-directory succeeds (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+    {
+        const file = try tmp_dir.dir.createFile(io, "file.txt", .{});
+        file.close(io);
+    }
+    tmp_dir.dir.symLink(io, "sub", "slink", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/file.txt\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "slink/../file.txt" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// `-s flink/../file.txt` where `flink` is a symlink to a regular file: GNU stat
+// follows the symlink, sees a non-directory, and errors "Not a directory" rc=1.
+// The check follows the symlink (statFile, not lstat), so this is a red for the
+// current textual pop. Guards that the fix uses a following stat.
+test "realpath: -s pop past symlink-to-file errors ENOTDIR (issue #62)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "file.txt", .{});
+        file.close(io);
+    }
+    tmp_dir.dir.symLink(io, "file.txt", "flink", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "flink/../file.txt" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "Not a directory") != null,
+    );
 }

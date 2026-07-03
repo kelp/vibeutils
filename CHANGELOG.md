@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **realpath `-s` validates the component preceding `..`.**
+  Popping `..` past a missing component now errors `No such
+  file or directory`, and past a file (or symlink to one)
+  errors `Not a directory`, both exit 1, matching GNU. A
+  symlink to a directory is accepted and popped textually;
+  `-m -s` still skips the check entirely (#62).
 - **grep `-r` exits 2 when the walk hits errors.** An unreadable
   subdirectory (or the walker entry cap) during a recursive
   search now sets exit code 2 like GNU, instead of reporting
