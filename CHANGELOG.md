@@ -19,6 +19,19 @@
   message shape instead of a generic `invalid operand value`;
   the exit code stays 2 per the project-wide misuse convention
   (#64).
+- **chown/chmod `-RL` reach directories aliased by sibling
+  symlinks.** The walker's global visited set skipped whichever
+  of a directory and a symlink to it was seen second, so the
+  real directory's ownership or mode was never changed. Under
+  `-L` both paths are now walked, matching the reference tools;
+  a symlink loop is serviced as a leaf and the walk continues
+  (#60).
+- **du `-L` prunes ancestor symlink loops.** A loop such as
+  `inner/up -> ..` previously walked to the 1024-depth bound,
+  emitting repeated paths; du now reports the cycle once on
+  stderr, lists each real directory once, and exits 1, matching
+  GNU. Per-path counting of legitimately aliased files is
+  preserved (#61).
 - **realpath `-s` validates the component preceding `..`.**
   Popping `..` past a missing component now errors `No such
   file or directory`, and past a file (or symlink to one)
@@ -36,6 +49,16 @@
   (zero bytes actually read) now report as `0+N records in`,
   matching GNU; they were previously counted as full. The
   padded writes still count as full records out (#59).
+
+### Infrastructure
+- **Walker cycle detection split into modes.** The single
+  `detect_cycles` flag became `cycle_mode`: `ancestors` (GNU
+  fts semantics — only true ancestor loops are cycles; aliases
+  are re-walked; used by du/chown/chmod under `-L`),
+  `ancestors_and_visited` (the old global visit-once set; mv
+  and rm keep it bit-for-bit), and `none` (cp, grep, find). The
+  traversal stack doubles as the ancestor chain, so detection
+  adds no allocation and stays bounded by `max_depth`.
 
 ## v0.11.0 — 2026-07-02
 

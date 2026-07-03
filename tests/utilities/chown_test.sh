@@ -500,5 +500,66 @@ test_chown() {
             "No supplementary groups available"
     fi
 
+    echo -e "${CYAN}Testing walker cycle_mode: sibling symlink alias (issue #60)...${NC}"
+
+    # GNU chown -RL visits BOTH a directory and a sibling symlink alias
+    # to it in full -- e.g. "ownership of '.../link/f' retained" AND
+    # "ownership of '.../real/f' retained" both appear (no dedup for
+    # chown, unlike du). vibeutils currently reuses the walker's
+    # global visited-set for cycle detection under -L, which treats
+    # the alias as an already-seen duplicate and silently DROPS it --
+    # only one of {real, link} is ever reported, undercounting real
+    # work done. Chowning to our own uid needs no privilege.
+    local alias_parent
+    alias_parent=$(mktemp -d)
+    mkdir -p "$alias_parent/real"
+    echo -n "alias test" > "$alias_parent/real/f"
+    ln -s real "$alias_parent/link"
+
+    local alias_out alias_err alias_exit
+    alias_out=$("$binary" -v -R -L "$current_uid" "$alias_parent" 2>"$alias_parent.stderr")
+    alias_exit=$?
+    alias_err=$(cat "$alias_parent.stderr")
+
+    if [[ $alias_exit -eq 0 ]] \
+        && echo "$alias_out" | grep -q "real/f" \
+        && echo "$alias_out" | grep -q "link/f"; then
+        print_test_result "chown -RL reports both a directory and its symlink alias" "PASS"
+    else
+        print_test_result "chown -RL reports both a directory and its symlink alias" "FAIL" \
+            "exit=$alias_exit stdout='$alias_out' stderr='$alias_err'"
+    fi
+    rm -rf "$alias_parent" "$alias_parent.stderr"
+
+    echo -e "${CYAN}Testing walker cycle_mode: ancestor symlink loop (issue #60)...${NC}"
+
+    # GNU chown -RL on an ancestor symlink loop (cyc/inner/up -> ..)
+    # terminates silently with exit 0, and -- notably -- still chowns
+    # the cycle-forming symlink itself as an ordinary (non-descended)
+    # leaf: "ownership of '.../cyc/inner/up' retained". vibeutils
+    # today already terminates without hanging (bounded below with
+    # run_with_limit as a belt-and-suspenders guard against a
+    # regression to the old ELOOP run-away), but its -v output drops
+    # the 'up' leaf entirely -- it is never reported at all.
+    local cyc_parent
+    cyc_parent=$(mktemp -d)
+    mkdir -p "$cyc_parent/cyc/inner"
+    ln -s .. "$cyc_parent/cyc/inner/up"
+
+    local cyc_out cyc_err cyc_exit
+    cyc_out=$(run_with_limit 10 "$binary" -v -R -L "$current_uid" "$cyc_parent/cyc" 2>"$cyc_parent.stderr")
+    cyc_exit=$?
+    cyc_err=$(cat "$cyc_parent.stderr")
+
+    if [[ $cyc_exit -eq 0 ]] \
+        && echo "$cyc_out" | grep -q "cyc/inner'" \
+        && echo "$cyc_out" | grep -q "cyc/inner/up'"; then
+        print_test_result "chown -RL on an ancestor symlink loop terminates and reports the cycle leaf" "PASS"
+    else
+        print_test_result "chown -RL on an ancestor symlink loop terminates and reports the cycle leaf" "FAIL" \
+            "exit=$cyc_exit stdout='$cyc_out' stderr='$cyc_err'"
+    fi
+    rm -rf "$cyc_parent" "$cyc_parent.stderr"
+
     echo -e "${CYAN}chown testing completed${NC}"
 }

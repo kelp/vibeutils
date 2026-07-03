@@ -617,4 +617,104 @@ test_chmod() {
         print_test_result "behavioral: chmod -w from 644 produces 444" "FAIL" \
             "Expected 444, got: $perms"
     fi
+
+    # =========================================================================
+    # Walker cycle_mode tests (issue #60).
+    #
+    # Reference behavior pinned against GNU coreutils 9.5 chmod -RL:
+    #   - A directory reached via two distinct paths (a real directory and a
+    #     sibling symlink alias pointing at it) is chmod'd through BOTH
+    #     paths; there is no directory-level dedup (unlike GNU du).
+    #   - A symlink that forms an ancestor cycle (points back up at one of
+    #     its own ancestor directories) does not cause infinite descent, AND
+    #     the cycle-forming symlink itself is still serviced as an ordinary
+    #     leaf (chmod is applied to the symlink path, it just isn't
+    #     descended into again).
+    # Current vibeutils chmod (global visited-set cycle detection) drops the
+    # second-encountered alias entirely, and never services the
+    # cycle-forming symlink itself as a leaf -- both are bugs this section
+    # locks in the fix for.
+    # =========================================================================
+
+    echo -e "${CYAN}Testing chmod -RL walker cycle/alias behavior (issue #60)...${NC}"
+
+    # --- Sibling alias: both the real directory and the symlink alias must
+    # receive the mode change under -RL. ---
+    local alias_root=$(create_temp_dir)
+    mkdir -p "$alias_root/real"
+    create_temp_file "alias test" "$alias_root/real/f"
+    chmod 700 "$alias_root/real"
+    chmod 600 "$alias_root/real/f"
+    ln -s real "$alias_root/link"
+
+    local alias_out="$TEMP_DIR/chmod_alias_out.txt"
+    local alias_err="$TEMP_DIR/chmod_alias_err.txt"
+    "$binary" -v -RL 755 "$alias_root" >"$alias_out" 2>"$alias_err"
+    local alias_rc=$?
+
+    if [[ $alias_rc -eq 0 ]]; then
+        print_test_result "chmod -RL sibling alias exits 0" "PASS"
+    else
+        print_test_result "chmod -RL sibling alias exits 0" "FAIL" \
+            "Expected rc=0, got: $alias_rc (stderr: $(cat "$alias_err"))"
+    fi
+
+    # This is the assertion that actually distinguishes the alias-skip bug:
+    # both "real/f" and "link/f" must be reported as chmod'd. Currently
+    # only whichever alias readdir returns first is processed; the other
+    # is silently dropped by the global visited-set.
+    if grep -q "real/f" "$alias_out" && grep -q "link/f" "$alias_out"; then
+        print_test_result "chmod -RL sibling alias processes both real and link" "PASS"
+    else
+        print_test_result "chmod -RL sibling alias processes both real and link" "FAIL" \
+            "Expected verbose output mentioning both 'real/f' and 'link/f', got: $(cat "$alias_out")"
+    fi
+
+    # Also verify the on-disk mode through both paths. Note real/f and
+    # link/f are the same underlying inode, so this is a sanity check on
+    # top of (not a replacement for) the verbose-output assertion above.
+    local real_f_perms=$(get_file_permissions "$alias_root/real/f")
+    local link_f_perms=$(get_file_permissions "$alias_root/link/f")
+    if [[ "$real_f_perms" == "755" && "$link_f_perms" == "755" ]]; then
+        print_test_result "chmod -RL sibling alias: mode matches via both paths" "PASS"
+    else
+        print_test_result "chmod -RL sibling alias: mode matches via both paths" "FAIL" \
+            "Expected 755/755, got real/f=$real_f_perms link/f=$link_f_perms"
+    fi
+
+    # --- Ancestor loop: a symlink pointing back at an ancestor directory
+    # must not cause infinite descent, and GNU services the cycle-forming
+    # symlink itself as an ordinary leaf (no diagnostic, rc=0). Bounded
+    # with run_with_limit since the current bug walks to depth 1024 before
+    # erroring out. ---
+    local cyc_root=$(create_temp_dir)
+    mkdir -p "$cyc_root/cyc/inner"
+    ln -s .. "$cyc_root/cyc/inner/up"
+    chmod 700 "$cyc_root" "$cyc_root/cyc" "$cyc_root/cyc/inner"
+
+    local cyc_out="$TEMP_DIR/chmod_cyc_out.txt"
+    local cyc_err="$TEMP_DIR/chmod_cyc_err.txt"
+    run_with_limit 10 "$binary" -v -RL 755 "$cyc_root" >"$cyc_out" 2>"$cyc_err"
+    local cyc_rc=$?
+
+    if [[ $cyc_rc -eq 0 ]]; then
+        print_test_result "chmod -RL ancestor loop terminates cleanly (rc=0)" "PASS"
+    else
+        print_test_result "chmod -RL ancestor loop terminates cleanly (rc=0)" "FAIL" \
+            "Expected rc=0, got: $cyc_rc (stdout: $(cat "$cyc_out") stderr: $(cat "$cyc_err"))"
+    fi
+
+    # GNU chmod -RL services the cycle-forming symlink itself as a leaf
+    # ("mode of '.../up' ..."); today's global visited-set silently drops
+    # it entirely with no line at all.
+    if grep -q "cyc/inner/up" "$cyc_out"; then
+        print_test_result "chmod -RL ancestor loop services cycle symlink as a leaf" "PASS"
+    else
+        print_test_result "chmod -RL ancestor loop services cycle symlink as a leaf" "FAIL" \
+            "Expected verbose output mentioning 'cyc/inner/up', got: $(cat "$cyc_out")"
+    fi
+
+    # Restore access for cleanup.
+    chmod -R u+rwx "$cyc_root" 2>/dev/null || true
+    chmod -R u+rwx "$alias_root" 2>/dev/null || true
 }

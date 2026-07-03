@@ -616,11 +616,13 @@ fn walkDirectoryOperand(
         .order = .both,
         .symlinks = symlinkPolicyFromMode(config.dereference_mode),
         .stay_on_filesystem = config.one_file_system,
-        // Cycle dedup is intentionally OFF: du counts a file reached via two
-        // distinct directory paths (e.g. -L through both real/ and a symlink to
-        // it) once per path, matching the recursion. Termination on genuine
-        // symlink loops comes from the depth/path bounds instead.
-        .detect_cycles = false,
+        // Ancestor-only cycle detection: du still counts a file reached via
+        // two distinct directory paths (e.g. -L through both real/ and a
+        // sibling symlink to it) once per path — no global visited set means
+        // sibling aliases are re-walked. Ancestor loops (a symlink resolving to
+        // one of its own ancestors) are pruned via the bounded stack scan,
+        // surfacing error.DirectoryCycle instead of running to the depth bound.
+        .cycle_mode = .ancestors,
         .max_depth = max_walk_depth,
         .max_entries = 1 << 24,
     };
@@ -666,6 +668,54 @@ fn walkDirectoryOperand(
     );
 }
 
+/// Outcome of handling one dir_walker.next() error in the drain loop: mirrors
+/// the continue/break the loop itself would take for that error class.
+const DrainLoopErrorAction = enum { continue_loop, stop_loop };
+
+/// Report one dir_walker.next() error for walkDirectoryOperand_drainLoop.
+/// Extracted from the drain loop's catch arm to keep that function under the
+/// 70-line cap. Cap errors (Depth/EntryLimitExceeded) stop the whole walk; an
+/// ancestor cycle or a raced NotDir under a follow policy are tolerated and
+/// the walk continues with the remaining entries.
+fn walkDirectoryOperand_drainLoop_handleWalkError(
+    allocator: Allocator,
+    path: []const u8,
+    err: anyerror,
+    follow_any: bool,
+    dir_walker: *common.walker.Walker,
+    stderr: *std.Io.Writer,
+    has_error: *bool,
+) DrainLoopErrorAction {
+    assert(path.len > 0);
+    switch (err) {
+        error.DepthLimitExceeded, error.EntryLimitExceeded => {
+            printDirError(allocator, stderr, path, err);
+            has_error.* = true;
+            return .stop_loop;
+        },
+        error.DirectoryCycle => {
+            // An ancestor symlink loop was pruned. GNU du is silent here;
+            // vibeutils reports it as a diagnosable error (has_error, rc=1)
+            // and keeps walking the remaining entries.
+            printCycleError(allocator, stderr, dir_walker.cyclePath());
+            has_error.* = true;
+            return .continue_loop;
+        },
+        error.NotDir => {
+            if (!follow_any) {
+                printIterError(allocator, stderr, path, err);
+                has_error.* = true;
+            }
+            return .continue_loop;
+        },
+        else => {
+            printIterError(allocator, stderr, path, err);
+            has_error.* = true;
+            return .continue_loop;
+        },
+    }
+}
+
 /// Consume all entries from dir_walker and accumulate sizes into state,
 /// returning the root subtree total. Extracted from walkDirectoryOperand to
 /// keep the outer function within the 70-line limit.
@@ -692,24 +742,19 @@ fn walkDirectoryOperand_drainLoop(
     // numeric cap here would only risk truncating valid output on large trees;
     // see the annotation below for the exact termination conditions.
     while (true) { // tiger:allow:unbounded-loop (termination: see comment above)
-        const maybe_entry = dir_walker.next(io) catch |err| switch (err) {
-            error.DepthLimitExceeded, error.EntryLimitExceeded => {
-                printDirError(allocator, stderr, path, err);
-                has_error.* = true;
-                break;
-            },
-            error.NotDir => {
-                if (!follow_any) {
-                    printIterError(allocator, stderr, path, err);
-                    has_error.* = true;
-                }
-                continue;
-            },
-            else => {
-                printIterError(allocator, stderr, path, err);
-                has_error.* = true;
-                continue;
-            },
+        const maybe_entry = dir_walker.next(io) catch |err| {
+            switch (walkDirectoryOperand_drainLoop_handleWalkError(
+                allocator,
+                path,
+                err,
+                follow_any,
+                dir_walker,
+                stderr,
+                has_error,
+            )) {
+                .continue_loop => continue,
+                .stop_loop => break,
+            }
         };
         const entry = maybe_entry orelse break;
         assert(entry.depth < accumulation_stack_len);
@@ -1037,6 +1082,24 @@ fn printIterError(
         prog_name,
         "cannot read directory '{s}': {s}",
         .{ path, common.posixErrorString(err) },
+    );
+}
+
+/// Report a pruned ancestor symlink loop. GNU du prints nothing here; vibeutils
+/// makes the cycle diagnosable. `cycle_path` names the offending symlink; it may
+/// be empty if the walker could not record it (OOM), in which case the operand
+/// path is not available here and the message still identifies the condition.
+fn printCycleError(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    cycle_path: []const u8,
+) void {
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        prog_name,
+        "cannot process '{s}': directory cycle detected",
+        .{cycle_path},
     );
 }
 
@@ -3828,6 +3891,68 @@ test "du survives a symlink cycle without infinite recursion (-L)" {
     const exit_code = try runDu(testing.allocator, io, args, &out.writer, common.null_writer);
     _ = exit_code;
     try testing.expect(std.mem.find(u8, out.writer.buffered(), dir_path) != null);
+}
+
+test "du -L prunes an ancestor symlink loop and reports it as a cycle (issue #61)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // cyc/inner/up -> ".." resolves back to cyc, an ANCESTOR of inner (not a
+    // self-loop). Reference: GNU du 9.5 prunes this silently (rc=0, empty
+    // stderr, one line per real directory -- see docs/specs scouting for
+    // this issue). vibeutils intentionally diverges here as a documented
+    // enhancement: the cycle_mode=.ancestors redesign makes the cycle
+    // diagnosable (a printed diagnostic mentioning the cycle/loop, has_error
+    // set, exit code 1) while still pruning promptly -- exactly two
+    // directory lines (inner, cyc), never re-descending through
+    // ".../cyc/inner/up/inner/up/...".
+    try tmp_dir.dir.createDir(io, "cyc", .default_dir);
+    try tmp_dir.dir.createDir(io, "cyc/inner", .default_dir);
+    tmp_dir.dir.symLink(io, "..", "cyc/inner/up", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..(try tmp_dir.dir.realPathFile(io, "cyc", &path_buf))];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = &[_][]const u8{ "-L", dir_path };
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    const stdout = stdout_aw.writer.buffered();
+    const stderr = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+
+    // Exactly two directory lines: "cyc/inner" and "cyc". A runaway walker
+    // would keep emitting deepening "up/inner/up/inner/..." lines instead.
+    var line_count: u32 = 0;
+    var it = std.mem.splitScalar(u8, stdout, '\n');
+    while (it.next()) |line| {
+        if (line.len > 0) line_count += 1;
+    }
+    try testing.expectEqual(@as(u32, 2), line_count);
+    try testing.expect(std.mem.find(u8, stdout, "/up/inner") == null);
+
+    // The diagnostic wording is not pinned to GNU (GNU prints nothing here);
+    // accept any of the plausible words a "this is a cycle" message would
+    // use so the test doesn't lock the implementer into one exact string.
+    const mentions_cycle = std.ascii.findIgnoreCase(stderr, "cycle") != null or
+        std.ascii.findIgnoreCase(stderr, "loop") != null or
+        std.ascii.findIgnoreCase(stderr, "circular") != null;
+    try testing.expect(mentions_cycle);
 }
 
 test "du emits directory operand in post-order: children printed before their parent" {
