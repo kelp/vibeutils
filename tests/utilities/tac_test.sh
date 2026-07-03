@@ -83,6 +83,18 @@ test_tac() {
     # Non-existent file
     test_command_exit_code "tac nonexistent file" 1 "$binary" /nonexistent/file.txt 2>/dev/null
 
+    # GNU always quotes the operand for this message, regardless of content
+    # (pinned on coreutils 9.5: `tac: failed to open '/nonexistent/file.txt'
+    # for reading: No such file or directory`).
+    local nf_err
+    nf_err=$("$binary" /nonexistent/file.txt 2>&1 >/dev/null)
+    if [[ "$nf_err" == *"failed to open '/nonexistent/file.txt' for reading: No such file or directory"* ]]; then
+        print_test_result "tac nonexistent file error message matches GNU" "PASS"
+    else
+        print_test_result "tac nonexistent file error message matches GNU" "FAIL" \
+            "Got: $nf_err"
+    fi
+
     # Regex flag unsupported
     test_command_exit_code "tac -r unsupported" 2 "$binary" -r 2>/dev/null
 

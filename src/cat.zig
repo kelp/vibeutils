@@ -206,6 +206,8 @@ fn runCat_processFile(
 ) bool {
     // Negative space: the stdin marker is dispatched elsewhere, never here.
     std.debug.assert(!std.mem.eql(u8, file_path, "-"));
+    // GNU cat prints this operand unquoted ("cat: x: No such file or
+    // directory"); keep parity.
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
         common.printErrorWithProgram(
             allocator,
@@ -218,8 +220,39 @@ fn runCat_processFile(
     };
     defer file.close(io);
 
+    // Zig 0.16's file_reader surfaces a generic error.ReadFailed when the
+    // opened handle turns out to be a directory, so stat it up front and
+    // report error.IsDir through the normal path instead of the raw name.
+    const stat = file.stat(io) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "cat",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    if (stat.kind == .directory) {
+        // GNU cat prints this operand unquoted ("cat: x: Is a directory");
+        // keep parity.
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "cat",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(error.IsDir) },
+        );
+        return true;
+    }
+    // Negative space: directories were rejected above, so a regular read
+    // attempt below can never legitimately hit error.IsDir again.
+    std.debug.assert(stat.kind != .directory);
+
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(io, &file_buffer);
+    // GNU cat prints this operand unquoted ("cat: x: Is a directory");
+    // keep parity.
     processInput(&file_reader.interface, stdout, options, state) catch |err| {
         common.printErrorWithProgram(
             allocator,

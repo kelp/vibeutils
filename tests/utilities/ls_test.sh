@@ -288,6 +288,16 @@ test_ls() {
         print_test_result "ls nonexistent directory error message" "FAIL" "Expected error on stderr"
     fi
 
+    # GNU ls quotes the operand for this diagnostic: "cannot access 'x':
+    # No such file or directory" (file_failure + quoteaf). We don't match
+    # the "cannot access" wording but must match the quoting placement.
+    if [[ "$nonexist_stderr" == *"'/tmp/vibeutils_nonexistent_dir_$$'"* ]]; then
+        print_test_result "ls nonexistent directory operand is quoted" "PASS"
+    else
+        print_test_result "ls nonexistent directory operand is quoted" "FAIL" \
+            "Expected quoted operand in stderr: '$nonexist_stderr'"
+    fi
+
     echo -e "${CYAN}Testing multiple directory arguments...${NC}"
 
     local multi_dir1=$(create_temp_dir)
@@ -474,7 +484,8 @@ test_ls() {
     local f49_noread
     f49_noread=$(create_temp_dir)
     chmod 000 "$f49_noread"
-    "$binary" "$f49_noread" >/dev/null 2>&1
+    local f49_perm_stderr
+    f49_perm_stderr=$("$binary" "$f49_noread" 2>&1 >/dev/null)
     local f49_perm_exit=$?
     chmod 755 "$f49_noread"  # restore so cleanup works
     if [[ $f49_perm_exit -ne 0 ]]; then
@@ -482,6 +493,17 @@ test_ls() {
     else
         print_test_result "ls permission-denied dir exits non-zero" "FAIL" \
             "Expected non-zero exit, got 0"
+    fi
+
+    # GNU ls quotes the operand for this diagnostic: "cannot open
+    # directory 'x': Permission denied" (file_failure + quoteaf). We
+    # don't match the "cannot open directory" wording but must match
+    # the quoting placement and the mapped errno string.
+    if [[ "$f49_perm_stderr" == *"'$f49_noread'"*"Permission denied"* ]]; then
+        print_test_result "ls permission-denied dir operand is quoted" "PASS"
+    else
+        print_test_result "ls permission-denied dir operand is quoted" "FAIL" \
+            "Expected quoted operand + 'Permission denied' in stderr: '$f49_perm_stderr'"
     fi
 
     # ================================================================

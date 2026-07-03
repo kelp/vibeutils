@@ -159,6 +159,16 @@ test_dd() {
         print_test_result "dd nonexistent input" "PASS"
     fi
 
+    # #63: GNU dd quotes the failing operand: "failed to open 'PATH': MESSAGE"
+    local open_err_stderr
+    open_err_stderr=$("$binary" if=/nonexistent/file of=/dev/null status=none 2>&1 >/dev/null)
+    if [[ "$open_err_stderr" == *"failed to open '/nonexistent/file': "* ]]; then
+        print_test_result "dd quotes failing operand (#63)" "PASS"
+    else
+        print_test_result "dd quotes failing operand (#63)" "FAIL" \
+            "Expected \"failed to open '/nonexistent/file': ...\", got: '$open_err_stderr'"
+    fi
+
     # Test invalid operand
     if "$binary" invalid=operand status=none 2>/dev/null; then
         print_test_result "dd invalid operand" "FAIL" "Should have failed"

@@ -287,6 +287,7 @@ fn runTeeWithInput_writeChunkToFiles(
             }
         } else {
             file_entry.writer.interface.writeAll(data) catch |err| {
+                // GNU tee prints this operand unquoted; keep parity.
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,
@@ -342,6 +343,7 @@ fn runTeeWithInput_flushFiles(
     for (multi.files, multi.is_stdout, positionals) |*file_entry, is_dash, name| {
         if (is_dash) continue;
         file_entry.writer.interface.flush() catch |err| {
+            // GNU tee prints this operand unquoted; keep parity.
             common.printErrorWithProgram(
                 allocator,
                 stderr_writer,
@@ -436,6 +438,7 @@ const MultiWriter = struct {
             // Open with O_WRONLY|O_CREAT|O_APPEND for true append semantics
             const flags: std.posix.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true };
             const fd = std.posix.openat(std.posix.AT.FDCWD, file_name, flags, 0o666) catch |err| {
+                // GNU tee prints this operand unquoted; keep parity.
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,
@@ -452,6 +455,7 @@ const MultiWriter = struct {
             file_name,
             .{ .read = false, .truncate = true },
         ) catch |err| {
+            // GNU tee prints this operand unquoted; keep parity.
             common.printErrorWithProgram(
                 allocator,
                 stderr_writer,

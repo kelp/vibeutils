@@ -183,6 +183,7 @@ fn runUniq_dispatchOutput(
             out_path,
             .{ .truncate = true },
         ) catch |err| {
+            // GNU prints this operand unquoted; keep parity.
             common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{
                 out_path,
                 common.posixErrorString(err),
@@ -225,6 +226,7 @@ fn runUniq_dispatchInput(
 
     if (input_path) |path| {
         const input_file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+            // GNU prints this operand unquoted; keep parity.
             common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{
                 path,
                 common.posixErrorString(err),

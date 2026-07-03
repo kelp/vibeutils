@@ -200,6 +200,12 @@ fn printResolveError(
     // posixErrorString never yields an empty string for a real error.
     const message = common.posixErrorString(err);
     std.debug.assert(message.len > 0);
+    // GNU realpath prints the operand bare for ordinary paths (pinned on
+    // coreutils 9.5: `realpath: nosuch/../x: No such file or directory`) and
+    // only quotes it via quotearg's shell-escape style when the operand is
+    // empty or contains characters that need shell quoting (spaces, embedded
+    // quotes, control bytes). We don't replicate that conditional escaping,
+    // so keep this bare to match the common case.
     common.printErrorWithProgram(
         allocator,
         stderr_writer,

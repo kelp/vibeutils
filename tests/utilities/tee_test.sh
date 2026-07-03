@@ -312,6 +312,31 @@ test_tee() {
         chmod 644 "$ro_file"
     fi
 
+    # #63: GNU tee prints the failing operand bare (unquoted): "tee: PATH: MESSAGE"
+    if [[ -c /dev/full ]]; then
+        local quote_stderr
+        quote_stderr=$(bash -c "echo test | '$binary' -p /dev/full >/dev/null" 2>&1)
+        if [[ "$quote_stderr" == *": /dev/full: "* ]]; then
+            print_test_result "tee leaves operand unquoted, GNU parity (#63)" "PASS"
+        else
+            print_test_result "tee leaves operand unquoted, GNU parity (#63)" "FAIL" \
+                "Expected bare ': /dev/full: ...', got: '$quote_stderr'"
+        fi
+    else
+        local ro_file_bare="$TEMP_DIR/readonly_bare.txt"
+        touch "$ro_file_bare"
+        chmod 444 "$ro_file_bare"
+        local quote_stderr
+        quote_stderr=$(bash -c "echo test | '$binary' -p '$ro_file_bare' >/dev/null" 2>&1)
+        if [[ "$quote_stderr" == *": $ro_file_bare: "* ]]; then
+            print_test_result "tee leaves operand unquoted, GNU parity (#63)" "PASS"
+        else
+            print_test_result "tee leaves operand unquoted, GNU parity (#63)" "FAIL" \
+                "Expected bare ': $ro_file_bare: ...', got: '$quote_stderr'"
+        fi
+        chmod 644 "$ro_file_bare"
+    fi
+
     # F60 additional: error message should include system error, not "WriteError"
     if [[ -c /dev/full ]]; then
         local f60b_stderr

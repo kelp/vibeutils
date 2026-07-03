@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Changed
+- **Error messages quote operands exactly as GNU does.** Every
+  diagnostic that names a user operand was audited against GNU
+  coreutils 9.5: sites in GNU's quoted families (`cannot
+  access 'x'`, `cannot open 'x' for reading`, `failed to
+  open 'x'`, tail's rotation messages, and others across ls,
+  head, tail, dd, tac) now quote the operand with GNU's exact
+  wording, while utilities GNU prints bare (cat, wc, uniq,
+  grep, sort, tee, realpath, readlink) stay bare with parity
+  pinned by tests. tail's `-F` retry message drops the
+  invented "waiting for it to appear" suffix to match GNU
+  verbatim (#63).
+
+### Fixed
+- **cat reports `Is a directory` for directory operands.**
+  Reading a directory leaked Zig's raw `ReadFailed` error name
+  (`cat: somedir: ReadFailed`); cat now stats the operand and
+  reports `cat: somedir: Is a directory` with exit 1, matching
+  GNU. Found by the new quoting-parity tests.
+
 ### Added
 - **dd accepts the full GNU size-suffix family with byte
   semantics.** `bs=`/`ibs=`/`obs=` and the count-like operands

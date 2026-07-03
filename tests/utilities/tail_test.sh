@@ -166,10 +166,13 @@ test_tail() {
     sleep 2
     kill "$trunc_pid" 2>/dev/null || true
     wait "$trunc_pid" 2>/dev/null || true
-    if grep -q "file truncated" "$trunc_stderr"; then
+    # GNU prints this operand unquoted: "tail: FILE: file truncated" — pin the
+    # bare shape, not just the substring, so a stray quote would fail this.
+    if grep -qF "$trunc_file: file truncated" "$trunc_stderr" \
+        && ! grep -qF "'$trunc_file'" "$trunc_stderr"; then
         print_test_result "tail -f detects truncation" "PASS"
     else
-        print_test_result "tail -f detects truncation" "FAIL" "Expected 'file truncated' on stderr"
+        print_test_result "tail -f detects truncation" "FAIL" "Expected unquoted '$trunc_file: file truncated' on stderr"
     fi
 
     # Test: tail -F follows rotated file
@@ -186,10 +189,15 @@ test_tail() {
     sleep 3
     kill "$rotate_pid" 2>/dev/null || true
     wait "$rotate_pid" 2>/dev/null || true
-    if grep -q "rotated content" "$rotate_stdout" && grep -q "file has been replaced" "$rotate_stderr"; then
+    # GNU quotes the operand for both messages: "'FILE' has become
+    # inaccessible: No such file or directory" and "'FILE' has been
+    # replaced;  following new file" (note the double space, matching GNU).
+    if grep -q "rotated content" "$rotate_stdout" \
+        && grep -qF "'$rotate_file' has become inaccessible: No such file or directory" "$rotate_stderr" \
+        && grep -qF "'$rotate_file' has been replaced;  following new file" "$rotate_stderr"; then
         print_test_result "tail -F follows rotated file" "PASS"
     else
-        print_test_result "tail -F follows rotated file" "FAIL" "Expected rotated content in stdout and replacement message on stderr"
+        print_test_result "tail -F follows rotated file" "FAIL" "Expected rotated content in stdout and quoted inaccessible/replaced messages on stderr"
     fi
 
     # Test: tail -F waits for nonexistent file to appear
@@ -203,10 +211,14 @@ test_tail() {
     sleep 3
     kill "$missing_pid" 2>/dev/null || true
     wait "$missing_pid" 2>/dev/null || true
-    if grep -q "file appeared" "$missing_stdout" && grep -q "waiting for it to appear" "$missing_stderr"; then
+    # GNU's message for the initial missing-file wait is the same quoted
+    # "cannot open 'FILE' for reading: ..." family used for a plain missing
+    # operand; GNU has no separate "waiting" text at this point.
+    if grep -q "file appeared" "$missing_stdout" \
+        && grep -qF "cannot open '$missing_file' for reading: No such file or directory" "$missing_stderr"; then
         print_test_result "tail -F waits for nonexistent file" "PASS"
     else
-        print_test_result "tail -F waits for nonexistent file" "FAIL" "Expected 'file appeared' in stdout and 'waiting' on stderr"
+        print_test_result "tail -F waits for nonexistent file" "FAIL" "Expected 'file appeared' in stdout and quoted 'cannot open ... for reading' on stderr"
     fi
 
     # Test: tail -f -r is an error (mutually exclusive)
@@ -228,15 +240,42 @@ test_tail() {
     # Non-existent files
     test_command_fails "tail non-existent file" "$binary" "/path/that/does/not/exist"
     test_command_fails "tail mixed existing and non-existent" "$binary" "$test_file1" "/nonexistent"
-    
+
+    # GNU quotes the missing operand: "cannot open 'FILE' for reading: ..."
+    local nx_command nx_stdout nx_stderr nx_exit
+    run_command nx_command nx_stdout nx_stderr nx_exit "$binary" "/path/that/does/not/exist"
+    if [[ "$nx_stderr" == *"cannot open '/path/that/does/not/exist' for reading: No such file or directory"* ]]; then
+        print_test_result "tail non-existent file quotes operand" "PASS"
+    else
+        print_test_result "tail non-existent file quotes operand" "FAIL" "Expected quoted 'cannot open' message. Got: '$nx_stderr'"
+    fi
+
+    # Same "cannot open 'FILE' for reading" family under -f (plain follow,
+    # no -F retry): GNU prints the identical message before "no files remaining".
+    local nxf_command nxf_stdout nxf_stderr nxf_exit
+    run_command nxf_command nxf_stdout nxf_stderr nxf_exit "$binary" -f "/path/that/does/not/exist"
+    if [[ "$nxf_stderr" == *"cannot open '/path/that/does/not/exist' for reading: No such file or directory"* ]]; then
+        print_test_result "tail -f non-existent file quotes operand" "PASS"
+    else
+        print_test_result "tail -f non-existent file quotes operand" "FAIL" "Expected quoted 'cannot open' message. Got: '$nxf_stderr'"
+    fi
+
     # Directory handling
     local test_dir=$(create_temp_dir)
     test_command_fails "tail directory" "$binary" "$test_dir"
-    
+
     # Permission denied
     local unreadable_file=$(create_temp_file "secret content")
     chmod 000 "$unreadable_file"
     test_command_fails "tail permission denied" "$binary" "$unreadable_file"
+
+    local perm_command perm_stdout perm_stderr perm_exit
+    run_command perm_command perm_stdout perm_stderr perm_exit "$binary" "$unreadable_file"
+    if [[ "$perm_stderr" == *"cannot open '$unreadable_file' for reading: Permission denied"* ]]; then
+        print_test_result "tail permission denied quotes operand" "PASS"
+    else
+        print_test_result "tail permission denied quotes operand" "FAIL" "Expected quoted 'cannot open' message. Got: '$perm_stderr'"
+    fi
     chmod 644 "$unreadable_file"  # cleanup
     
     echo -e "${CYAN}Testing POSIX compliance...${NC}"

@@ -151,9 +151,15 @@ pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
 /// Example:
 /// ```zig
 /// common.fatalWithWriter(io, stderr_writer, "myprogram",
-///     "cannot open file: {s}", .{filename});
-/// // Output: myprogram: cannot open file: test.txt
+///     "cannot open '{s}': {s}", .{ filename, message });
+/// // Output: myprogram: cannot open 'test.txt': No such file or directory
 /// ```
+///
+/// Whether an operand is quoted here follows GNU coreutils parity, decided
+/// per message family (e.g. `cannot open`/`cannot stat` quote; `cat`/`wc`
+/// bare-operand "No such file or directory" messages do not) — match GNU's
+/// exact shape for the message being emitted rather than picking one style
+/// uniformly.
 pub fn fatalWithWriter(
     io: std.Io,
     stderr_writer: *std.Io.Writer,

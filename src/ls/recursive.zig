@@ -38,11 +38,15 @@ pub fn recurseIntoSubdirectory(
     ) catch |err| switch (err) {
         error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
         else => {
+            // GNU ls quotes directory operands across this family of
+            // diagnostics (file_failure + quoteaf: "cannot open
+            // directory 'x'", "reading directory 'x'", "closing
+            // directory 'x'", etc.); match placement.
             common.printErrorWithProgram(
                 allocator,
                 stderr_writer,
                 "ls",
-                "{s}: {}",
+                "'{s}': {}",
                 .{ subdir_path, err },
             );
             // Continue with other directories even if one fails

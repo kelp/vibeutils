@@ -374,6 +374,75 @@ test_grep() {
     test_command_exit_code "grep -r clean tree no-match exits 1" 1 "$binary" --color=never -r zzz "$clean_root"
     rm -rf "$clean_root"
 
+    echo -e "${CYAN}Testing issue #63: operand errors stay unquoted (GNU grep parity)...${NC}"
+
+    # GNU grep 3.11 (LC_ALL=C) prints all four of these bare, with no quotes
+    # around the operand: "grep: PATH: MESSAGE". Unlike coreutils, GNU grep
+    # never wraps the failing operand in quotes.
+
+    # Missing operand file.
+    run_command cmd out err exit_code "$binary" --color=never pattern "$TEMP_DIR/grep_63_nosuch.txt"
+    if [[ "$err" == "grep: $TEMP_DIR/grep_63_nosuch.txt: No such file or directory" ]]; then
+        print_test_result "grep missing operand file stays unquoted" "PASS"
+    else
+        print_test_result "grep missing operand file stays unquoted" "FAIL" "Got: $err"
+    fi
+
+    # Missing -f pattern file.
+    local pf_data_file="$TEMP_DIR/grep_63_data.txt"
+    printf 'hello\n' > "$pf_data_file"
+    run_command cmd out err exit_code "$binary" --color=never -f "$TEMP_DIR/grep_63_nopatterns.txt" "$pf_data_file"
+    if [[ "$err" == "grep: $TEMP_DIR/grep_63_nopatterns.txt: No such file or directory" ]]; then
+        print_test_result "grep missing -f pattern file stays unquoted" "PASS"
+    else
+        print_test_result "grep missing -f pattern file stays unquoted" "FAIL" "Got: $err"
+    fi
+
+    # Unreadable operand file (non-recursive).
+    local locked_file="$TEMP_DIR/grep_63_locked.txt"
+    printf 'secret\n' > "$locked_file"
+    chmod 000 "$locked_file"
+    run_command cmd out err exit_code "$binary" --color=never pattern "$locked_file"
+    if [[ "$err" == "grep: $locked_file: Permission denied" ]]; then
+        print_test_result "grep unreadable operand file stays unquoted" "PASS"
+    else
+        print_test_result "grep unreadable operand file stays unquoted" "FAIL" "Got: $err"
+    fi
+    chmod 644 "$locked_file"
+    rm -f "$locked_file"
+
+    # Unreadable file found during a recursive walk.
+    local walk_file_root
+    walk_file_root=$(create_temp_dir)
+    printf 'hay\n' > "$walk_file_root/f.txt"
+    local locked_walk_file="$walk_file_root/secret.txt"
+    printf 'secret\n' > "$locked_walk_file"
+    chmod 000 "$locked_walk_file"
+    run_command cmd out err exit_code "$binary" --color=never -r hay "$walk_file_root"
+    if [[ "$err" == "grep: $locked_walk_file: Permission denied" ]]; then
+        print_test_result "grep unreadable file during -r walk stays unquoted" "PASS"
+    else
+        print_test_result "grep unreadable file during -r walk stays unquoted" "FAIL" "Got: $err"
+    fi
+    chmod 644 "$locked_walk_file"
+    rm -rf "$walk_file_root"
+
+    # Unreadable subdirectory found during a recursive walk.
+    local walk_dir_root
+    walk_dir_root=$(create_temp_dir)
+    mkdir -p "$walk_dir_root/ok" "$walk_dir_root/locked"
+    printf 'hay\n' > "$walk_dir_root/ok/f.txt"
+    printf 'secret\n' > "$walk_dir_root/locked/s.txt"
+    chmod 000 "$walk_dir_root/locked"
+    run_command cmd out err exit_code "$binary" --color=never -r hay "$walk_dir_root"
+    if [[ "$err" == "grep: $walk_dir_root/locked: Permission denied" ]]; then
+        print_test_result "grep unreadable dir during -r walk stays unquoted" "PASS"
+    else
+        print_test_result "grep unreadable dir during -r walk stays unquoted" "FAIL" "Got: $err"
+    fi
+    chmod 755 "$walk_dir_root/locked"
+    rm -rf "$walk_dir_root"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}grep tests completed${NC}"

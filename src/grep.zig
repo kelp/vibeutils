@@ -765,6 +765,7 @@ fn loadPatternsFromFile(
         allocator,
         .limited(10 * 1024 * 1024),
     ) catch {
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -1898,6 +1899,7 @@ fn reportWalkError(
     assert(parent_path.len > 0);
     const failing_path =
         findUnreadableChildDir(search.allocator, io, parent_path) orelse parent_path;
+    // GNU prints this operand unquoted; keep parity.
     common.printErrorWithProgram(
         search.allocator,
         stderr_writer,
@@ -2039,6 +2041,7 @@ fn searchOneFile(
     if (!shouldIncludeFile(basename, opts)) return;
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         if (!opts.no_messages) {
+            // GNU prints this operand unquoted; keep parity.
             common.printErrorWithProgram(
                 allocator,
                 stderr_writer,
@@ -2396,6 +2399,7 @@ fn runGrep_reportFileError(
     err: anyerror,
 ) void {
     if (opts.no_messages) return;
+    // GNU prints this operand unquoted; keep parity.
     common.printErrorWithProgram(
         allocator,
         stderr_writer,

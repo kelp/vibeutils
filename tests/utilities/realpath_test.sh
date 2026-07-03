@@ -345,6 +345,19 @@ test_realpath() {
             "Got: $err_msg"
     fi
 
+    # Issue #63: GNU realpath prints the operand bare for ordinary paths and
+    # only quotes it (via quotearg shell-escape style) when the operand is
+    # empty or needs shell quoting (pinned on coreutils 9.5:
+    # `realpath: /nonexistent_vibeutils_xyz: No such file or directory`, no
+    # quotes). Lock in the bare form so a future "helpful" fix doesn't wrap it
+    # in quotes without re-verifying against GNU.
+    if [[ "$err_msg" == "realpath: /nonexistent_vibeutils_xyz: No such file or directory" ]]; then
+        print_test_result "error message operand is unquoted (GNU parity)" "PASS"
+    else
+        print_test_result "error message operand is unquoted (GNU parity)" "FAIL" \
+            "Got: $err_msg"
+    fi
+
     # Audit: --relative-to only tested with -s; verify it works in default mode
     echo -e "${CYAN}Testing --relative-to without -s...${NC}"
 

@@ -513,6 +513,7 @@ fn runCut_processPositional(
     }
 
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(
             allocator,
             stderr_writer,

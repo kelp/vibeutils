@@ -293,6 +293,17 @@ test_cut() {
             "Expected stderr to contain '/nonexistent/file', got: '$cut_err_stderr'"
     fi
 
+    # Regression test: GNU cut prints a nonexistent-file operand unquoted,
+    # as "prog: path: message" with no "cannot access"/"cannot open"
+    # wording. Pinned against GNU coreutils 9.5 (LC_ALL=C):
+    #   cut: /nonexistent/file: No such file or directory
+    if [[ "$cut_err_stderr" == "cut: /nonexistent/file: No such file or directory" ]]; then
+        print_test_result "cut nonexistent file bare operand (GNU parity)" "PASS"
+    else
+        print_test_result "cut nonexistent file bare operand (GNU parity)" "FAIL" \
+            "Expected 'cut: /nonexistent/file: No such file or directory', got: '$cut_err_stderr'"
+    fi
+
     # Regression test: --version output contains project name
     local cut_ver_out="" cut_ver_err="" cut_ver_exit=""
     run_command cut_ver_cmd cut_ver_out cut_ver_err cut_ver_exit "$binary" --version

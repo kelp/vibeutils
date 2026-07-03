@@ -457,7 +457,7 @@ fn runTail_processOnePositional(
             allocator,
             stderr_writer,
             "tail",
-            "{s}: {s}",
+            "cannot open '{s}' for reading: {s}",
             .{ file_path, common.posixErrorString(err) },
         );
         return true;
@@ -520,7 +520,7 @@ fn runTail_enterFollow(
                 allocator,
                 stderr_writer,
                 "tail",
-                "{s}: {s}",
+                "cannot open '{s}' for reading: {s}",
                 .{ path, common.posixErrorString(err) },
             );
             return @intFromEnum(common.ExitCode.general_error);
@@ -816,7 +816,7 @@ fn followFile_runInotify(
                     allocator,
                     stderr_writer,
                     "tail",
-                    "{s}: file has been replaced; following new file",
+                    "'{s}' has been replaced;  following new file",
                     .{path},
                 );
                 stderr_writer.flush() catch {};
@@ -890,7 +890,7 @@ fn followFile_runKqueue(
                     allocator,
                     stderr_writer,
                     "tail",
-                    "{s}: file has been replaced; following new file",
+                    "'{s}' has been replaced;  following new file",
                     .{path},
                 );
                 stderr_writer.flush() catch {};
@@ -926,8 +926,8 @@ fn followFile_openInitial(
                 allocator,
                 stderr_writer,
                 "tail",
-                "{s}: No such file or directory; waiting for it to appear",
-                .{path},
+                "cannot open '{s}' for reading: {s}",
+                .{ path, common.posixErrorString(err) },
             );
             stderr_writer.flush() catch {};
             waited_out.* = true;
@@ -977,13 +977,14 @@ fn followFile_waitForReappear(
     assert(path.len > 0);
     assert(path.len <= std.Io.Dir.max_path_bytes);
 
-    // File is gone — wait for it to reappear
+    // File is gone — wait for it to reappear. This helper's only caller
+    // (followFile_rotationInode) routes here exclusively on FileNotFound.
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
         "tail",
-        "{s}: file has become inaccessible; waiting for it to reappear",
-        .{path},
+        "'{s}' has become inaccessible: {s}",
+        .{ path, common.posixErrorString(error.FileNotFound) },
     );
     stderr_writer.flush() catch {};
     // Bounded by the file reappearing; relocated verbatim from followFile.
@@ -1013,6 +1014,7 @@ fn followFile_checkTruncation(
 
     const new_end = try file.length(io);
     if (new_end < last_pos.*) {
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(
             allocator,
             stderr_writer,

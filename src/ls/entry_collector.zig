@@ -125,11 +125,13 @@ fn readSymlinkSafely(
         error.NotLink => return null,
         // For all other errors, use OS error message directly - no custom categories
         else => {
+            // GNU ls quotes the operand here (file_failure + quoteaf,
+            // "cannot read symbolic link 'x': reason"); match placement.
             common.printErrorWithProgram(
                 allocator,
                 stderr_writer,
                 "ls",
-                "symlink {s}: {s}",
+                "symlink '{s}': {s}",
                 .{ name, common.posixErrorString(err) },
             );
             return null; // Continue processing other entries rather than failing completely
@@ -313,26 +315,30 @@ fn openSubdirChecked(
     allocator: std.mem.Allocator,
     stderr_writer: anytype,
 ) ?std.Io.Dir {
-    // Open the subdirectory relative to the current directory
+    // Open the subdirectory relative to the current directory.
+    // GNU ls quotes the operand here (file_failure + quoteaf,
+    // "cannot open directory 'x': reason"); match placement.
     var sub_dir = dir.openDir(io, subdir.name, .{ .iterate = true }) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
             "ls",
-            "{s}: {}",
+            "'{s}': {}",
             .{ subdir.path, err },
         );
         return null;
     };
 
-    // Atomically check for cycles and mark as visited (TOCTOU-safe)
+    // Atomically check for cycles and mark as visited (TOCTOU-safe).
+    // GNU ls quotes the operand here too (file_failure + quoteaf,
+    // "cannot determine device and inode of 'x': reason").
     const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
         sub_dir.close(io);
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
             "ls",
-            "{s}: unable to check for cycles: {}",
+            "'{s}': unable to check for cycles: {}",
             .{ subdir.path, err },
         );
         return null;
@@ -340,6 +346,9 @@ fn openSubdirChecked(
 
     if (is_cycle) {
         sub_dir.close(io);
+        // GNU ls prints this operand unquoted here (error(0,0,...) with
+        // quotef, not quoteaf — "not listing already-listed directory");
+        // keep parity.
         common.printErrorWithProgram(
             allocator,
             stderr_writer,

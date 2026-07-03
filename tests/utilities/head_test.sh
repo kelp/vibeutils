@@ -157,7 +157,17 @@ test_head() {
     # Non-existent files
     test_command_fails "head non-existent file" "$binary" "/path/that/does/not/exist"
     test_command_fails "head mixed existing and non-existent" "$binary" "$test_file1" "/nonexistent"
-    
+
+    # GNU head quotes the missing operand: "cannot open 'PATH' for reading: ...".
+    local nx_cmd nx_out nx_err nx_exit
+    run_command nx_cmd nx_out nx_err nx_exit "$binary" "/path/that/does/not/exist"
+    if [[ "$nx_err" == *"head: cannot open '/path/that/does/not/exist' for reading: No such file or directory"* ]]; then
+        print_test_result "head non-existent file message is quoted" "PASS"
+    else
+        print_test_result "head non-existent file message is quoted" "FAIL" \
+            "Expected quoted \"cannot open '/path/that/does/not/exist' for reading: No such file or directory\", got: '$nx_err'"
+    fi
+
     # Directory handling
     local test_dir=$(create_temp_dir)
     test_command_fails "head directory" "$binary" "$test_dir"
