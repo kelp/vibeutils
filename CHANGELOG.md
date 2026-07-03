@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+- **dd `conv=noerror,sync` counts error-synthesized blocks as
+  partial records in.** Blocks NUL-padded after a read error
+  (zero bytes actually read) now report as `0+N records in`,
+  matching GNU; they were previously counted as full. The
+  padded writes still count as full records out (#59).
+
 ## v0.11.0 — 2026-07-02
 
 ### Added

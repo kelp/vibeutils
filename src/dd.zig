@@ -907,8 +907,9 @@ fn runDd_handleReadError(
         if (config.conv_sync) {
             // Fill with NULs when sync is specified
             @memset(in_buf, 0);
-            // Count as a full block
-            ctx.stats.full_blocks_in += 1;
+            // GNU counts an error-synthesized block (zero bytes actually
+            // read, NUL-padded to ibs) as a partial record in.
+            ctx.stats.partial_blocks_in += 1;
             if (simple_copy) {
                 // Write the NUL-filled block
                 ctx.output_file.writeStreamingAll(ctx.io, in_buf) catch |werr| {
