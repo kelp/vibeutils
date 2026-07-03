@@ -1819,6 +1819,7 @@ fn searchTree(
     stderr_writer: *std.Io.Writer,
     use_color: bool,
     found_any: *bool,
+    had_error: *bool,
     walk_config: common.walker.WalkConfig,
 ) void {
     assert(root_path.len > 0);
@@ -1846,7 +1847,9 @@ fn searchTree(
     while (true) { // tiger:allow:unbounded-loop walker.next() returns null at exhaustion
         const maybe_entry = search.walker.next(io) catch |err| {
             // An unreadable directory (or other per-entry I/O failure) is
-            // non-fatal: report it and let the walker resume at siblings.
+            // non-fatal: report it and let the walker resume at siblings. GNU
+            // grep exits 2 on any read error, so latch had_error here.
+            had_error.* = true;
             reportWalkError(io, root_path, err, opts, stderr_writer, &search);
             // The entry-count cap is terminal: next() latches this error and
             // re-returns it forever, so stop the walk instead of spinning.
@@ -2238,7 +2241,11 @@ pub fn runGrep(
     if (quiet_early) return 0;
 
     if (opts.quiet) {
-        return if (found_any) 0 else 1;
+        // A quiet match wins outright; otherwise a walk error still dominates
+        // the no-match exit (GNU: -q only overrides to 0 when a match was found).
+        if (found_any) return 0;
+        if (had_error) return 2;
+        return 1;
     }
 
     if (had_error) return 2;
@@ -2322,6 +2329,7 @@ fn runGrep_dispatchInputs(d: DispatchInputs) bool {
             d.stderr_writer,
             d.use_color,
             d.found_any_ptr,
+            d.had_error_ptr,
             .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
         );
     } else {
@@ -2450,6 +2458,7 @@ fn runGrep_processOneOperand(
                 stderr_writer,
                 use_color,
                 found_any_ptr,
+                had_error_ptr,
                 .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
             );
             return false;
@@ -4134,6 +4143,160 @@ test "walker-migration: unreadable directory is reported to stderr and walk cont
     try testing.expect(std.mem.indexOf(u8, result2.output, "CONTINUEMARKER hidden") == null);
 }
 
+// =============================================================
+// ISSUE #58: recursive walk errors must set the exit code.
+//
+// grep -r reports walk errors (unreadable subtree) to stderr via
+// reportWalkError, but searchTree returns void, so had_error never
+// reaches runGrep's exit logic. Truncated results then look like a
+// clean run (exit 0/1) instead of exit 2. GNU 3.11 (pinned on the
+// Linux VM) exits 2 whenever a read error occurred during the walk,
+// except that -q returns 0 when a line was selected. These tests
+// assert that pinned behavior; the two error-present-no-q tests are
+// RED on the current code, the -q and clean-tree tests guard against
+// the fix leaking the error channel into cases that must stay 0/1.
+// =============================================================
+
+/// Build the pinned issue-#58 tree under `tmp_dir`: ok/f.txt="hay\n"
+/// (readable, holds the match) and locked/s.txt="secret\n" inside a
+/// chmod-000 directory the walk cannot enter. Returns the NUL-terminated
+/// absolute path of the locked dir (owned by `testing.allocator`; the
+/// caller frees it) so the caller can restore its mode. On success the
+/// locked dir is already chmod 000.
+fn issue58BuildLockedTree(tmp_dir: *testing.TmpDir) ![:0]u8 {
+    const io = testing.io;
+    try tmp_dir.dir.createDirPath(io, "ok");
+    try tmp_dir.dir.createDirPath(io, "locked");
+    {
+        const file = try tmp_dir.dir.createFile(io, "ok/f.txt", .{});
+        try file.writeStreamingAll(io, "hay\n");
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "locked/s.txt", .{});
+        try file.writeStreamingAll(io, "secret\n");
+        file.close(io);
+    }
+
+    const locked_abs = try tmp_dir.dir.realPathFileAlloc(io, "locked", testing.allocator);
+    defer testing.allocator.free(locked_abs);
+    const locked_z = try testing.allocator.dupeZ(u8, locked_abs);
+    errdefer testing.allocator.free(locked_z);
+
+    if (std.c.chmod(locked_z.ptr, 0o000) != 0) return error.SkipZigTest;
+    return locked_z;
+}
+
+test "issue #58: grep -r no match over tree with unreadable subdir exits 2 with diagnostic" {
+    // chmod 000 is bypassed by root, so skip under fakeroot or as root.
+    if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
+    if (geteuid() == 0) return error.SkipZigTest;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const locked_z = try issue58BuildLockedTree(&tmp_dir);
+    defer testing.allocator.free(locked_z);
+    defer _ = std.c.chmod(locked_z.ptr, 0o755);
+
+    // Pattern "zzz" matches nothing anywhere; only the walk error remains.
+    var result = try runGrepRecursive(&tmp_dir, &.{"zzz"}, true);
+    defer result.arena.deinit();
+
+    // GNU 3.11 pinned: a read error occurred, so exit is 2 (NOT 1, mere
+    // no-match). This is the core RED assertion for issue #58.
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    // The read error must still be reported on stderr (result.output here).
+    try testing.expect(std.mem.indexOf(u8, result.output, "grep") != null);
+}
+
+test "issue #58: grep -r match found over tree with unreadable subdir exits 2" {
+    if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
+    if (geteuid() == 0) return error.SkipZigTest;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const locked_z = try issue58BuildLockedTree(&tmp_dir);
+    defer testing.allocator.free(locked_z);
+    defer _ = std.c.chmod(locked_z.ptr, 0o755);
+
+    // "hay" matches ok/f.txt, but the walk still fails on locked/.
+    var result = try runGrepRecursive(&tmp_dir, &.{"hay"}, false);
+    defer result.arena.deinit();
+
+    // GNU 3.11 pinned (scenario 2): match found + walk error, no -q => exit 2.
+    // The error dominates the match. Current (buggy) code returns 0 here.
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    // The walk continued: the match still reaches stdout.
+    try testing.expect(std.mem.indexOf(u8, result.output, "hay") != null);
+}
+
+test "issue #58: grep -q -r match found with unreadable subdir exits 0" {
+    if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
+    if (geteuid() == 0) return error.SkipZigTest;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const locked_z = try issue58BuildLockedTree(&tmp_dir);
+    defer testing.allocator.free(locked_z);
+    defer _ = std.c.chmod(locked_z.ptr, 0o755);
+
+    var result = try runGrepRecursive(&tmp_dir, &.{ "-q", "hay" }, false);
+    defer result.arena.deinit();
+
+    // GNU 3.11 pinned (scenario 3): -q + a selected line => exit 0 even though
+    // an error occurred. Guards the fix from breaking quiet's match-wins rule.
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+}
+
+test "issue #58: grep -q -r no match with unreadable subdir exits 2" {
+    if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
+    if (geteuid() == 0) return error.SkipZigTest;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const locked_z = try issue58BuildLockedTree(&tmp_dir);
+    defer testing.allocator.free(locked_z);
+    defer _ = std.c.chmod(locked_z.ptr, 0o755);
+
+    var result = try runGrepRecursive(&tmp_dir, &.{ "-q", "zzz" }, false);
+    defer result.arena.deinit();
+
+    // GNU 3.11 pinned (scenario 4): -q only overrides to 0 when a match WAS
+    // found. Here "zzz" matches nothing, so the walk error dominates and exit
+    // is 2 (NOT 1, mere no-match). Current (buggy) quiet branch returns 1.
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+}
+
+test "issue #58: grep -r over a fully readable tree exits 0 on match and 1 on no-match" {
+    // No chmod here, so no root/fakeroot guard is needed: this guards that the
+    // new error channel does not leak into clean walks.
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "ok");
+    {
+        const file = try tmp_dir.dir.createFile(io, "ok/f.txt", .{});
+        try file.writeStreamingAll(io, "hay\n");
+        file.close(io);
+    }
+
+    // Match present, no error => exit 0.
+    var match = try runGrepRecursive(&tmp_dir, &.{"hay"}, false);
+    defer match.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), match.exit_code);
+    try testing.expect(std.mem.indexOf(u8, match.output, "hay") != null);
+
+    // No match, no error => exit 1 (not 2).
+    var nomatch = try runGrepRecursive(&tmp_dir, &.{"zzz"}, false);
+    defer nomatch.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), nomatch.exit_code);
+}
+
 test "walker-migration: -R terminates on a symlink cycle and finds the file exactly once" {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
@@ -4376,6 +4539,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     var stderr_w: std.Io.Writer = .fixed(&stderr_buf);
 
     var found_any = false;
+    var had_error = false;
     searchTree(
         allocator,
         io,
@@ -4386,6 +4550,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
         &stderr_w,
         false,
         &found_any,
+        &had_error,
         .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false, .max_entries = 3 },
     );
 
