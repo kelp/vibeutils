@@ -1819,6 +1819,7 @@ fn searchTree(
     stderr_writer: *std.Io.Writer,
     use_color: bool,
     found_any: *bool,
+    had_error: *bool,
     walk_config: common.walker.WalkConfig,
 ) void {
     assert(root_path.len > 0);
@@ -1846,7 +1847,9 @@ fn searchTree(
     while (true) { // tiger:allow:unbounded-loop walker.next() returns null at exhaustion
         const maybe_entry = search.walker.next(io) catch |err| {
             // An unreadable directory (or other per-entry I/O failure) is
-            // non-fatal: report it and let the walker resume at siblings.
+            // non-fatal: report it and let the walker resume at siblings. GNU
+            // grep exits 2 on any read error, so latch had_error here.
+            had_error.* = true;
             reportWalkError(io, root_path, err, opts, stderr_writer, &search);
             // The entry-count cap is terminal: next() latches this error and
             // re-returns it forever, so stop the walk instead of spinning.
@@ -2238,7 +2241,11 @@ pub fn runGrep(
     if (quiet_early) return 0;
 
     if (opts.quiet) {
-        return if (found_any) 0 else 1;
+        // A quiet match wins outright; otherwise a walk error still dominates
+        // the no-match exit (GNU: -q only overrides to 0 when a match was found).
+        if (found_any) return 0;
+        if (had_error) return 2;
+        return 1;
     }
 
     if (had_error) return 2;
@@ -2322,6 +2329,7 @@ fn runGrep_dispatchInputs(d: DispatchInputs) bool {
             d.stderr_writer,
             d.use_color,
             d.found_any_ptr,
+            d.had_error_ptr,
             .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
         );
     } else {
@@ -2450,6 +2458,7 @@ fn runGrep_processOneOperand(
                 stderr_writer,
                 use_color,
                 found_any_ptr,
+                had_error_ptr,
                 .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
             );
             return false;
@@ -4530,6 +4539,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     var stderr_w: std.Io.Writer = .fixed(&stderr_buf);
 
     var found_any = false;
+    var had_error = false;
     searchTree(
         allocator,
         io,
@@ -4540,6 +4550,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
         &stderr_w,
         false,
         &found_any,
+        &had_error,
         .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false, .max_entries = 3 },
     );
 
