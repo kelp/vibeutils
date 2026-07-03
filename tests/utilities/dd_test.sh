@@ -557,4 +557,147 @@ test_dd() {
         print_test_result "dd conv=sync partial read accounting unchanged" "FAIL" \
             "expected '0+1 records in'/'1+0 records out', got rc=$sync_rc in='$sync_in' out='$sync_out'"
     fi
+
+    # ==================================================================
+    #   ISSUE #65: multi-character/byte suffixes (kB, B, KiB) and
+    #   ISSUE #64: named "invalid number" parse-error messages.
+    # ==================================================================
+    # All values below are pinned against GNU coreutils 9.5 on Linux
+    # (orb -m ubuntu). A trailing 'B' on count=/skip=/seek= means the
+    # number is an EXACT BYTE count, independent of bs=; suffixes with
+    # no trailing 'B' stay pure block-count multipliers (issue #43
+    # semantics, unchanged).
+    echo -e "${CYAN}Testing issue #65: byte-suffix semantics and issue #64 messages...${NC}"
+
+    local b65_count_input="$TEMP_DIR/dd65_count_in.bin"
+    head -c 4000 /dev/zero | tr '\0' 'x' > "$b65_count_input"
+
+    # count= with a trailing-B suffix is an EXACT BYTE count.
+    local b65_count_output="$TEMP_DIR/dd65_count_out.bin"
+    "$binary" if="$b65_count_input" of="$b65_count_output" bs=512 count=1kB status=none 2>/dev/null
+    local b65_count_size
+    b65_count_size=$(get_file_size "$b65_count_output")
+    if [[ "$b65_count_size" -eq 1000 ]]; then
+        print_test_result "dd count=1kB is byte-exact" "PASS"
+    else
+        print_test_result "dd count=1kB is byte-exact" "FAIL" \
+            "Expected 1000 bytes, got $b65_count_size"
+    fi
+
+    local b65_countb_output="$TEMP_DIR/dd65_countb_out.bin"
+    "$binary" if="$b65_count_input" of="$b65_countb_output" bs=512 count=1B status=none 2>/dev/null
+    local b65_countb_size
+    b65_countb_size=$(get_file_size "$b65_countb_output")
+    if [[ "$b65_countb_size" -eq 1 ]]; then
+        print_test_result "dd count=1B copies exactly 1 byte" "PASS"
+    else
+        print_test_result "dd count=1B copies exactly 1 byte" "FAIL" \
+            "Expected 1 byte, got $b65_countb_size"
+    fi
+
+    local b65_countkib_output="$TEMP_DIR/dd65_countkib_out.bin"
+    "$binary" if="$b65_count_input" of="$b65_countkib_output" bs=512 count=1KiB status=none 2>/dev/null
+    local b65_countkib_size
+    b65_countkib_size=$(get_file_size "$b65_countkib_output")
+    if [[ "$b65_countkib_size" -eq 1024 ]]; then
+        print_test_result "dd count=1KiB copies exactly 1024 bytes" "PASS"
+    else
+        print_test_result "dd count=1KiB copies exactly 1024 bytes" "FAIL" \
+            "Expected 1024 bytes, got $b65_countkib_size"
+    fi
+
+    # count=2b (no trailing B) stays a block-count multiplier: N=1024
+    # blocks at bs=512 exceeds the 4000-byte input, so the WHOLE file
+    # is copied (EOF-truncated), not 1024 bytes. Regression guard for
+    # issue #43 -- expected to PASS both before and after the fix.
+    local b65_count2b_output="$TEMP_DIR/dd65_count2b_out.bin"
+    "$binary" if="$b65_count_input" of="$b65_count2b_output" bs=512 count=2b status=none 2>/dev/null
+    local b65_count2b_size
+    b65_count2b_size=$(get_file_size "$b65_count2b_output")
+    if [[ "$b65_count2b_size" -eq 4000 ]]; then
+        print_test_result "dd count=2b (no trailing B) stays block multiplier" "PASS"
+    else
+        print_test_result "dd count=2b (no trailing B) stays block multiplier" "FAIL" \
+            "Expected 4000 bytes (whole file), got $b65_count2b_size"
+    fi
+
+    # skip= with a byte suffix seeks the EXACT byte offset, not rounded
+    # to an ibs-block multiple (bs=200 does not divide 1000 evenly).
+    local b65_skip_input="$TEMP_DIR/dd65_skip_in.bin"
+    printf 'ABCDEFGHIJ' > "$b65_skip_input"
+    head -c 990 /dev/zero >> "$b65_skip_input"
+    printf 'KLMNOPQRST' >> "$b65_skip_input"
+    local b65_skip_output="$TEMP_DIR/dd65_skip_out.bin"
+    "$binary" if="$b65_skip_input" of="$b65_skip_output" bs=200 skip=1kB status=none 2>/dev/null
+    local b65_skip_content
+    b65_skip_content=$(cat "$b65_skip_output")
+    if [[ "$b65_skip_content" == "KLMNOPQRST" ]]; then
+        print_test_result "dd skip=1kB seeks exact byte offset" "PASS"
+    else
+        print_test_result "dd skip=1kB seeks exact byte offset" "FAIL" \
+            "Expected 'KLMNOPQRST', got '$b65_skip_content'"
+    fi
+
+    # seek=1kB seeks exactly 1000 output bytes, then count=1 at bs=100
+    # writes one 100-byte block -> 1100 total output bytes.
+    local b65_seek_input="$TEMP_DIR/dd65_seek_in.bin"
+    printf 'X%.0s' {1..100} > "$b65_seek_input"
+    local b65_seek_output="$TEMP_DIR/dd65_seek_out.bin"
+    "$binary" if="$b65_seek_input" of="$b65_seek_output" bs=100 count=1 seek=1kB status=none 2>/dev/null
+    local b65_seek_size
+    b65_seek_size=$(get_file_size "$b65_seek_output")
+    if [[ "$b65_seek_size" -eq 1100 ]]; then
+        print_test_result "dd seek=1kB seeks exact byte offset" "PASS"
+    else
+        print_test_result "dd seek=1kB seeks exact byte offset" "FAIL" \
+            "Expected 1100 bytes, got $b65_seek_size"
+    fi
+
+    # bs=1kB uses 1000-byte blocks: a 4000-byte input yields exactly
+    # "4+0 records in" (pinned on GNU dd 9.5).
+    local b65_bs_err="$TEMP_DIR/dd65_bs_err.txt"
+    "$binary" if="$b65_count_input" of=/dev/null bs=1kB 2>"$b65_bs_err"
+    if grep -q "4+0 records in" "$b65_bs_err"; then
+        print_test_result "dd bs=1kB uses 1000-byte blocks" "PASS"
+    else
+        print_test_result "dd bs=1kB uses 1000-byte blocks" "FAIL" \
+            "Expected '4+0 records in' in stderr, got: $(cat "$b65_bs_err")"
+    fi
+
+    # count=0x10 warns that '0x' is a zero multiplier and copies nothing.
+    local b65_zero_err="$TEMP_DIR/dd65_zero_err.txt"
+    local b65_zero_output="$TEMP_DIR/dd65_zero_out.bin"
+    "$binary" if="$b65_count_input" of="$b65_zero_output" bs=512 count=0x10 2>"$b65_zero_err"
+    local b65_zero_size
+    b65_zero_size=$(get_file_size "$b65_zero_output")
+    if grep -qF "dd: warning: '0x' is a zero multiplier; use '00x' if that is intended" "$b65_zero_err" \
+        && [[ "$b65_zero_size" -eq 0 ]]; then
+        print_test_result "dd count=0x10 warns and copies nothing" "PASS"
+    else
+        print_test_result "dd count=0x10 warns and copies nothing" "FAIL" \
+            "size=$b65_zero_size stderr='$(cat "$b65_zero_err")'"
+    fi
+
+    # Issue #64: invalid operand values must name the offending value
+    # with GNU's message shape; our rc stays 2 (misuse), not GNU's rc=1.
+    local b65_invnum_err="$TEMP_DIR/dd65_invnum_err.txt"
+    "$binary" if=/dev/null of=/dev/null count=1m 2>"$b65_invnum_err"
+    local b65_invnum_rc=$?
+    if [[ "$b65_invnum_rc" -eq 2 ]] && grep -qF "dd: invalid number: '1m'" "$b65_invnum_err"; then
+        print_test_result "dd count=1m names value with GNU quoting, rc=2" "PASS"
+    else
+        print_test_result "dd count=1m names value with GNU quoting, rc=2" "FAIL" \
+            "rc=$b65_invnum_rc stderr='$(cat "$b65_invnum_err")'"
+    fi
+
+    # Garbage suffix combo rejected the same way.
+    local b65_garbage_err="$TEMP_DIR/dd65_garbage_err.txt"
+    "$binary" if=/dev/null of=/dev/null bs=1kBx 2>"$b65_garbage_err"
+    local b65_garbage_rc=$?
+    if [[ "$b65_garbage_rc" -eq 2 ]] && grep -qF "dd: invalid number: '1kBx'" "$b65_garbage_err"; then
+        print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=2" "PASS"
+    else
+        print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=2" "FAIL" \
+            "rc=$b65_garbage_rc stderr='$(cat "$b65_garbage_err")'"
+    fi
 }

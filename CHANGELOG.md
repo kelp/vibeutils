@@ -2,7 +2,23 @@
 
 ## Unreleased
 
+### Added
+- **dd accepts the full GNU size-suffix family with byte
+  semantics.** `bs=`/`ibs=`/`obs=` and the count-like operands
+  now take `B`, decimal `kB`/`MB`/`GB`/`TB`/`PB`/`EB`, and
+  binary `K`/`KiB` through `E`/`EiB` suffixes. On
+  `count=`/`skip=`/`seek=`, a suffix ending in `B` counts
+  exact BYTES rather than blocks (`bs=512 count=1kB` copies
+  exactly 1000 bytes; byte-precise skip/seek offsets), matching
+  GNU. A zero multiplier such as `count=0x10` now emits GNU's
+  `'0x' is a zero multiplier` warning (#65).
+
 ### Fixed
+- **dd names the offending value in operand errors.**
+  `dd count=1m` now reports `invalid number: '1m'` in GNU's
+  message shape instead of a generic `invalid operand value`;
+  the exit code stays 2 per the project-wide misuse convention
+  (#64).
 - **chown/chmod `-RL` reach directories aliased by sibling
   symlinks.** The walker's global visited set skipped whichever
   of a directory and a symlink to it was seen second, so the
