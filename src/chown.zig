@@ -609,7 +609,11 @@ fn chownWalk(
         .order = .post,
         .symlinks = policy,
         .stay_on_filesystem = options.no_cross_device,
-        .detect_cycles = true,
+        // Ancestor-only cycles: a sibling symlink alias of an already-walked
+        // directory is chowned again (GNU chown -RL reports both), while an
+        // ancestor loop surfaces error.DirectoryCycle so the cycle-forming
+        // symlink is serviced as a leaf without re-descending.
+        .cycle_mode = .ancestors,
     });
     defer walk.deinit(io);
     try walk.addRoot(path);
@@ -650,7 +654,63 @@ fn walkAndApply(
     stderr_writer: anytype,
 ) !void {
     var had_errors = false;
-    while (walk.next(io)) |maybe_entry| {
+    // The walker is bounded (max_depth / max_entries) and self-terminating; it
+    // returns null when drained, latches terminal cap errors, and stays
+    // re-entrant after a per-entry error. Reporting-and-continuing here matches
+    // GNU chown, which services every reachable entry rather than aborting on
+    // the first failure.
+    while (true) { // tiger:allow:unbounded-loop next()->null drains; caps latch+break
+        const maybe_entry = walk.next(io) catch |err| switch (err) {
+            error.DirectoryCycle => {
+                // An ancestor symlink loop. GNU chown -RL still chowns the
+                // cycle-forming symlink itself as a leaf (rc stays 0) and does
+                // not descend; do the same via the recorded cycle path.
+                chownSingle(
+                    io,
+                    allocator,
+                    walk.cyclePath(),
+                    ownership,
+                    options,
+                    stdout_writer,
+                    stderr_writer,
+                ) catch |e| {
+                    handleError(allocator, walk.cyclePath(), e, options, stderr_writer);
+                    had_errors = true;
+                };
+                continue;
+            },
+            error.DepthLimitExceeded, error.EntryLimitExceeded => {
+                // EntryLimitExceeded is latched: next() re-returns it forever
+                // once the cap is hit (walker.zig:299), so breaking here is
+                // mandatory. DepthLimitExceeded is per-entry — the walker
+                // consumes the offending dirent and would continue with
+                // siblings on the next next() call — so breaking on it is a
+                // deliberate abort choice matching chmod/du precedent, not
+                // something the walker requires.
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chown",
+                    "cannot traverse '{s}': {s}",
+                    .{ path, common.posixErrorString(err) },
+                );
+                had_errors = true;
+                break;
+            },
+            else => {
+                // Per-entry I/O error; the walker stays re-entrant, so report
+                // and keep walking the remaining siblings.
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chown",
+                    "cannot traverse '{s}': {s}",
+                    .{ path, common.posixErrorString(err) },
+                );
+                had_errors = true;
+                continue;
+            },
+        };
         const entry = maybe_entry orelse break;
         chownSingle(
             io,
@@ -664,19 +724,6 @@ fn walkAndApply(
             handleError(allocator, entry.path, err, options, stderr_writer);
             had_errors = true;
         };
-    } else |err| {
-        // A cycle stop or per-entry I/O error surfaced from the walker. The
-        // cycle case is the -L self-link guard the tests exercise; treat any
-        // such failure as a non-fatal error so the rest of the walk's output
-        // (already emitted) is preserved, matching the old kernel-ELOOP path.
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            "chown",
-            "cannot traverse '{s}': {s}",
-            .{ path, common.posixErrorString(err) },
-        );
-        had_errors = true;
     }
 
     if (had_errors) {

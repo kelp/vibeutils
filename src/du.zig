@@ -616,11 +616,13 @@ fn walkDirectoryOperand(
         .order = .both,
         .symlinks = symlinkPolicyFromMode(config.dereference_mode),
         .stay_on_filesystem = config.one_file_system,
-        // Cycle dedup is intentionally OFF: du counts a file reached via two
-        // distinct directory paths (e.g. -L through both real/ and a symlink to
-        // it) once per path, matching the recursion. Termination on genuine
-        // symlink loops comes from the depth/path bounds instead.
-        .detect_cycles = false,
+        // Ancestor-only cycle detection: du still counts a file reached via
+        // two distinct directory paths (e.g. -L through both real/ and a
+        // sibling symlink to it) once per path — no global visited set means
+        // sibling aliases are re-walked. Ancestor loops (a symlink resolving to
+        // one of its own ancestors) are pruned via the bounded stack scan,
+        // surfacing error.DirectoryCycle instead of running to the depth bound.
+        .cycle_mode = .ancestors,
         .max_depth = max_walk_depth,
         .max_entries = 1 << 24,
     };
@@ -697,6 +699,14 @@ fn walkDirectoryOperand_drainLoop(
                 printDirError(allocator, stderr, path, err);
                 has_error.* = true;
                 break;
+            },
+            error.DirectoryCycle => {
+                // An ancestor symlink loop was pruned. GNU du is silent here;
+                // vibeutils reports it as a diagnosable error (has_error, rc=1)
+                // and keeps walking the remaining entries.
+                printCycleError(allocator, stderr, dir_walker.cyclePath());
+                has_error.* = true;
+                continue;
             },
             error.NotDir => {
                 if (!follow_any) {
@@ -1037,6 +1047,24 @@ fn printIterError(
         prog_name,
         "cannot read directory '{s}': {s}",
         .{ path, common.posixErrorString(err) },
+    );
+}
+
+/// Report a pruned ancestor symlink loop. GNU du prints nothing here; vibeutils
+/// makes the cycle diagnosable. `cycle_path` names the offending symlink; it may
+/// be empty if the walker could not record it (OOM), in which case the operand
+/// path is not available here and the message still identifies the condition.
+fn printCycleError(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    cycle_path: []const u8,
+) void {
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        prog_name,
+        "cannot process '{s}': directory cycle detected",
+        .{cycle_path},
     );
 }
 

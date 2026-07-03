@@ -656,7 +656,11 @@ fn chmodWalk(
         .order = .post,
         .symlinks = symlinkPolicyFromOptions(options),
         .stay_on_filesystem = false, // chmod has no cross-device flag.
-        .detect_cycles = true, // Terminates symlink cycles under -L.
+        // Ancestor-only cycles: a sibling symlink alias of an already-walked
+        // directory is chmod'd again (GNU chmod -RL applies to both), while an
+        // ancestor loop surfaces error.DirectoryCycle so the cycle-forming
+        // symlink is serviced as a leaf without re-descending.
+        .cycle_mode = .ancestors,
         // These caps make the driver loop below provably finite.
         .max_depth = 1024,
         .max_entries = 1 << 24,
@@ -720,6 +724,21 @@ fn walkAndApply(
                 reportWalkLimit(allocator, stderr_writer, dir_path, err, options);
                 had_errors_out.* = true;
                 break;
+            },
+            // An ancestor symlink loop. GNU chmod -RL still chmods the
+            // cycle-forming symlink itself as a leaf (rc stays 0) and does not
+            // descend; apply the mode to the recorded cycle path and continue.
+            error.DirectoryCycle => {
+                if (!applyModeToPath(
+                    io,
+                    allocator,
+                    walker.cyclePath(),
+                    mode_spec,
+                    writer,
+                    stderr_writer,
+                    options,
+                )) had_errors_out.* = true;
+                continue;
             },
             // Per-entry open/iterate errors leave the walker re-entrant; report
             // the failure and keep walking the remaining entries.
@@ -3119,8 +3138,10 @@ test "char: symlink cycle does not cause an infinite loop" {
     // Guards: a symlink pointing back into an ancestor directory must not cause
     // chmod -R to loop forever. We use the default -P policy (symlinks not
     // followed) so the cycle is inert, plus assert the real file still gets the
-    // mode. Under the walker, detect_cycles=true provides the same guarantee
-    // for -L; here we lock in that -R completes and the run terminates.
+    // mode. The walker always runs chmod with cycle_mode = .ancestors (not
+    // conditioned on -L), so an ancestor loop under -L surfaces as a
+    // re-entrant error.DirectoryCycle and terminates rather than silently
+    // deduping; here we lock in that -R completes and the run terminates.
     if (std.c.getuid() == 0) return;
 
     var tmp_dir = testing.tmpDir(.{});

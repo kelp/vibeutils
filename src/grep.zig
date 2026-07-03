@@ -2330,7 +2330,7 @@ fn runGrep_dispatchInputs(d: DispatchInputs) bool {
             d.use_color,
             d.found_any_ptr,
             d.had_error_ptr,
-            .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
+            .{ .order = .pre, .symlinks = .no_follow, .cycle_mode = .none },
         );
     } else {
         for (opts.files.items) |file_path| {
@@ -2459,7 +2459,7 @@ fn runGrep_processOneOperand(
                 use_color,
                 found_any_ptr,
                 had_error_ptr,
-                .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false },
+                .{ .order = .pre, .symlinks = .no_follow, .cycle_mode = .none },
             );
             return false;
         }
@@ -4312,8 +4312,10 @@ test "walker-migration: -R terminates on a symlink cycle and finds the file exac
     // before any OS path-length limit halts the descent. A single match
     // therefore proves the cycle is NOT traversed. This holds on the current
     // recursive code (opening the symlink-to-dir as a file succeeds, so it is
-    // never descended) and must keep holding once the walker's detect_cycles
-    // owns the guarantee.
+    // never descended) and must keep holding under the walker, which runs
+    // grep's -R traversal with symlinks = .no_follow and cycle_mode = .none:
+    // the cycle-forming symlink is simply never descended, so no cycle
+    // detection is needed to guarantee termination.
     try tmp_dir.dir.createDirPath(io, "sub");
     {
         const file = try tmp_dir.dir.createFile(io, "sub/real.txt", .{});
@@ -4442,10 +4444,10 @@ test "walker-migration: common.walker exposes the API the grep driver loop needs
     try testing.expect(@hasField(W.Entry, "path"));
     try testing.expect(@hasField(W.Entry, "depth"));
     // The migration sets these WalkConfig knobs (.order, .symlinks,
-    // .detect_cycles); guard their presence so the recipe stays valid.
+    // .cycle_mode); guard their presence so the recipe stays valid.
     try testing.expect(@hasField(W.WalkConfig, "order"));
     try testing.expect(@hasField(W.WalkConfig, "symlinks"));
-    try testing.expect(@hasField(W.WalkConfig, "detect_cycles"));
+    try testing.expect(@hasField(W.WalkConfig, "cycle_mode"));
 }
 
 // MIGRATION-COMPLETION GATE.
@@ -4551,7 +4553,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
         false,
         &found_any,
         &had_error,
-        .{ .order = .pre, .symlinks = .no_follow, .detect_cycles = false, .max_entries = 3 },
+        .{ .order = .pre, .symlinks = .no_follow, .cycle_mode = .none, .max_entries = 3 },
     );
 
     // Returning here at all is the core regression proof: the walk halted

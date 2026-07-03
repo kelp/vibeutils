@@ -1317,7 +1317,7 @@ fn copyOneTree(
         .order = .both,
         .symlinks = .no_follow,
         .stay_on_filesystem = options.one_file_system,
-        .detect_cycles = false,
+        .cycle_mode = .none,
     }) catch {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
         return false;

@@ -4019,8 +4019,9 @@ fn reportStatError(state: *WalkState, path: []const u8, err: anyerror, stderr: a
 
 /// Build the WalkConfig for find. Order is always .both so the driver controls
 /// pre/post timing. -xdev and loop detection are driver-side, so the walker's
-/// stay_on_filesystem and detect_cycles stay off. -L uses no_follow (NOT
-/// follow_all) so symlinks arrive as .sym_link and the driver re-stats them.
+/// stay_on_filesystem and cycle_mode stay off (false / .none). -L uses
+/// no_follow (NOT follow_all) so symlinks arrive as .sym_link and the driver
+/// re-stats them.
 fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
     const symlinks: common.walker.SymlinkPolicy =
         if (config.follow_cmdline_symlinks and !config.follow_symlinks)
@@ -4032,7 +4033,7 @@ fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
         .symlinks = symlinks,
         .sort_children = config.sorted,
         .stay_on_filesystem = false,
-        .detect_cycles = false,
+        .cycle_mode = .none,
         .max_depth = 1024,
     };
 }
