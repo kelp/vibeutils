@@ -75,9 +75,69 @@ const RealpathArgs = struct {
     };
 };
 
+/// Join collected path components into an absolute "/c0/c1/..." slice, or "/"
+/// when empty. Caller owns the returned slice.
+fn joinComponentsAbsolute(allocator: Allocator, components: []const []const u8) ![]u8 {
+    if (components.len == 0) {
+        return try allocator.dupe(u8, "/");
+    }
+    // Leading '/' plus one '/' separator and the bytes for each component.
+    var total_len: usize = 0;
+    for (components) |comp| {
+        std.debug.assert(comp.len > 0);
+        total_len += 1 + comp.len;
+    }
+    std.debug.assert(total_len >= components.len);
+
+    const result = try allocator.alloc(u8, total_len);
+    var pos: usize = 0;
+    for (components) |comp| {
+        result[pos] = '/';
+        pos += 1;
+        @memcpy(result[pos .. pos + comp.len], comp);
+        pos += comp.len;
+    }
+    // The build loop writes exactly total_len bytes, so pos lands on total_len.
+    std.debug.assert(pos == total_len);
+    return result;
+}
+
+/// Stat the accumulated prefix that precedes a `..` and confirm it is a
+/// directory (following symlinks, matching GNU realpath -s). Errors with
+/// FileNotFound when the prefix is absent and NotDir when it resolves to a
+/// non-directory. `components` are the path parts collected so far, all
+/// non-empty and never `.`/`..`.
+fn checkDotDotPrefix(
+    allocator: Allocator,
+    io: std.Io,
+    components: []const []const u8,
+) !void {
+    std.debug.assert(components.len > 0);
+    const prefix = try joinComponentsAbsolute(allocator, components);
+    defer allocator.free(prefix);
+    std.debug.assert(prefix.len > 0);
+    const info = try std.Io.Dir.cwd().statFile(io, prefix, .{});
+    if (info.kind != .directory) {
+        return error.NotDir;
+    }
+}
+
+/// Textual logical resolution: clean . and .. purely as text, no filesystem
+/// check. Convenience wrapper used by the pure-algorithm unit tests.
+fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    return resolveLogicalWithMode(allocator, io, path, true);
+}
+
 /// Resolve a path without following symlinks, just cleaning . and .. components.
 /// Makes the path absolute and removes redundant separators and dot components.
-fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+/// When `allow_missing` is false (plain -s), each `..` requires the component
+/// it pops to exist and be a directory; -m -s passes true to skip that check.
+fn resolveLogicalWithMode(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    allow_missing: bool,
+) ![]u8 {
     // GNU realpath -s reports "No such file or directory" for an empty operand
     // rather than resolving it to the cwd. Reject it here so an empty
     // --relative-to= base routed through this path errors like GNU.
@@ -114,6 +174,10 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
             continue;
         } else if (std.mem.eql(u8, component, "..")) {
             if (components.items.len > 0) {
+                // Under plain -s the popped prefix must exist as a directory.
+                if (!allow_missing) {
+                    try checkDotDotPrefix(allocator, io, components.items);
+                }
                 _ = components.pop();
             }
         } else {
@@ -121,29 +185,8 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
         }
     }
 
-    // Build result path
-    if (components.items.len == 0) {
-        return try allocator.dupe(u8, "/");
-    }
-
-    // Calculate total length: leading / + each component + separators
-    var total_len: usize = 0;
-    for (components.items) |comp| {
-        total_len += 1 + comp.len; // '/' + component
-    }
-
-    const result = try allocator.alloc(u8, total_len);
-    var pos: usize = 0;
-    for (components.items) |comp| {
-        result[pos] = '/';
-        pos += 1;
-        @memcpy(result[pos .. pos + comp.len], comp);
-        pos += comp.len;
-    }
-    // The build loop writes exactly total_len bytes, so pos lands on total_len.
-    std.debug.assert(pos == total_len);
-
-    return result;
+    // Build result path from the cleaned components.
+    return try joinComponentsAbsolute(allocator, components.items);
 }
 
 /// Print a "name: message" resolution error with the program prefix. Shared by
@@ -177,7 +220,7 @@ fn processPath_resolveTarget(
     stderr_writer: *std.Io.Writer,
 ) !?[]u8 {
     if (opts.no_symlinks) {
-        return resolveLogical(allocator, io, path) catch |err| {
+        return resolveLogicalWithMode(allocator, io, path, opts.canonicalize_missing) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, path, err);
             }
@@ -221,7 +264,8 @@ fn processPath_resolveBase(
     stderr_writer: *std.Io.Writer,
 ) !?[]u8 {
     if (opts.no_symlinks) {
-        return resolveLogical(allocator, io, base_dir) catch |err| {
+        const allow_missing = opts.canonicalize_missing;
+        return resolveLogicalWithMode(allocator, io, base_dir, allow_missing) catch |err| {
             if (!opts.quiet) {
                 printResolveError(allocator, stderr_writer, base_dir, err);
             }
