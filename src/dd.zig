@@ -51,6 +51,14 @@ const DdConfig = struct {
     count: ?usize = null,
     skip: usize = 0,
     seek: usize = 0,
+    // Trailing-'B' byte-unit mode for count/skip/seek: the value is an
+    // exact byte cap/offset instead of a block multiplier.
+    count_bytes: bool = false,
+    skip_bytes: bool = false,
+    seek_bytes: bool = false,
+    // The offending factor of a zero-multiplier product (e.g. "0" from
+    // "0x10"); non-null triggers GNU's zero-multiplier warning.
+    zero_mult: ?[]const u8 = null,
     conv_lcase: bool = false,
     conv_ucase: bool = false,
     conv_notrunc: bool = false,
@@ -89,8 +97,13 @@ const DdStats = struct {
     start_ns: i128 = 0,
 };
 
-/// Parse a byte size value with optional suffix.
-/// Supports: c=1, w=2, b=512, k/K=1024, M=1048576, G=1073741824
+/// Parse a byte size value with optional multiplicative suffix.
+/// Supports the full GNU dd suffix table (see `dd_suffixes`): c, w, b, B;
+/// decimal kB/MB/GB/TB/PB/EB (1000-based); and bare-or-IEC K/KiB,
+/// M/MiB, G/GiB, T/TiB, P/PiB, E/EiB (1024-based). For count=/skip=/seek=
+/// specifically, a trailing 'B' additionally means "bytes not blocks"
+/// rather than a suffix multiplier; that rule is applied by the caller
+/// (see `operandIsBytes`), not here.
 /// Also supports multiplication with 'x' (e.g., "1024x1024").
 fn parseByteSize(s: []const u8) !usize {
     if (s.len == 0) return error.InvalidValue;
@@ -107,6 +120,62 @@ fn parseByteSize(s: []const u8) !usize {
     }
     if (!has_parts) return error.InvalidValue;
     return result;
+}
+
+/// Parse a byte-size operand, recording a zero-multiplier factor (if any)
+/// on `config` so runDd can emit GNU's warning. The parser itself stays
+/// pure; the warning is a returned signal via `config.zero_mult`.
+fn parseByteSizeOperand(config: *DdConfig, value: []const u8) !usize {
+    std.debug.assert(value.len < std.math.maxInt(usize));
+    const parsed = try parseByteSize(value);
+    if (zeroMultiplierPart(value)) |zm| config.zero_mult = zm;
+    std.debug.assert(parsed <= std.math.maxInt(usize));
+    return parsed;
+}
+
+/// One entry in dd's multiplicative-suffix table.
+const SuffixEntry = struct { name: []const u8, mult: u64 };
+
+/// GNU dd's committed multiplicative suffixes (docs/specs/dd-gnu.txt).
+/// Decimal-B forms are 1000-based; bare and IEC (`iB`) forms are
+/// 1024-based. A trailing 'B' additionally means "bytes not blocks" for
+/// count/skip/seek, handled at the operand level, not here.
+const dd_suffixes = [_]SuffixEntry{
+    .{ .name = "c", .mult = 1 },
+    .{ .name = "w", .mult = 2 },
+    .{ .name = "b", .mult = 512 },
+    .{ .name = "B", .mult = 1 },
+    .{ .name = "kB", .mult = 1000 },
+    .{ .name = "k", .mult = 1024 },
+    .{ .name = "K", .mult = 1024 },
+    .{ .name = "KiB", .mult = 1024 },
+    .{ .name = "MB", .mult = 1_000_000 },
+    .{ .name = "M", .mult = 1_048_576 },
+    .{ .name = "MiB", .mult = 1_048_576 },
+    .{ .name = "GB", .mult = 1_000_000_000 },
+    .{ .name = "G", .mult = 1_073_741_824 },
+    .{ .name = "GiB", .mult = 1_073_741_824 },
+    .{ .name = "TB", .mult = 1_000_000_000_000 },
+    .{ .name = "T", .mult = 1_099_511_627_776 },
+    .{ .name = "TiB", .mult = 1_099_511_627_776 },
+    .{ .name = "PB", .mult = 1_000_000_000_000_000 },
+    .{ .name = "P", .mult = 1_125_899_906_842_624 },
+    .{ .name = "PiB", .mult = 1_125_899_906_842_624 },
+    .{ .name = "EB", .mult = 1_000_000_000_000_000_000 },
+    .{ .name = "E", .mult = 1_152_921_504_606_846_976 },
+    .{ .name = "EiB", .mult = 1_152_921_504_606_846_976 },
+};
+
+/// Look up a multiplicative suffix, returning null when unrecognized.
+fn suffixMultiplier(suffix: []const u8) ?u64 {
+    std.debug.assert(suffix.len > 0);
+    for (dd_suffixes) |entry| {
+        if (std.mem.eql(u8, suffix, entry.name)) {
+            std.debug.assert(entry.mult > 0);
+            return entry.mult;
+        }
+    }
+    return null;
 }
 
 /// Parse a single size token (number with optional suffix)
@@ -128,19 +197,40 @@ fn parseSingleSize(s: []const u8) !usize {
 
     if (suffix.len == 0) return num;
 
-    const multiplier: usize = switch (suffix[0]) {
-        'c' => 1,
-        'w' => 2,
-        'b' => 512,
-        'k', 'K' => 1024,
-        'M' => 1048576,
-        'G' => 1073741824,
-        else => return error.InvalidValue,
-    };
+    const multiplier = suffixMultiplier(suffix) orelse return error.InvalidValue;
+    const product = std.math.mul(u64, @as(u64, num), multiplier) catch return error.InvalidValue;
+    return std.math.cast(usize, product) orelse return error.InvalidValue;
+}
 
-    if (suffix.len > 1) return error.InvalidValue;
+/// True when a numeric operand's value string ends in 'B', selecting
+/// byte units (not blocks) for count/skip/seek per GNU dd.
+fn operandIsBytes(value: []const u8) bool {
+    // Callers only invoke this after parseByteSizeOperand has already
+    // parsed the same value successfully, so it is never empty.
+    std.debug.assert(value.len > 0);
+    const is_bytes = value[value.len - 1] == 'B';
+    // A successfully parsed byte-size value always starts with a digit
+    // (see parseSingleSize); independent of the suffix check above, this
+    // catches a caller that skipped validation before reaching here.
+    std.debug.assert(std.ascii.isDigit(value[0]));
+    return is_bytes;
+}
 
-    return std.math.mul(usize, num, multiplier) catch return error.InvalidValue;
+/// Detect a zero-multiplier factor in an `NxM` product (a bare "0"
+/// factor). GNU warns because "0" multiplies the whole value to zero;
+/// "00" signals that a zero was intended. Returns the offending factor
+/// slice for the warning, or null when there is none.
+fn zeroMultiplierPart(s: []const u8) ?[]const u8 {
+    std.debug.assert(s.len < std.math.maxInt(usize));
+    if (std.mem.indexOfScalar(u8, s, 'x') == null) return null;
+    var iter = std.mem.splitScalar(u8, s, 'x');
+    while (iter.next()) |part| {
+        if (std.mem.eql(u8, part, "0")) {
+            std.debug.assert(part.len == 1);
+            return part;
+        }
+    }
+    return null;
 }
 
 /// Parse dd operands from command-line arguments.
@@ -184,31 +274,36 @@ fn parseOperands_applyKeyValue(config: *DdConfig, key: []const u8, value: []cons
     } else if (std.mem.eql(u8, key, "of")) {
         config.output_file = value;
     } else if (std.mem.eql(u8, key, "bs")) {
-        config.bs = try parseByteSize(value);
+        config.bs = try parseByteSizeOperand(config, value);
     } else if (std.mem.eql(u8, key, "ibs")) {
-        config.ibs = try parseByteSize(value);
+        config.ibs = try parseByteSizeOperand(config, value);
     } else if (std.mem.eql(u8, key, "obs")) {
-        config.obs = try parseByteSize(value);
+        config.obs = try parseByteSizeOperand(config, value);
     } else if (std.mem.eql(u8, key, "count")) {
-        // Issue #43: count/skip/seek take the same multiplicative suffix
-        // grammar as bs=. Here the suffix is a pure block-count multiplier
-        // (count=1k means 1024 blocks), so parseByteSize's number is used
-        // verbatim without any byte conversion.
-        config.count = try parseByteSize(value);
+        // Issue #43/#65: count/skip/seek take the same multiplicative
+        // suffix grammar as bs=. Without a trailing 'B' the number is a
+        // pure block-count multiplier (count=1k means 1024 blocks); a
+        // trailing 'B' switches it to an exact byte cap (count_bytes).
+        config.count = try parseByteSizeOperand(config, value);
+        config.count_bytes = operandIsBytes(value);
     } else if (std.mem.eql(u8, key, "skip")) {
-        config.skip = try parseByteSize(value);
+        config.skip = try parseByteSizeOperand(config, value);
+        config.skip_bytes = operandIsBytes(value);
     } else if (std.mem.eql(u8, key, "seek")) {
-        config.seek = try parseByteSize(value);
+        config.seek = try parseByteSizeOperand(config, value);
+        config.seek_bytes = operandIsBytes(value);
     } else if (std.mem.eql(u8, key, "cbs")) {
-        config.cbs = try parseByteSize(value);
+        config.cbs = try parseByteSizeOperand(config, value);
     } else if (std.mem.eql(u8, key, "conv")) {
         try parseConversions(config, value);
     } else if (std.mem.eql(u8, key, "iseek")) {
         // Alias for skip; same suffix grammar as skip=.
-        config.skip = try parseByteSize(value);
+        config.skip = try parseByteSizeOperand(config, value);
+        config.skip_bytes = operandIsBytes(value);
     } else if (std.mem.eql(u8, key, "oseek")) {
         // Alias for seek; same suffix grammar as seek=.
-        config.seek = try parseByteSize(value);
+        config.seek = try parseByteSizeOperand(config, value);
+        config.seek_bytes = operandIsBytes(value);
     } else if (std.mem.eql(u8, key, "fillchar")) {
         if (value.len != 1) return error.InvalidValue;
         config.fillchar = value[0];
@@ -780,29 +875,28 @@ fn runDd_skipInput(
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Seek the output forward by `seek_blocks` obs-sized blocks. Falls
-/// back to writing zero blocks when the file cannot seek (e.g. stdout).
-/// Returns 0 on success, or a fatal exit code. Seek errors do NOT
-/// print stats.
+/// Seek the output forward by exactly `seek_bytes` bytes. Falls back to
+/// writing that many zero bytes when the file cannot seek (e.g. stdout).
+/// Returns 0 on success, or a fatal exit code. Seek errors do NOT print
+/// stats. The caller derives seek_bytes from the block/byte mode.
 fn runDd_seekOutput(
     allocator: Allocator,
     io: std.Io,
     stderr: *std.Io.Writer,
     output_file: std.Io.File,
     out_buf: []u8,
-    seek_blocks: usize, // tiger:allow:usize-arch block count uses slice index type
-    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    seek_bytes: usize, // tiger:allow:usize-arch byte count uses slice index type
 ) u8 {
-    std.debug.assert(seek_blocks > 0);
-    std.debug.assert(obs > 0);
+    std.debug.assert(seek_bytes > 0);
+    std.debug.assert(out_buf.len > 0);
 
-    const seek_bytes = seek_blocks * obs;
     io.vtable.fileSeekTo(io.userdata, output_file, seek_bytes) catch {
-        // If seeking fails (e.g., stdout), try writing zeros
-        var seeked: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+        // If seeking fails (e.g., stdout), write zeros up to seek_bytes.
         @memset(out_buf, 0);
-        while (seeked < seek_blocks) : (seeked += 1) {
-            output_file.writeStreamingAll(io, out_buf) catch |write_err| {
+        var remaining = seek_bytes; // tiger:allow:usize-arch byte count uses slice index type
+        while (remaining > 0) {
+            const chunk = @min(remaining, out_buf.len);
+            output_file.writeStreamingAll(io, out_buf[0..chunk]) catch |write_err| {
                 const message = common.posixErrorString(write_err);
                 common.printErrorWithProgram(
                     allocator,
@@ -813,11 +907,54 @@ fn runDd_seekOutput(
                 );
                 return @intFromEnum(common.ExitCode.general_error);
             };
+            remaining -= chunk;
         }
-        // The fallback loop stops at seeked == seek_blocks (or returned
-        // early on write error), so it never overshoots the request.
-        std.debug.assert(seeked <= seek_blocks);
+        // The fallback loop decrements remaining to zero without overrun.
+        std.debug.assert(remaining == 0);
     };
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Skip exactly `skip_bytes` bytes at the start of the input by seeking,
+/// falling back to reading and discarding for non-seekable inputs. Used
+/// for the trailing-'B' byte-exact skip (skip=NB), independent of ibs.
+/// Returns 0 on success (including early EOF), or a fatal exit code.
+fn runDd_skipInputBytes(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    input_file: std.Io.File,
+    in_buf: []u8,
+    skip_bytes: usize, // tiger:allow:usize-arch byte count uses slice index type
+) u8 {
+    std.debug.assert(skip_bytes > 0);
+    std.debug.assert(in_buf.len > 0);
+
+    if (io.vtable.fileSeekBy(io.userdata, input_file, @intCast(skip_bytes))) |_| {
+        return @intFromEnum(common.ExitCode.success);
+    } else |_| {}
+
+    var remaining = skip_bytes; // tiger:allow:usize-arch byte count uses slice index type
+    while (remaining > 0) {
+        const chunk = @min(remaining, in_buf.len);
+        const n = input_file.readStreaming(io, &.{in_buf[0..chunk]}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => {
+                const message = common.posixErrorString(err);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr,
+                    "dd",
+                    "error skipping input: {s}",
+                    .{message},
+                );
+                return @intFromEnum(common.ExitCode.general_error);
+            },
+        };
+        if (n == 0) break;
+        remaining -= n;
+    }
+    std.debug.assert(remaining <= skip_bytes);
     return @intFromEnum(common.ExitCode.success);
 }
 
@@ -838,13 +975,21 @@ fn runDd_skipAndSeek(
 
     if (config.skip > 0) {
         const input = files.input_file;
-        const code = runDd_skipInput(allocator, io, stderr, input, bufs.in_buf, config.skip);
+        // Trailing-'B' skip is an exact byte offset; otherwise skip N
+        // ibs-sized blocks by reading and discarding them.
+        const code = if (config.skip_bytes)
+            runDd_skipInputBytes(allocator, io, stderr, input, bufs.in_buf, config.skip)
+        else
+            runDd_skipInput(allocator, io, stderr, input, bufs.in_buf, config.skip);
         if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
     if (config.seek > 0) {
         const output = files.output_file;
         const out_buf = bufs.out_buf;
-        const code = runDd_seekOutput(allocator, io, stderr, output, out_buf, config.seek, obs);
+        // Trailing-'B' seek is an exact byte offset; otherwise seek N
+        // obs-sized blocks (seek * obs bytes).
+        const seek_bytes = if (config.seek_bytes) config.seek else config.seek * obs;
+        const code = runDd_seekOutput(allocator, io, stderr, output, out_buf, seek_bytes);
         if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
     return @intFromEnum(common.ExitCode.success);
@@ -1198,6 +1343,42 @@ fn runDd_flushTails_buffer(
     return @intFromEnum(common.ExitCode.success);
 }
 
+/// True when `key` names an operand whose value is a multiplicative
+/// number (bs/ibs/obs/count/skip/seek/cbs and the iseek/oseek aliases).
+fn isNumericOperandKey(key: []const u8) bool {
+    const keys = [_][]const u8{
+        "bs",    "ibs",   "obs",
+        "count", "skip",  "seek",
+        "cbs",   "iseek", "oseek",
+    };
+    for (keys) |k| {
+        if (std.mem.eql(u8, key, k)) return true;
+    }
+    return false;
+}
+
+/// Find the value string of the first numeric operand that fails to
+/// parse, so runDd can name it in GNU's "invalid number: '<value>'"
+/// message. Returns null when no numeric operand is malformed.
+/// Attribution is best-effort: when a non-numeric operand (e.g. an
+/// unknown key) is invalid earlier in argv and a malformed numeric
+/// operand appears later, the value named here is that later numeric
+/// operand, not necessarily the first invalid operand overall. It is
+/// never wrong (the named value is always genuinely malformed), just
+/// not guaranteed to be the first-encountered invalid operand.
+fn findInvalidNumberOperand(args: []const []const u8) ?[]const u8 {
+    std.debug.assert(args.len < std.math.maxInt(usize));
+    for (args) |arg| {
+        const eq = std.mem.indexOfScalar(u8, arg, '=') orelse continue;
+        std.debug.assert(eq < arg.len);
+        const key = arg[0..eq];
+        const value = arg[eq + 1 ..];
+        if (!isNumericOperandKey(key)) continue;
+        _ = parseByteSize(value) catch return value;
+    }
+    return null;
+}
+
 /// Execute the dd copy operation. Handles the argument-level outcomes
 /// (unsupported operand, parse errors, --help, --version) here and
 /// delegates the actual copy to runDd_copy once the config is valid.
@@ -1217,7 +1398,26 @@ pub fn runDd(
     const config = parseOperands(args) catch |err| {
         switch (err) {
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr, "dd", "invalid operand value", .{});
+                // Issue #64: name the offending value with GNU's message
+                // shape when it is a numeric operand; keep the generic
+                // message for non-numeric operands (status=, conv=, ...).
+                if (findInvalidNumberOperand(args)) |value| {
+                    common.printErrorWithProgram(
+                        allocator,
+                        stderr,
+                        "dd",
+                        "invalid number: '{s}'",
+                        .{value},
+                    );
+                } else {
+                    common.printErrorWithProgram(
+                        allocator,
+                        stderr,
+                        "dd",
+                        "invalid operand value",
+                        .{},
+                    );
+                }
             },
             error.UnknownOperand => {
                 common.printErrorWithProgram(allocator, stderr, "dd", "unrecognized operand", .{});
@@ -1234,6 +1434,13 @@ pub fn runDd(
     if (config.version) {
         printVersion(stdout) catch {};
         return @intFromEnum(common.ExitCode.success);
+    }
+
+    // GNU's zero-multiplier warning: a bare "0" factor (e.g. count=0x10)
+    // silently zeroes the value; warn but continue.
+    if (config.zero_mult) |zm| {
+        const message = "warning: '{s}x' is a zero multiplier; use '0{s}x' if that is intended";
+        common.printErrorWithProgram(allocator, stderr, "dd", message, .{ zm, zm });
     }
 
     return runDd_copy(allocator, io, stderr, &config);
@@ -1420,6 +1627,38 @@ fn runDd_readBlock(
     return .{ .bytes = bytes_read };
 }
 
+/// True when the copy has reached its count= limit. In block mode the
+/// limit is N input blocks; in byte mode (trailing 'B') it is N bytes.
+fn runDd_countReached(
+    config: *const DdConfig,
+    blocks_read: usize, // tiger:allow:usize-arch block counter uses slice index type
+    bytes_counted: usize, // tiger:allow:usize-arch byte counter uses slice index type
+) bool {
+    const count = config.count orelse return false;
+    std.debug.assert(count <= std.math.maxInt(usize));
+    if (config.count_bytes) return bytes_counted >= count;
+    return blocks_read >= count;
+}
+
+/// Truncate `data` so byte-exact count=NB stops on an exact byte
+/// boundary, accumulating the copied byte total in `counted`. In block
+/// mode (no trailing 'B') the data passes through unchanged.
+fn runDd_capByteCount(
+    config: *const DdConfig,
+    data: []u8,
+    counted: *usize, // tiger:allow:usize-arch byte counter uses slice index type
+) []u8 {
+    if (!config.count_bytes) return data;
+    const count = config.count orelse return data;
+    // The loop breaks before entry once the cap is met, so room remains.
+    std.debug.assert(counted.* < count);
+    const remaining = count - counted.*;
+    const capped = if (data.len > remaining) data[0..remaining] else data;
+    counted.* += capped.len;
+    std.debug.assert(counted.* <= count);
+    return capped;
+}
+
 /// The main dd copy loop: read a block, account it, sync-pad, convert,
 /// and dispatch to the matching per-mode write helper. Position state
 /// is carried via pointers so the tail-flush phase can finish records.
@@ -1442,11 +1681,11 @@ fn runDd_copyLoop(
     // neither reading data nor seeking past the bad block. Reset on any
     // good read or successful skip; bounds a truly non-advancing spin.
     var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+    // Bytes copied toward a byte-exact count=NB limit (trailing 'B').
+    var bytes_toward_count: usize = 0; // tiger:allow:usize-arch byte counter uses slice index type
     while (true) { // tiger:allow:unbounded-loop bounded by EOF, count=/stall, or fatal I/O
-        // Check count limit
-        if (config.count) |count| {
-            if (blocks_read >= count) break;
-        }
+        // Check count limit (block count, or byte count for count=NB).
+        if (runDd_countReached(config, blocks_read, bytes_toward_count)) break;
 
         const outcome = runDd_readBlock(ctx, config, plan, &blocks_read, &read_errors_stalled);
         const bytes_read = switch (outcome) {
@@ -1477,6 +1716,9 @@ fn runDd_copyLoop(
             @memset(in_buf[bytes_read..], pad_byte);
             data = in_buf[0..plan.ibs];
         }
+
+        // Byte-exact count=NB: cap the final block to the byte limit.
+        data = runDd_capByteCount(config, data, &bytes_toward_count);
 
         // Apply conversions (swab, charset, case)
         applyConversions(data, config.*);
@@ -2430,16 +2672,31 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
 
     // Pinned: bs=512 count=1kB copies exactly 1000 bytes (GNU dd 9.5).
     {
-        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/out_kb.txt", .{base_path});
+        const output_path = try std.fmt.allocPrint(
+            testing.allocator,
+            "{s}/out_kb.txt",
+            .{base_path},
+        );
         defer testing.allocator.free(output_path);
         const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
         defer testing.allocator.free(of_arg);
 
         const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=1kB", "status=none" };
-        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        const exit_code = try runDd(
+            testing.allocator,
+            io,
+            &args,
+            common.null_writer,
+            common.null_writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(io, "out_kb.txt", testing.allocator, .unlimited);
+        const content = try tmp_dir.dir.readFileAlloc(
+            io,
+            "out_kb.txt",
+            testing.allocator,
+            .unlimited,
+        );
         defer testing.allocator.free(content);
         try testing.expectEqual(@as(usize, 1000), content.len);
         try testing.expectEqualStrings(data[0..1000], content);
@@ -2447,32 +2704,62 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
 
     // Pinned: bs=512 count=1B copies exactly 1 byte (GNU dd 9.5).
     {
-        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/out_b.txt", .{base_path});
+        const output_path = try std.fmt.allocPrint(
+            testing.allocator,
+            "{s}/out_b.txt",
+            .{base_path},
+        );
         defer testing.allocator.free(output_path);
         const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
         defer testing.allocator.free(of_arg);
 
         const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=1B", "status=none" };
-        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        const exit_code = try runDd(
+            testing.allocator,
+            io,
+            &args,
+            common.null_writer,
+            common.null_writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(io, "out_b.txt", testing.allocator, .unlimited);
+        const content = try tmp_dir.dir.readFileAlloc(
+            io,
+            "out_b.txt",
+            testing.allocator,
+            .unlimited,
+        );
         defer testing.allocator.free(content);
         try testing.expectEqualStrings("0", content);
     }
 
     // Pinned: bs=512 count=1KiB copies exactly 1024 bytes (GNU dd 9.5).
     {
-        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/out_kib.txt", .{base_path});
+        const output_path = try std.fmt.allocPrint(
+            testing.allocator,
+            "{s}/out_kib.txt",
+            .{base_path},
+        );
         defer testing.allocator.free(output_path);
         const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
         defer testing.allocator.free(of_arg);
 
         const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=1KiB", "status=none" };
-        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        const exit_code = try runDd(
+            testing.allocator,
+            io,
+            &args,
+            common.null_writer,
+            common.null_writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(io, "out_kib.txt", testing.allocator, .unlimited);
+        const content = try tmp_dir.dir.readFileAlloc(
+            io,
+            "out_kib.txt",
+            testing.allocator,
+            .unlimited,
+        );
         defer testing.allocator.free(content);
         try testing.expectEqual(@as(usize, 1024), content.len);
         try testing.expectEqualStrings(data[0..1024], content);
@@ -2487,7 +2774,7 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
 // truncated to the whole file (7+1 records on GNU). This must stay
 // green both before and after the issue #65 fix -- it is not expected
 // to be red against the current code.
-test "runDd - count=2b with no trailing B stays a block-count multiplier (issue #65 regression guard)" {
+test "runDd - count=2b with no trailing B stays a block-count multiplier (issue #65 regression)" {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -2508,7 +2795,13 @@ test "runDd - count=2b with no trailing B stays a block-count multiplier (issue 
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=2b", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
@@ -2534,13 +2827,21 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
     @memcpy(skip_input[1000..1010], "KLMNOPQRST");
     try common.test_utils.createTestFile(io, tmp_dir.dir, "skip_input.bin", &skip_input);
 
-    const skip_input_path = try tmp_dir.dir.realPathFileAlloc(io, "skip_input.bin", testing.allocator);
+    const skip_input_path = try tmp_dir.dir.realPathFileAlloc(
+        io,
+        "skip_input.bin",
+        testing.allocator,
+    );
     defer testing.allocator.free(skip_input_path);
     const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
 
     {
-        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/skip_output.bin", .{base_path});
+        const output_path = try std.fmt.allocPrint(
+            testing.allocator,
+            "{s}/skip_output.bin",
+            .{base_path},
+        );
         defer testing.allocator.free(output_path);
         const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{skip_input_path});
         defer testing.allocator.free(if_arg);
@@ -2549,10 +2850,21 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
 
         // bs=200 does not evenly divide skip=1kB (1000 bytes).
         const args = [_][]const u8{ if_arg, of_arg, "bs=200", "skip=1kB", "status=none" };
-        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        const exit_code = try runDd(
+            testing.allocator,
+            io,
+            &args,
+            common.null_writer,
+            common.null_writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(io, "skip_output.bin", testing.allocator, .unlimited);
+        const content = try tmp_dir.dir.readFileAlloc(
+            io,
+            "skip_output.bin",
+            testing.allocator,
+            .unlimited,
+        );
         defer testing.allocator.free(content);
         try testing.expectEqualStrings("KLMNOPQRST", content);
     }
@@ -2563,21 +2875,47 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
     {
         const seek_data = "X" ** 100;
         try common.test_utils.createTestFile(io, tmp_dir.dir, "seek_input.bin", seek_data);
-        const seek_input_path = try tmp_dir.dir.realPathFileAlloc(io, "seek_input.bin", testing.allocator);
+        const seek_input_path = try tmp_dir.dir.realPathFileAlloc(
+            io,
+            "seek_input.bin",
+            testing.allocator,
+        );
         defer testing.allocator.free(seek_input_path);
 
-        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/seek_output.bin", .{base_path});
+        const output_path = try std.fmt.allocPrint(
+            testing.allocator,
+            "{s}/seek_output.bin",
+            .{base_path},
+        );
         defer testing.allocator.free(output_path);
         const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{seek_input_path});
         defer testing.allocator.free(if_arg);
         const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
         defer testing.allocator.free(of_arg);
 
-        const args = [_][]const u8{ if_arg, of_arg, "bs=100", "count=1", "seek=1kB", "status=none" };
-        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        const args = [_][]const u8{
+            if_arg,
+            of_arg,
+            "bs=100",
+            "count=1",
+            "seek=1kB",
+            "status=none",
+        };
+        const exit_code = try runDd(
+            testing.allocator,
+            io,
+            &args,
+            common.null_writer,
+            common.null_writer,
+        );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(io, "seek_output.bin", testing.allocator, .unlimited);
+        const content = try tmp_dir.dir.readFileAlloc(
+            io,
+            "seek_output.bin",
+            testing.allocator,
+            .unlimited,
+        );
         defer testing.allocator.free(content);
         try testing.expectEqual(@as(usize, 1100), content.len);
         try testing.expectEqualStrings(seek_data, content[1000..1100]);
@@ -2612,7 +2950,13 @@ test "runDd - bs with byte suffix kB produces 1000-byte records (issue #65)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "bs=1kB" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "4+0 records in") != null);
@@ -2632,7 +2976,12 @@ test "runDd - count=0x10 emits GNU zero-multiplier warning and copies nothing (i
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data for zero multiplier");
+    try common.test_utils.createTestFile(
+        io,
+        tmp_dir.dir,
+        "input.txt",
+        "test data for zero multiplier",
+    );
 
     const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
@@ -2650,7 +2999,13 @@ test "runDd - count=0x10 emits GNU zero-multiplier warning and copies nothing (i
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=0x10" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     try testing.expect(std.mem.find(
@@ -2676,10 +3031,20 @@ test "runDd - invalid count value names the operand with GNU quoting (issue #65 
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"count=1m"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dd: invalid number: '1m'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dd: invalid number: '1m'",
+    ) != null);
 }
 
 // A garbage multi-suffix combo must be rejected the same way, naming
@@ -2691,10 +3056,20 @@ test "runDd - garbage suffix combo bs=1kBx rejected with GNU-quoted message (iss
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"bs=1kBx"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dd: invalid number: '1kBx'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dd: invalid number: '1kBx'",
+    ) != null);
 }
 
 test "parseOperands - cbs operand" {
