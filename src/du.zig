@@ -668,6 +668,54 @@ fn walkDirectoryOperand(
     );
 }
 
+/// Outcome of handling one dir_walker.next() error in the drain loop: mirrors
+/// the continue/break the loop itself would take for that error class.
+const DrainLoopErrorAction = enum { continue_loop, stop_loop };
+
+/// Report one dir_walker.next() error for walkDirectoryOperand_drainLoop.
+/// Extracted from the drain loop's catch arm to keep that function under the
+/// 70-line cap. Cap errors (Depth/EntryLimitExceeded) stop the whole walk; an
+/// ancestor cycle or a raced NotDir under a follow policy are tolerated and
+/// the walk continues with the remaining entries.
+fn walkDirectoryOperand_drainLoop_handleWalkError(
+    allocator: Allocator,
+    path: []const u8,
+    err: anyerror,
+    follow_any: bool,
+    dir_walker: *common.walker.Walker,
+    stderr: *std.Io.Writer,
+    has_error: *bool,
+) DrainLoopErrorAction {
+    assert(path.len > 0);
+    switch (err) {
+        error.DepthLimitExceeded, error.EntryLimitExceeded => {
+            printDirError(allocator, stderr, path, err);
+            has_error.* = true;
+            return .stop_loop;
+        },
+        error.DirectoryCycle => {
+            // An ancestor symlink loop was pruned. GNU du is silent here;
+            // vibeutils reports it as a diagnosable error (has_error, rc=1)
+            // and keeps walking the remaining entries.
+            printCycleError(allocator, stderr, dir_walker.cyclePath());
+            has_error.* = true;
+            return .continue_loop;
+        },
+        error.NotDir => {
+            if (!follow_any) {
+                printIterError(allocator, stderr, path, err);
+                has_error.* = true;
+            }
+            return .continue_loop;
+        },
+        else => {
+            printIterError(allocator, stderr, path, err);
+            has_error.* = true;
+            return .continue_loop;
+        },
+    }
+}
+
 /// Consume all entries from dir_walker and accumulate sizes into state,
 /// returning the root subtree total. Extracted from walkDirectoryOperand to
 /// keep the outer function within the 70-line limit.
@@ -694,32 +742,19 @@ fn walkDirectoryOperand_drainLoop(
     // numeric cap here would only risk truncating valid output on large trees;
     // see the annotation below for the exact termination conditions.
     while (true) { // tiger:allow:unbounded-loop (termination: see comment above)
-        const maybe_entry = dir_walker.next(io) catch |err| switch (err) {
-            error.DepthLimitExceeded, error.EntryLimitExceeded => {
-                printDirError(allocator, stderr, path, err);
-                has_error.* = true;
-                break;
-            },
-            error.DirectoryCycle => {
-                // An ancestor symlink loop was pruned. GNU du is silent here;
-                // vibeutils reports it as a diagnosable error (has_error, rc=1)
-                // and keeps walking the remaining entries.
-                printCycleError(allocator, stderr, dir_walker.cyclePath());
-                has_error.* = true;
-                continue;
-            },
-            error.NotDir => {
-                if (!follow_any) {
-                    printIterError(allocator, stderr, path, err);
-                    has_error.* = true;
-                }
-                continue;
-            },
-            else => {
-                printIterError(allocator, stderr, path, err);
-                has_error.* = true;
-                continue;
-            },
+        const maybe_entry = dir_walker.next(io) catch |err| {
+            switch (walkDirectoryOperand_drainLoop_handleWalkError(
+                allocator,
+                path,
+                err,
+                follow_any,
+                dir_walker,
+                stderr,
+                has_error,
+            )) {
+                .continue_loop => continue,
+                .stop_loop => break,
+            }
         };
         const entry = maybe_entry orelse break;
         assert(entry.depth < accumulation_stack_len);

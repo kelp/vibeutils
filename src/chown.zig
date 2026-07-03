@@ -638,6 +638,77 @@ fn operandIsSymlink(path: []const u8) bool {
     return info.kind == .sym_link;
 }
 
+/// Outcome of handling one walker.next() error in walkAndApply's drive loop:
+/// mirrors the continue/break the loop itself would take for that error class.
+const WalkErrorAction = enum { continue_walk, stop_walk };
+
+/// Report (and for DirectoryCycle, service) one walker.next() error for
+/// walkAndApply. Extracted from the drive loop's catch arm so walkAndApply
+/// stays under the 70-line cap. GNU chown -RL still chowns the cycle-forming
+/// symlink itself as a leaf (rc stays 0) rather than descending; cap errors
+/// (Depth/EntryLimitExceeded) stop the whole walk, everything else is a
+/// per-entry I/O error the walker stays re-entrant after.
+fn walkAndApply_handleWalkError(
+    io: std.Io,
+    walk: *common.walker.Walker,
+    path: []const u8,
+    err: anyerror,
+    ownership: common.user_group.OwnershipSpec,
+    options: ChownOptions,
+    allocator: std.mem.Allocator,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+    had_errors: *bool,
+) WalkErrorAction {
+    assert(options.recursive);
+    switch (err) {
+        error.DirectoryCycle => {
+            chownSingle(
+                io,
+                allocator,
+                walk.cyclePath(),
+                ownership,
+                options,
+                stdout_writer,
+                stderr_writer,
+            ) catch |e| {
+                handleError(allocator, walk.cyclePath(), e, options, stderr_writer);
+                had_errors.* = true;
+            };
+            return .continue_walk;
+        },
+        error.DepthLimitExceeded, error.EntryLimitExceeded => {
+            // EntryLimitExceeded is latched: next() re-returns it forever
+            // once the cap is hit (walker.zig:299), so stopping here is
+            // mandatory. DepthLimitExceeded is per-entry — the walker
+            // consumes the offending dirent and would continue with
+            // siblings on the next next() call — so stopping on it is a
+            // deliberate abort choice matching chmod/du precedent, not
+            // something the walker requires.
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "chown",
+                "cannot traverse '{s}': {s}",
+                .{ path, common.posixErrorString(err) },
+            );
+            had_errors.* = true;
+            return .stop_walk;
+        },
+        else => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "chown",
+                "cannot traverse '{s}': {s}",
+                .{ path, common.posixErrorString(err) },
+            );
+            had_errors.* = true;
+            return .continue_walk;
+        },
+    }
+}
+
 /// Drive the walker to completion, chowning each emitted entry in post-order.
 /// Extracted from chownWalk to keep both functions under the 70-line cap and to
 /// isolate the bounded drive loop (no recursion). Per-entry failures are
@@ -653,6 +724,7 @@ fn walkAndApply(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !void {
+    assert(options.recursive);
     var had_errors = false;
     // The walker is bounded (max_depth / max_entries) and self-terminating; it
     // returns null when drained, latches terminal cap errors, and stays
@@ -660,56 +732,22 @@ fn walkAndApply(
     // GNU chown, which services every reachable entry rather than aborting on
     // the first failure.
     while (true) { // tiger:allow:unbounded-loop next()->null drains; caps latch+break
-        const maybe_entry = walk.next(io) catch |err| switch (err) {
-            error.DirectoryCycle => {
-                // An ancestor symlink loop. GNU chown -RL still chowns the
-                // cycle-forming symlink itself as a leaf (rc stays 0) and does
-                // not descend; do the same via the recorded cycle path.
-                chownSingle(
-                    io,
-                    allocator,
-                    walk.cyclePath(),
-                    ownership,
-                    options,
-                    stdout_writer,
-                    stderr_writer,
-                ) catch |e| {
-                    handleError(allocator, walk.cyclePath(), e, options, stderr_writer);
-                    had_errors = true;
-                };
-                continue;
-            },
-            error.DepthLimitExceeded, error.EntryLimitExceeded => {
-                // EntryLimitExceeded is latched: next() re-returns it forever
-                // once the cap is hit (walker.zig:299), so breaking here is
-                // mandatory. DepthLimitExceeded is per-entry — the walker
-                // consumes the offending dirent and would continue with
-                // siblings on the next next() call — so breaking on it is a
-                // deliberate abort choice matching chmod/du precedent, not
-                // something the walker requires.
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    "chown",
-                    "cannot traverse '{s}': {s}",
-                    .{ path, common.posixErrorString(err) },
-                );
-                had_errors = true;
-                break;
-            },
-            else => {
-                // Per-entry I/O error; the walker stays re-entrant, so report
-                // and keep walking the remaining siblings.
-                common.printErrorWithProgram(
-                    allocator,
-                    stderr_writer,
-                    "chown",
-                    "cannot traverse '{s}': {s}",
-                    .{ path, common.posixErrorString(err) },
-                );
-                had_errors = true;
-                continue;
-            },
+        const maybe_entry = walk.next(io) catch |err| {
+            switch (walkAndApply_handleWalkError(
+                io,
+                walk,
+                path,
+                err,
+                ownership,
+                options,
+                allocator,
+                stdout_writer,
+                stderr_writer,
+                &had_errors,
+            )) {
+                .continue_walk => continue,
+                .stop_walk => break,
+            }
         };
         const entry = maybe_entry orelse break;
         chownSingle(
