@@ -12,12 +12,15 @@ Verify code works on both macOS (native) and Linux (OrbStack).
 
 ## Steps
 
-1. **Build on macOS**: `make build`
+1. **Build on macOS**: `just build`
 2. **Unit tests on macOS**: `zig build test`
-3. **Integration tests on macOS**: `make it`
-4. **Build on Linux**: `orb -m ubuntu make build`
+3. **Integration tests on macOS**: `just it`
+4. **Build on Linux**: `orb -m ubuntu zig build`
 5. **Unit tests on Linux**: `orb -m ubuntu zig build test`
-6. **Integration tests on Linux**: `orb -m ubuntu make it`
+6. **Integration tests on Linux**: `orb -m ubuntu bash tests/integration.sh`
+
+The Ubuntu VM has `zig` but not `just`, so Linux steps call
+`zig`/`bash` directly (matches the release flow).
 
 ## Reporting
 
@@ -25,7 +28,7 @@ Report a platform comparison table showing pass/fail for
 each step. Flag any platform-specific failures.
 
 If `orb` is not available, report that Linux testing was
-skipped and recommend using Docker (`make test-linux`)
+skipped and recommend using Docker (`just test-linux`)
 as a fallback.
 
 ## When to Use

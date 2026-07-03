@@ -47,7 +47,7 @@
           },
           {
             "type": "command",
-            "command": "echo \"$TOOL_INPUT_file_path\" | grep -q 'build.zig.zon' && echo 'BLOCK: Use make release VERSION=x.y.z to change versions. Do not edit build.zig.zon directly.' && exit 1; exit 0"
+            "command": "echo \"$TOOL_INPUT_file_path\" | grep -q 'build.zig.zon' && echo 'BLOCK: Use just release x.y.z to change versions. Do not edit build.zig.zon directly.' && exit 1; exit 0"
           }
         ]
       }

@@ -65,7 +65,7 @@ Use the **programmer agent** for phases 2-4.
 
 7. **Verify scaffold:**
    ```bash
-   make build UTIL=<utility>
+   just build-util <utility>
    zig-out/bin/<utility> --help
    ```
 
@@ -82,28 +82,50 @@ Repeat this cycle for each feature/flag:
 - Use `appendRemaining` to read input, NOT
   `takeDelimiterExclusive` loops
 - Skip stdin-dependent unit tests (they hang)
-- Test via `runUtilWithInput()` with file-backed input
+- Test via a `runUtilWithInput()`-style helper, injecting input
+  with `std.Io.Reader.fixed(input)`
 - Add integration smoke tests
 
 ### Test patterns:
 ```zig
 test "<utility>: basic functionality" {
-    const allocator = testing.allocator;
-    var stdout_buf: [8192]u8 = undefined;
-    var stdout_writer = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_buf: [8192]u8 = undefined;
-    var stderr_writer = std.io.fixedBufferStream(&stderr_buf);
+    const io = std.testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const exit_code = try run<Utility>(
-        allocator,
+        testing.allocator,
+        io,
         &.{"--flag"},
-        stdout_writer.writer(),
-        stderr_writer.writer(),
+        &stdout_aw.writer,
+        common.null_writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    const output = stdout_buf[0..stdout_writer.pos];
-    try testing.expectEqualStrings("expected output", output);
+    try testing.expectEqualStrings("expected output", stdout_aw.writer.buffered());
+}
+```
+
+For filter utilities, inject stdin with `std.Io.Reader.fixed`:
+
+```zig
+test "<utility>: reads input" {
+    const io = std.testing.io;
+    var input: std.Io.Reader = .fixed("line1\nline2\n");
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const exit_code = try runUtilWithInput(
+        testing.allocator,
+        io,
+        &.{},
+        &input,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("line1\nline2\n", stdout_aw.writer.buffered());
 }
 ```
 
@@ -119,12 +141,12 @@ test "<utility>: basic functionality" {
 
 14. **Run `/zig-check`** to audit for Zig 0.16 correctness.
 
-15. **Coverage:** Run `make coverage` targeting 90%+.
+15. **Coverage:** Run `just coverage` targeting 90%+.
 
 16. **Final verification:**
     ```bash
     zig build test
-    make test UTIL=<utility>
+    just test-util <utility>
     ```
 
 ## Checklist

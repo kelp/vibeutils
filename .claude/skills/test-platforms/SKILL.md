@@ -16,20 +16,26 @@ Run tests on both macOS (native) and Linux (via `orb -m ubuntu`).
 
 Run on each platform:
 
-1. `make test UTIL=$ARG`
+- macOS: `just test-util $ARG`
+- Linux: `orb -m ubuntu zig build test` (the Ubuntu VM has
+  `zig` but not `just`, so run the unit suite directly)
 
 ## Without argument:
 
 Run on each platform:
 
-1. `zig build test` (unit tests)
-2. `make it` (integration tests)
+- macOS: `zig build test` (unit) and `just it` (integration)
+- Linux: `orb -m ubuntu zig build test` (unit), then
+  `orb -m ubuntu zig build` and
+  `orb -m ubuntu bash tests/integration.sh` (integration).
+  The Ubuntu VM has `zig` but not `just`, so invoke the
+  integration script directly (matches the release flow).
 
 ## Execution
 
-Run macOS tests first, then Linux tests. For Linux, prefix
-each command with `orb -m ubuntu` and run from the project
-directory.
+Run macOS tests first, then Linux tests. Run Linux commands
+with `orb -m ubuntu` from the project directory, calling
+`zig`/`bash` directly since `just` is not installed in the VM.
 
 Check whether `orb` is available before attempting Linux
 tests. If the command is not found, skip Linux and mark it

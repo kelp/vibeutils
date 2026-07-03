@@ -907,8 +907,9 @@ fn runDd_handleReadError(
         if (config.conv_sync) {
             // Fill with NULs when sync is specified
             @memset(in_buf, 0);
-            // Count as a full block
-            ctx.stats.full_blocks_in += 1;
+            // GNU counts an error-synthesized block (zero bytes actually
+            // read, NUL-padded to ibs) as a partial record in.
+            ctx.stats.partial_blocks_in += 1;
             if (simple_copy) {
                 // Write the NUL-filled block
                 ctx.output_file.writeStreamingAll(ctx.io, in_buf) catch |werr| {
@@ -3382,4 +3383,71 @@ test "skip bound aborts a seekable input that never reads" {
         stderr_aw.writer.buffered(),
         "while skipping",
     ) != null);
+}
+
+// Regression test for issue #59: with conv=noerror,sync, a block
+// synthesized after a read error (zero bytes actually read, NUL-padded to
+// ibs) must be counted as a PARTIAL record in, matching GNU dd 9.5. Pinned
+// GNU output for a directory fd with count=5 is "0+5 records in" /
+// "5+0 records out": every synthesized input block is partial-in, every
+// padded write is full-out. The buggy code increments full_blocks_in at
+// src/dd.zig:911, producing "5+0 records in". This drives
+// runDd_handleReadError directly on the noerror+sync path and pins the
+// per-block accounting: exactly one partial record in, zero full records
+// in, and (in simple-copy mode) one full record out for the padded write.
+test "conv=noerror,sync counts an error-synthesized block as partial in" {
+    const io = testing.io;
+
+    // A real output file absorbs the NUL-padded simple-copy write without
+    // polluting the test runner's stdout.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var out_file = try tmp_dir.dir.createFile(io, "synced_out.bin", .{});
+    defer out_file.close(io);
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = common.null_writer,
+        .output_file = out_file,
+        .status = .none,
+        .stats = &stats,
+    };
+
+    var config: DdConfig = .{};
+    config.conv_noerror = true;
+    config.conv_sync = true;
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var in_buf: [512]u8 = undefined;
+    var blocks_read: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+
+    // simple_copy=true so the padded write and full_blocks_out increment
+    // are exercised alongside the input accounting under test.
+    const outcome = runDd_handleReadError(
+        &ctx,
+        &config,
+        &in_buf,
+        ibs,
+        true,
+        &blocks_read,
+        error.IsDir,
+    );
+
+    // The loop continues after a noerror read failure.
+    try testing.expectEqual(ReadErrorOutcome.continue_loop, outcome);
+
+    // The synthesized block is a PARTIAL record in (GNU "0+N records in"),
+    // never a full one. This is the assertion the bug fails: buggy code
+    // leaves partial_blocks_in == 0 and sets full_blocks_in == 1.
+    try testing.expectEqual(@as(usize, 1), stats.partial_blocks_in);
+    try testing.expectEqual(@as(usize, 0), stats.full_blocks_in);
+
+    // The padded write remains a FULL record out (GNU "N+0 records out")
+    // and copies a full ibs worth of NUL bytes. These guard that the fix
+    // touches only the input accounting.
+    try testing.expectEqual(@as(usize, 1), stats.full_blocks_out);
+    try testing.expectEqual(@as(usize, 0), stats.partial_blocks_out);
+    try testing.expectEqual(ibs, stats.bytes_copied);
 }

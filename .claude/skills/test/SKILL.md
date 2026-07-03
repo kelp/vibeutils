@@ -11,7 +11,7 @@ Run tests for the given utility. If no argument, run full suite.
 
 Run these steps in order, reporting pass/fail for each:
 
-1. **Build:** `make build UTIL=$ARG`
+1. **Build:** `just build-util $ARG`
 2. **Unit tests:** `zig build test 2>&1 | grep -E "$ARG\.zig|passed|failed"`
 3. **Smoke test:** Run `./zig-out/bin/$ARG --help` and
    `./zig-out/bin/$ARG --version` — verify both exit 0
@@ -32,5 +32,5 @@ Report a summary table:
 ## Without argument:
 
 1. Run `timeout 120 zig build test`
-2. Run `zig build fmt -- --check` to verify formatting
+2. Run `just fmt-check` to verify formatting
 3. Report pass/fail summary

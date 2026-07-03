@@ -33,11 +33,11 @@ Run `timeout 120 zig build test`. Must exit 0.
 
 ### 5. Build
 
-Run `make build`. Must exit 0.
+Run `just build`. Must exit 0.
 
 ### 6. Integration tests
 
-Run `make it`. Must exit 0.
+Run `just it`. Must exit 0.
 
 ### 7. Man page lint
 
@@ -83,7 +83,7 @@ If all checks pass (SKIP is acceptable), print:
 
 ```
 All checks passed. Ready to release:
-  make release VERSION=$VERSION
+  just release $VERSION
 ```
 
 ### On failure
