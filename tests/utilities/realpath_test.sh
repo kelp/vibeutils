@@ -93,7 +93,11 @@ test_realpath() {
     # -s should resolve . and .. without following symlinks
     test_command_output "-s resolves .." "/usr/lib" "$binary" -s /usr/bin/../lib
     test_command_output "-s resolves ." "/usr/bin" "$binary" -s /usr/./bin
-    test_command_output "-s resolves complex .." "/a/d" "$binary" -s /a/b/c/../../d
+    # Issue #62: popping '..' requires the preceding component to exist and be a
+    # directory. /a/b/c does not exist on any host, so GNU 9.5 errors ENOENT
+    # rc=1 rather than printing /a/d. (Was previously asserted as "/a/d" rc=0,
+    # which encoded the pre-fix textual-pop bug.)
+    test_command_exit_code "-s errors on complex .. with nonexistent prefix" 1 "$binary" -s /a/b/c/../../d
     test_command_output "-s resolves root .." "/" "$binary" -s /../../..
     test_command_output "-s removes redundant slashes" "/usr/bin/ls" "$binary" -s /usr///bin///ls
 
@@ -395,4 +399,110 @@ test_realpath() {
         print_test_result "empty --relative-to= reports No such file or directory" "FAIL" \
             "Error: $empty_rt_err"
     fi
+
+    # Issue #62: under -s, popping '..' requires the preceding component to
+    # exist and be a directory. Missing -> ENOENT rc=1; a file (or a
+    # symlink-to-file, followed) -> ENOTDIR rc=1. Under -m -s the check is
+    # skipped. The final component after cleanup need not exist under plain -s.
+    echo -e "${CYAN}Testing -s '..' preceding-component check (issue #62)...${NC}"
+
+    local dd_dir="$TEMP_DIR/realpath_dotdot_test"
+    mkdir -p "$dd_dir/sub"
+    echo "test" > "$dd_dir/file.txt"
+    ln -sfn sub "$dd_dir/slink" 2>/dev/null
+    ln -sfn file.txt "$dd_dir/flink" 2>/dev/null
+
+    # Missing preceding component -> ENOENT rc=1 (was <cwd>/x rc=0 pre-fix).
+    local dd_enoent_out dd_enoent_err dd_enoent_rc
+    dd_enoent_out=$(cd "$dd_dir" && "$binary" -s nosuch/../x 2>/dev/null)
+    dd_enoent_err=$(cd "$dd_dir" && "$binary" -s nosuch/../x 2>&1 >/dev/null)
+    (cd "$dd_dir" && "$binary" -s nosuch/../x >/dev/null 2>&1)
+    dd_enoent_rc=$?
+    if [[ "$dd_enoent_rc" -eq 1 && -z "$dd_enoent_out" && \
+          "$dd_enoent_err" == *"No such file or directory"* ]]; then
+        print_test_result "-s '..' past missing component errors ENOENT" "PASS"
+    else
+        print_test_result "-s '..' past missing component errors ENOENT" "FAIL" \
+            "rc=$dd_enoent_rc out='$dd_enoent_out' err='$dd_enoent_err'"
+    fi
+
+    # Preceding component is a regular file -> ENOTDIR rc=1.
+    local dd_enotdir_out dd_enotdir_err dd_enotdir_rc
+    dd_enotdir_out=$(cd "$dd_dir" && "$binary" -s file.txt/../x 2>/dev/null)
+    dd_enotdir_err=$(cd "$dd_dir" && "$binary" -s file.txt/../x 2>&1 >/dev/null)
+    (cd "$dd_dir" && "$binary" -s file.txt/../x >/dev/null 2>&1)
+    dd_enotdir_rc=$?
+    if [[ "$dd_enotdir_rc" -eq 1 && -z "$dd_enotdir_out" && \
+          "$dd_enotdir_err" == *"Not a directory"* ]]; then
+        print_test_result "-s '..' past regular file errors ENOTDIR" "PASS"
+    else
+        print_test_result "-s '..' past regular file errors ENOTDIR" "FAIL" \
+            "rc=$dd_enotdir_rc out='$dd_enotdir_out' err='$dd_enotdir_err'"
+    fi
+
+    # Absolute path with a missing prefix before '..' -> ENOENT rc=1.
+    local dd_abs_rc
+    "$binary" -s "$dd_dir/nosuch/../x" >/dev/null 2>&1
+    dd_abs_rc=$?
+    if [[ "$dd_abs_rc" -eq 1 ]]; then
+        print_test_result "-s absolute '..' past missing prefix errors" "PASS"
+    else
+        print_test_result "-s absolute '..' past missing prefix errors" "FAIL" \
+            "Expected exit 1, got $dd_abs_rc"
+    fi
+
+    # -m -s skips the check: nonexistent components permitted, textual result.
+    local dd_ms_out dd_ms_rc
+    dd_ms_out=$(cd "$dd_dir" && "$binary" -m -s nosuch/../x 2>/dev/null)
+    dd_ms_rc=$?
+    if [[ "$dd_ms_rc" -eq 0 && "$dd_ms_out" == "$dd_dir/x" ]]; then
+        print_test_result "-m -s '..' past missing component succeeds" "PASS"
+    else
+        print_test_result "-m -s '..' past missing component succeeds" "FAIL" \
+            "Expected exit 0 and '$dd_dir/x', got rc=$dd_ms_rc out='$dd_ms_out'"
+    fi
+
+    # Preceding component is a real directory; final component may be missing.
+    local dd_ok_out dd_ok_rc
+    dd_ok_out=$(cd "$dd_dir" && "$binary" -s sub/../nosuch_final 2>/dev/null)
+    dd_ok_rc=$?
+    if [[ "$dd_ok_rc" -eq 0 && "$dd_ok_out" == "$dd_dir/nosuch_final" ]]; then
+        print_test_result "-s '..' past existing dir, missing final, succeeds" "PASS"
+    else
+        print_test_result "-s '..' past existing dir, missing final, succeeds" "FAIL" \
+            "Expected exit 0 and '$dd_dir/nosuch_final', got rc=$dd_ok_rc out='$dd_ok_out'"
+    fi
+
+    # symlink-to-directory before '..': stat follows, sees a dir, pops textually.
+    if [[ -L "$dd_dir/slink" ]]; then
+        local dd_slink_out dd_slink_rc
+        dd_slink_out=$(cd "$dd_dir" && "$binary" -s slink/../file.txt 2>/dev/null)
+        dd_slink_rc=$?
+        if [[ "$dd_slink_rc" -eq 0 && "$dd_slink_out" == "$dd_dir/file.txt" ]]; then
+            print_test_result "-s '..' past symlink-to-dir succeeds" "PASS"
+        else
+            print_test_result "-s '..' past symlink-to-dir succeeds" "FAIL" \
+                "Expected exit 0 and '$dd_dir/file.txt', got rc=$dd_slink_rc out='$dd_slink_out'"
+        fi
+    else
+        print_test_result "-s '..' past symlink-to-dir succeeds" "SKIP" "Cannot create symlinks"
+    fi
+
+    # symlink-to-file before '..': stat follows, sees a non-dir -> ENOTDIR rc=1.
+    if [[ -L "$dd_dir/flink" ]]; then
+        local dd_flink_err dd_flink_rc
+        dd_flink_err=$(cd "$dd_dir" && "$binary" -s flink/../file.txt 2>&1 >/dev/null)
+        (cd "$dd_dir" && "$binary" -s flink/../file.txt >/dev/null 2>&1)
+        dd_flink_rc=$?
+        if [[ "$dd_flink_rc" -eq 1 && "$dd_flink_err" == *"Not a directory"* ]]; then
+            print_test_result "-s '..' past symlink-to-file errors ENOTDIR" "PASS"
+        else
+            print_test_result "-s '..' past symlink-to-file errors ENOTDIR" "FAIL" \
+                "rc=$dd_flink_rc err='$dd_flink_err'"
+        fi
+    else
+        print_test_result "-s '..' past symlink-to-file errors ENOTDIR" "SKIP" "Cannot create symlinks"
+    fi
+
+    rm -rf "$dd_dir"
 }
