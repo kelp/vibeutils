@@ -318,6 +318,62 @@ test_grep() {
     printf 'foo bar foo\n' > "$wo_file"
     test_command_output "grep -wo multiple words on line" $'foo\nfoo' "$binary" --color=never -wo "foo" "$wo_file"
 
+    echo -e "${CYAN}Testing issue #58: recursive walk errors set exit 2...${NC}"
+
+    # GNU 3.11 pinned: grep -r exits 2 when a read error occurs during the walk
+    # (unreadable subdir), except -q returns 0 when a line was selected.
+    local walk_root
+    walk_root=$(create_temp_dir)
+    mkdir -p "$walk_root/ok" "$walk_root/locked"
+    printf 'hay\n' > "$walk_root/ok/f.txt"
+    printf 'secret\n' > "$walk_root/locked/s.txt"
+    chmod 000 "$walk_root/locked"
+
+    # No match + unreadable subdir => exit 2 (not 1), with a stderr diagnostic.
+    run_command cmd out err exit_code "$binary" --color=never -r zzz "$walk_root"
+    if [[ "$exit_code" -eq 2 && -n "$err" ]]; then
+        print_test_result "grep -r no-match unreadable subdir exits 2" "PASS"
+    else
+        print_test_result "grep -r no-match unreadable subdir exits 2" "FAIL" "exit=$exit_code err=$err"
+    fi
+
+    # Match found + unreadable subdir, no -q => exit 2 (error dominates match).
+    run_command cmd out err exit_code "$binary" --color=never -r hay "$walk_root"
+    if [[ "$exit_code" -eq 2 && "$out" =~ hay ]]; then
+        print_test_result "grep -r match unreadable subdir exits 2" "PASS"
+    else
+        print_test_result "grep -r match unreadable subdir exits 2" "FAIL" "exit=$exit_code out=$out"
+    fi
+
+    # -q + match => exit 0 (quiet match wins over the error).
+    run_command cmd out err exit_code "$binary" --color=never -q -r hay "$walk_root"
+    if [[ "$exit_code" -eq 0 ]]; then
+        print_test_result "grep -q -r match unreadable subdir exits 0" "PASS"
+    else
+        print_test_result "grep -q -r match unreadable subdir exits 0" "FAIL" "exit=$exit_code"
+    fi
+
+    # -q + no match => exit 2 (quiet overrides to 0 only when a match was found;
+    # here the walk error dominates, not mere no-match 1).
+    run_command cmd out err exit_code "$binary" --color=never -q -r zzz "$walk_root"
+    if [[ "$exit_code" -eq 2 ]]; then
+        print_test_result "grep -q -r no-match unreadable subdir exits 2" "PASS"
+    else
+        print_test_result "grep -q -r no-match unreadable subdir exits 2" "FAIL" "exit=$exit_code"
+    fi
+
+    chmod 755 "$walk_root/locked"
+    rm -rf "$walk_root"
+
+    # Fully readable tree: the error channel must not leak into clean walks.
+    local clean_root
+    clean_root=$(create_temp_dir)
+    mkdir -p "$clean_root/ok"
+    printf 'hay\n' > "$clean_root/ok/f.txt"
+    test_command_exit_code "grep -r clean tree match exits 0" 0 "$binary" --color=never -r hay "$clean_root"
+    test_command_exit_code "grep -r clean tree no-match exits 1" 1 "$binary" --color=never -r zzz "$clean_root"
+    rm -rf "$clean_root"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}grep tests completed${NC}"
