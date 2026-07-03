@@ -326,6 +326,91 @@ test_du() {
     fi
     rm -rf "$f26_dir" "$f26_dir.stderr"
 
+    # ================================================================
+    # F27: du -L must prune an ancestor symlink loop instead of walking
+    # to the depth bound (issue #61). Fixture: cyc/inner/up -> ".." is a
+    # symlink whose resolved target (cyc) is an ANCESTOR of the
+    # directory containing it (inner).
+    #
+    # Reference behavior check (GNU du 9.5, orb -m ubuntu, confirmed this
+    # session): GNU prunes this SILENTLY -- rc=0, EMPTY stderr, one line
+    # per real directory, no warning at all (only `find -L` warns, "File
+    # system loop detected"). vibeutils intentionally DIVERGES from GNU
+    # here per the approved cycle_mode=.ancestors design: it makes the
+    # cycle diagnosable (a printed diagnostic mentioning the cycle, plus
+    # has_error set, rc=1) while still pruning promptly -- exactly two
+    # directory lines (inner, cyc) -- rather than the current runaway
+    # walk that repeats ".../cyc/inner/up/inner/up/..." until the depth
+    # bound / OS ELOOP. This is a deliberate vibeutils enhancement beyond
+    # GNU parity, not an attempt to match a (nonexistent) GNU warning.
+    # The exact diagnostic wording is unpinned (GNU has none to copy), so
+    # the assertion below accepts any of cycle/loop/circular rather than
+    # locking the implementer to one literal string.
+    # ================================================================
+    echo -e "${CYAN}Testing -L ancestor-loop pruning and diagnostic (F27, issue #61)...${NC}"
+
+    local f27_root f27_dir
+    f27_root=$(mktemp -d)
+    f27_dir="$f27_root/cyc"
+    mkdir -p "$f27_dir/inner"
+    ln -s .. "$f27_dir/inner/up"
+
+    local f27_out f27_err f27_exit f27_lines
+    f27_out=$(run_with_limit 10 "$binary" -L "$f27_dir" 2>"$f27_root.stderr")
+    f27_exit=$?
+    f27_err=$(cat "$f27_root.stderr")
+    f27_lines=$(echo "$f27_out" | grep -c .)
+
+    if [[ $f27_exit -eq 1 ]] && [[ "$f27_lines" -eq 2 ]] \
+        && echo "$f27_out" | grep -q "cyc/inner$" \
+        && echo "$f27_out" | grep -qE "[[:space:]]${f27_dir}$" \
+        && ! echo "$f27_out" | grep -q "/up/inner" \
+        && echo "$f27_err" | grep -qiE "cycle|loop|circular"; then
+        print_test_result "du -L prunes ancestor symlink loop with cycle diagnostic" "PASS"
+    else
+        print_test_result "du -L prunes ancestor symlink loop with cycle diagnostic" "FAIL" \
+            "exit=$f27_exit lines=$f27_lines stderr='$f27_err' stdout='$f27_out'"
+    fi
+    rm -rf "$f27_root" "$f27_root.stderr"
+
+    # ================================================================
+    # F28: du -aL sibling-alias counting stays per-path, not deduped at
+    # the whole-subtree level (issue #61). Fixture: real/f reached both
+    # directly and via a sibling symlink "link -> real". This is a
+    # pre-existing, intentional divergence from GNU (which dedups the
+    # whole aliased subtree and shows only one of {real,link}); the
+    # cycle_mode=.ancestors redesign for du must preserve today's
+    # per-path listing (both real/f and link/f appear) -- ancestor-loop
+    # pruning (F27) must not regress into whole-subtree alias dedup.
+    #
+    # NOTE: this is a characterization/regression guard, not a red-phase
+    # test -- it already PASSES against today's unmodified du binary
+    # (confirmed this session). Its purpose is to pin the current
+    # per-path behavior so the .ancestors refactor cannot silently
+    # collapse it into GNU's whole-subtree dedup; it has no expected RED
+    # state of its own.
+    # ================================================================
+    echo -e "${CYAN}Testing -aL sibling-alias per-path counting (F28, issue #61)...${NC}"
+
+    local f28_dir
+    f28_dir=$(mktemp -d)
+    mkdir -p "$f28_dir/real"
+    printf 'xx\n' > "$f28_dir/real/f"
+    ln -s real "$f28_dir/link"
+
+    local f28_out f28_exit
+    f28_out=$("$binary" -aL -b "$f28_dir" 2>/dev/null)
+    f28_exit=$?
+
+    if [[ $f28_exit -eq 0 ]] && echo "$f28_out" | grep -q "real/f$" \
+        && echo "$f28_out" | grep -q "link/f$"; then
+        print_test_result "du -aL lists both sibling-alias paths (no whole-subtree dedup)" "PASS"
+    else
+        print_test_result "du -aL lists both sibling-alias paths (no whole-subtree dedup)" "FAIL" \
+            "exit=$f28_exit stdout='$f28_out'"
+    fi
+    rm -rf "$f28_dir"
+
     # Cleanup
     rm -rf "$tmpdir"
 }

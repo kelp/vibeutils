@@ -3830,6 +3830,68 @@ test "du survives a symlink cycle without infinite recursion (-L)" {
     try testing.expect(std.mem.find(u8, out.writer.buffered(), dir_path) != null);
 }
 
+test "du -L prunes an ancestor symlink loop and reports it as a cycle (issue #61)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // cyc/inner/up -> ".." resolves back to cyc, an ANCESTOR of inner (not a
+    // self-loop). Reference: GNU du 9.5 prunes this silently (rc=0, empty
+    // stderr, one line per real directory -- see docs/specs scouting for
+    // this issue). vibeutils intentionally diverges here as a documented
+    // enhancement: the cycle_mode=.ancestors redesign makes the cycle
+    // diagnosable (a printed diagnostic mentioning the cycle/loop, has_error
+    // set, exit code 1) while still pruning promptly -- exactly two
+    // directory lines (inner, cyc), never re-descending through
+    // ".../cyc/inner/up/inner/up/...".
+    try tmp_dir.dir.createDir(io, "cyc", .default_dir);
+    try tmp_dir.dir.createDir(io, "cyc/inner", .default_dir);
+    tmp_dir.dir.symLink(io, "..", "cyc/inner/up", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..(try tmp_dir.dir.realPathFile(io, "cyc", &path_buf))];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = &[_][]const u8{ "-L", dir_path };
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    const stdout = stdout_aw.writer.buffered();
+    const stderr = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+
+    // Exactly two directory lines: "cyc/inner" and "cyc". A runaway walker
+    // would keep emitting deepening "up/inner/up/inner/..." lines instead.
+    var line_count: u32 = 0;
+    var it = std.mem.splitScalar(u8, stdout, '\n');
+    while (it.next()) |line| {
+        if (line.len > 0) line_count += 1;
+    }
+    try testing.expectEqual(@as(u32, 2), line_count);
+    try testing.expect(std.mem.find(u8, stdout, "/up/inner") == null);
+
+    // The diagnostic wording is not pinned to GNU (GNU prints nothing here);
+    // accept any of the plausible words a "this is a cycle" message would
+    // use so the test doesn't lock the implementer into one exact string.
+    const mentions_cycle = std.ascii.findIgnoreCase(stderr, "cycle") != null or
+        std.ascii.findIgnoreCase(stderr, "loop") != null or
+        std.ascii.findIgnoreCase(stderr, "circular") != null;
+    try testing.expect(mentions_cycle);
+}
+
 test "du emits directory operand in post-order: children printed before their parent" {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
