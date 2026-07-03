@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **grep `-r` exits 2 when the walk hits errors.** An unreadable
+  subdirectory (or the walker entry cap) during a recursive
+  search now sets exit code 2 like GNU, instead of reporting
+  0/1 as if the truncated results were complete. Matching GNU,
+  errors dominate a found match unless `-q` is given; under
+  `-q` with no match, an error still exits 2 (#58).
 - **dd `conv=noerror,sync` counts error-synthesized blocks as
   partial records in.** Blocks NUL-padded after a read error
   (zero bytes actually read) now report as `0+N records in`,
