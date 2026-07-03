@@ -1690,6 +1690,25 @@ test "parseByteSize - errors" {
     try testing.expectError(error.InvalidValue, parseByteSize("x1"));
 }
 
+// Issue #65: GNU's committed multiplicative-suffix table (see
+// docs/specs/dd-gnu.txt) adds decimal-B and binary-IEC multi-character
+// suffixes on top of the existing single-character table (c/w/b/k/K/M/G).
+// Pinned on GNU dd 9.5 (Linux): kB/MB/GB are decimal (1000-based), K/M/G
+// stay binary (1024-based), and KiB/MiB/GiB are explicit binary aliases
+// for K/M/G. Bare "B" is a plain multiplier of 1 (the byte-vs-block
+// distinction for count=/skip=/seek= is a separate, higher-level
+// concern exercised by the runDd-level tests below).
+test "parseByteSize - decimal and binary multi-character suffixes (issue #65)" {
+    try testing.expectEqual(@as(usize, 1000), try parseByteSize("1kB"));
+    try testing.expectEqual(@as(usize, 1000000), try parseByteSize("1MB"));
+    try testing.expectEqual(@as(usize, 1000000000), try parseByteSize("1GB"));
+    try testing.expectEqual(@as(usize, 1024), try parseByteSize("1KiB"));
+    try testing.expectEqual(@as(usize, 1048576), try parseByteSize("1MiB"));
+    try testing.expectEqual(@as(usize, 1073741824), try parseByteSize("1GiB"));
+    try testing.expectEqual(@as(usize, 1), try parseByteSize("1B"));
+    try testing.expectEqual(@as(usize, 500), try parseByteSize("500B"));
+}
+
 test "parseOperands - basic operands" {
     const args = [_][]const u8{ "if=input.txt", "of=output.txt", "bs=1024" };
     const config = try parseOperands(&args);
@@ -2380,6 +2399,302 @@ test "runDd - count=0 copies nothing" {
     const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 0), content.len);
+}
+
+// ==================================================================
+//   ISSUE #65: multi-character/byte suffixes on count=/skip=/seek=/
+//   bs=, plus the zero-multiplier warning.
+//   ISSUE #64: named "invalid number" parse-error messages.
+// ==================================================================
+// GNU dd 9.5 (pinned on Linux via orb -m ubuntu): a trailing 'B' on
+// count=/skip=/seek= means the number is an EXACT BYTE count, not a
+// block count -- independent of bs=. Suffixes with no trailing 'B'
+// (b, k, K, M, G, ...) remain pure block-count multipliers, matching
+// the v0.11.0 (#43) semantics unchanged.
+
+test "runDd - count byte suffixes bound the copy in exact bytes independent of bs (issue #65)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // 1200 bytes: "0123456789" repeated 120 times.
+    const data = "0123456789" ** 120;
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+
+    // Pinned: bs=512 count=1kB copies exactly 1000 bytes (GNU dd 9.5).
+    {
+        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/out_kb.txt", .{base_path});
+        defer testing.allocator.free(output_path);
+        const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+        defer testing.allocator.free(of_arg);
+
+        const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=1kB", "status=none" };
+        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        const content = try tmp_dir.dir.readFileAlloc(io, "out_kb.txt", testing.allocator, .unlimited);
+        defer testing.allocator.free(content);
+        try testing.expectEqual(@as(usize, 1000), content.len);
+        try testing.expectEqualStrings(data[0..1000], content);
+    }
+
+    // Pinned: bs=512 count=1B copies exactly 1 byte (GNU dd 9.5).
+    {
+        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/out_b.txt", .{base_path});
+        defer testing.allocator.free(output_path);
+        const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+        defer testing.allocator.free(of_arg);
+
+        const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=1B", "status=none" };
+        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        const content = try tmp_dir.dir.readFileAlloc(io, "out_b.txt", testing.allocator, .unlimited);
+        defer testing.allocator.free(content);
+        try testing.expectEqualStrings("0", content);
+    }
+
+    // Pinned: bs=512 count=1KiB copies exactly 1024 bytes (GNU dd 9.5).
+    {
+        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/out_kib.txt", .{base_path});
+        defer testing.allocator.free(output_path);
+        const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+        defer testing.allocator.free(of_arg);
+
+        const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=1KiB", "status=none" };
+        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        const content = try tmp_dir.dir.readFileAlloc(io, "out_kib.txt", testing.allocator, .unlimited);
+        defer testing.allocator.free(content);
+        try testing.expectEqual(@as(usize, 1024), content.len);
+        try testing.expectEqualStrings(data[0..1024], content);
+    }
+}
+
+// Regression guard (v0.11.0, issue #43): count=2b has NO trailing 'B',
+// so it must stay a pure block-count multiplier exactly as before this
+// fix, not a byte-exact count. Pinned on GNU dd 9.5: with a 4000-byte
+// input and bs=512, count=2b computes N=2*512=1024 BLOCKS (a 524288-
+// byte request), which exceeds the 4000-byte input and is EOF-
+// truncated to the whole file (7+1 records on GNU). This must stay
+// green both before and after the issue #65 fix -- it is not expected
+// to be red against the current code.
+test "runDd - count=2b with no trailing B stays a block-count multiplier (issue #65 regression guard)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const data = "ABCDEFGHIJ" ** 400; // exactly 4000 bytes
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=2b", "status=none" };
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    defer testing.allocator.free(content);
+    try testing.expectEqual(@as(usize, 4000), content.len);
+    try testing.expectEqualStrings(data, content);
+}
+
+// Pinned on GNU dd 9.5: skip=/seek= with a trailing-B suffix position
+// by an EXACT byte offset, independent of bs -- and NOT rounded to the
+// nearest ibs/obs-sized block (bs=200 does not evenly divide the
+// 1000-byte skip below, ruling out a block-rounded implementation).
+test "runDd - skip and seek with byte suffix kB position by exact byte offset (issue #65)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // 1010 bytes: "ABCDEFGHIJ" + 990 zero bytes + "KLMNOPQRST" at
+    // offset 1000. Mirrors the exact GNU-pinned fixture.
+    var skip_input: [1010]u8 = undefined;
+    @memcpy(skip_input[0..10], "ABCDEFGHIJ");
+    @memset(skip_input[10..1000], 0);
+    @memcpy(skip_input[1000..1010], "KLMNOPQRST");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "skip_input.bin", &skip_input);
+
+    const skip_input_path = try tmp_dir.dir.realPathFileAlloc(io, "skip_input.bin", testing.allocator);
+    defer testing.allocator.free(skip_input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+
+    {
+        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/skip_output.bin", .{base_path});
+        defer testing.allocator.free(output_path);
+        const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{skip_input_path});
+        defer testing.allocator.free(if_arg);
+        const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+        defer testing.allocator.free(of_arg);
+
+        // bs=200 does not evenly divide skip=1kB (1000 bytes).
+        const args = [_][]const u8{ if_arg, of_arg, "bs=200", "skip=1kB", "status=none" };
+        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        const content = try tmp_dir.dir.readFileAlloc(io, "skip_output.bin", testing.allocator, .unlimited);
+        defer testing.allocator.free(content);
+        try testing.expectEqualStrings("KLMNOPQRST", content);
+    }
+
+    // seek=1kB seeks exactly 1000 output bytes, then count=1 at bs=100
+    // writes one 100-byte block -> total output size 1100 bytes, with
+    // the source content landing at the tail.
+    {
+        const seek_data = "X" ** 100;
+        try common.test_utils.createTestFile(io, tmp_dir.dir, "seek_input.bin", seek_data);
+        const seek_input_path = try tmp_dir.dir.realPathFileAlloc(io, "seek_input.bin", testing.allocator);
+        defer testing.allocator.free(seek_input_path);
+
+        const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/seek_output.bin", .{base_path});
+        defer testing.allocator.free(output_path);
+        const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{seek_input_path});
+        defer testing.allocator.free(if_arg);
+        const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+        defer testing.allocator.free(of_arg);
+
+        const args = [_][]const u8{ if_arg, of_arg, "bs=100", "count=1", "seek=1kB", "status=none" };
+        const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        const content = try tmp_dir.dir.readFileAlloc(io, "seek_output.bin", testing.allocator, .unlimited);
+        defer testing.allocator.free(content);
+        try testing.expectEqual(@as(usize, 1100), content.len);
+        try testing.expectEqualStrings(seek_data, content[1000..1100]);
+    }
+}
+
+// Pinned on GNU dd 9.5: bs=1kB uses 1000-byte blocks -- a 4000-byte
+// input yields exactly "4+0 records in" / "4+0 records out", proving
+// bs=/ibs=/obs= treat the new suffixes as plain byte multipliers (not
+// the count=/skip=/seek=-only byte-exact semantics above).
+test "runDd - bs with byte suffix kB produces 1000-byte records (issue #65)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const data = "ABCDEFGHIJ" ** 400; // exactly 4000 bytes
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ if_arg, of_arg, "bs=1kB" };
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "4+0 records in") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "4+0 records out") != null);
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings(data, content);
+}
+
+// Pinned verbatim on GNU dd 9.5 (LC_ALL=C, straight ASCII quotes --
+// matches this project's own quoting convention elsewhere in dd.zig,
+// e.g. the "unsupported operand '{s}'" message): count=0x10 warns
+// that '0x' is a zero multiplier and copies nothing.
+test "runDd - count=0x10 emits GNU zero-multiplier warning and copies nothing (issue #65)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data for zero multiplier");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ if_arg, of_arg, "bs=512", "count=0x10" };
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "dd: warning: '0x' is a zero multiplier; use '00x' if that is intended",
+    ) != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "0+0 records in") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "0+0 records out") != null);
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    defer testing.allocator.free(content);
+    try testing.expectEqual(@as(usize, 0), content.len);
+}
+
+// Issue #64: invalid operand values must name the offending value and
+// use GNU's message shape, though the project deliberately keeps its
+// own misuse exit code (2) rather than GNU's rc=1 -- pinned verbatim
+// on GNU dd 9.5: "dd: invalid number: '1m'".
+test "runDd - invalid count value names the operand with GNU quoting (issue #65 / #64)" {
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"count=1m"};
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dd: invalid number: '1m'") != null);
+}
+
+// A garbage multi-suffix combo must be rejected the same way, naming
+// the exact value that was rejected. Pinned verbatim on GNU dd 9.5:
+// "dd: invalid number: '1kBx'" (our rc stays 2, not GNU's rc=1).
+test "runDd - garbage suffix combo bs=1kBx rejected with GNU-quoted message (issue #65)" {
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"bs=1kBx"};
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dd: invalid number: '1kBx'") != null);
 }
 
 test "parseOperands - cbs operand" {
