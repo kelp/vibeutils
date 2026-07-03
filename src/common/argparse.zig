@@ -26,7 +26,11 @@ const testing = std.testing;
 ///     };
 /// };
 ///
-/// const args = try ArgParser.parse(Args, allocator, &[_][]const u8{"--count=5", "-m", "fast", "file.txt"});
+/// const args = try ArgParser.parse(
+///     Args,
+///     allocator,
+///     &[_][]const u8{ "--count=5", "-m", "fast", "file.txt" },
+/// );
 /// defer allocator.free(args.positionals);
 /// ```
 pub const ArgParser = struct {
@@ -46,7 +50,11 @@ pub const ArgParser = struct {
 
     /// Parse arguments from a slice of strings
     /// Returns a parsed struct with all fields populated according to the command-line arguments
-    pub fn parse(comptime T: type, allocator: std.mem.Allocator, args: []const []const u8) ParseError!T {
+    pub fn parse(
+        comptime T: type,
+        allocator: std.mem.Allocator,
+        args: []const []const u8,
+    ) ParseError!T {
         var result: T = .{};
         var positionals = try std.ArrayList([]const u8).initCapacity(allocator, 0);
         defer positionals.deinit(allocator);
@@ -56,7 +64,7 @@ pub const ArgParser = struct {
             @compileError("ArgParser.parse expects a struct type");
         }
 
-        var i: usize = 0;
+        var i: usize = 0; // tiger:allow:usize-arch slice index into args
         while (i < args.len) : (i += 1) {
             const arg = args[i];
 
@@ -64,9 +72,8 @@ pub const ArgParser = struct {
             if (std.mem.eql(u8, arg, "--")) {
                 // Everything after -- is positional
                 i += 1;
-                while (i < args.len) : (i += 1) {
-                    try positionals.append(allocator, args[i]);
-                }
+                std.debug.assert(i <= args.len);
+                try parse_drainPositionals(allocator, &positionals, args, i);
                 break;
             }
 
@@ -74,83 +81,23 @@ pub const ArgParser = struct {
             if (arg.len > 1 and arg[0] == '-') {
                 if (arg.len > 2 and arg[1] == '-') {
                     // Long flag: --flag or --flag=value
-                    const flag_content = arg[2..];
-
-                    // Check for = separator
-                    if (std.mem.findScalar(u8, flag_content, '=')) |eq_pos| {
-                        const flag_name = flag_content[0..eq_pos];
-                        const flag_value = flag_content[eq_pos + 1 ..];
-                        const next_arg: ?[]const u8 = null;
-                        const used = try parseLongFlagWithValue(T, &result, flag_name, flag_value, next_arg, i);
-                        if (used == .Unknown) {
+                    const used = try parse_handleLongFlag(T, &result, arg, args, i);
+                    switch (used) {
+                        .Unknown => {
                             return ParseError.UnknownFlag;
-                        }
-                    } else {
-                        // Check if next arg is the value
-                        const next_arg = if (i + 1 < args.len) args[i + 1] else null;
-                        const used = try parseLongFlagWithValue(T, &result, flag_content, null, next_arg, i);
-                        switch (used) {
-                            .Unknown => {
-                                return ParseError.UnknownFlag;
-                            },
-                            .ValueUsed => i += 1, // Skip next arg as it was used as value
-                            .NoValue => {}, // Boolean flag, no value consumed
-                        }
+                        },
+                        .ValueUsed => i += 1, // Skip next arg as it was used as value
+                        .NoValue => {}, // Boolean flag, no value consumed
                     }
                 } else {
                     // Short flag(s): -f or -abc or -o value or -o=value
-                    // Check for equals sign for short options too
-                    if (std.mem.findScalar(u8, arg[1..], '=')) |eq_pos| {
-                        // Short flag with = syntax: -o=value
-                        const flag_char = arg[1];
-                        const flag_value = arg[2 + eq_pos ..];
-                        const next_arg: ?[]const u8 = null;
-
-                        const used = try parseShortFlagWithValue(T, &result, flag_char, flag_value, next_arg, i);
-                        if (used == .Unknown) {
+                    const used = try parse_handleShortCluster(T, &result, arg, args, i);
+                    switch (used) {
+                        .Unknown => {
                             return ParseError.UnknownFlag;
-                        }
-                    } else {
-                        // Combined flags or single flag with optional value
-                        var j: usize = 1;
-                        while (j < arg.len) : (j += 1) {
-                            const flag_char = arg[j];
-
-                            // Check if this is the last char and might have a value
-                            if (j == arg.len - 1) {
-                                // Check if remaining chars could be a value
-                                const remaining = if (j + 1 < arg.len) arg[j + 1 ..] else null;
-                                const next_arg = if (i + 1 < args.len) args[i + 1] else null;
-
-                                const used = try parseShortFlagWithValue(T, &result, flag_char, remaining, next_arg, i);
-                                switch (used) {
-                                    .Unknown => {
-                                        return ParseError.UnknownFlag;
-                                    },
-                                    .ValueUsed => {
-                                        i += 1; // Skip next arg as it was used as value
-                                        break;
-                                    },
-                                    .NoValue => {}, // Boolean flag
-                                }
-                            } else {
-                                // Middle of combined flags - try boolean first
-                                if (!try parseShortFlag(T, &result, flag_char)) {
-                                    // Not a boolean flag; try as a value-taking flag
-                                    // with remaining chars as the value (POSIX: -dVALUE)
-                                    const remaining = arg[j + 1 ..];
-                                    const used = try parseShortFlagWithValue(T, &result, flag_char, remaining, null, i);
-                                    switch (used) {
-                                        .Unknown => {
-                                            return ParseError.UnknownFlag;
-                                        },
-                                        .NoValue, .ValueUsed => {
-                                            break; // consumed rest of arg
-                                        },
-                                    }
-                                }
-                            }
-                        }
+                        },
+                        .ValueUsed => i += 1, // Skip next arg as it was used as value
+                        .NoValue => {}, // Boolean flag, no value consumed
                     }
                 }
             } else {
@@ -158,6 +105,181 @@ pub const ArgParser = struct {
                 try positionals.append(allocator, arg);
             }
         }
+
+        try parse_assignPositionalsField(T, &result, &positionals, allocator);
+
+        return result;
+    }
+
+    /// Drain every remaining arg (from `start`) into `positionals`. The caller
+    /// owns the `--` detection and the loop `break`; this helper holds only the
+    /// straight-line drain loop ("push fors down").
+    fn parse_drainPositionals(
+        allocator: std.mem.Allocator,
+        positionals: *std.ArrayList([]const u8),
+        args: []const []const u8,
+        start: usize, // tiger:allow:usize-arch slice index into args
+    ) ParseError!void {
+        std.debug.assert(start <= args.len);
+
+        var k: usize = start; // tiger:allow:usize-arch slice index into args
+        while (k < args.len) : (k += 1) {
+            try positionals.append(allocator, args[k]);
+        }
+    }
+
+    /// Resolve a long flag (`--flag` or `--flag=value`) into a ValueUsage. Does
+    /// NOT mutate `i`; the caller's switch advances the index. The `=value` form
+    /// maps its UnknownFlag to `.Unknown` so the caller's single switch handles
+    /// both forms uniformly.
+    fn parse_handleLongFlag(
+        comptime T: type,
+        result: *T,
+        arg: []const u8,
+        args: []const []const u8,
+        i: usize, // tiger:allow:usize-arch slice index into args
+    ) ParseError!ValueUsage {
+        std.debug.assert(arg.len > 2);
+        std.debug.assert(arg[0] == '-');
+        std.debug.assert(arg[1] == '-');
+
+        // Long flag: --flag or --flag=value
+        const flag_content = arg[2..];
+
+        // Check for = separator
+        if (std.mem.findScalar(u8, flag_content, '=')) |eq_pos| {
+            std.debug.assert(eq_pos < flag_content.len);
+            std.debug.assert(eq_pos + 1 <= flag_content.len);
+            const flag_name = flag_content[0..eq_pos];
+            const flag_value = flag_content[eq_pos + 1 ..];
+            const next_arg: ?[]const u8 = null;
+            const used = try parseLongFlagWithValue(T, result, flag_name, flag_value, next_arg, i);
+            if (used == .Unknown) {
+                return .Unknown;
+            }
+            return .NoValue;
+        } else {
+            // Check if next arg is the value
+            const next_arg = if (i + 1 < args.len) args[i + 1] else null;
+            return try parseLongFlagWithValue(T, result, flag_content, null, next_arg, i);
+        }
+    }
+
+    /// Resolve a short-flag cluster (`-f`, `-abc`, `-o value`, `-o=value`) into a
+    /// single ValueUsage describing whether the NEXT arg was consumed. The inner
+    /// combined-flags loop lives here ("push fors down"); the caller keeps the
+    /// outer switch that advances `i` or reports UnknownFlag.
+    fn parse_handleShortCluster(
+        comptime T: type,
+        result: *T,
+        arg: []const u8,
+        args: []const []const u8,
+        i: usize, // tiger:allow:usize-arch slice index into args
+    ) ParseError!ValueUsage {
+        std.debug.assert(arg.len > 1);
+        std.debug.assert(arg[0] == '-');
+
+        // Check for equals sign for short options too
+        if (std.mem.findScalar(u8, arg[1..], '=')) |eq_pos| {
+            std.debug.assert(eq_pos < arg.len - 1);
+            std.debug.assert(2 + eq_pos <= arg.len);
+            // Short flag with = syntax: -o=value
+            const flag_char = arg[1];
+            const flag_value = arg[2 + eq_pos ..];
+            const next_arg: ?[]const u8 = null;
+
+            const used = try parseShortFlagWithValue(T, result, flag_char, flag_value, next_arg, i);
+            if (used == .Unknown) {
+                return .Unknown;
+            }
+            return .NoValue;
+        } else {
+            // Combined flags or single flag with optional value
+            return try parse_handleShortCluster_combined(T, result, arg, args, i);
+        }
+    }
+
+    /// Walk a combined short-flag cluster (`-abc`, `-dVALUE`) one char at a time,
+    /// returning a single ValueUsage for the whole cluster. Middle chars must be
+    /// boolean flags (or value-taking flags that swallow the remainder); only the
+    /// last char may consume the next arg. Split out of parse_handleShortCluster
+    /// to keep that function under the 70-line limit ("push fors down").
+    fn parse_handleShortCluster_combined(
+        comptime T: type,
+        result: *T,
+        arg: []const u8,
+        args: []const []const u8,
+        i: usize, // tiger:allow:usize-arch slice index into args
+    ) ParseError!ValueUsage {
+        std.debug.assert(arg.len > 1);
+        std.debug.assert(arg[0] == '-');
+
+        var j: usize = 1; // tiger:allow:usize-arch slice index into arg
+        while (j < arg.len) : (j += 1) {
+            std.debug.assert(j >= 1);
+            std.debug.assert(j < arg.len);
+            const flag_char = arg[j];
+
+            // Check if this is the last char and might have a value
+            if (j == arg.len - 1) {
+                // Check if remaining chars could be a value
+                const remaining = if (j + 1 < arg.len) arg[j + 1 ..] else null;
+                const next_arg = if (i + 1 < args.len) args[i + 1] else null;
+
+                const used = try parseShortFlagWithValue(
+                    T,
+                    result,
+                    flag_char,
+                    remaining,
+                    next_arg,
+                    i,
+                );
+                switch (used) {
+                    .Unknown => {
+                        return .Unknown;
+                    },
+                    .ValueUsed => {
+                        return .ValueUsed; // Skip next arg as it was used as value
+                    },
+                    .NoValue => {}, // Boolean flag
+                }
+            } else {
+                // Middle of combined flags - try boolean first
+                if (!try parseShortFlag(T, result, flag_char)) {
+                    // Not a boolean flag; try as a value-taking flag
+                    // with remaining chars as the value (POSIX: -dVALUE)
+                    const remaining = arg[j + 1 ..];
+                    const used = try parseShortFlagWithValue(
+                        T,
+                        result,
+                        flag_char,
+                        remaining,
+                        null,
+                        i,
+                    );
+                    switch (used) {
+                        .Unknown => {
+                            return .Unknown;
+                        },
+                        .NoValue, .ValueUsed => {
+                            return .NoValue; // consumed rest of arg
+                        },
+                    }
+                }
+            }
+        }
+        return .NoValue;
+    }
+
+    /// Assign collected positionals to a `positionals: []const []const u8` field
+    /// when `T` declares one, transferring ownership via `toOwnedSlice`.
+    fn parse_assignPositionalsField(
+        comptime T: type,
+        result: *T,
+        positionals: *std.ArrayList([]const u8),
+        allocator: std.mem.Allocator,
+    ) ParseError!void {
+        const type_info = @typeInfo(T);
 
         // Handle special field types
         inline for (type_info.@"struct".fields) |field| {
@@ -168,15 +290,14 @@ pub const ArgParser = struct {
                 }
             }
         }
-
-        return result;
     }
 
     /// Parse arguments from process args.
     /// Deprecated: pass args explicitly via parse() instead.
     pub fn parseProcess(comptime T: type, allocator: std.mem.Allocator) !T {
         _ = allocator;
-        @compileError("parseProcess is removed in 0.16; pass args slice explicitly via ArgParser.parse()");
+        @compileError("parseProcess is removed in 0.16; " ++
+            "pass args slice explicitly via ArgParser.parse()");
     }
 
     fn parseLongFlag(comptime T: type, obj: *T, flag_name: []const u8) !bool {
@@ -200,12 +321,20 @@ pub const ArgParser = struct {
         return false;
     }
 
-    fn parseLongFlagWithValue(comptime T: type, obj: *T, flag_name: []const u8, provided_value: ?[]const u8, next_arg: ?[]const u8, position: usize) !ValueUsage {
+    fn parseLongFlagWithValue(
+        comptime T: type,
+        obj: *T,
+        flag_name: []const u8,
+        provided_value: ?[]const u8,
+        next_arg: ?[]const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+    ) !ValueUsage {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             // Check if field name or converted name matches
             const long_flag = comptime getLongFlag(field.name);
-            const matches = std.mem.eql(u8, field.name, flag_name) or std.mem.eql(u8, long_flag, flag_name);
+            const matches = std.mem.eql(u8, field.name, flag_name) or
+                std.mem.eql(u8, long_flag, flag_name);
 
             if (matches) {
                 // Check field type
@@ -223,7 +352,13 @@ pub const ArgParser = struct {
                         return ParseError.MissingValue;
                     };
 
-                    try parseValue(field_type_info.optional.child, &@field(obj, field.name), value_str, flag_name, position);
+                    try parseValue(
+                        field_type_info.optional.child,
+                        &@field(obj, field.name),
+                        value_str,
+                        flag_name,
+                        position,
+                    );
                     return if (provided_value != null) .NoValue else .ValueUsed;
                 }
             }
@@ -231,11 +366,19 @@ pub const ArgParser = struct {
         return .Unknown;
     }
 
-    fn parseShortFlagWithValue(comptime T: type, obj: *T, flag_char: u8, provided_value: ?[]const u8, next_arg: ?[]const u8, position: usize) !ValueUsage {
+    fn parseShortFlagWithValue(
+        comptime T: type,
+        obj: *T,
+        flag_char: u8,
+        provided_value: ?[]const u8,
+        next_arg: ?[]const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+    ) !ValueUsage {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             // Check metadata first, then default
-            const short_flag = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name) and
+            const short_flag = if (@hasDecl(T, "meta") and
+                @hasField(@TypeOf(T.meta), field.name) and
                 @hasField(@TypeOf(@field(T.meta, field.name)), "short"))
                 @field(T.meta, field.name).short
             else
@@ -257,7 +400,13 @@ pub const ArgParser = struct {
                         return ParseError.MissingValue;
                     };
 
-                    try parseValue(field_type_info.optional.child, &@field(obj, field.name), value_str, field.name, position);
+                    try parseValue(
+                        field_type_info.optional.child,
+                        &@field(obj, field.name),
+                        value_str,
+                        field.name,
+                        position,
+                    );
                     return if (provided_value != null) .NoValue else .ValueUsed;
                 }
             }
@@ -269,7 +418,8 @@ pub const ArgParser = struct {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             if (field.type == bool) {
-                const short_flag = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name) and
+                const short_flag = if (@hasDecl(T, "meta") and
+                    @hasField(@TypeOf(T.meta), field.name) and
                     @hasField(@TypeOf(@field(T.meta, field.name)), "short"))
                     @field(T.meta, field.name).short
                 else
@@ -334,7 +484,13 @@ pub const ArgParser = struct {
     }
 
     /// Parse a value string into the appropriate type
-    fn parseValue(comptime T: type, dest: *?T, value_str: []const u8, flag_name: []const u8, position: usize) !void {
+    fn parseValue(
+        comptime T: type,
+        dest: *?T,
+        value_str: []const u8,
+        flag_name: []const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+    ) !void {
         _ = flag_name;
         _ = position;
         const type_info = @typeInfo(T);
@@ -876,7 +1032,11 @@ test "float parsing" {
         try testing.expect(result.rate != null);
         try testing.expectApproxEqAbs(@as(f32, 3.14159), result.rate.?, 0.00001);
         try testing.expect(result.precision != null);
-        try testing.expectApproxEqAbs(@as(f64, 2.71828182845904523536), result.precision.?, 0.0000000000001);
+        try testing.expectApproxEqAbs(
+            @as(f64, 2.71828182845904523536),
+            result.precision.?,
+            0.0000000000001,
+        );
     }
 
     // Test scientific notation

@@ -61,6 +61,9 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
     const args = init.minimal.args.toSlice(allocator) catch std.process.exit(1);
+    // The OS always passes argv[0] (the program name), so args has at least
+    // one element; the args[1..] slice below depends on this.
+    std.debug.assert(args.len >= 1);
 
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
@@ -70,7 +73,14 @@ pub fn main(init: std.process.Init) !void {
     var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    const exit_code = runEnv(allocator, io, args[1..], init.environ_map, stdout, stderr) catch |err| {
+    const exit_code = runEnv(
+        allocator,
+        io,
+        args[1..],
+        init.environ_map,
+        stdout,
+        stderr,
+    ) catch |err| {
         stderr.print("error: {s}\n", .{common.posixErrorString(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -80,23 +90,52 @@ pub fn main(init: std.process.Init) !void {
     std.process.exit(exit_code);
 }
 
+/// Map a parseArgs error to an error message and the exit code the caller
+/// returns. Keeps runEnv's body within the function-length limit.
+fn runEnv_parseError(
+    allocator: Allocator,
+    err: error{ UnknownFlag, MissingValue, OutOfMemory },
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    switch (err) {
+        error.UnknownFlag => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "env",
+                "unrecognized option\nTry 'env --help' for more information.",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.MissingValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "env",
+                "option requires an argument\nTry 'env --help' for more information.",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.OutOfMemory => {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        },
+    }
+}
+
 /// Run the env utility with given arguments
-pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent_environ: *const std.process.Environ.Map, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) anyerror!u8 {
+pub fn runEnv(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    parent_environ: *const std.process.Environ.Map,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) anyerror!u8 {
     var options = parseArgs(allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", "unrecognized option\nTry 'env --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", "option requires an argument\nTry 'env --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.OutOfMemory => {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-        }
+        return runEnv_parseError(allocator, err, stderr_writer);
     };
     defer options.deinit(allocator);
 
@@ -112,108 +151,195 @@ pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent
 
     // Per macOS spec: -0 and utility may not be specified together
     if (options.null_delimiter and options.command.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", "cannot specify -0 with a utility", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "env",
+            "cannot specify -0 with a utility",
+            .{},
+        );
         return 125;
     }
 
     // Handle -S: split string into tokens, process as assignments/command
     if (options.split_string) |split_str| {
-        var split_assignments = std.ArrayListUnmanaged(Assignment).empty;
-        defer split_assignments.deinit(allocator);
-        var split_command = std.ArrayListUnmanaged([]const u8).empty;
-        var in_command = false;
-
-        var token_it = std.mem.tokenizeAny(u8, split_str, " \t");
-        while (token_it.next()) |token| {
-            if (in_command) {
-                split_command.append(allocator, token) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            } else if (std.mem.indexOfScalar(u8, token, '=')) |eq_pos| {
-                split_assignments.append(allocator, .{
-                    .name = token[0..eq_pos],
-                    .value = token[eq_pos + 1 ..],
-                }) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            } else {
-                // First non-assignment token starts the command
-                in_command = true;
-                split_command.append(allocator, token) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-        }
-
-        // Merge -S assignments with any from the command line
-        if (split_assignments.items.len > 0) {
-            var merged = std.ArrayListUnmanaged(Assignment).empty;
-            // Add original assignments first
-            for (options.assignments) |a| {
-                merged.append(allocator, a) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-            // Then -S assignments
-            for (split_assignments.items) |a| {
-                merged.append(allocator, a) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-            // Free old owned assignments before replacing
-            if (options.owns_memory and options.assignments.len > 0) {
-                allocator.free(options.assignments);
-            }
-            options.assignments = merged.toOwnedSlice(allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-        }
-
-        // -S command tokens override if no command was set from args
-        if (options.command.len == 0 and split_command.items.len > 0) {
-            options.command = split_command.items;
-        } else {
-            split_command.deinit(allocator);
+        if (try runEnv_handleSplitString(allocator, &options, split_str, stderr_writer)) |code| {
+            return code;
         }
     }
 
     // Build the environment
     var env_map = buildEnvMap(allocator, options, parent_environ) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to build environment: {s}", .{common.posixErrorString(err)});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "env",
+            "failed to build environment: {s}",
+            .{common.posixErrorString(err)},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer env_map.deinit();
 
     // Verbose output for environment modifications
     if (options.verbose) {
-        if (options.ignore_environment) {
-            stderr_writer.writeAll("env: clearing environment\n") catch {};
-        }
-        for (options.unsets) |name| {
-            stderr_writer.print("env: unsetenv {s}\n", .{name}) catch {};
-        }
-        for (options.assignments) |assignment| {
-            stderr_writer.print("env: setenv {s}={s}\n", .{ assignment.name, assignment.value }) catch {};
+        runEnv_writeVerbose(&options, stderr_writer);
+    }
+
+    return runEnv_finishCommand(allocator, io, &options, &env_map, stdout_writer, stderr_writer);
+}
+
+/// Handle -S/--split-string: tokenize the split string into assignments and a
+/// command, merging with command-line assignments. Returns null to continue,
+/// or an exit code the caller should return (on OOM).
+fn runEnv_handleSplitString(
+    allocator: Allocator,
+    options: *EnvOptions,
+    split_str: []const u8,
+    stderr_writer: *std.Io.Writer,
+) error{}!?u8 {
+    std.debug.assert(options.split_string != null);
+    std.debug.assert(!options.help);
+
+    var split_assignments = std.ArrayListUnmanaged(Assignment).empty;
+    defer split_assignments.deinit(allocator);
+    var split_command = std.ArrayListUnmanaged([]const u8).empty;
+    var in_command = false;
+
+    var token_it = std.mem.tokenizeAny(u8, split_str, " \t");
+    while (token_it.next()) |token| {
+        if (in_command) {
+            split_command.append(allocator, token) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        } else if (std.mem.indexOfScalar(u8, token, '=')) |eq_pos| {
+            split_assignments.append(allocator, .{
+                .name = token[0..eq_pos],
+                .value = token[eq_pos + 1 ..],
+            }) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        } else {
+            // First non-assignment token starts the command
+            in_command = true;
+            split_command.append(allocator, token) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
         }
     }
+
+    // Merge -S assignments with any from the command line
+    if (split_assignments.items.len > 0) {
+        const merge_result = try runEnv_handleSplitString_mergeAssignments(
+            allocator,
+            options,
+            split_assignments.items,
+            stderr_writer,
+        );
+        if (merge_result) |code| return code;
+    }
+
+    // -S command tokens override if no command was set from args
+    if (options.command.len == 0 and split_command.items.len > 0) {
+        options.command = split_command.items;
+    } else {
+        split_command.deinit(allocator);
+    }
+    return null;
+}
+
+/// Merge command-line assignments with -S assignments into a fresh owned slice.
+/// Returns null on success, or an exit code the caller should return (on OOM).
+fn runEnv_handleSplitString_mergeAssignments(
+    allocator: Allocator,
+    options: *EnvOptions,
+    split_assignments: []const Assignment,
+    stderr_writer: *std.Io.Writer,
+) error{}!?u8 {
+    std.debug.assert(split_assignments.len > 0);
+    std.debug.assert(options.split_string != null);
+
+    var merged = std.ArrayListUnmanaged(Assignment).empty;
+    // Add original assignments first
+    for (options.assignments) |a| {
+        merged.append(allocator, a) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+    // Then -S assignments
+    for (split_assignments) |a| {
+        merged.append(allocator, a) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+    // Free old owned assignments before replacing
+    if (options.owns_memory and options.assignments.len > 0) {
+        allocator.free(options.assignments);
+    }
+    options.assignments = merged.toOwnedSlice(allocator) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+    // Postcondition: merged holds the original assignments followed by all
+    // split_assignments, so its length is at least split_assignments.len.
+    std.debug.assert(options.assignments.len >= split_assignments.len);
+    return null;
+}
+
+/// Write verbose env-modification lines (clearing/unsetenv/setenv) to stderr.
+/// Precondition: verbose mode is enabled.
+fn runEnv_writeVerbose(options: *const EnvOptions, stderr_writer: *std.Io.Writer) void {
+    std.debug.assert(options.verbose);
+    std.debug.assert(!options.help);
+
+    if (options.ignore_environment) {
+        stderr_writer.writeAll("env: clearing environment\n") catch {};
+    }
+    for (options.unsets) |name| {
+        stderr_writer.print("env: unsetenv {s}\n", .{name}) catch {};
+    }
+    for (options.assignments) |assignment| {
+        const fmt_args = .{ assignment.name, assignment.value };
+        stderr_writer.print("env: setenv {s}={s}\n", fmt_args) catch {};
+    }
+}
+
+/// Finish: handle -C chdir, print env when no command, inject -P alt PATH, and
+/// execute the command. Returns the final exit code.
+fn runEnv_finishCommand(
+    allocator: Allocator,
+    io: std.Io,
+    options: *const EnvOptions,
+    env_map: *std.process.Environ.Map,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) anyerror!u8 {
+    // Reached only after help/version returned upstream, so both are false.
+    std.debug.assert(options.help == false);
+    std.debug.assert(options.version == false);
 
     // Handle -C/--chdir
     if (options.chdir) |dir| {
         std.Io.Threaded.chdir(dir) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "env", "cannot change directory to '{s}': {s}", .{ dir, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "env",
+                "cannot change directory to '{s}': {s}",
+                .{ dir, common.posixErrorString(err) },
+            );
             return 125;
         };
     }
 
     // If no command, print the environment
     if (options.command.len == 0) {
-        printEnvironment(stdout_writer, &env_map, options.null_delimiter) catch {
+        printEnvironment(stdout_writer, env_map, options.null_delimiter) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         return 0;
@@ -228,17 +354,26 @@ pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent
             stderr_writer.print("env: using alternate PATH: {s}\n", .{alt}) catch {};
         }
         env_map.put("PATH", alt) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to set alternate PATH", .{});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "env",
+                "failed to set alternate PATH",
+                .{},
+            );
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
 
     // Execute the command
-    return execCommand(allocator, io, options.command, &env_map, stderr_writer);
+    return execCommand(allocator, io, options.command, env_map, stderr_writer);
 }
 
 /// Parse command-line arguments manually (env has unusual argument syntax)
-fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag, MissingValue, OutOfMemory }!EnvOptions {
+fn parseArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+) error{ UnknownFlag, MissingValue, OutOfMemory }!EnvOptions {
     var options = EnvOptions{};
     var unsets = std.ArrayListUnmanaged([]const u8).empty;
     errdefer unsets.deinit(allocator);
@@ -251,159 +386,134 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        // After --, everything is command
-        if (past_options) {
-            options.command = args[i..];
-            break;
-        }
-
-        // Check for --
-        if (std.mem.eql(u8, arg, "--")) {
-            past_options = true;
-            continue;
-        }
-
-        // A bare `-` implies -i (clear environment), per GNU coreutils
-        if (std.mem.eql(u8, arg, "-")) {
-            options.ignore_environment = true;
-            continue;
-        }
-
-        // Check for NAME=VALUE assignment or command start
-        if (!past_options and !std.mem.startsWith(u8, arg, "-")) {
-            if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
-                assignments.append(allocator, .{
-                    .name = arg[0..eq_pos],
-                    .value = arg[eq_pos + 1 ..],
-                }) catch return error.OutOfMemory;
+        // Classify the non-flag token shape; flag dispatch stays below.
+        switch (parseArgs_classifyToken(arg, past_options, seen_assignment)) {
+            .command_tail => {
+                options.command = args[i..];
+                break;
+            },
+            .mark_past_options => {
+                past_options = true;
+                continue;
+            },
+            .set_ignore_env => {
+                options.ignore_environment = true;
+                continue;
+            },
+            .assignment => |eq_pos| {
+                try parseArgs_appendAssignment(allocator, &assignments, arg, eq_pos);
                 seen_assignment = true;
                 continue;
-            }
-            // Not an assignment and not a flag -- it's the command
-            options.command = args[i..];
-            break;
-        }
-
-        // Per POSIX/macOS spec: once a NAME=VALUE has been seen,
-        // subsequent flag-like tokens start the command.
-        if (seen_assignment) {
-            options.command = args[i..];
-            break;
+            },
+            .dispatch_flag => {},
         }
 
         // Long flags
         if (std.mem.startsWith(u8, arg, "--")) {
-            if (std.mem.eql(u8, arg, "--help")) {
-                options.help = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--version")) {
-                options.version = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--ignore-environment")) {
-                options.ignore_environment = true;
-            } else if (std.mem.eql(u8, arg, "--null")) {
-                options.null_delimiter = true;
-            } else if (std.mem.startsWith(u8, arg, "--unset=")) {
-                const name = arg["--unset=".len..];
-                unsets.append(allocator, name) catch return error.OutOfMemory;
-            } else if (std.mem.eql(u8, arg, "--unset")) {
-                i += 1;
-                if (i >= args.len) return error.MissingValue;
-                unsets.append(allocator, args[i]) catch return error.OutOfMemory;
-            } else if (std.mem.startsWith(u8, arg, "--chdir=")) {
-                options.chdir = arg["--chdir=".len..];
-            } else if (std.mem.eql(u8, arg, "--chdir")) {
-                i += 1;
-                if (i >= args.len) return error.MissingValue;
-                options.chdir = args[i];
-            } else if (std.mem.startsWith(u8, arg, "--split-string=")) {
-                options.split_string = arg["--split-string=".len..];
-            } else if (std.mem.eql(u8, arg, "--split-string")) {
-                i += 1;
-                if (i >= args.len) return error.MissingValue;
-                options.split_string = args[i];
-            } else {
-                return error.UnknownFlag;
-            }
+            try parseArgs_parseLongFlag(allocator, &options, &unsets, arg, &i, args);
+            // Early return if help/version was found
+            if (options.help or options.version) break;
             continue;
         }
 
         // Short flags (can be combined for boolean flags)
         if (arg.len > 1 and arg[0] == '-') {
-            var j: usize = 1;
-            while (j < arg.len) : (j += 1) {
-                switch (arg[j]) {
-                    'i' => options.ignore_environment = true,
-                    '0', 'z' => options.null_delimiter = true,
-                    'h' => {
-                        options.help = true;
-                        break;
-                    },
-                    'V' => {
-                        options.version = true;
-                        break;
-                    },
-                    'u' => {
-                        // -u requires a value
-                        if (j + 1 < arg.len) {
-                            // Value is the rest of this arg: -uNAME
-                            unsets.append(allocator, arg[j + 1 ..]) catch return error.OutOfMemory;
-                            j = arg.len; // consumed rest of arg
-                        } else {
-                            // Value is the next arg
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            unsets.append(allocator, args[i]) catch return error.OutOfMemory;
-                        }
-                        break;
-                    },
-                    'C' => {
-                        // -C requires a value
-                        if (j + 1 < arg.len) {
-                            options.chdir = arg[j + 1 ..];
-                            j = arg.len;
-                        } else {
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            options.chdir = args[i];
-                        }
-                        break;
-                    },
-                    'P' => {
-                        // -P requires a path value
-                        if (j + 1 < arg.len) {
-                            options.alt_path = arg[j + 1 ..];
-                            j = arg.len;
-                        } else {
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            options.alt_path = args[i];
-                        }
-                        break;
-                    },
-                    'S' => {
-                        // -S requires a string value (stub)
-                        if (j + 1 < arg.len) {
-                            options.split_string = arg[j + 1 ..];
-                            j = arg.len;
-                        } else {
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            options.split_string = args[i];
-                        }
-                        break;
-                    },
-                    'v' => options.verbose = true,
-                    else => return error.UnknownFlag,
-                }
-            }
+            try parseArgs_parseShortFlags(allocator, &options, &unsets, arg, &i, args);
             // Early return if help/version was found in combined flags
             if (options.help or options.version) break;
             continue;
         }
     }
 
-    // Transfer ownership from ArrayListUnmanaged to owned slices
+    try parseArgs_finalizeOwnership(allocator, &options, &unsets, &assignments);
+    // finalizeOwnership always sets owns_memory; every success return owns its
+    // unsets/assignments slices, which EnvOptions.deinit relies on.
+    std.debug.assert(options.owns_memory);
+    return options;
+}
+
+/// Outcome of classifying one token before flag dispatch. The parent loop
+/// owns all state mutation and break/continue control flow.
+const ParseArgsTokenClass = union(enum) {
+    /// This token and everything after it is the command tail.
+    command_tail,
+    /// Token is `--`; mark options ended and continue.
+    mark_past_options,
+    /// Token is a bare `-`; clear the environment and continue.
+    set_ignore_env,
+    /// Token is NAME=VALUE; payload is the `=` index within arg.
+    assignment: usize, // tiger:allow:usize-arch std slice indexing forces usize
+    /// Token is a flag (-x / --x); the parent should dispatch it below.
+    dispatch_flag,
+};
+
+/// Classify a single token's shape, mirroring env's argument grammar. Pure:
+/// performs no mutation, so the parent loop keeps every break/continue and the
+/// past_options/seen_assignment state changes.
+fn parseArgs_classifyToken(
+    arg: []const u8,
+    past_options: bool,
+    seen_assignment: bool,
+) ParseArgsTokenClass {
+    // After --, everything is command.
+    if (past_options) return .command_tail;
+
+    // Check for --.
+    if (std.mem.eql(u8, arg, "--")) return .mark_past_options;
+
+    // A bare `-` implies -i (clear environment), per GNU coreutils.
+    if (std.mem.eql(u8, arg, "-")) return .set_ignore_env;
+
+    // Check for NAME=VALUE assignment or command start.
+    if (!std.mem.startsWith(u8, arg, "-")) {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            // Postcondition for the assignment payload: eq_pos indexes the '='.
+            std.debug.assert(eq_pos < arg.len);
+            std.debug.assert(arg[eq_pos] == '=');
+            return .{ .assignment = eq_pos };
+        }
+        // Not an assignment and not a flag -- it's the command.
+        return .command_tail;
+    }
+
+    // Per POSIX/macOS spec: once a NAME=VALUE has been seen,
+    // subsequent flag-like tokens start the command.
+    if (seen_assignment) return .command_tail;
+
+    // A dispatch_flag result implies a flag token longer than a bare `-`.
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+    return .dispatch_flag;
+}
+
+/// Append a NAME=VALUE assignment parsed from arg, split at eq_pos.
+fn parseArgs_appendAssignment(
+    allocator: Allocator,
+    assignments: *std.ArrayListUnmanaged(Assignment),
+    arg: []const u8,
+    eq_pos: usize, // tiger:allow:usize-arch std slice indexing forces usize
+) error{OutOfMemory}!void {
+    std.debug.assert(eq_pos < arg.len);
+    std.debug.assert(arg[eq_pos] == '=');
+
+    assignments.append(allocator, .{
+        .name = arg[0..eq_pos],
+        .value = arg[eq_pos + 1 ..],
+    }) catch return error.OutOfMemory;
+}
+
+/// Transfer ownership of the parsed unsets/assignments lists into the options
+/// struct as owned slices (or free empty lists). Sets owns_memory.
+fn parseArgs_finalizeOwnership(
+    allocator: Allocator,
+    options: *EnvOptions,
+    unsets: *std.ArrayListUnmanaged([]const u8),
+    assignments: *std.ArrayListUnmanaged(Assignment),
+) error{OutOfMemory}!void {
+    std.debug.assert(!options.owns_memory);
+    std.debug.assert(options.unsets.len == 0);
+    std.debug.assert(options.assignments.len == 0);
+
     options.owns_memory = true;
     if (unsets.items.len > 0) {
         options.unsets = unsets.toOwnedSlice(allocator) catch return error.OutOfMemory;
@@ -415,17 +525,141 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
     } else {
         assignments.deinit(allocator);
     }
-    return options;
+}
+
+/// Consume a value for a value-taking short flag: either the rest of the
+/// current arg (-uNAME) or the next arg (-u NAME). Advances j to arg.len for
+/// the inline case, or advances i for the next-arg case.
+fn parseArgs_consumeValue(
+    arg: []const u8,
+    j: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    i: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    args: []const []const u8,
+) error{MissingValue}![]const u8 {
+    std.debug.assert(j.* >= 1);
+    std.debug.assert(j.* <= arg.len);
+
+    if (j.* + 1 < arg.len) {
+        // Value is the rest of this arg: -uNAME
+        const value = arg[j.* + 1 ..];
+        j.* = arg.len; // consumed rest of arg
+        return value;
+    }
+    // Value is the next arg
+    i.* += 1;
+    if (i.* >= args.len) return error.MissingValue;
+    return args[i.*];
+}
+
+/// Parse a single long flag (--foo) token, mutating options/unsets in place.
+/// Value-taking flags may advance i to consume the next arg.
+fn parseArgs_parseLongFlag(
+    allocator: Allocator,
+    options: *EnvOptions,
+    unsets: *std.ArrayListUnmanaged([]const u8),
+    arg: []const u8,
+    i: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    args: []const []const u8,
+) error{ UnknownFlag, MissingValue, OutOfMemory }!void {
+    std.debug.assert(arg.len >= 2);
+    std.debug.assert(std.mem.startsWith(u8, arg, "--"));
+
+    if (std.mem.eql(u8, arg, "--help")) {
+        options.help = true;
+    } else if (std.mem.eql(u8, arg, "--version")) {
+        options.version = true;
+    } else if (std.mem.eql(u8, arg, "--ignore-environment")) {
+        options.ignore_environment = true;
+    } else if (std.mem.eql(u8, arg, "--null")) {
+        options.null_delimiter = true;
+    } else if (std.mem.startsWith(u8, arg, "--unset=")) {
+        const name = arg["--unset=".len..];
+        unsets.append(allocator, name) catch return error.OutOfMemory;
+    } else if (std.mem.eql(u8, arg, "--unset")) {
+        i.* += 1;
+        if (i.* >= args.len) return error.MissingValue;
+        unsets.append(allocator, args[i.*]) catch return error.OutOfMemory;
+    } else if (std.mem.startsWith(u8, arg, "--chdir=")) {
+        options.chdir = arg["--chdir=".len..];
+    } else if (std.mem.eql(u8, arg, "--chdir")) {
+        i.* += 1;
+        if (i.* >= args.len) return error.MissingValue;
+        options.chdir = args[i.*];
+    } else if (std.mem.startsWith(u8, arg, "--split-string=")) {
+        options.split_string = arg["--split-string=".len..];
+    } else if (std.mem.eql(u8, arg, "--split-string")) {
+        i.* += 1;
+        if (i.* >= args.len) return error.MissingValue;
+        options.split_string = args[i.*];
+    } else {
+        return error.UnknownFlag;
+    }
+}
+
+/// Parse combined short flags (-i0, -uNAME, ...), mutating options/unsets in
+/// place. Value-taking flags consume the rest of the arg or the next arg.
+fn parseArgs_parseShortFlags(
+    allocator: Allocator,
+    options: *EnvOptions,
+    unsets: *std.ArrayListUnmanaged([]const u8),
+    arg: []const u8,
+    i: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    args: []const []const u8,
+) error{ UnknownFlag, MissingValue, OutOfMemory }!void {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+
+    var j: usize = 1; // tiger:allow:usize-arch std slice indexing forces usize
+    while (j < arg.len) : (j += 1) {
+        switch (arg[j]) {
+            'i' => options.ignore_environment = true,
+            '0', 'z' => options.null_delimiter = true,
+            'h' => {
+                options.help = true;
+                break;
+            },
+            'V' => {
+                options.version = true;
+                break;
+            },
+            'u' => {
+                const value = try parseArgs_consumeValue(arg, &j, i, args);
+                unsets.append(allocator, value) catch return error.OutOfMemory;
+                break;
+            },
+            'C' => {
+                options.chdir = try parseArgs_consumeValue(arg, &j, i, args);
+                break;
+            },
+            'P' => {
+                options.alt_path = try parseArgs_consumeValue(arg, &j, i, args);
+                break;
+            },
+            'S' => {
+                options.split_string = try parseArgs_consumeValue(arg, &j, i, args);
+                break;
+            },
+            'v' => options.verbose = true,
+            else => return error.UnknownFlag,
+        }
+    }
 }
 
 /// Build the environment map based on options
-fn buildEnvMap(allocator: Allocator, options: EnvOptions, parent_environ: *const std.process.Environ.Map) !std.process.Environ.Map {
+fn buildEnvMap(
+    allocator: Allocator,
+    options: EnvOptions,
+    parent_environ: *const std.process.Environ.Map,
+) !std.process.Environ.Map {
     var env_map = std.process.Environ.Map.init(allocator);
 
     if (!options.ignore_environment) {
         // Copy parent environment
         const keys = parent_environ.keys();
         const vals = parent_environ.values();
+        // keys() and values() are parallel arrays of one entry each, so their
+        // lengths always match; the for loop below iterates them together.
+        std.debug.assert(keys.len == vals.len);
         for (keys, vals) |k, v| {
             try env_map.put(k, v);
         }
@@ -445,9 +679,16 @@ fn buildEnvMap(allocator: Allocator, options: EnvOptions, parent_environ: *const
 }
 
 /// Print the environment to stdout
-fn printEnvironment(writer: *std.Io.Writer, env_map: *const std.process.Environ.Map, null_delimiter: bool) !void {
+fn printEnvironment(
+    writer: *std.Io.Writer,
+    env_map: *const std.process.Environ.Map,
+    null_delimiter: bool,
+) !void {
     const keys = env_map.keys();
     const vals = env_map.values();
+    // keys() and values() are parallel arrays with one value per key, so their
+    // lengths always match; the for loop below iterates them together.
+    std.debug.assert(keys.len == vals.len);
     for (keys, vals) |k, v| {
         try writer.print("{s}={s}", .{ k, v });
         if (null_delimiter) {
@@ -459,17 +700,39 @@ fn printEnvironment(writer: *std.Io.Writer, env_map: *const std.process.Environ.
 }
 
 /// Execute a command with the given environment
-fn execCommand(allocator: Allocator, io: std.Io, command: []const []const u8, env_map: *const std.process.Environ.Map, stderr_writer: *std.Io.Writer) u8 {
+fn execCommand(
+    allocator: Allocator,
+    io: std.Io,
+    command: []const []const u8,
+    env_map: *const std.process.Environ.Map,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    // Callers reach here only after the empty-command branch returns early, and
+    // command[0] is indexed below for spawn/error messages.
+    std.debug.assert(command.len > 0);
+
     var child = std.process.spawn(io, .{
         .argv = command,
         .environ_map = env_map,
     }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "env",
+            "'{s}': {s}",
+            .{ command[0], common.posixErrorString(err) },
+        );
         return 127;
     };
 
     const result = child.wait(io) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "env",
+            "'{s}': {s}",
+            .{ command[0], common.posixErrorString(err) },
+        );
         return 126;
     };
 
@@ -824,7 +1087,14 @@ test "env runEnv: help flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{"--help"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{"--help"},
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: env") != null);
 }
@@ -838,7 +1108,14 @@ test "env runEnv: version flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{"--version"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{"--version"},
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "env") != null);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
@@ -853,7 +1130,14 @@ test "env runEnv: print environment with -i and assignment" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("FOO=bar\n", stdout_aw.writer.buffered());
 }
@@ -867,7 +1151,14 @@ test "env runEnv: empty environment with -i" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{"-i"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{"-i"},
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -881,7 +1172,14 @@ test "env runEnv: -i with multiple assignments" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "A=1", "B=2" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "A=1", "B=2" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Both should be present (order may vary in hash map)
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "A=1\n") != null);
@@ -897,7 +1195,14 @@ test "env runEnv: null delimiter output" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-0", "X=y" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "-0", "X=y" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     const out = stdout_aw.writer.buffered();
     try testing.expectEqualStrings("X=y", out[0..3]);
@@ -913,9 +1218,18 @@ test "env runEnv: unknown flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{"--badoption"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{"--badoption"},
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
+    );
 }
 
 test "env runEnv: invalid chdir" {
@@ -927,9 +1241,18 @@ test "env runEnv: invalid chdir" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-C", "/nonexistent_dir_12345" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-C", "/nonexistent_dir_12345" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 125), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot change directory") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "cannot change directory") != null,
+    );
 }
 
 test "env parseArgs: -P flag" {
@@ -987,7 +1310,14 @@ test "env runEnv: -P does not set PATH when printing environment" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "-P", "/custom/path", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Per spec, -P only affects utility search path, not the environment
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "PATH=") == null);
@@ -1004,7 +1334,14 @@ test "env runEnv: -S processes assignments" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-S", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "-S", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -S should process the string, not print a stub warning
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "FOO=bar") != null);
@@ -1019,10 +1356,19 @@ test "env runEnv: -v verbose with -i" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-iv", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-iv", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Verbose should mention clearing and setting
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "clearing environment") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "clearing environment") != null,
+    );
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "setenv FOO=bar") != null);
 }
 
@@ -1035,9 +1381,18 @@ test "env runEnv: -v verbose with -u" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-v", "-u", "NONEXISTENT_VAR_TEST" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-v", "-u", "NONEXISTENT_VAR_TEST" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unsetenv NONEXISTENT_VAR_TEST") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unsetenv NONEXISTENT_VAR_TEST") != null,
+    );
 }
 
 // ============================================================================
@@ -1073,7 +1428,14 @@ test "env runEnv: bare dash clears environment" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{"-"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{"-"},
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
@@ -1088,7 +1450,14 @@ test "env runEnv: bare dash with assignment prints only that var" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("FOO=bar\n", stdout_aw.writer.buffered());
 }
@@ -1107,7 +1476,14 @@ test "env runEnv: -S splits string into assignment" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-S", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "-S", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should actually set FOO=bar in the environment, not just warn
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "FOO=bar\n") != null);
@@ -1144,7 +1520,14 @@ test "audit: env -0 with utility should be detected" {
 
     // Use -i so no inherited env, and a nonexistent command to avoid spawn.
     // But the validation should reject BEFORE reaching exec.
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-0", "NONEXISTENT_CMD_AUDIT_TEST_12345" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "-0", "NONEXISTENT_CMD_AUDIT_TEST_12345" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     // Per spec, should exit 125 rejecting the -0+utility combination.
     // Currently returns 127 (command not found) because validation is missing.
     try testing.expectEqual(@as(u8, 125), exit_code);
@@ -1184,7 +1567,14 @@ test "audit: env -P should not set PATH in child environment" {
 
     // env -i -P /custom/path FOO=bar — print env with -i, -P, and assignment
     // -P should NOT inject PATH into the child's environment
-    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runEnv(
+        testing.allocator,
+        io,
+        &.{ "-i", "-P", "/custom/path", "FOO=bar" },
+        &empty_env,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Only FOO=bar should be printed; PATH should NOT appear
     try testing.expectEqualStrings("FOO=bar\n", stdout_aw.writer.buffered());

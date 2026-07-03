@@ -127,7 +127,10 @@ test "format: multi-column output by default" {
     defer env.deinit();
 
     // Create several files with different name lengths
-    const files = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg", "hhhhhhhh" };
+    const files = [_][]const u8{
+        "a",     "bb",     "ccc",     "dddd",
+        "eeeee", "ffffff", "ggggggg", "hhhhhhhh",
+    };
     for (files) |name| {
         try env.createFile(name, "");
     }
@@ -330,6 +333,44 @@ test "recursive: shows directory headers with proper formatting" {
     try LsAssertions.expectDirectoryHeader(output, "./dir1:");
     try LsAssertions.expectDirectoryHeader(output, "./dir2:");
     try LsAssertions.expectDirectoryHeader(output, "./dir1/subdir:");
+}
+
+test "recursive: each directory header appears exactly once (no duplicates)" {
+    // Guard against bug G13: ls -R printed each subdirectory path header twice.
+    // Substring presence (expectDirectoryHeader) cannot detect this because it
+    // stops at the first match. This test counts occurrences and asserts == 1.
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Two top-level subdirs and one nested subdir exercise both shallow and
+    // deep recursion code paths.
+    try env.createDir("dir1");
+    try env.createDir("dir2");
+
+    var dir1 = try env.createDirAndOpen("dir1");
+    defer dir1.close(std.testing.io);
+    try dir1.createDir(std.testing.io, "subdir", .default_dir);
+
+    try env.runLs(.{ .recursive = true });
+
+    const output = env.getStdout();
+
+    const headers = [_][]const u8{ "./dir1:", "./dir2:", "./dir1/subdir:" };
+    for (headers) |header| {
+        var count: u32 = 0;
+        var pos: usize = 0;
+        while (std.mem.findPos(u8, output, pos, header)) |found| {
+            count += 1;
+            pos = found + header.len;
+        }
+        if (count != 1) {
+            std.debug.print(
+                "Header '{s}' appears {d} time(s) (expected 1) in output:\n{s}\n",
+                .{ header, count, output },
+            );
+            return error.HeaderCountWrong;
+        }
+    }
 }
 
 test "recursive: handles symlink cycles safely" {
@@ -838,7 +879,10 @@ test "version_sort: -v sorts version numbers naturally" {
     try env.runLs(.{ .version_sort = true, .one_per_line = true });
 
     // Should be file1, file2, file10, file20
-    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "file1", "file2", "file10", "file20" });
+    try LsAssertions.expectOnePerLineOrder(
+        env.getStdout(),
+        &.{ "file1", "file2", "file10", "file20" },
+    );
 }
 
 // ============================================================================
@@ -856,7 +900,10 @@ test "sort_by_extension: -X sorts by file extension" {
     try env.runLs(.{ .sort_by_extension = true, .one_per_line = true });
 
     // Sorted by extension: .c, .md, .txt
-    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "main.c", "readme.md", "notes.txt" });
+    try LsAssertions.expectOnePerLineOrder(
+        env.getStdout(),
+        &.{ "main.c", "readme.md", "notes.txt" },
+    );
 }
 
 // ============================================================================
@@ -1059,10 +1106,16 @@ test "F50: . and .. are first entries in ls -a sorted output" {
     const second = line_iter.next() orelse "";
 
     if (!std.mem.eql(u8, first, ".")) {
-        std.debug.print("F50: Expected '.' as first entry, got '{s}'\nFull output:\n{s}\n", .{ first, output });
+        std.debug.print(
+            "F50: Expected '.' as first entry, got '{s}'\nFull output:\n{s}\n",
+            .{ first, output },
+        );
     }
     if (!std.mem.eql(u8, second, "..")) {
-        std.debug.print("F50: Expected '..' as second entry, got '{s}'\nFull output:\n{s}\n", .{ second, output });
+        std.debug.print(
+            "F50: Expected '..' as second entry, got '{s}'\nFull output:\n{s}\n",
+            .{ second, output },
+        );
     }
 
     try testing.expectEqualStrings(".", first);

@@ -18,7 +18,10 @@ const MkdirArgs = struct {
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .mode = .{ .short = 'm', .desc = "Set file mode (as in chmod)", .value_name = "MODE" },
-        .parents = .{ .short = 'p', .desc = "Make parent directories as needed, no error if existing" },
+        .parents = .{
+            .short = 'p',
+            .desc = "Make parent directories as needed, no error if existing",
+        },
         .verbose = .{ .short = 'v', .desc = "Print a message for each created directory" },
     };
 };
@@ -50,7 +53,13 @@ fn run(
 ) !u8 {
     const prog_name = "mkdir";
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(MkdirArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        MkdirArgs,
+        allocator,
+        args,
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -72,7 +81,43 @@ fn run(
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Create options
+    // Build options from parsed flags, parsing -m mode if present.
+    const options = run_buildOptions(allocator, parsed_args, prog_name, stderr_writer) catch {
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+
+    // Process directories - continue processing even if some fail
+    // The missing-operand guard above returned for dirs.len == 0, so any path
+    // reaching the loop has a non-empty operand list.
+    std.debug.assert(dirs.len > 0);
+    var exit_code = common.ExitCode.success;
+    for (dirs) |dir_path| {
+        createDirectory(
+            io,
+            dir_path,
+            options,
+            prog_name,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+        ) catch {
+            // Mark overall failure but continue with remaining directories
+            exit_code = common.ExitCode.general_error;
+            continue;
+        };
+    }
+
+    return @intFromEnum(exit_code);
+}
+
+/// Build MkdirOptions from parsed flags, parsing the -m mode string if present.
+/// On an invalid mode it prints the diagnostic and returns error.InvalidMode.
+fn run_buildOptions(
+    allocator: std.mem.Allocator,
+    parsed_args: MkdirArgs,
+    prog_name: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !MkdirOptions {
     var options = MkdirOptions{
         .parents = parsed_args.parents,
         .verbose = parsed_args.verbose,
@@ -81,22 +126,18 @@ fn run(
     // Parse mode if provided
     if (parsed_args.mode) |mode_str| {
         options.mode = parseMode(mode_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid mode '{s}'", .{mode_str});
-            return @intFromEnum(common.ExitCode.general_error);
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid mode '{s}'",
+                .{mode_str},
+            );
+            return error.InvalidMode;
         };
     }
 
-    // Process directories - continue processing even if some fail
-    var exit_code = common.ExitCode.success;
-    for (dirs) |dir_path| {
-        createDirectory(io, dir_path, options, prog_name, stdout_writer, stderr_writer, allocator) catch {
-            // Mark overall failure but continue with remaining directories
-            exit_code = common.ExitCode.general_error;
-            continue;
-        };
-    }
-
-    return @intFromEnum(exit_code);
+    return options;
 }
 
 /// Print help message to provided writer
@@ -125,24 +166,55 @@ fn printVersion(writer: *std.Io.Writer) !void {
 }
 
 /// Set directory permissions. No-op with warning on Windows.
-fn setDirectoryMode(io: std.Io, path: []const u8, mode: std.posix.mode_t, prog_name: []const u8, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+fn setDirectoryMode(
+    io: std.Io,
+    path: []const u8,
+    mode: std.posix.mode_t,
+    prog_name: []const u8,
+    stderr_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
     _ = io;
+    // Precondition: both callers pass a created/cumulative path component, never
+    // empty (createDir would already have failed on an empty path).
+    std.debug.assert(path.len > 0);
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
-        common.printWarningWithProgram(allocator, stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
+        common.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "mode flag (-m) is not supported on Windows",
+            .{},
+        );
         return;
     }
 
+    // mode originates solely from parseMode, which bounds it to 0o7777.
+    std.debug.assert(mode <= 0o7777);
+
     // Use C chmod function for directories on POSIX systems
     const path_z = std.posix.toPosixPath(path) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "path too long: '{s}'", .{path});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "path too long: '{s}'",
+            .{path},
+        );
         return error.ChmodFailed;
     };
 
     const result = std.c.chmod(&path_z, mode);
     if (result != 0) {
         const err = std.posix.errno(result);
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "cannot set mode on '{s}': {s}",
+            .{ path, @tagName(err) },
+        );
         return error.ChmodFailed;
     }
 }
@@ -152,6 +224,9 @@ fn setDirectoryMode(io: std.Io, path: []const u8, mode: std.posix.mode_t, prog_n
 fn getUmask() u32 {
     const m = std.c.umask(0);
     _ = std.c.umask(m);
+    // POSIX defines the umask over the nine permission bits only, so the
+    // kernel never returns a value outside 0o000..0o777.
+    std.debug.assert(m <= 0o777);
     return @intCast(m);
 }
 
@@ -162,6 +237,8 @@ fn parseMode(mode_str: []const u8) !std.posix.mode_t {
 
     // Try octal first: 1-4 octal digits.
     if (common.mode.parseOctal(mode_str)) |octal| {
+        // parseOctal rejects any value above 0o7777 on its success path.
+        std.debug.assert(octal <= 0o7777);
         return @intCast(octal);
     } else |_| {}
 
@@ -183,16 +260,41 @@ fn parseMode(mode_str: []const u8) !std.posix.mode_t {
     }) catch {
         return error.InvalidMode;
     };
+    // toOctal ORs at most the three special bits onto a 9-bit permission value,
+    // so it never exceeds 0o7777; this bounds the narrowing cast below.
+    std.debug.assert(parsed.toOctal() <= 0o7777);
     return @intCast(parsed.toOctal());
 }
 
 /// Create directory with specified options
-fn createDirectory(io: std.Io, path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+fn createDirectory(
+    io: std.Io,
+    path: []const u8,
+    options: MkdirOptions,
+    prog_name: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
     if (options.parents) {
-        try createPathComponents(io, path, options, prog_name, stdout_writer, stderr_writer, allocator);
+        try createPathComponents(
+            io,
+            path,
+            options,
+            prog_name,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+        );
     } else {
         std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "cannot create directory '{s}': {s}",
+                .{ path, common.posixErrorString(err) },
+            );
             return err;
         };
 
@@ -209,16 +311,20 @@ fn createDirectory(io: std.Io, path: []const u8, options: MkdirOptions, prog_nam
 
 /// Create path components one at a time, supporting -v per directory
 /// and -m on the leaf directory only (GNU behavior).
-fn createPathComponents(io: std.Io, path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+fn createPathComponents(
+    io: std.Io,
+    path: []const u8,
+    options: MkdirOptions,
+    prog_name: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+) !void {
     // Handle absolute paths - start with "/"
     const is_absolute = path.len > 0 and path[0] == '/';
 
     // Count non-empty components to identify the leaf
-    var count_iter = std.mem.splitScalar(u8, path, '/');
-    var total_components: usize = 0;
-    while (count_iter.next()) |component| {
-        if (component.len > 0) total_components += 1;
-    }
+    const total_components = createPathComponents_countComponents(path);
 
     // Split path into components
     var iter = std.mem.splitScalar(u8, path, '/');
@@ -238,23 +344,34 @@ fn createPathComponents(io: std.Io, path: []const u8, options: MkdirOptions, pro
         if (component.len == 0) continue;
 
         component_index += 1;
+        // The counting pass used the same splitter over the same path, so any
+        // non-empty component we reach here was already counted: there is at
+        // least one, and our running index never overruns that total.
+        std.debug.assert(total_components >= 1);
+        std.debug.assert(component_index <= total_components);
         const is_leaf = (component_index == total_components);
 
-        // Add separator between components (not before first)
-        if (!first and !(cumulative.items.len == 1 and cumulative.items[0] == '/')) {
-            try cumulative.append(allocator, '/');
-        }
+        // Add separator (if needed) and append this component to the cumulative
+        // path. The `first` toggle is parent loop state, so it lives here.
+        try createPathComponents_appendComponent(&cumulative, allocator, component, first);
         first = false;
 
-        try cumulative.appendSlice(allocator, component);
-
         const current_path = cumulative.items;
+        // We just appended a non-empty component, so the cumulative path holds
+        // at least that component (plus a leading '/' for absolute paths).
+        std.debug.assert(current_path.len > 0);
 
         // Try to create this component
         std.Io.Dir.cwd().createDir(io, current_path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => continue, // -p: silently skip existing
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path, common.posixErrorString(err) });
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "cannot create directory '{s}': {s}",
+                    .{ current_path, common.posixErrorString(err) },
+                );
                 return err;
             },
         };
@@ -272,6 +389,45 @@ fn createPathComponents(io: std.Io, path: []const u8, options: MkdirOptions, pro
             try stdout_writer.print("{s}: created directory '{s}'\n", .{ prog_name, current_path });
         }
     }
+}
+
+/// Count the non-empty '/'-separated components of `path`. The leaf is the
+/// last such component; the caller uses this total to apply -m to it only.
+fn createPathComponents_countComponents(path: []const u8) u32 {
+    var count_iter = std.mem.splitScalar(u8, path, '/');
+    var total: u32 = 0;
+    while (count_iter.next()) |component| {
+        if (component.len > 0) total += 1;
+    }
+    // Each component is separated by a distinct '/', so there can be at most
+    // one component per character: the count never exceeds the path length.
+    std.debug.assert(total <= path.len);
+    // An empty path has no components at all (negative-space bound).
+    if (path.len == 0) std.debug.assert(total == 0);
+    return total;
+}
+
+/// Append `component` to the cumulative path, inserting a '/' separator first
+/// unless this is the first component or the path is exactly the root "/".
+fn createPathComponents_appendComponent(
+    cumulative: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    component: []const u8,
+    first: bool,
+) !void {
+    // We only reach here for non-empty components; the parent skips empties.
+    std.debug.assert(component.len > 0);
+    const len_before = cumulative.items.len;
+
+    // Add separator between components (not before first)
+    if (!first and !(cumulative.items.len == 1 and cumulative.items[0] == '/')) {
+        try cumulative.append(allocator, '/');
+    }
+
+    try cumulative.appendSlice(allocator, component);
+    // Appending a non-empty component must grow the buffer by at least its
+    // length (more if a separator was also added).
+    std.debug.assert(cumulative.items.len >= len_before + component.len);
 }
 
 // ============================================================================
@@ -323,7 +479,11 @@ test "mkdir with verbose flag prints creation messages" {
     const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mkdir: created directory 'test_verbose'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_aw.writer.buffered(),
+        "mkdir: created directory 'test_verbose'",
+    ) != null);
 }
 
 test "mkdir with mode flag sets permissions" {
@@ -399,7 +559,11 @@ test "mkdir shows help with -h flag" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: mkdir") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Create the DIRECTORY") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_aw.writer.buffered(),
+        "Create the DIRECTORY",
+    ) != null);
 }
 
 test "mkdir shows version with -V flag" {
@@ -631,7 +795,11 @@ test "mkdir -p handles absolute-like paths" {
     const tmp_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const tmp_path = path_buf[0..tmp_len];
 
-    const deep_path = try std.fmt.allocPrint(testing.allocator, "{s}/abs_test/sub/dir", .{tmp_path});
+    const deep_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/abs_test/sub/dir",
+        .{tmp_path},
+    );
     defer testing.allocator.free(deep_path);
 
     const args = [_][]const u8{ "-p", deep_path };
@@ -676,5 +844,9 @@ test "mkdir error for existing directory uses POSIX-style message" {
 
     try testing.expect(std.mem.find(u8, stderr_output, "File exists") != null);
     try testing.expect(std.mem.find(u8, stderr_output, "PathAlreadyExists") == null);
-    try testing.expect(std.mem.find(u8, stderr_output, "cannot create directory 'test_posix_err'") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_output,
+        "cannot create directory 'test_posix_err'",
+    ) != null);
 }

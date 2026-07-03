@@ -69,6 +69,9 @@ pub const OwnershipSpec = struct {
     /// given, the user's login group is used as the new group.
     pub fn parse(spec: []const u8, allocator: std.mem.Allocator) Error!OwnershipSpec {
         if (spec.len == 0) return Error.InvalidFormat;
+        // The empty-spec guard above returns early, so every path below runs
+        // only on a non-empty spec.
+        std.debug.assert(spec.len > 0);
 
         var result = OwnershipSpec{};
 
@@ -77,6 +80,10 @@ pub const OwnershipSpec = struct {
             // user:group format
             const user_part = spec[0..colon_pos];
             const group_part = spec[colon_pos + 1 ..];
+            // indexOf returns an in-bounds byte index, and the two parts plus
+            // the single colon byte must reconstruct the whole spec exactly.
+            std.debug.assert(colon_pos < spec.len);
+            std.debug.assert(user_part.len + group_part.len + 1 == spec.len);
 
             // Parse user part (if not empty)
             if (user_part.len > 0) {
@@ -117,6 +124,10 @@ fn looksLikeOctalMode(spec: []const u8) bool {
     for (spec) |ch| {
         if (ch < '0' or ch > '7') return false;
     }
+    // The length guard above returned for anything outside [3, 4], so any spec
+    // reaching the final check has exactly 3 or 4 bytes.
+    std.debug.assert(spec.len >= 3);
+    std.debug.assert(spec.len <= 4);
     // 4-digit octal modes always start with 0 (e.g., 0755);
     // numbers like 1000 are common UIDs, not permission modes
     if (spec.len == 4 and spec[0] != '0') return false;
@@ -150,6 +161,9 @@ pub fn parseGroup(group_spec: []const u8, allocator: std.mem.Allocator) Error!gi
 pub fn lookupUserByName(name: []const u8, allocator: std.mem.Allocator) Error!uid_t {
     const name_z = allocator.dupeZ(u8, name) catch return Error.OutOfMemory;
     defer allocator.free(name_z);
+    // dupeZ produces a null-terminated copy whose length (excluding the
+    // sentinel) equals the source slice length.
+    std.debug.assert(name_z.len == name.len);
 
     const passwd = getpwnam(name_z.ptr) orelse return Error.UserNotFound;
     return passwd.pw_uid;
@@ -160,6 +174,9 @@ pub fn lookupUserByName(name: []const u8, allocator: std.mem.Allocator) Error!ui
 pub fn lookupGroupByName(name: []const u8, allocator: std.mem.Allocator) Error!gid_t {
     const name_z = allocator.dupeZ(u8, name) catch return Error.OutOfMemory;
     defer allocator.free(name_z);
+    // dupeZ produces a null-terminated copy whose length (excluding the
+    // sentinel) equals the source slice length.
+    std.debug.assert(name_z.len == name.len);
 
     const group = getgrnam(name_z.ptr) orelse return Error.GroupNotFound;
     return group.gr_gid;
@@ -171,6 +188,9 @@ pub fn getUserById(uid: uid_t, allocator: std.mem.Allocator) Error!UserInfo {
     const passwd = getpwuid(uid) orelse return Error.UserNotFound;
     const name = std.mem.span(passwd.pw_name);
     const owned_name = allocator.dupe(u8, name) catch return Error.OutOfMemory;
+    // dupe copies the source slice exactly, so the owned copy has the same
+    // length as the C-string view of pw_name.
+    std.debug.assert(owned_name.len == name.len);
     return UserInfo{
         .uid = passwd.pw_uid,
         .gid = passwd.pw_gid,
@@ -184,6 +204,9 @@ pub fn getGroupById(gid: gid_t, allocator: std.mem.Allocator) Error!GroupInfo {
     const group = getgrgid(gid) orelse return Error.GroupNotFound;
     const name = std.mem.span(group.gr_name);
     const owned_name = allocator.dupe(u8, name) catch return Error.OutOfMemory;
+    // dupe copies the source slice exactly, so the owned copy has the same
+    // length as the C-string view of gr_name.
+    std.debug.assert(owned_name.len == name.len);
     return GroupInfo{
         .gid = group.gr_gid,
         .name = owned_name,
@@ -214,12 +237,18 @@ test "parseGroup with numeric ID" {
 
 test "parseUser with numeric overflow falls back to name lookup" {
     // Test numeric overflow - parseUser falls back to name lookup which fails
-    try testing.expectError(Error.UserNotFound, parseUser("999999999999999999999", testing.allocator));
+    try testing.expectError(
+        Error.UserNotFound,
+        parseUser("999999999999999999999", testing.allocator),
+    );
 }
 
 test "parseGroup with numeric overflow falls back to name lookup" {
     // Test numeric overflow - parseGroup falls back to name lookup which fails
-    try testing.expectError(Error.GroupNotFound, parseGroup("999999999999999999999", testing.allocator));
+    try testing.expectError(
+        Error.GroupNotFound,
+        parseGroup("999999999999999999999", testing.allocator),
+    );
 }
 
 test "OwnershipSpec.parse user only" {
@@ -321,11 +350,17 @@ test "lookupGroupByName with root group" {
 }
 
 test "lookupUserByName with nonexistent user" {
-    try testing.expectError(Error.UserNotFound, lookupUserByName("nonexistent_user_12345", testing.allocator));
+    try testing.expectError(
+        Error.UserNotFound,
+        lookupUserByName("nonexistent_user_12345", testing.allocator),
+    );
 }
 
 test "lookupGroupByName with nonexistent group" {
-    try testing.expectError(Error.GroupNotFound, lookupGroupByName("nonexistent_group_12345", testing.allocator));
+    try testing.expectError(
+        Error.GroupNotFound,
+        lookupGroupByName("nonexistent_group_12345", testing.allocator),
+    );
 }
 
 test "octal confusion warning for 700" {

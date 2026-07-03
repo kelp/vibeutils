@@ -50,7 +50,7 @@ Operands are treated as flags for this table.
 | parset |     | yes   |         |     | yes  | SHOULD |
 | excl  |      |       |         | yes |      | WONT |
 | nocreat |    |       |         | yes |      | WONT |
-| fdatasync |  |       |         | yes |      | WONT |
+| fdatasync |  |       |         | yes | yes  | SHOULD |
 
 ### status= values
 

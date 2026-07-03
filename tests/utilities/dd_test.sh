@@ -187,6 +187,97 @@ test_dd() {
         print_test_result "dd bs=1K suffix" "FAIL" "Expected 1024 bytes, got $file_size"
     fi
 
+    # Issue #43: count= must accept the same suffixes bs= does. This is
+    # the exact command from the issue: bs=512 count=1k -> 512*1024 bytes.
+    local count_suffix_output="$TEMP_DIR/dd_count_suffix.txt"
+    "$binary" if=/dev/zero of="$count_suffix_output" bs=512 count=1k status=none 2>/dev/null
+    local count_suffix_size
+    count_suffix_size=$(get_file_size "$count_suffix_output")
+    if [[ "$count_suffix_size" -eq 524288 ]]; then
+        print_test_result "dd count=1k suffix" "PASS"
+    else
+        print_test_result "dd count=1k suffix" "FAIL" \
+            "Expected 524288 bytes, got $count_suffix_size"
+    fi
+
+    # Issue #43: skip= suffix seeks the input by the suffixed block count.
+    # Build a >1KiB input where byte at offset 1024 is known, copy 1 byte.
+    local skip_suffix_input="$TEMP_DIR/dd_skip_suffix_in.txt"
+    printf '%01024d' 0 > "$skip_suffix_input"
+    printf 'Z' >> "$skip_suffix_input"
+    local skip_suffix_output="$TEMP_DIR/dd_skip_suffix_out.txt"
+    "$binary" if="$skip_suffix_input" of="$skip_suffix_output" \
+        bs=1 skip=1k count=1 status=none 2>/dev/null
+    local skip_suffix_content
+    skip_suffix_content=$(cat "$skip_suffix_output")
+    if [[ "$skip_suffix_content" == "Z" ]]; then
+        print_test_result "dd skip=1k suffix" "PASS"
+    else
+        print_test_result "dd skip=1k suffix" "FAIL" \
+            "Expected 'Z', got '$skip_suffix_content'"
+    fi
+
+    echo -e "${CYAN}Testing conv=fdatasync...${NC}"
+
+    # Issue #43: conv=fdatasync flushes data before exit and copies
+    # normally. Exact second command from the issue.
+    local fdatasync_input=$(create_temp_file "fdatasync payload")
+    local fdatasync_output="$TEMP_DIR/dd_fdatasync.txt"
+    "$binary" if="$fdatasync_input" of="$fdatasync_output" \
+        conv=fdatasync status=none 2>/dev/null
+    local fdatasync_rc=$?
+    local fdatasync_content
+    fdatasync_content=$(cat "$fdatasync_output")
+    if [[ "$fdatasync_rc" -eq 0 && "$fdatasync_content" == "fdatasync payload" ]]; then
+        print_test_result "dd conv=fdatasync" "PASS"
+    else
+        print_test_result "dd conv=fdatasync" "FAIL" \
+            "rc=$fdatasync_rc content='$fdatasync_content'"
+    fi
+
+    # conv=fdatasync,fsync combo: both syncs coexist, data intact.
+    local fdcombo_input=$(create_temp_file "combo payload")
+    local fdcombo_output="$TEMP_DIR/dd_fdcombo.txt"
+    "$binary" if="$fdcombo_input" of="$fdcombo_output" \
+        conv=fdatasync,fsync status=none 2>/dev/null
+    local fdcombo_rc=$?
+    local fdcombo_content
+    fdcombo_content=$(cat "$fdcombo_output")
+    if [[ "$fdcombo_rc" -eq 0 && "$fdcombo_content" == "combo payload" ]]; then
+        print_test_result "dd conv=fdatasync,fsync" "PASS"
+    else
+        print_test_result "dd conv=fdatasync,fsync" "FAIL" \
+            "rc=$fdcombo_rc content='$fdcombo_content'"
+    fi
+
+    echo -e "${CYAN}Testing conv=fdatasync on a pipe (issue #43, round 2)...${NC}"
+
+    # Adversarial regression: conv=fdatasync with a pipe as the output must
+    # NEVER abort the process. fdatasync(2) on a pipe returns EINVAL, and
+    # the Zig std marks that errno path unreachable, so the naive
+    # implementation panics (SIGABRT, rc=134). GNU coreutils 9.7 instead
+    # falls back and prints "dd: fsync failed for 'standard output':
+    # Invalid argument" and exits 1 (verified against GNU dd 9.7 on this
+    # host). Contract: rc is 0 or 1 (never >=128, never a signal), and any
+    # nonzero exit carries a sync-failure diagnostic on stderr with no
+    # "panic" text. On Linux fsync/fdatasync on a pipe fails EINVAL, so the
+    # pinned expectation is rc=1 plus a diagnostic.
+    local fdatasync_pipe_err="$TEMP_DIR/dd_fdatasync_pipe.err"
+    "$binary" if=/dev/zero count=1 conv=fdatasync status=none \
+        2>"$fdatasync_pipe_err" | cat >/dev/null
+    local fdatasync_pipe_rc=${PIPESTATUS[0]}
+    local fdatasync_pipe_err_text
+    fdatasync_pipe_err_text=$(cat "$fdatasync_pipe_err")
+    if [[ "$fdatasync_pipe_rc" -eq 1 ]] \
+        && ! grep -qi 'panic' "$fdatasync_pipe_err" \
+        && grep -qi 'sync' "$fdatasync_pipe_err" \
+        && grep -qiE 'fail|invalid' "$fdatasync_pipe_err"; then
+        print_test_result "dd conv=fdatasync on pipe does not panic" "PASS"
+    else
+        print_test_result "dd conv=fdatasync on pipe does not panic" "FAIL" \
+            "rc=$fdatasync_pipe_rc (expected 1, never >=128) stderr='$fdatasync_pipe_err_text'"
+    fi
+
     echo -e "${CYAN}Testing exit codes...${NC}"
 
     # Success exit code
@@ -365,5 +456,55 @@ test_dd() {
     else
         print_test_result "dd ibs/obs separate path preserves data" "FAIL" \
             "Expected 'ABCDEFGHIJKLMNOP', got '$content'"
+    fi
+
+    # ==================================================================
+    #   ISSUE #44: conv=noerror must not spin on a persistent read error
+    # ==================================================================
+    # A directory fd yields a persistent, non-progressing read error
+    # (EISDIR on Linux, ENOTSUP/EISDIR on macOS BSD read(2)) with zero
+    # bytes ever consumed -- a portable stand-in for a device whose read
+    # keeps failing without advancing. With conv=noerror the old copy
+    # loop returned .continue_loop and re-issued the same read from the
+    # same position forever, never incrementing blocks_read, so even
+    # count= could not bound it. dd must terminate promptly instead of
+    # spinning. We bound the run at 5s via run_with_limit (portable to
+    # macOS CI, which lacks GNU timeout(1)); exit 124 is the timeout
+    # sentinel, so a passing dd must exit with anything but 124.
+    echo -e "${CYAN}Testing conv=noerror read-error termination (issue #44)...${NC}"
+
+    local noerror_baddir="$TEMP_DIR/dd_noerror_baddir"
+    mkdir -p "$noerror_baddir"
+
+    # Primary case: conv=noerror WITHOUT sync. This spins forever at HEAD
+    # (blocks_read never increments, so count=5 cannot bound the loop).
+    local noerror_err="$TEMP_DIR/dd_noerror_err.txt"
+    run_with_limit 5 "$binary" if="$noerror_baddir" of=/dev/null \
+        conv=noerror bs=512 count=5 status=none 2>"$noerror_err"
+    local noerror_rc=$?
+    local noerror_lines
+    noerror_lines=$(grep -c "read error" "$noerror_err" 2>/dev/null || true)
+    if [[ "$noerror_rc" -ne 124 ]] && [[ "$noerror_lines" -le 10 ]]; then
+        print_test_result "dd conv=noerror terminates on persistent read error" "PASS"
+    else
+        print_test_result "dd conv=noerror terminates on persistent read error" "FAIL" \
+            "expected non-124 exit and <=10 read-error lines, got rc=$noerror_rc lines=$noerror_lines"
+    fi
+
+    # Secondary case: conv=noerror,sync with count=5 must also terminate
+    # promptly and emit a bounded number of read-error lines. This
+    # distinguishes the count= budget bounding the loop from the
+    # spin-forever path above.
+    local noerror_sync_err="$TEMP_DIR/dd_noerror_sync_err.txt"
+    run_with_limit 5 "$binary" if="$noerror_baddir" of=/dev/null \
+        conv=noerror,sync bs=512 count=5 status=none 2>"$noerror_sync_err"
+    local noerror_sync_rc=$?
+    local noerror_sync_lines
+    noerror_sync_lines=$(grep -c "read error" "$noerror_sync_err" 2>/dev/null || true)
+    if [[ "$noerror_sync_rc" -ne 124 ]] && [[ "$noerror_sync_lines" -le 10 ]]; then
+        print_test_result "dd conv=noerror,sync count= bounds read-error retries" "PASS"
+    else
+        print_test_result "dd conv=noerror,sync count= bounds read-error retries" "FAIL" \
+            "expected non-124 exit and <=10 read-error lines, got rc=$noerror_sync_rc lines=$noerror_sync_lines"
     fi
 }

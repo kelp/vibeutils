@@ -9,12 +9,23 @@ const common = @import("common");
 const testing = std.testing;
 
 /// Main entry point for the false utility
-pub fn runFalse(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runFalse(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = allocator;
     _ = io;
     _ = args;
     _ = stdout_writer;
     _ = stderr_writer;
+
+    // The sole purpose of `false` is to exit unsuccessfully with status 1.
+    // Guard that the exit code we return is the POSIX failure code, so a
+    // refactor of the ExitCode enum can never silently make `false` succeed.
+    comptime std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
 
     return @intFromEnum(common.ExitCode.general_error);
 }
@@ -46,7 +57,13 @@ test "false always returns 1 and ignores all arguments" {
         defer stdout_aw.deinit();
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
-        const result = try runFalse(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
+        const result = try runFalse(
+            testing.allocator,
+            io,
+            args,
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqual(@as(u8, 1), result);
     }
 }
@@ -72,7 +89,13 @@ test "false produces no output" {
         var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
         defer stderr_aw.deinit();
 
-        _ = try runFalse(testing.allocator, io, &.{ "--help", "--version", "test" }, &stdout_aw.writer, &stderr_aw.writer);
+        _ = try runFalse(
+            testing.allocator,
+            io,
+            &.{ "--help", "--version", "test" },
+            &stdout_aw.writer,
+            &stderr_aw.writer,
+        );
         try testing.expectEqualStrings("", stdout_aw.writer.buffered());
         try testing.expectEqualStrings("", stderr_aw.writer.buffered());
     }

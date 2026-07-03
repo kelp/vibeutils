@@ -883,4 +883,90 @@ test_rm() {
         print_test_result "rm --no-preserve-root file removed" "FAIL" "File still exists"
         rm -f "$npr_file"
     fi
+
+    echo -e "${CYAN}Testing recursive interactive (-ri) subtree behavior...${NC}"
+
+    # Behavior #3: -ri must prompt BEFORE descending into a directory, and a
+    # 'no' answer must skip that directory's WHOLE subtree (pruneCurrent) AND
+    # leave the directory itself undeleted. The walker driver must prompt on
+    # the .pre emit (the old recursion prompted AFTER processing children).
+    #
+    # Methodology: a tree root_skip/ containing a subdir keep/ with a file
+    # keep/inside.txt. Answer 'n' to the FIRST directory prompt (root_skip).
+    # If prompting happens before descent and prunes, the whole tree must
+    # survive intact: root_skip, keep, AND keep/inside.txt all remain.
+    local skip_root
+    skip_root=$(create_temp_dir)
+    mkdir -p "$skip_root/keep"
+    create_temp_file "do not delete me" "$skip_root/keep/inside.txt"
+    # Single 'n' to the first (top-level) directory prompt.
+    echo "n" | "$binary" -ri "$skip_root" >/dev/null 2>&1
+    local skip_exit=$?
+    if [[ -d "$skip_root" && -d "$skip_root/keep" && -f "$skip_root/keep/inside.txt" ]]; then
+        print_test_result "rm -ri 'no' prunes subtree and keeps directory" "PASS"
+    else
+        print_test_result "rm -ri 'no' prunes subtree and keeps directory" "FAIL" \
+            "Declined directory (or its subtree) was removed; exit=$skip_exit"
+    fi
+    rm -rf "$skip_root"
+
+    # Behavior #4: cancellation containment. When a CHILD entry's removal is
+    # declined, the parent directory must NOT be deleted (deleteDir is skipped
+    # for any directory with a cancelled descendant). The old recursion got
+    # this 'for free' via DirNotEmpty on unwind; the walker driver must track
+    # a cancelled-descendant flag and replicate it.
+    #
+    # Methodology: contain/ holds two files, drop_me.txt and keep_me.txt.
+    # Answer 'y' to descend into contain/, 'y' to remove drop_me.txt, then
+    # 'n' to decline keep_me.txt. Because a child was kept, contain/ must
+    # survive (non-empty) and still hold keep_me.txt, while drop_me.txt is
+    # gone. The order of the two files is not guaranteed, so we answer the
+    # same pattern that keeps exactly one file regardless of iteration order:
+    # 'y' (descend) then 'y','n' would be order-dependent. Instead we decline
+    # BOTH files but still descend, guaranteeing the parent stays: 'y','n','n'.
+    local contain_root
+    contain_root=$(create_temp_dir)
+    mkdir -p "$contain_root/contain"
+    create_temp_file "child one" "$contain_root/contain/file_a.txt"
+    create_temp_file "child two" "$contain_root/contain/file_b.txt"
+    # Prompts in order: contain dir (descend=y), file_a (n), file_b (n),
+    # then contain dir delete prompt is never reached because it is non-empty.
+    printf "y\nn\nn\n" | "$binary" -ri "$contain_root" >/dev/null 2>&1
+    local contain_exit=$?
+    # Parent kept (had declined children), both files preserved.
+    if [[ -d "$contain_root/contain" \
+        && -f "$contain_root/contain/file_a.txt" \
+        && -f "$contain_root/contain/file_b.txt" ]]; then
+        print_test_result "rm -ri declined children keep parent dir" "PASS"
+    else
+        print_test_result "rm -ri declined children keep parent dir" "FAIL" \
+            "Parent with declined children was deleted or children lost; exit=$contain_exit"
+    fi
+    rm -rf "$contain_root"
+
+    # Companion to #4: a child that IS removed while a sibling is declined
+    # still leaves the parent (because the sibling kept it non-empty). This
+    # proves the removal of the accepted child actually happened (not a no-op)
+    # AND containment held for the declined one.
+    local mixed_root
+    mixed_root=$(create_temp_dir)
+    mkdir -p "$mixed_root/mix"
+    create_temp_file "remove this" "$mixed_root/mix/only.txt"
+    create_temp_file "keep this" "$mixed_root/mix/spare.txt"
+    # Prompts in order: descend mixed_root (y), descend mix (y), then the two
+    # files: accept the first (y) and decline the second (n). Whatever the file
+    # iteration order, exactly one file is removed and one kept, so the parent
+    # must survive non-empty.
+    printf "y\ny\ny\nn\n" | "$binary" -ri "$mixed_root" >/dev/null 2>&1
+    local mixed_exit=$?
+    local remaining_count=0
+    [[ -f "$mixed_root/mix/only.txt" ]] && remaining_count=$((remaining_count + 1))
+    [[ -f "$mixed_root/mix/spare.txt" ]] && remaining_count=$((remaining_count + 1))
+    if [[ -d "$mixed_root/mix" && $remaining_count -eq 1 ]]; then
+        print_test_result "rm -ri mixed accept/decline keeps parent, removes one" "PASS"
+    else
+        print_test_result "rm -ri mixed accept/decline keeps parent, removes one" "FAIL" \
+            "Expected parent kept with exactly 1 file; got $remaining_count remaining, exit=$mixed_exit"
+    fi
+    rm -rf "$mixed_root"
 }

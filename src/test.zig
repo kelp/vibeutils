@@ -63,6 +63,8 @@ const RawStat = struct {
 fn getRawStat(path: []const u8) ?RawStat {
     var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return null;
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(path.len < buf.len);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
@@ -92,6 +94,8 @@ fn getRawStat(path: []const u8) ?RawStat {
 fn isSymlink(path: []const u8) bool {
     var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.Io.Dir.max_path_bytes) return false;
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(path.len < buf.len);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
@@ -121,6 +125,8 @@ const FileAccess = struct {
     fn check(path: []const u8, mode: u32) bool {
         var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
         if (path.len > std.Io.Dir.max_path_bytes) return false;
+        std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+        std.debug.assert(path.len < buf.len);
         @memcpy(buf[0..path.len], path);
         buf[path.len] = 0;
         return c.access(buf[0..path.len :0].ptr, @intCast(mode)) == 0;
@@ -141,7 +147,9 @@ const FileAccess = struct {
 /// Check if string is an unary operator (alphabetized)
 fn isUnknownOperatorLike(str: []const u8) bool {
     if (str.len > 1 and str[0] == '-' and std.ascii.isAlphabetic(str[1])) {
-        if (!isBinaryOperator(str) and !isUnaryOperator(str) and !std.mem.eql(u8, str, "-a") and !std.mem.eql(u8, str, "-o")) {
+        const is_known = isBinaryOperator(str) or isUnaryOperator(str) or
+            std.mem.eql(u8, str, "-a") or std.mem.eql(u8, str, "-o");
+        if (!is_known) {
             return true;
         }
     }
@@ -204,6 +212,7 @@ const ExpressionParser = struct {
     /// Evaluate negation expressions - apply negation to the next logical unit only
     fn evaluateNegation(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
         if (args.len == 0) return error.InvalidExpression;
+        std.debug.assert(args.len > 0);
 
         // For negation, we need to find what it applies to:
         // If it starts with parentheses, find the matching closing paren
@@ -226,6 +235,7 @@ const ExpressionParser = struct {
             if (depth > 0) {
                 return error.InvalidExpression; // Unmatched parentheses
             }
+            std.debug.assert(depth == 0);
 
             // Evaluate the parenthesized expression
             const paren_expr = args[1 .. i - 1];
@@ -276,6 +286,7 @@ const ExpressionParser = struct {
 
         var i: usize = 0;
         while (i < args.len) {
+            std.debug.assert(i <= args.len);
             if (std.mem.eql(u8, args[i], "(")) {
                 // Find matching closing parenthesis
                 const open = i;
@@ -294,6 +305,7 @@ const ExpressionParser = struct {
                 if (depth > 0) {
                     return error.InvalidExpression; // Unmatched parentheses
                 }
+                std.debug.assert(depth == 0);
 
                 // Recursively evaluate the sub-expression
                 const sub_expr = args[open + 1 .. i - 1];
@@ -313,7 +325,10 @@ const ExpressionParser = struct {
 
     /// Evaluate logical expressions with POSIX operator precedence.
     /// -a binds tighter than -o; both evaluate left-to-right.
-    fn evaluateLogicalExpression(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
+    fn evaluateLogicalExpression(
+        self: *ExpressionParser,
+        args: []const []const u8,
+    ) ParseError!bool {
         // Scan left-to-right for -o (lowest precedence).
         // Splitting at the leftmost -o keeps the left operand
         // minimal and recurses into the right remainder, which
@@ -323,6 +338,8 @@ const ExpressionParser = struct {
             while (i < args.len) : (i += 1) {
                 if (std.mem.eql(u8, args[i], "-o")) {
                     if (i == 0 or i == args.len - 1) return error.InvalidExpression;
+                    std.debug.assert(i > 0);
+                    std.debug.assert(i < args.len - 1);
                     const left = try self.evaluateLogicalExpression(args[0..i]);
                     const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
                     return left or right;
@@ -336,6 +353,8 @@ const ExpressionParser = struct {
             while (i < args.len) : (i += 1) {
                 if (std.mem.eql(u8, args[i], "-a")) {
                     if (i == 0 or i == args.len - 1) return error.InvalidExpression;
+                    std.debug.assert(i > 0);
+                    std.debug.assert(i < args.len - 1);
                     const left = try self.evaluateLogicalExpression(args[0..i]);
                     const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
                     return left and right;
@@ -372,6 +391,7 @@ const ExpressionParser = struct {
 
 /// Evaluate unary operator against single argument
 fn evaluateUnary(io: std.Io, op: []const u8, arg: []const u8) ParseError!bool {
+    std.debug.assert(op.len > 0);
     if (std.mem.eql(u8, op, "-z")) return arg.len == 0;
     if (std.mem.eql(u8, op, "-n")) return arg.len > 0;
     if (std.mem.eql(u8, op, "-e")) return FileAccess.exists(io, arg);
@@ -402,6 +422,7 @@ fn evaluateUnary(io: std.Io, op: []const u8, arg: []const u8) ParseError!bool {
 
 /// Evaluate binary operator between two operands
 fn evaluateBinary(io: std.Io, left: []const u8, op: []const u8, right: []const u8) ParseError!bool {
+    std.debug.assert(op.len > 0);
     if (std.mem.eql(u8, op, "=")) return std.mem.eql(u8, left, right);
     if (std.mem.eql(u8, op, "!=")) return !std.mem.eql(u8, left, right);
     if (std.mem.eql(u8, op, "-eq")) return NumericComparison.compare(left, right, .eq);
@@ -507,7 +528,11 @@ fn isOlderThan(io: std.Io, path1: []const u8, path2: []const u8) bool {
 
 /// Check if string is a unary operator (alphabetized)
 fn isUnaryOperator(str: []const u8) bool {
-    const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-G", "-h", "-k", "-L", "-n", "-O", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z" };
+    const unary_ops = [_][]const u8{
+        "-b", "-c", "-d", "-e", "-f", "-g", "-G", "-h", "-k", "-L", "-n",
+        "-O", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z",
+    };
+    comptime std.debug.assert(unary_ops.len == 21);
 
     for (unary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -517,7 +542,11 @@ fn isUnaryOperator(str: []const u8) bool {
 
 /// Check if string is a binary operator (alphabetized)
 fn isBinaryOperator(str: []const u8) bool {
-    const binary_ops = [_][]const u8{ "!=", "<", "=", ">", "-ef", "-eq", "-ge", "-gt", "-le", "-lt", "-ne", "-nt", "-ot" };
+    const binary_ops = [_][]const u8{
+        "!=",  "<",   "=",   ">",   "-ef", "-eq", "-ge",
+        "-gt", "-le", "-lt", "-ne", "-nt", "-ot",
+    };
+    comptime std.debug.assert(binary_ops.len == 13);
 
     for (binary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -526,12 +555,25 @@ fn isBinaryOperator(str: []const u8) bool {
 }
 
 /// Evaluate parsed test arguments and return exit code
-fn evaluateTestArgs(allocator: Allocator, io: std.Io, test_args: []const []const u8, stderr_writer: *std.Io.Writer, prog_name: []const u8) !u8 {
+fn evaluateTestArgs(
+    allocator: Allocator,
+    io: std.Io,
+    test_args: []const []const u8,
+    stderr_writer: *std.Io.Writer,
+    prog_name: []const u8,
+) !u8 {
+    std.debug.assert(prog_name.len > 0);
     var parser = ExpressionParser.init(allocator, io);
     const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid expression", .{});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid expression",
+                .{},
+            );
             return @intFromEnum(ExitCode.@"error");
         },
     };
@@ -539,7 +581,13 @@ fn evaluateTestArgs(allocator: Allocator, io: std.Io, test_args: []const []const
 }
 
 /// Run test command in bracket form (when invoked as '[')
-pub fn runBracketTest(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runBracketTest(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = stdout_writer; // Not used in test command
 
     // POSIX compliance: treat all arguments including --help and --version as expressions
@@ -550,6 +598,8 @@ pub fn runBracketTest(allocator: Allocator, io: std.Io, args: []const []const u8
         common.printErrorWithProgram(allocator, stderr_writer, "[", "missing closing ']'", .{});
         return @intFromEnum(ExitCode.@"error");
     }
+    std.debug.assert(args.len > 0);
+    std.debug.assert(std.mem.eql(u8, args[args.len - 1], "]"));
 
     // Remove closing ']' from arguments
     const test_args = args[0 .. args.len - 1];
@@ -558,7 +608,13 @@ pub fn runBracketTest(allocator: Allocator, io: std.Io, args: []const []const u8
 }
 
 /// Run main test command implementation
-pub fn runTest(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runTest(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = stdout_writer; // Not used in test command
 
     var test_args = args;
@@ -566,23 +622,43 @@ pub fn runTest(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     // Handle bracket form embedded in test command arguments
     if (args.len > 0 and std.mem.eql(u8, args[0], "[")) {
         if (args.len < 2 or !std.mem.eql(u8, args[args.len - 1], "]")) {
-            common.printErrorWithProgram(allocator, stderr_writer, "test", "missing closing ']'", .{});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "test",
+                "missing closing ']'",
+                .{},
+            );
             return @intFromEnum(ExitCode.@"error");
         }
+        std.debug.assert(args.len >= 2);
         // Remove '[' and ']' from arguments
         test_args = args[1 .. args.len - 1];
+        std.debug.assert(test_args.len + 2 == args.len);
     }
 
     return evaluateTestArgs(allocator, io, test_args, stderr_writer, "test");
 }
 
 /// Run function for bracket form binary ('[').
-fn runBracketCmd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) anyerror!u8 {
+fn runBracketCmd(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) anyerror!u8 {
     return runBracketTest(allocator, io, args, stdout_writer, stderr_writer);
 }
 
 /// Run function for test binary.
-fn runTestCmd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) anyerror!u8 {
+fn runTestCmd(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) anyerror!u8 {
     return runTest(allocator, io, args, stdout_writer, stderr_writer);
 }
 
@@ -604,104 +680,254 @@ pub fn main(init: std.process.Init) noreturn {
 
 test "empty expression returns false" {
     const io = testing.io;
-    const result = try runTest(testing.allocator, io, &[_][]const u8{}, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "single non-empty string returns true" {
     const io = testing.io;
-    const result = try runTest(testing.allocator, io, &[_][]const u8{"hello"}, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{"hello"},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "single empty string returns false" {
     const io = testing.io;
-    const result = try runTest(testing.allocator, io, &[_][]const u8{""}, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{""},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "string length tests -z and -n" {
     const io = testing.io;
     // -z (zero length)
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-z", "" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-z", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-z", "hello" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-z", "hello" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // -n (non-zero length)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-n", "hello" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-n", "hello" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-n", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-n", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "string equality tests" {
     const io = testing.io;
     // String equality
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "=", "hello" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "=", "hello" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "=", "world" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "=", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // String inequality
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "!=", "world" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "!=", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "!=", "hello" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "!=", "hello" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "numeric comparison tests" {
     const io = testing.io;
     // Equal
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-eq", "5" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-eq", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-eq", "3" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-eq", "3" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Not equal
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-ne", "3" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-ne", "3" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-ne", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-ne", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Less than
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "3", "-lt", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "3", "-lt", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-lt", "3" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-lt", "3" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Less than or equal
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "3", "-le", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "3", "-le", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-le", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-le", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-le", "3" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-le", "3" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Greater than
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-gt", "3" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-gt", "3" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "3", "-gt", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "3", "-gt", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Greater than or equal
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-ge", "3" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-ge", "3" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "5", "-ge", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "5", "-ge", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "3", "-ge", "5" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "3", "-ge", "5" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -719,15 +945,33 @@ test "file existence tests" {
     defer testing.allocator.free(temp_path);
 
     // Test file existence
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-e", temp_path }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-e", temp_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Test regular file
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-f", temp_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-f", temp_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Test non-existent file
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-e", "/nonexistent/file" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-e", "/nonexistent/file" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -742,7 +986,13 @@ test "directory tests" {
     defer testing.allocator.free(temp_dir);
 
     // Test directory existence
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-d", temp_dir }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-d", temp_dir },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Test that file is not a directory
@@ -752,7 +1002,13 @@ test "directory tests" {
     const temp_file = try tmp.dir.realPathFileAlloc(io, "test_file", testing.allocator);
     defer testing.allocator.free(temp_file);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-d", temp_file }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-d", temp_file },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -777,11 +1033,23 @@ test "file size tests" {
     defer testing.allocator.free(nonempty_path);
 
     // Test empty file
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-s", empty_path }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-s", empty_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Test non-empty file
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-s", nonempty_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-s", nonempty_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
@@ -790,27 +1058,58 @@ test "bracket form requires closing bracket" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runTest(testing.allocator, io, &[_][]const u8{ "[", "hello" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "[", "hello" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing closing ']'") != null);
+    const found = std.mem.find(u8, stderr_aw.writer.buffered(), "missing closing ']'");
+    try testing.expect(found != null);
 }
 
 test "bracket form works correctly" {
     const io = testing.io;
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "[", "hello", "]" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "[", "hello", "]" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "[", "", "]" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "[", "", "]" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "[", "5", "-eq", "5", "]" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "[", "5", "-eq", "5", "]" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "terminal test with invalid fd" {
     const io = testing.io;
     // Test with invalid file descriptor
-    const result = try runTest(testing.allocator, io, &[_][]const u8{ "-t", "999" }, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-t", "999" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -818,9 +1117,17 @@ test "terminal test with valid fd" {
     const io = testing.io;
     // Test with stdout (fd 1) - may or may not be a terminal depending on test environment
     // We just verify it doesn't crash
-    const result = try runTest(testing.allocator, io, &[_][]const u8{ "-t", "1" }, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-t", "1" },
+        common.null_writer,
+        common.null_writer,
+    );
     // Result can be either true or false depending on environment, just check it's not error
-    try testing.expect(result == @intFromEnum(ExitCode.true) or result == @intFromEnum(ExitCode.false));
+    const is_valid = result == @intFromEnum(ExitCode.true) or
+        result == @intFromEnum(ExitCode.false);
+    try testing.expect(is_valid);
 }
 
 test "numeric comparison with invalid numbers" {
@@ -829,7 +1136,13 @@ test "numeric comparison with invalid numbers" {
     defer stderr_aw.deinit();
 
     // Invalid numbers should return error for numeric operations (not false)
-    const result = try runTest(testing.allocator, io, &[_][]const u8{ "abc", "-eq", "5" }, common.null_writer, &stderr_aw.writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "abc", "-eq", "5" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 }
 
@@ -839,78 +1152,174 @@ test "invalid expressions return error" {
     defer stderr_aw.deinit();
 
     // Test with incomplete unary expression (missing argument)
-    var result = try runTest(testing.allocator, io, &[_][]const u8{"-e"}, common.null_writer, &stderr_aw.writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{"-e"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 
     // Test with incomplete binary expression (missing second operand)
     stderr_aw.clearRetainingCapacity();
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "=" }, common.null_writer, &stderr_aw.writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "=" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 }
 
 test "negation operator" {
     const io = testing.io;
     // Simple negation
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "!", "hello" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "hello" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "!", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Negation with file tests
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "!", "-e", "/nonexistent" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "-e", "/nonexistent" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "logical AND operator -a" {
     const io = testing.io;
     // Both true
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "-a", "world" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "-a", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // First false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "", "-a", "world" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "-a", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Second false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "-a", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "-a", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Both false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "", "-a", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "-a", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "logical OR operator -o" {
     const io = testing.io;
     // Both true
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "-o", "world" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "-o", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // First true, second false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "-o", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "-o", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // First false, second true
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "", "-o", "world" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "-o", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Both false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "", "-o", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "-o", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "parentheses grouping" {
     const io = testing.io;
     // Simple parentheses
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "(", "hello", ")" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "(", "hello", ")" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "(", "", ")" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "(", "", ")" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Parentheses with operators
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "(", "5", "-eq", "5", ")" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "(", "5", "-eq", "5", ")" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
@@ -918,22 +1327,46 @@ test "operator precedence -o vs -a" {
     const io = testing.io;
     // Test that -a has higher precedence than -o
     // This should be: (false -a true) -o true = false -o true = true
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "", "-a", "hello", "-o", "world" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "-a", "hello", "-o", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // This should be: true -o (false -a false) = true -o false = true
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "-o", "", "-a", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "-o", "", "-a", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "complex nested expressions" {
     const io = testing.io;
     // Test: ! ( "" -o "hello" ) should be false (because "" -o "hello" is true)
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "!", "(", "", "-o", "hello", ")" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "(", "", "-o", "hello", ")" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Test simple negation of string inequality (should be false)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "!", "hello", "!=", "world" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "hello", "!=", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -943,12 +1376,24 @@ test "error handling for malformed expressions" {
     defer stderr_aw.deinit();
 
     // Test with mixed operators that don't make sense
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-e", "-f", "hello" }, common.null_writer, &stderr_aw.writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-e", "-f", "hello" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 
     // Test with unbalanced parentheses
     stderr_aw.clearRetainingCapacity();
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "(", "hello" }, common.null_writer, &stderr_aw.writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "(", "hello" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 }
 
@@ -1016,16 +1461,34 @@ test "invalid operator should return exit code 2" {
     defer stderr_aw.deinit();
 
     // Test with invalid unary operator - should return error exit code 2, not false (1)
-    const result = try runTest(testing.allocator, io, &[_][]const u8{"-invalid"}, common.null_writer, &stderr_aw.writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{"-invalid"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 
     // Test with invalid binary operator - should return error exit code 2
     stderr_aw.clearRetainingCapacity();
-    const result2 = try runTest(testing.allocator, io, &[_][]const u8{ "hello", "-badop", "world" }, common.null_writer, &stderr_aw.writer);
+    const result2 = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "hello", "-badop", "world" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result2);
 
     // Debug: Test that valid operators still work
-    const result3 = try runTest(testing.allocator, io, &[_][]const u8{ "-e", "/nonexistent" }, common.null_writer, common.null_writer);
+    const result3 = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-e", "/nonexistent" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result3);
 }
 
@@ -1033,22 +1496,46 @@ test "parentheses expression with logical operators should return correct exit c
     const io = testing.io;
     // Test: test ( "" -o "hello" ) -a "" should return exit code 1 (false), not 2 (error)
     // This tests proper parsing of parentheses expressions with logical operators
-    const result = try runTest(testing.allocator, io, &[_][]const u8{ "(", "", "-o", "hello", ")", "-a", "" }, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "(", "", "-o", "hello", ")", "-a", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Test: test ( "hello" -a "world" ) -o "" should return exit code 0 (true)
-    const result2 = try runTest(testing.allocator, io, &[_][]const u8{ "(", "hello", "-a", "world", ")", "-o", "" }, common.null_writer, common.null_writer);
+    const result2 = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "(", "hello", "-a", "world", ")", "-o", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result2);
 }
 
 test "complex nested expressions should parse correctly" {
     const io = testing.io;
     // Test: test ! ( ( "" ) ) -a "" should parse correctly and return false
-    const result = try runTest(testing.allocator, io, &[_][]const u8{ "!", "(", "(", "", ")", ")", "-a", "" }, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "(", "(", "", ")", ")", "-a", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Test: test ! ( "hello" -o "" ) -a "world" should parse correctly
-    const result2 = try runTest(testing.allocator, io, &[_][]const u8{ "!", "(", "hello", "-o", "", ")", "-a", "world" }, common.null_writer, common.null_writer);
+    const result2 = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "!", "(", "hello", "-o", "", ")", "-a", "world" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result2);
 }
 
@@ -1058,10 +1545,22 @@ test "bracket form should handle errors identically to test command" {
     defer stderr_aw.deinit();
 
     // Test invalid operator in bracket form - should return same error as test command
-    const bracket_result = try runBracketTest(testing.allocator, io, &[_][]const u8{ "-invalid", "]" }, common.null_writer, &stderr_aw.writer);
+    const bracket_result = try runBracketTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-invalid", "]" },
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     stderr_aw.clearRetainingCapacity();
-    const test_result = try runTest(testing.allocator, io, &[_][]const u8{"-invalid"}, common.null_writer, &stderr_aw.writer);
+    const test_result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{"-invalid"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // Both should return error exit code 2
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), bracket_result);
@@ -1072,29 +1571,59 @@ test "bracket form should handle errors identically to test command" {
 test "POSIX: string 'false' is non-empty, should be true" {
     const io = testing.io;
     // POSIX: test "false" should return true because "false" is a non-empty string
-    const result = try runTest(testing.allocator, io, &[_][]const u8{"false"}, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{"false"},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "POSIX: string 'true' is non-empty, should be true" {
     const io = testing.io;
     // POSIX: test "true" should return true because "true" is a non-empty string
-    const result = try runTest(testing.allocator, io, &[_][]const u8{"true"}, common.null_writer, common.null_writer);
+    const result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{"true"},
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "POSIX: -o is left-associative" {
     const io = testing.io;
     // "a" -o "b" -o "c" should not error (exercises the split logic)
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "a", "-o", "b", "-o", "c" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "a", "-o", "b", "-o", "c" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // "a" -a "b" -a "c" should be true (all non-empty)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "a", "-a", "b", "-a", "c" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "a", "-a", "b", "-a", "c" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // "" -a "b" -a "c" should be false (left-assoc: ("" -a "b") -a "c" = false -a "c" = false)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "", "-a", "b", "-a", "c" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "-a", "b", "-a", "c" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -1119,23 +1648,51 @@ test "symlink detection with -L and -h operators" {
     const tmpdir_path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmpdir_path);
 
-    const link_path_abs = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_file", .{tmpdir_path});
+    const link_path_abs = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/link_to_file",
+        .{tmpdir_path},
+    );
     defer testing.allocator.free(link_path_abs);
 
     // Test -L operator on symlink (should return true)
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-L", link_path_abs }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-L", link_path_abs },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Test -h operator on symlink (should return true)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-h", link_path_abs }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-h", link_path_abs },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Test -L operator on regular file (should return false)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-L", target_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-L", target_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Test -h operator on regular file (should return false)
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-h", target_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-h", target_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -1143,10 +1700,22 @@ test "setuid and sticky bit operators -u and -k" {
     const io = testing.io;
     // These operators require special file setup, so just test they don't crash
     // on non-existent files (should return false)
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-u", "/nonexistent" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-u", "/nonexistent" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-k", "/nonexistent" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-k", "/nonexistent" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -1174,61 +1743,205 @@ test "file comparison operators -nt, -ot, -ef" {
     defer testing.allocator.free(newer_path);
 
     // -nt: newer file is newer than older file
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ newer_path, "-nt", older_path }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ newer_path, "-nt", older_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // -ot: older file is older than newer file
-    result = try runTest(testing.allocator, io, &[_][]const u8{ older_path, "-ot", newer_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ older_path, "-ot", newer_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // -ef: same file should be equal to itself
-    result = try runTest(testing.allocator, io, &[_][]const u8{ older_path, "-ef", older_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ older_path, "-ef", older_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // -ef: different files should not be equal
-    result = try runTest(testing.allocator, io, &[_][]const u8{ older_path, "-ef", newer_path }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ older_path, "-ef", newer_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Non-existent files should return false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "/nonexistent1", "-nt", "/nonexistent2" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "/nonexistent1", "-nt", "/nonexistent2" },
+        common.null_writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
+// Regression: the comparison in isNewerThan/isOlderThan reads
+// `mtime.nanoseconds`, which on `std.Io.File.Stat` is the full
+// nanoseconds-since-epoch (`i96`), not a sub-second component of a
+// `tv_sec`/`tv_nsec` pair. Verify the comparison stays correct when
+// the two files straddle a wall-clock second boundary.
+test "file comparison -nt / -ot across a one-second boundary" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f_old = try tmp.dir.createFile(io, "old", .{});
+    f_old.close(io);
+
+    // Sleep long enough to push the second file into the next whole
+    // second (1.1s — comfortable margin for low-resolution clocks).
+    io.sleep(std.Io.Duration.fromNanoseconds(1_100 * std.time.ns_per_ms), .awake) catch {};
+
+    const f_new = try tmp.dir.createFile(io, "new", .{});
+    f_new.close(io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(dir_path);
+    const old_path = try std.fmt.allocPrint(testing.allocator, "{s}/old", .{dir_path});
+    defer testing.allocator.free(old_path);
+    const new_path = try std.fmt.allocPrint(testing.allocator, "{s}/new", .{dir_path});
+    defer testing.allocator.free(new_path);
+
+    // -nt: the second-created file is newer than the first.
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ new_path, "-nt", old_path },
+        common.null_writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // -ot: the first-created file is older than the second.
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ old_path, "-ot", new_path },
+        common.null_writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // Reverse direction must return false in both cases.
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ old_path, "-nt", new_path },
+        common.null_writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ new_path, "-ot", old_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "string ordering operator < (less than)" {
     const io = testing.io;
     // "abc" < "def" should be true
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "abc", "<", "def" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "abc", "<", "def" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // "def" < "abc" should be false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "def", "<", "abc" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "def", "<", "abc" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Same strings should be false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "abc", "<", "abc" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "abc", "<", "abc" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Empty string sorts before non-empty
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "", "<", "abc" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "", "<", "abc" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
 test "string ordering operator > (greater than)" {
     const io = testing.io;
     // "def" > "abc" should be true
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "def", ">", "abc" }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "def", ">", "abc" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // "abc" > "def" should be false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "abc", ">", "def" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "abc", ">", "def" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Same strings should be false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "abc", ">", "abc" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "abc", ">", "abc" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 
     // Non-empty string sorts after empty
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "abc", ">", "" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "abc", ">", "" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 }
 
@@ -1250,11 +1963,23 @@ test "-G operator: file group matches effective group ID" {
     defer testing.allocator.free(temp_path);
 
     // File created by current process should match effective group ID
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-G", temp_path }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-G", temp_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Non-existent file should return false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-G", "/nonexistent/file" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-G", "/nonexistent/file" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
@@ -1271,11 +1996,23 @@ test "-O operator: file user matches effective user ID" {
     defer testing.allocator.free(temp_path);
 
     // File created by current process should match effective user ID
-    var result = try runTest(testing.allocator, io, &[_][]const u8{ "-O", temp_path }, common.null_writer, common.null_writer);
+    var result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-O", temp_path },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Non-existent file should return false
-    result = try runTest(testing.allocator, io, &[_][]const u8{ "-O", "/nonexistent/file" }, common.null_writer, common.null_writer);
+    result = try runTest(
+        testing.allocator,
+        io,
+        &[_][]const u8{ "-O", "/nonexistent/file" },
+        common.null_writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 

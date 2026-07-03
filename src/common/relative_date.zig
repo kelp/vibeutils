@@ -36,16 +36,71 @@ const Strings = struct {
     const one_month_ago = "1 month ago";
     const one_year_ago = "1 year ago";
 
-    const minutes_ago_fmt = "{} minutes ago";
-    const hours_ago_fmt = "{} hours ago";
-    const days_ago_fmt = "{} days ago";
-    const weeks_ago_fmt = "{} weeks ago";
-    const months_ago_fmt = "{} months ago";
-    const years_ago_fmt = "{} years ago";
+    // Plural output is "{count} {unit} ago"; the parent ladder previously held
+    // one full format string per unit (e.g. "{} minutes ago"). Storing just the
+    // unit word lets formatRelativeDate_formatCount keep a single comptime
+    // format string while producing byte-identical output.
+    const plural_unit_fmt = "{} {s} ago";
+    const minutes_unit = "minutes";
+    const hours_unit = "hours";
+    const days_unit = "days";
+    const weeks_unit = "weeks";
+    const months_unit = "months";
+    const years_unit = "years";
 
-    const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const month_names = [_][]const u8{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
     const same_year_fmt = "{s} {d} {d:0>2}:{d:0>2}";
     const different_year_fmt = "{s} {d} {d}";
+};
+
+/// One magnitude bucket of relative-date formatting: the divisor that converts
+/// diff_seconds to a whole-unit count, the exact string for a count of 1, and
+/// the plural unit word. Bundling these lets each ladder branch in
+/// formatRelativeDate pass a single value, keeping the call within the column
+/// limit; the values themselves are copied verbatim from the original branches.
+const Magnitude = struct {
+    divisor: i128,
+    singular: []const u8,
+    plural_unit: []const u8,
+};
+
+/// Per-unit magnitude buckets, named to match the threshold ladder branches in
+/// formatRelativeDate. Each is the exact (divisor, singular, plural_unit) triple
+/// that branch previously inlined.
+const Magnitudes = struct {
+    const minute = Magnitude{
+        .divisor = TimeConstants.seconds_per_minute,
+        .singular = Strings.one_minute_ago,
+        .plural_unit = Strings.minutes_unit,
+    };
+    const hour = Magnitude{
+        .divisor = TimeConstants.seconds_per_hour,
+        .singular = Strings.one_hour_ago,
+        .plural_unit = Strings.hours_unit,
+    };
+    const day = Magnitude{
+        .divisor = TimeConstants.seconds_per_day,
+        .singular = Strings.one_day_ago,
+        .plural_unit = Strings.days_unit,
+    };
+    const week = Magnitude{
+        .divisor = TimeConstants.seconds_per_week,
+        .singular = Strings.one_week_ago,
+        .plural_unit = Strings.weeks_unit,
+    };
+    const month = Magnitude{
+        .divisor = TimeConstants.seconds_per_month,
+        .singular = Strings.one_month_ago,
+        .plural_unit = Strings.months_unit,
+    };
+    const year = Magnitude{
+        .divisor = TimeConstants.seconds_per_year,
+        .singular = Strings.one_year_ago,
+        .plural_unit = Strings.years_unit,
+    };
 };
 
 /// Configuration for relative date formatting
@@ -77,64 +132,67 @@ pub fn formatRelativeDate(
 
     // Convert to seconds for easier calculations
     const diff_seconds = @divTrunc(diff_ns, std.time.ns_per_s);
+    // The diff_ns < 0 guard above establishes diff_ns >= 0; dividing a
+    // non-negative dividend by a positive divisor stays non-negative.
+    std.debug.assert(diff_seconds >= 0);
 
     // Check if it's too old for relative formatting
     const max_age_seconds = config.max_relative_age_days * TimeConstants.seconds_per_day;
+    // u32 days (>= 0) times the positive seconds_per_day constant is non-negative.
+    std.debug.assert(max_age_seconds >= 0);
     if (diff_seconds > max_age_seconds) {
         return formatAbsoluteDate(timestamp_ns, allocator);
     }
 
-    // Format based on time difference
+    // Format based on time difference. The threshold ladder stays here (push
+    // ifs up); each magnitude branch defers its identical count-formatting tail
+    // (assert quotient >= 1, then singular vs plural) to the helper below.
     if (diff_seconds < TimeConstants.just_now_threshold) {
         return try allocator.dupe(u8, Strings.just_now);
     } else if (diff_seconds < TimeConstants.seconds_per_hour) {
-        const minutes = @divTrunc(diff_seconds, TimeConstants.seconds_per_minute);
-        if (minutes == 1) {
-            return try allocator.dupe(u8, Strings.one_minute_ago);
-        } else {
-            return try std.fmt.allocPrint(allocator, Strings.minutes_ago_fmt, .{minutes});
-        }
+        return try formatRelativeDate_formatCount(allocator, diff_seconds, &Magnitudes.minute);
     } else if (diff_seconds < TimeConstants.seconds_per_day) {
-        const hours = @divTrunc(diff_seconds, TimeConstants.seconds_per_hour);
-        if (hours == 1) {
-            return try allocator.dupe(u8, Strings.one_hour_ago);
-        } else {
-            return try std.fmt.allocPrint(allocator, Strings.hours_ago_fmt, .{hours});
-        }
+        return try formatRelativeDate_formatCount(allocator, diff_seconds, &Magnitudes.hour);
     } else if (diff_seconds < TimeConstants.seconds_per_two_days and config.use_yesterday) {
         return try allocator.dupe(u8, Strings.yesterday);
     } else if (diff_seconds < TimeConstants.seconds_per_week) {
-        const days = @divTrunc(diff_seconds, TimeConstants.seconds_per_day);
-        if (days == 1) {
-            return try allocator.dupe(u8, Strings.one_day_ago);
-        } else {
-            return try std.fmt.allocPrint(allocator, Strings.days_ago_fmt, .{days});
-        }
+        return try formatRelativeDate_formatCount(allocator, diff_seconds, &Magnitudes.day);
     } else if (diff_seconds < TimeConstants.seconds_per_two_weeks and config.use_last_period) {
         return try allocator.dupe(u8, Strings.last_week);
     } else if (diff_seconds < TimeConstants.seconds_per_month) {
-        const weeks = @divTrunc(diff_seconds, TimeConstants.seconds_per_week);
-        if (weeks == 1) {
-            return try allocator.dupe(u8, Strings.one_week_ago);
-        } else {
-            return try std.fmt.allocPrint(allocator, Strings.weeks_ago_fmt, .{weeks});
-        }
+        return try formatRelativeDate_formatCount(allocator, diff_seconds, &Magnitudes.week);
     } else if (diff_seconds < TimeConstants.seconds_per_two_months and config.use_last_period) {
         return try allocator.dupe(u8, Strings.last_month);
     } else if (diff_seconds < TimeConstants.seconds_per_year) {
-        const months = @divTrunc(diff_seconds, TimeConstants.seconds_per_month);
-        if (months == 1) {
-            return try allocator.dupe(u8, Strings.one_month_ago);
-        } else {
-            return try std.fmt.allocPrint(allocator, Strings.months_ago_fmt, .{months});
-        }
+        return try formatRelativeDate_formatCount(allocator, diff_seconds, &Magnitudes.month);
     } else {
-        const years = @divTrunc(diff_seconds, TimeConstants.seconds_per_year);
-        if (years == 1) {
-            return try allocator.dupe(u8, Strings.one_year_ago);
-        } else {
-            return try std.fmt.allocPrint(allocator, Strings.years_ago_fmt, .{years});
-        }
+        return try formatRelativeDate_formatCount(allocator, diff_seconds, &Magnitudes.year);
+    }
+}
+
+/// Format the count tail shared by every magnitude branch of
+/// formatRelativeDate: divide diff_seconds by the magnitude's divisor, then
+/// return the singular string for a count of 1 or the formatted plural
+/// otherwise. Logic is copied verbatim from the per-branch tails; only
+/// relocated, so behavior is identical. Magnitude is 48 bytes (> 16), so it is
+/// passed by const pointer per Tiger Style.
+fn formatRelativeDate_formatCount(
+    allocator: std.mem.Allocator,
+    diff_seconds: i128,
+    magnitude: *const Magnitude,
+) ![]u8 {
+    // Negative space: every caller is gated by a threshold ladder that only
+    // reaches this branch once diff_seconds is at least one whole unit, and the
+    // divisor is always a positive TimeConstants value, so count is never < 1.
+    std.debug.assert(magnitude.divisor > 0);
+    std.debug.assert(diff_seconds >= magnitude.divisor);
+    const count = @divTrunc(diff_seconds, magnitude.divisor);
+    std.debug.assert(count >= 1);
+    if (count == 1) {
+        return try allocator.dupe(u8, magnitude.singular);
+    } else {
+        const args = .{ count, magnitude.plural_unit };
+        return try std.fmt.allocPrint(allocator, Strings.plural_unit_fmt, args);
     }
 }
 
@@ -157,16 +215,28 @@ pub fn formatAbsoluteDate(timestamp_ns: i128, allocator: std.mem.Allocator) ![]u
         break :blk now_year_day.year;
     };
 
+    // Month enum is 1-based (jan=1..dec=12), so numeric() - 1 is a valid index
+    // into the 12-entry month_names table; guard both bounds before indexing.
+    std.debug.assert(month_day.month.numeric() >= 1);
+    std.debug.assert(month_day.month.numeric() <= Strings.month_names.len);
     const month_name = Strings.month_names[month_day.month.numeric() - 1];
 
     if (year_day.year == current_year) {
         // Same year: show "Jan 15 15:30"
         const hour = day_seconds.getHoursIntoDay();
         const minute = day_seconds.getMinutesIntoHour();
-        return try std.fmt.allocPrint(allocator, Strings.same_year_fmt, .{ month_name, month_day.day_index + 1, hour, minute });
+        return try std.fmt.allocPrint(
+            allocator,
+            Strings.same_year_fmt,
+            .{ month_name, month_day.day_index + 1, hour, minute },
+        );
     } else {
         // Different year: show "Jan 15 2024"
-        return try std.fmt.allocPrint(allocator, Strings.different_year_fmt, .{ month_name, month_day.day_index + 1, year_day.year });
+        return try std.fmt.allocPrint(
+            allocator,
+            Strings.different_year_fmt,
+            .{ month_name, month_day.day_index + 1, year_day.year },
+        );
     }
 }
 
@@ -241,7 +311,8 @@ test "relative dates - yesterday" {
     const config = RelativeDateConfig{ .current_time_ns = current };
 
     // 1 day ago (within yesterday range)
-    const yesterday = current - (30 * TimeConstants.seconds_per_hour * std.time.ns_per_s); // 30 hours ago
+    // 30 hours ago
+    const yesterday = current - (30 * TimeConstants.seconds_per_hour * std.time.ns_per_s);
     const result = try formatRelativeDate(yesterday, config, allocator);
     defer allocator.free(result);
     try testing.expectEqualStrings("yesterday", result);
@@ -317,7 +388,8 @@ test "relative dates - future dates show absolute" {
     const result = try formatRelativeDate(future, config, allocator);
     defer allocator.free(result);
 
-    // Should be an absolute date format (we don't test exact string since it depends on current date)
+    // Should be an absolute date format (we don't test exact string since it
+    // depends on current date)
     try testing.expect(result.len > 0);
     try testing.expect(!std.mem.startsWith(u8, result, "ago"));
 }

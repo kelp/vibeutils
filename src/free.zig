@@ -125,6 +125,8 @@ fn getMemInfoMacOS() !MemInfo {
     var mib = [_]c_int{ c.CTL_HW, c.HW_MEMSIZE };
     const sysctl_ret = c.sysctl(&mib, 2, &mem_size, &size, null, 0);
     if (sysctl_ret != 0) return error.SysctlFailed;
+    // On success, the kernel reports it wrote exactly a u64 for HW_MEMSIZE.
+    std.debug.assert(size == @sizeOf(u64));
 
     // VM statistics via host_statistics64. The count is the buffer size in
     // units of integer_t (natural_t), matching the HOST_VM_INFO64_COUNT macro.
@@ -140,6 +142,9 @@ fn getMemInfoMacOS() !MemInfo {
     if (host_ret != mach.KERN_SUCCESS) return error.HostStatisticsFailed;
 
     const page_size: u64 = @intCast(c.getpagesize());
+    // getpagesize() is a strictly positive power of two; the byte-size
+    // products below are meaningless if it were zero.
+    std.debug.assert(page_size != 0);
     const free_pages: u64 = @intCast(vm_stat.free_count);
     const active_pages: u64 = @intCast(vm_stat.active_count);
     const inactive_pages: u64 = @intCast(vm_stat.inactive_count);
@@ -189,6 +194,8 @@ fn getMemInfoLinux(io: std.Io) !MemInfo {
     var reader_buf: [4096]u8 = undefined;
     var file_reader = file.reader(io, &reader_buf);
     const bytes_read = file_reader.interface.readSliceShort(&buf) catch return error.ReadFailed;
+    // readSliceShort cannot report more bytes than the destination buffer.
+    std.debug.assert(bytes_read <= buf.len);
     const content = buf[0..bytes_read];
 
     var total: u64 = 0;
@@ -247,6 +254,8 @@ fn parseMemInfoLine(line: []const u8, prefix: []const u8) ?u64 {
     // Parse the number (value is in kB)
     var end: usize = 0;
     while (end < rest.len and std.ascii.isDigit(rest[end])) : (end += 1) {}
+    // The loop advances end only while end < rest.len, so it never exceeds it.
+    std.debug.assert(end <= rest.len);
     if (end == 0) return null;
     return std.fmt.parseInt(u64, rest[0..end], 10) catch null;
 }
@@ -302,7 +311,11 @@ const FreeArgs = struct {
         .si = .{ .short = 0, .desc = "Use powers of 1000 instead of 1024" },
         .total = .{ .short = 't', .desc = "Display a line showing column totals" },
         .wide = .{ .short = 'w', .desc = "Wide output" },
-        .seconds = .{ .short = 's', .desc = "Continuous display every N seconds", .value_name = "N" },
+        .seconds = .{
+            .short = 's',
+            .desc = "Continuous display every N seconds",
+            .value_name = "N",
+        },
         .count = .{ .short = 'c', .desc = "Display N times (used with -s)", .value_name = "N" },
         .help = .{ .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -322,6 +335,10 @@ fn resolveUnit(args: FreeArgs) Unit {
 /// Scale a byte value to the selected unit
 pub fn scaleValue(bytes: u64, unit: Unit, use_si: bool) u64 {
     const divisor: u64 = if (use_si) 1000 else 1024;
+    // divisor is exactly 1000 (SI) or 1024; the @divTrunc calls below need
+    // it nonzero, and both selections sit at or above the SI base.
+    std.debug.assert(divisor != 0);
+    std.debug.assert(divisor >= 1000);
     return switch (unit) {
         .bytes => bytes,
         .kibi => @divTrunc(bytes, divisor),
@@ -333,6 +350,8 @@ pub fn scaleValue(bytes: u64, unit: Unit, use_si: bool) u64 {
 
 /// Format a human-readable value with appropriate unit suffix
 pub fn formatHumanReadable(buf: []u8, bytes: u64, use_si: bool) []const u8 {
+    // Callers pass a fixed buffer; it must hold at least the shortest output.
+    std.debug.assert(buf.len != 0);
     const format = common.format;
     return format.formatHumanReadable(buf, bytes, .{ .si = use_si, .suffix = .iec });
 }
@@ -365,7 +384,17 @@ fn printValue(writer: *std.Io.Writer, bytes: u64, unit: Unit, use_si: bool) !voi
 }
 
 /// Print a memory row (Mem: or Swap: or Total:)
-fn printMemRow(writer: *std.Io.Writer, label: []const u8, info: MemInfo, unit: Unit, use_si: bool, wide: bool, is_swap: bool) !void {
+fn printMemRow(
+    writer: *std.Io.Writer,
+    label: []const u8,
+    info: MemInfo,
+    unit: Unit,
+    use_si: bool,
+    wide: bool,
+    is_swap: bool,
+) !void {
+    // Every row carries a non-empty label for the left-padded label column.
+    std.debug.assert(label.len != 0);
     try writer.print("{s:<6}", .{label});
 
     if (is_swap) {
@@ -396,7 +425,13 @@ fn printMemRow(writer: *std.Io.Writer, label: []const u8, info: MemInfo, unit: U
 }
 
 /// Print the total row
-fn printTotalRow(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool, wide: bool) !void {
+fn printTotalRow(
+    writer: *std.Io.Writer,
+    info: MemInfo,
+    unit: Unit,
+    use_si: bool,
+    wide: bool,
+) !void {
     const total_total = info.total + info.swap_total;
     const total_used = info.used + info.swap_used;
     const total_free = info.free + info.swap_free;
@@ -424,7 +459,14 @@ fn printTotalRow(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool
 }
 
 /// Print a complete memory report for the given MemInfo
-pub fn printReport(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool, show_total: bool, wide: bool) !void {
+pub fn printReport(
+    writer: *std.Io.Writer,
+    info: MemInfo,
+    unit: Unit,
+    use_si: bool,
+    show_total: bool,
+    wide: bool,
+) !void {
     try printHeader(writer, wide);
     try printMemRow(writer, "Mem:", info, unit, use_si, wide, false);
     try printMemRow(writer, "Swap:", info, unit, use_si, wide, true);
@@ -437,67 +479,109 @@ pub fn printReport(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bo
 // Main entry point
 // ============================================================================
 
-pub fn runFree(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+/// Result of argument parsing: on success `parsed` holds the FreeArgs and
+/// `code` is unused; on failure `parsed` is null and `code` is the exit code.
+const ParseResult = struct {
+    parsed: ?FreeArgs,
+    code: u8,
+};
+
+/// Parse free's arguments, mapping parse errors to exit codes verbatim.
+/// Ownership of `parsed.positionals` is returned to the caller; the helper
+/// frees nothing, matching the original inline error arms.
+fn runFree_parseArgs(
+    allocator: Allocator,
+    args: []const []const u8,
+    stderr_writer: *std.Io.Writer,
+) !ParseResult {
+    // Sanity on the exit-code constants this helper maps onto.
+    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != @intFromEnum(common.ExitCode.success));
+    std.debug.assert(prog_name.len != 0);
+
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "unrecognized option",
+                    .{},
+                );
+                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "option requires an argument",
+                    .{},
+                );
+                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "invalid option value",
+                    .{},
+                );
+                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "argument parsing error", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "argument parsing error",
+                    .{},
+                );
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
         }
     };
-    defer allocator.free(parsed.positionals);
+    return ParseResult{ .parsed = parsed, .code = @intFromEnum(common.ExitCode.success) };
+}
 
-    if (parsed.help) {
-        printHelp(allocator, stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
+/// Drive the continuous-display loop. The parent only calls this when an
+/// interval was requested, so the interval is guaranteed positive.
+fn runFree_displayContinuous(
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+    unit: Unit,
+    use_si: bool,
+    show_total: bool,
+    wide: bool,
+    interval: u32,
+    repeat_count: u32,
+) u8 {
+    std.debug.assert(interval != 0);
 
-    if (parsed.version) {
-        printVersion(stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    if (parsed.positionals.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{parsed.positionals[0]});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    const unit = resolveUnit(parsed);
-    const use_si = parsed.si;
-    const show_total = parsed.total;
-    const wide = parsed.wide;
-
-    const repeat_count = parsed.count orelse 0;
-    const interval = parsed.seconds orelse 0;
-
-    // Per GNU free: -c requires -s
-    if (parsed.count != null and parsed.seconds == null) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-c requires -s option", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // No continuous mode requested, display once
-    if (interval == 0) {
-        return displayOnce(io, stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
-    }
-
-    // Continuous mode
     var iterations: u32 = 0;
     while (repeat_count == 0 or iterations < repeat_count) {
-        const result = displayOnce(io, stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
+        // Bounded-loop invariant: in counted mode the body only runs while
+        // iterations is below the cap; unbounded mode (repeat_count == 0)
+        // admits any iteration count, so the bound is asserted only then.
+        if (repeat_count != 0) {
+            std.debug.assert(iterations <= repeat_count);
+        }
+        const result = displayOnce(
+            io,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+            unit,
+            use_si,
+            show_total,
+            wide,
+        );
         if (result != 0) return result;
         stdout_writer.flush() catch {};
 
@@ -513,9 +597,127 @@ pub fn runFree(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     return @intFromEnum(common.ExitCode.success);
 }
 
-fn displayOnce(io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
+/// Handle the early-exit flags (help, version) and the extra-operand error.
+/// Returns the exit code to propagate, or null when normal display proceeds.
+fn runFree_handleEarlyExit(
+    allocator: Allocator,
+    parsed: FreeArgs,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(@intFromEnum(common.ExitCode.success) == 0);
+
+    if (parsed.help) {
+        printHelp(allocator, stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    if (parsed.version) {
+        printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    if (parsed.positionals.len > 0) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "extra operand '{s}'",
+            .{parsed.positionals[0]},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return null;
+}
+
+pub fn runFree(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(prog_name.len > 0);
+    std.debug.assert(@intFromEnum(common.ExitCode.success) == 0);
+
+    const parse_result = try runFree_parseArgs(allocator, args, stderr_writer);
+    if (parse_result.parsed == null) return parse_result.code;
+    const parsed = parse_result.parsed.?;
+    defer allocator.free(parsed.positionals);
+
+    if (runFree_handleEarlyExit(allocator, parsed, stdout_writer, stderr_writer)) |code| {
+        return code;
+    }
+
+    const unit = resolveUnit(parsed);
+    const use_si = parsed.si;
+    const show_total = parsed.total;
+    const wide = parsed.wide;
+
+    const repeat_count = parsed.count orelse 0;
+    const interval = parsed.seconds orelse 0;
+
+    // Per GNU free: -c requires -s
+    if (parsed.count != null and parsed.seconds == null) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "-c requires -s option",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // No continuous mode requested, display once
+    if (interval == 0) {
+        return displayOnce(
+            io,
+            stdout_writer,
+            stderr_writer,
+            allocator,
+            unit,
+            use_si,
+            show_total,
+            wide,
+        );
+    }
+
+    // Continuous mode
+    return runFree_displayContinuous(
+        io,
+        stdout_writer,
+        stderr_writer,
+        allocator,
+        unit,
+        use_si,
+        show_total,
+        wide,
+        interval,
+        repeat_count,
+    );
+}
+
+fn displayOnce(
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+    unit: Unit,
+    use_si: bool,
+    show_total: bool,
+    wide: bool,
+) u8 {
     const info = getMemInfo(io) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to read memory information", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "failed to read memory information",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
 

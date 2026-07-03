@@ -302,6 +302,70 @@ test_head() {
             "Help text advertises unimplemented feature"
     fi
 
+    echo -e "${CYAN}Testing audit: -z NUL-terminated mode...${NC}"
+
+    # -z uses NUL as line delimiter instead of newline (GNU extension).
+    # NUL bytes are stripped by bash variables, so we compare hex via od.
+
+    # -z -n 2 from file: first two NUL-terminated records
+    local nul_file=$(mktemp "$TEMP_DIR/nulfile_XXXXXX")
+    printf 'rec1\x00rec2\x00rec3\x00' > "$nul_file"
+    local head_z_hex
+    head_z_hex=$("$binary" -z -n 2 "$nul_file" | od -An -tx1 | tr -d ' \n')
+    # Expected: 72656331 00 72656332 00 (rec1 NUL rec2 NUL)
+    if [[ "$head_z_hex" == "726563310072656332"* ]] && [[ "$head_z_hex" == *"00" ]]; then
+        print_test_result "head -z -n 2 from file" "PASS"
+    else
+        print_test_result "head -z -n 2 from file" "FAIL" \
+            "Expected hex starting with '7265633100726563320', got '$head_z_hex'"
+    fi
+
+    # -z -n 2 from stdin
+    local head_z_stdin_hex
+    head_z_stdin_hex=$(printf 'alpha\x00beta\x00gamma\x00' | "$binary" -z -n 2 | od -An -tx1 | tr -d ' \n')
+    # Expected: 616c706861 00 62657461 00 (alpha NUL beta NUL)
+    if [[ "$head_z_stdin_hex" == "616c70686100626574610"* ]]; then
+        print_test_result "head -z -n 2 from stdin" "PASS"
+    else
+        print_test_result "head -z -n 2 from stdin" "FAIL" \
+            "Expected hex for 'alpha NUL beta NUL', got '$head_z_stdin_hex'"
+    fi
+
+    # -z -n 1 returns only first NUL-terminated record
+    local head_z1_hex
+    head_z1_hex=$("$binary" -z -n 1 "$nul_file" | od -An -tx1 | tr -d ' \n')
+    # Expected: 72656331 00 (rec1 NUL)
+    if [[ "$head_z1_hex" == "726563310"* ]]; then
+        print_test_result "head -z -n 1 single record" "PASS"
+    else
+        print_test_result "head -z -n 1 single record" "FAIL" \
+            "Expected hex for 'rec1 NUL', got '$head_z1_hex'"
+    fi
+
+    # -z with -c (byte mode) should work identically to without -z
+    local head_zc_hex
+    head_zc_hex=$("$binary" -z -c 5 "$nul_file" | od -An -tx1 | tr -d ' \n')
+    # First 5 bytes of "rec1\0rec2\0rec3\0" are "rec1\0" = 72 65 63 31 00
+    if [[ "$head_zc_hex" == "7265633100" ]]; then
+        print_test_result "head -z -c 5 byte mode" "PASS"
+    else
+        print_test_result "head -z -c 5 byte mode" "FAIL" \
+            "Expected '7265633100', got '$head_zc_hex'"
+    fi
+
+    # -z with multiple files shows headers normally (headers use \n not NUL)
+    local nul_file2=$(mktemp "$TEMP_DIR/nulfile2_XXXXXX")
+    printf 'AAA\x00BBB\x00' > "$nul_file2"
+    local head_zv_out head_zv_err head_zv_exit head_zv_cmd
+    run_command head_zv_cmd head_zv_out head_zv_err head_zv_exit "$binary" -z -n 1 "$nul_file" "$nul_file2"
+    # Headers should be present (using newline separators)
+    if [[ "$head_zv_out" == *"==>"* ]] && [[ $head_zv_exit -eq 0 ]]; then
+        print_test_result "head -z multiple files shows headers" "PASS"
+    else
+        print_test_result "head -z multiple files shows headers" "FAIL" \
+            "Expected headers in output. Exit=$head_zv_exit, out='$head_zv_out'"
+    fi
+
     echo -e "${CYAN}Testing audit: --silent alias...${NC}"
 
     # --silent should be accepted as alias for --quiet/-q (GNU compat).

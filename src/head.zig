@@ -30,7 +30,10 @@ const HeadArgs = struct {
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .lines = .{ .short = 'n', .desc = "Print the first NUM lines instead of the first 10" },
         .quiet = .{ .short = 'q', .desc = "Never print headers giving file names" },
-        .silent = .{ .short = 0, .desc = "Never print headers giving file names (alias for --quiet)" },
+        .silent = .{
+            .short = 0,
+            .desc = "Never print headers giving file names (alias for --quiet)",
+        },
         .verbose = .{ .short = 'v', .desc = "Always print headers giving file names" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
@@ -56,9 +59,11 @@ fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![
         }
         if (isObsoleteNumArg(arg)) extra += 1;
     }
+    std.debug.assert(extra <= args.len); // At most one extra slot per arg.
     if (extra == 0) return allocator.dupe([]const u8, args);
 
     const expanded = try allocator.alloc([]const u8, args.len + extra);
+    std.debug.assert(expanded.len == args.len + extra); // Buffer sized from count.
     var i: usize = 0;
     prev_expects_value = false;
     for (args) |arg| {
@@ -77,6 +82,7 @@ fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![
             continue;
         }
         if (isObsoleteNumArg(arg)) {
+            std.debug.assert(arg.len >= 2); // isObsoleteNumArg guarantees -NUM form.
             expanded[i] = "-n";
             i += 1;
             expanded[i] = arg[1..]; // strip leading '-'
@@ -86,6 +92,7 @@ fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![
             i += 1;
         }
     }
+    std.debug.assert(i == expanded.len); // Fill loop wrote every reserved slot.
     return expanded;
 }
 
@@ -100,11 +107,24 @@ fn isObsoleteNumArg(arg: []const u8) bool {
 
 /// Core head functionality accepting parsed arguments and writers.
 /// Processes files or stdin according to the provided options.
-pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runHead(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     const expanded_args = try expandObsoleteArgs(allocator, args);
     defer allocator.free(expanded_args);
+    std.debug.assert(expanded_args.len >= args.len); // expandObsoleteArgs never shrinks.
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(HeadArgs, allocator, expanded_args, "head", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        HeadArgs,
+        allocator,
+        expanded_args,
+        "head",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -120,87 +140,226 @@ pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
     }
 
     // Parse line count, handling negative values (e.g., -n -3 means "all but last 3")
-    var line_count: u64 = DEFAULT_LINE_COUNT;
-    var negative_count: u64 = 0;
-    if (parsed_args.lines) |lines_str| {
-        if (lines_str.len > 0 and lines_str[0] == '-') {
-            // Negative: output all but last N lines
-            negative_count = std.fmt.parseUnsigned(u64, lines_str[1..], 10) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines: '{s}'", .{lines_str});
-                return @intFromEnum(common.ExitCode.misuse);
-            };
-        } else {
-            line_count = std.fmt.parseUnsigned(u64, lines_str, 10) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines: '{s}'", .{lines_str});
-                return @intFromEnum(common.ExitCode.misuse);
-            };
-        }
-    }
+    const lc = try runHead_parseLineCount(allocator, parsed_args.lines, stderr_writer);
+    if (!lc.ok) return @intFromEnum(common.ExitCode.misuse);
+    const line_count = lc.line_count;
+    const negative_count = lc.negative_count;
 
-    const is_quiet = parsed_args.quiet or parsed_args.silent;
+    const options = runHead_buildOptions(parsed_args, line_count, negative_count);
 
-    const options = HeadOptions{
-        .line_count = line_count,
-        .negative_count = negative_count,
-        .byte_count = parsed_args.bytes,
-        .show_headers = if (is_quiet) false else if (parsed_args.verbose) true else parsed_args.positionals.len > 1,
-        .line_delimiter = if (parsed_args.zero_terminated) 0 else '\n',
-    };
+    return runHead_processInputs(
+        allocator,
+        io,
+        parsed_args.positionals,
+        options,
+        stdout_writer,
+        stderr_writer,
+    );
+}
 
+/// Dispatch each positional (or stdin when none) through processInput, applying
+/// GNU's inter-file blank-line and header rules. Returns the exit code: general
+/// error if any file failed, success otherwise.
+fn runHead_processInputs(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    positionals: []const []const u8,
+    options: HeadOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
     const stdin = &stdin_reader.interface;
 
-    if (parsed_args.positionals.len == 0) {
+    if (positionals.len == 0) {
         // No files specified, read from stdin
         try processInput(stdin, stdout_writer, options, allocator);
-    } else {
-        var had_error = false;
-        // Process each file in order
-        for (parsed_args.positionals, 0..) |file_path, i| {
-            if (i > 0 and options.show_headers) {
-                try stdout_writer.writeAll("\n");
-            }
+        return @intFromEnum(common.ExitCode.success);
+    }
 
-            if (std.mem.eql(u8, file_path, "-")) {
-                // "-" means read from stdin
-                if (options.show_headers) {
-                    try stdout_writer.writeAll("==> standard input <==\n");
-                }
-                try processInput(stdin, stdout_writer, options, allocator);
-            } else {
-                // Open and process regular file
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    had_error = true;
-                    continue;
-                };
-                defer file.close(io);
-
-                const stat = file.stat(io) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': {s}", .{ file_path, common.posixErrorString(err) });
-                    had_error = true;
-                    continue;
-                };
-                if (stat.kind == .directory) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': Is a directory", .{file_path});
-                    had_error = true;
-                    continue;
-                }
-
-                if (options.show_headers) {
-                    try stdout_writer.print("==> {s} <==\n", .{file_path});
-                }
-                var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.reader(io, &file_buffer);
-                try processInput(&file_reader.interface, stdout_writer, options, allocator);
-            }
+    var had_error = false;
+    // Process each file in order
+    for (positionals, 0..) |file_path, i| {
+        if (i > 0 and options.show_headers) {
+            try stdout_writer.writeAll("\n");
         }
-        if (had_error) {
-            return @intFromEnum(common.ExitCode.general_error);
+
+        if (std.mem.eql(u8, file_path, "-")) {
+            // "-" means read from stdin
+            if (options.show_headers) {
+                try stdout_writer.writeAll("==> standard input <==\n");
+            }
+            try processInput(stdin, stdout_writer, options, allocator);
+        } else {
+            // Open and process regular file
+            const file_failed = try runHead_processFile(
+                allocator,
+                io,
+                file_path,
+                stdout_writer,
+                stderr_writer,
+                &options,
+            );
+            if (file_failed) had_error = true;
         }
     }
+    if (had_error) {
+        return @intFromEnum(common.ExitCode.general_error);
+    }
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Result of parsing the -n/--lines argument.
+/// When `ok` is false, the helper has already reported the error; the caller
+/// must exit with the misuse code and must not read line_count/negative_count.
+const ParsedLineCount = struct {
+    line_count: u64,
+    negative_count: u64,
+    ok: bool,
+};
+
+/// Parse the -n/--lines value, handling negative values (e.g., "-3" means
+/// "all but last 3"). On parse failure reports the error via stderr_writer and
+/// returns ok=false; defaults are preserved unchanged on the failure path.
+fn runHead_parseLineCount(
+    allocator: std.mem.Allocator,
+    lines_opt: ?[]const u8,
+    stderr_writer: *std.Io.Writer,
+) !ParsedLineCount {
+    var line_count: u64 = DEFAULT_LINE_COUNT;
+    var negative_count: u64 = 0;
+    // Compile-time coupling: HeadOptions.line_count default literal must match.
+    std.debug.assert(DEFAULT_LINE_COUNT == 10);
+    if (lines_opt) |lines_str| {
+        if (lines_str.len > 0 and lines_str[0] == '-') {
+            // Negative: output all but last N lines
+            negative_count = std.fmt.parseUnsigned(u64, lines_str[1..], 10) catch {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "head",
+                    "invalid number of lines: '{s}'",
+                    .{lines_str},
+                );
+                return .{ .line_count = line_count, .negative_count = negative_count, .ok = false };
+            };
+        } else {
+            line_count = std.fmt.parseUnsigned(u64, lines_str, 10) catch {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "head",
+                    "invalid number of lines: '{s}'",
+                    .{lines_str},
+                );
+                return .{ .line_count = line_count, .negative_count = negative_count, .ok = false };
+            };
+        }
+    }
+    const result = ParsedLineCount{
+        .line_count = line_count,
+        .negative_count = negative_count,
+        .ok = true,
+    };
+    // Positive space: negative and explicit-positive line counts are mutually exclusive.
+    const counts_mutually_exclusive =
+        result.negative_count == 0 or result.line_count == DEFAULT_LINE_COUNT;
+    std.debug.assert(counts_mutually_exclusive);
+    // Negative space: the paired form, a non-default explicit line count is only
+    // reachable when the negative count was never touched.
+    const counts_mutually_exclusive_paired =
+        result.line_count == DEFAULT_LINE_COUNT or result.negative_count == 0;
+    std.debug.assert(counts_mutually_exclusive_paired);
+    return result;
+}
+
+/// Open and process a single regular file (never "-"/stdin, which the parent
+/// handles inline). Returns true on any per-file error (after reporting it),
+/// mirroring the original `had_error = true; continue;`; false on success.
+fn runHead_processFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: *const HeadOptions,
+) !bool {
+    std.debug.assert(!std.mem.eql(u8, file_path, "-")); // Negative space: stdin handled by parent.
+    const delimiter_is_newline_or_nul =
+        options.line_delimiter == '\n' or options.line_delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Positive space: delimiter is newline or NUL.
+
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "head",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    defer file.close(io);
+
+    const stat = file.stat(io) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "head",
+            "error reading '{s}': {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    if (stat.kind == .directory) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "head",
+            "error reading '{s}': Is a directory",
+            .{file_path},
+        );
+        return true;
+    }
+
+    if (options.show_headers) {
+        try stdout_writer.print("==> {s} <==\n", .{file_path});
+    }
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
+    try processInput(&file_reader.interface, stdout_writer, options.*, allocator);
+    return false;
+}
+
+/// Build HeadOptions from the parsed flags and the already-parsed line counts.
+/// Header visibility follows GNU precedence: --quiet wins, then --verbose, then
+/// the implicit "more than one file" rule.
+fn runHead_buildOptions(
+    parsed_args: HeadArgs,
+    line_count: u64,
+    negative_count: u64,
+) HeadOptions {
+    const is_quiet = parsed_args.quiet or parsed_args.silent;
+    const show_headers = if (is_quiet)
+        false
+    else if (parsed_args.verbose)
+        true
+    else
+        parsed_args.positionals.len > 1;
+    const options = HeadOptions{
+        .line_count = line_count,
+        .negative_count = negative_count,
+        .byte_count = parsed_args.bytes,
+        .show_headers = show_headers,
+        .line_delimiter = if (parsed_args.zero_terminated) 0 else '\n',
+    };
+    const headers_suppressed_when_quiet = !(options.show_headers and is_quiet);
+    std.debug.assert(headers_suppressed_when_quiet); // Quiet must suppress headers.
+    const delimiter_is_newline_or_nul =
+        options.line_delimiter == '\n' or options.line_delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+    return options;
 }
 
 /// Entry point for the head binary.
@@ -249,63 +408,31 @@ const HeadOptions = struct {
 /// Process input from a reader and output first lines/bytes to writer.
 /// Streams data without reading the entire input into memory (except for
 /// negative line counts which require buffering the entire input).
-pub fn processInput(reader: *std.Io.Reader, writer: *std.Io.Writer, options: HeadOptions, allocator: ?std.mem.Allocator) !void {
+pub fn processInput(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    options: HeadOptions,
+    allocator: ?std.mem.Allocator,
+) !void {
+    const delim = options.line_delimiter;
+    const delimiter_is_newline_or_nul = delim == '\n' or delim == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+
     if (options.negative_count > 0) {
         // Negative count: output all but the last N lines.
         // Must buffer the entire input to know where the last N lines start.
         const alloc = allocator orelse return;
-        const delimiter = options.line_delimiter;
-        var all_lines: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer {
-            for (all_lines.items) |line| alloc.free(line);
-            all_lines.deinit(alloc);
-        }
-        // Read all lines from the reader
-        while (true) {
-            const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
-                error.EndOfStream => {
-                    // Handle remaining partial line (no trailing delimiter)
-                    const remaining = reader.buffered();
-                    if (remaining.len > 0) {
-                        const owned = alloc.dupe(u8, remaining) catch return;
-                        all_lines.append(alloc, owned) catch {
-                            alloc.free(owned);
-                            return;
-                        };
-                        reader.toss(remaining.len);
-                    }
-                    break;
-                },
-                else => |e| return e,
-            };
-            const owned = alloc.dupe(u8, line) catch return;
-            all_lines.append(alloc, owned) catch {
-                alloc.free(owned);
-                return;
-            };
-        }
-        // Output all but the last N lines
-        const total = all_lines.items.len;
-        const to_output = if (total > options.negative_count) total - options.negative_count else 0;
-        for (all_lines.items[0..to_output]) |line| {
-            try writer.writeAll(line);
-        }
+        try processInput_outputAllButLast(
+            reader,
+            writer,
+            options.line_delimiter,
+            options.negative_count,
+            alloc,
+        );
         return;
     }
     if (options.byte_count) |byte_count| {
-        // Byte mode: read chunks and write until byte_count reached
-        var remaining: u64 = byte_count;
-        while (remaining > 0) {
-            // peekGreedy(1) fills the buffer and returns all available bytes
-            const available = reader.peekGreedy(1) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => |e| return e,
-            };
-            const to_write = @min(@as(usize, @intCast(@min(remaining, std.math.maxInt(usize)))), available.len);
-            try writer.writeAll(available[0..to_write]);
-            reader.toss(to_write);
-            remaining -= to_write;
-        }
+        try processInput_outputBytes(reader, writer, byte_count);
     } else {
         // Line mode: output first N lines
         const delimiter = options.line_delimiter;
@@ -321,12 +448,91 @@ pub fn processInput(reader: *std.Io.Reader, writer: *std.Io.Writer, options: Hea
     }
 }
 
+/// Buffer all input lines and emit all but the last `negative_count`.
+/// Only called when negative-count mode is active, so the full input must be
+/// retained before any output can begin.
+fn processInput_outputAllButLast(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    delimiter: u8,
+    negative_count: u64,
+    alloc: std.mem.Allocator,
+) !void {
+    std.debug.assert(negative_count > 0); // Helper only used in negative mode.
+    const delimiter_is_newline_or_nul = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+
+    var all_lines: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (all_lines.items) |line| alloc.free(line);
+        all_lines.deinit(alloc);
+    }
+    // Read all lines from the reader
+    while (true) { // tiger:allow:unbounded-loop EOF-bounded read
+        const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
+            error.EndOfStream => {
+                // Handle remaining partial line (no trailing delimiter)
+                const remaining = reader.buffered();
+                if (remaining.len > 0) {
+                    const owned = alloc.dupe(u8, remaining) catch return;
+                    all_lines.append(alloc, owned) catch {
+                        alloc.free(owned);
+                        return;
+                    };
+                    reader.toss(remaining.len);
+                }
+                break;
+            },
+            else => |e| return e,
+        };
+        const owned = alloc.dupe(u8, line) catch return;
+        all_lines.append(alloc, owned) catch {
+            alloc.free(owned);
+            return;
+        };
+    }
+    // Output all but the last N lines
+    const total = all_lines.items.len;
+    const to_output = if (total > negative_count) total - negative_count else 0;
+    std.debug.assert(to_output <= all_lines.items.len); // Slice bound is in range.
+    for (all_lines.items[0..to_output]) |line| {
+        try writer.writeAll(line);
+    }
+}
+
+/// Stream the first `byte_count` bytes from `reader` to `writer`.
+/// Reads greedily in chunks and stops at EOF or once the count is reached.
+fn processInput_outputBytes(reader: *std.Io.Reader, writer: *std.Io.Writer, byte_count: u64) !void {
+    // Byte mode: read chunks and write until byte_count reached
+    var remaining: u64 = byte_count;
+    while (remaining > 0) {
+        std.debug.assert(remaining <= byte_count); // remaining never exceeds the request.
+        // peekGreedy(1) fills the buffer and returns all available bytes
+        const available = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        const max: u64 = std.math.maxInt(usize); // tiger:allow:usize-arch
+        const capped: usize = @intCast(@min(remaining, max)); // tiger:allow:usize-arch
+        const to_write = @min(capped, available.len);
+        std.debug.assert(to_write <= available.len); // Slice bound is in range.
+        std.debug.assert(to_write <= remaining); // No unsigned underflow below.
+        try writer.writeAll(available[0..to_write]);
+        reader.toss(to_write);
+        remaining -= to_write;
+    }
+}
+
 /// Read one delimiter-terminated line from `reader` and write it to `writer`.
 /// Returns true if a delimiter byte was consumed; false on EOF (no delimiter).
 /// Handles lines longer than the reader's buffer by streaming through in
 /// chunks rather than failing with `error.StreamTooLong`.
 fn streamOneLine(reader: *std.Io.Reader, writer: *std.Io.Writer, delimiter: u8) !bool {
-    while (true) {
+    const delimiter_is_newline_or_nul = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+    // Returns on delimiter found or EOF; StreamTooLong tosses buffered bytes
+    // each pass, so it always advances toward EOF and cannot spin forever.
+    while (true) { // tiger:allow:unbounded-loop terminates at delimiter or EOF
         const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
             error.EndOfStream => {
                 const remaining = reader.buffered();
@@ -383,7 +589,13 @@ test "head outputs first 10 lines by default" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     const expected = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
@@ -406,10 +618,19 @@ test "head with -n 5 outputs first 5 lines" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "5", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n",
+        stdout_aw.writer.buffered(),
+    );
 }
 
 test "head with -c 10 outputs first 10 bytes" {
@@ -417,7 +638,12 @@ test "head with -c 10 outputs first 10 bytes" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Hello, World! This is a test.\n");
+    try common.test_utils.createTestFile(
+        io,
+        tmp_dir.dir,
+        "test.txt",
+        "Hello, World! This is a test.\n",
+    );
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -426,7 +652,13 @@ test "head with -c 10 outputs first 10 bytes" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "10", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Hello, Wor", stdout_aw.writer.buffered());
@@ -447,7 +679,13 @@ test "head handles fewer lines than requested" {
 
     // Request 10 lines (default) but file only has 2
     const args = [_][]const u8{file_path};
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_aw.writer.buffered());
@@ -468,7 +706,13 @@ test "head handles fewer bytes than requested" {
 
     // Request 1000 bytes but file only has 5
     const args = [_][]const u8{ "-c", "1000", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Short", stdout_aw.writer.buffered());
@@ -488,7 +732,13 @@ test "head handles empty input" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
@@ -508,7 +758,13 @@ test "head with -n 0 outputs nothing" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "0", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
@@ -528,7 +784,13 @@ test "head with -c 0 outputs nothing" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "0", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
@@ -560,7 +822,13 @@ test "head handles lines longer than read buffer (regression: StreamTooLong)" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "1", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const out = stdout_aw.writer.buffered();
@@ -575,7 +843,8 @@ test "head processes lines efficiently" {
     defer tmp_dir.cleanup();
 
     // Create a file with many lines, request only the first 3
-    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
+    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
+        "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
     try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -585,7 +854,13 @@ test "head processes lines efficiently" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "3", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_aw.writer.buffered());
@@ -605,7 +880,13 @@ test "head processes bytes efficiently" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "5", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("ABCDE", stdout_aw.writer.buffered());
@@ -667,7 +948,13 @@ test "head with line count larger than available lines" {
 
     // Request 100 lines but file only has 1
     const args = [_][]const u8{ "-n", "100", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Only one line\n", stdout_aw.writer.buffered());
@@ -688,7 +975,13 @@ test "head byte count takes precedence over line count" {
 
     // Use -c (bytes) which should override default line count
     const args = [_][]const u8{ "-c", "10", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLin", stdout_aw.writer.buffered());
@@ -712,7 +1005,13 @@ test "head continues after file error and outputs remaining files" {
 
     // First file is nonexistent, second is valid
     const args = [_][]const u8{ "/nonexistent/file.txt", valid_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should return error exit code
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -723,7 +1022,9 @@ test "head continues after file error and outputs remaining files" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Line 3") != null);
 
     // And stderr should report the error
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
 }
 
 test "head with multiple files shows headers" {
@@ -743,7 +1044,13 @@ test "head with multiple files shows headers" {
     defer testing.allocator.free(path2);
 
     const args = [_][]const u8{ path1, path2 };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -772,7 +1079,13 @@ test "head with -z uses NUL as line delimiter" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", "-n", "3", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\x00Line 2\x00Line 3\x00", stdout_aw.writer.buffered());
@@ -784,7 +1097,8 @@ test "head with -z and default line count" {
     defer tmp_dir.cleanup();
 
     // Create a file with 15 NUL-separated "lines"
-    const content = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00L9\x00L10\x00L11\x00L12\x00L13\x00L14\x00L15\x00";
+    const content = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00" ++
+        "L9\x00L10\x00L11\x00L12\x00L13\x00L14\x00L15\x00";
     try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -794,7 +1108,13 @@ test "head with -z and default line count" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Default is 10 lines
@@ -818,7 +1138,13 @@ test "head with -z and fewer items than requested" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", "-n", "10", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line A\x00Line B\x00", stdout_aw.writer.buffered());
@@ -833,7 +1159,13 @@ test "head directory in line mode returns exit code 1 not crash" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp"};
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Must exit 1 (general error), not crash/panic
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -843,14 +1175,21 @@ test "head directory in line mode returns exit code 1 not crash" {
 
 test "head directory in byte mode returns exit code 1 not crash" {
     const io = testing.io;
-    // GNU head: head -c 10 /tmp prints "head: error reading '/tmp': Is a directory" to stderr, exits 1
+    // GNU head: head -c 10 /tmp prints "head: error reading '/tmp': Is a
+    // directory" to stderr, exits 1
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "10", "/tmp" };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Is a directory") != null);
@@ -865,7 +1204,13 @@ test "head directory does not produce stack trace on stderr" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp"};
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     // Must not contain Zig panic/stack trace indicators
@@ -891,7 +1236,13 @@ test "head directory continues processing remaining files" {
     defer testing.allocator.free(valid_path);
 
     const args = [_][]const u8{ "/tmp", valid_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     // Should return error exit code but still output valid file
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -914,7 +1265,13 @@ test "head with obsolete -NUM syntax" {
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-3", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_aw.writer.buffered());
@@ -941,7 +1298,13 @@ test "head --silent is alias for --quiet" {
     defer testing.allocator.free(path_b);
 
     const args = [_][]const u8{ "--silent", path_a, path_b };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     // Should succeed (exit 0) and suppress headers, just like --quiet
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -969,7 +1332,13 @@ test "head -n -3 outputs all but last 3 lines" {
 
     // -n -3 means "all but the last 3 lines" = first 2 lines
     const args = [_][]const u8{ "-n", "-3", file_path };
-    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const exit_code = try runHead(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_aw.writer.buffered());

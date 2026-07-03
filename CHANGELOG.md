@@ -1,5 +1,106 @@
 # Changelog
 
+## Unreleased
+
+## v0.11.0 — 2026-07-02
+
+### Added
+- **dd `count=`/`skip=`/`seek=` accept size suffixes and
+  `conv=fdatasync` is supported.** The count-like operands now
+  honor the same K/M/G suffix grammar as `bs=` (as block-count
+  multipliers, matching GNU), and `conv=fdatasync` performs a
+  data-only flush before exit (full fsync on non-Linux and when
+  combined with `conv=fsync`).
+
+### Fixed
+- **dd `conv=fdatasync`/`conv=fsync` report sync failures
+  instead of aborting.** Syncing a pipe (for example dd in a
+  pipeline) previously crashed with SIGABRT; it now reports
+  `fsync failed for 'standard output'` and exits 1, matching
+  GNU.
+- **realpath/readlink resolve relative paths again with `-s` and
+  `-m`.** A Zig 0.16 Threaded-io regression made `cwd().realPath`
+  fail on the AT_FDCWD pseudo-fd, so `realpath -s <relative>`,
+  `realpath -m <relative>`, and `readlink -m <relative>` reported
+  "No such file or directory" for paths that exist. Empty
+  operands now also error with exit 1 under `-s`/`-m`, matching
+  GNU, instead of resolving to the working directory.
+- **The directory walker follows symlinks correctly under
+  `follow_all`, fixing `chown -RL` and `du -L` on symlinked
+  files.** Every symlink was classified as a directory without
+  checking its target, so a symlink-to-file, broken link, or
+  loop poisoned the whole walk (chown -RL aborted entire trees).
+  The walker now stats targets; du -L also gained diagnostics
+  and exit 1 for dangling/looping links, matching GNU.
+- **dd `conv=noerror` no longer spins forever on persistent read
+  errors.** A failed read never consumed the `count=` budget and
+  never advanced the input. Failed reads now count against
+  `count=`, dd seeks past bad blocks on seekable inputs, and two
+  finite retry bounds terminate cases where GNU dd retries
+  without bound (documented in the man page).
+- **realpath no longer aborts on relative or empty path inputs.**
+  An empty or relative `--relative-to=`/`--relative-base=` value,
+  an empty `-e` operand, or a relative `-e` operand tripped a
+  std-library assertion and killed the process (SIGABRT, exit
+  134). Relative paths now resolve against the working directory
+  and empty paths report `No such file or directory` with exit 1,
+  matching GNU.
+- **grep `-r` and mv now halt cleanly at the walker entry cap.**
+  Hitting the 16M-entry safety cap previously re-fired the same
+  error on every subsequent iteration, an infinite storm of
+  identical diagnostics; the cap is now reported once, the walk
+  stops, and the usual error exit status is preserved.
+- **grep `-R` now descends symbolic links to directories.**
+  Following a directory symlink under `-R` previously did nothing
+  (opening the symlink read-only succeeded, so grep treated it as a
+  file and never recursed); it now descends and searches the target,
+  matching GNU.
+- **cp `-p`/`-a` now preserves directory modes and timestamps.**
+  Directory permission/mtime preservation was silently dropped
+  (`fchmod` on a fresh dir handle failed `EBADF`, swallowed). Modes
+  and mtimes are now applied post-order, so even a read-only `0555`
+  source directory copies its contents and lands the right mode.
+- **cp `-L` no longer runs away on symlink cycles.** A directory
+  symlink cycle under `-L` previously recursed to the kernel symlink
+  limit, materializing dozens of junk levels; cp now reports
+  `cannot copy cyclic symbolic link` and skips it, matching GNU.
+- **mv cross-device moves preserve directory mode and mtime and
+  continue past errors.** The EXDEV copy fallback no longer breaks
+  on a read-only source subdirectory, now carries directory mtimes,
+  and reports per-entry errors while continuing with siblings
+  instead of aborting; a failed copy never deletes the source.
+- **find `-xdev` now emits mount-point entries.** Cross-device
+  directories were skipped entirely; they are now reported (without
+  descending), matching GNU.
+- **find `-L` detects filesystem loops.** A symlink loop under `-L`
+  previously walked ~40 junk levels until the kernel symlink limit;
+  find now prints `File system loop detected`, skips the loop, and
+  continues with siblings.
+
+### Infrastructure
+- **Tiger Style Phase 2: bounded directory walker.** All eight
+  recursive tree-walkers (chmod, chown, rm, du, grep, cp, mv, find)
+  now run on the shared bounded, iterative `common.walker`; no
+  direct filesystem-walk recursion remains. Shared per-file copy
+  leaves were extracted into `common/file_ops` for cp and mv.
+- **Tiger Style CI gate.** A `Tiger Style` workflow runs the
+  `tiger-check` scanner tree-wide on every PR and push to `main`,
+  failing on any gating violation (oversized function, long line,
+  recursion, compound assert, unbounded loop). Available locally as
+  `just tiger-check`.
+- **Changelog CI gate.** A `Changelog` workflow lints CHANGELOG.md
+  structure on every PR and push to `main`: the `## Unreleased`
+  heading must be present (except during the release-promotion
+  window), every released `## vX.Y.Z` section must be byte-identical
+  to its git tag, and no merge-conflict markers may remain. Catches
+  clean-but-wrong automerges that file unreleased entries into an
+  already-tagged section. Available locally as `just lint-changelog`.
+- Add `actionlint` to the project gale deps so `just lint-actions`
+  runs everywhere, and fix the three shellcheck findings its first
+  run surfaced in `test.yml` and `release.yml` (unquoted `$(nproc)`,
+  an unquoted `${VERSION}` glob, a dead `VERSION` assignment). All
+  behavior-preserving; the workflow lint is now clean.
+
 ## v0.10.3 — 2026-06-29
 
 ### Fixed

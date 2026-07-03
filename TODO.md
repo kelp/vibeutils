@@ -9,6 +9,18 @@
 - **Packaging**: Homebrew tap, Nix flake with Cachix binary cache (4 platforms), GitHub release binaries
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy, CHANGELOG.md
 
+## Tiger Style remediation (deferred)
+- [ ] Enable `scripts/tiger-check.sh` in CI after the Tiger Style
+      migration is finished (Phases 3-6 in
+      `docs/tiger-style-review/README.md`). Add a CI job running
+      `scripts/tiger-check.sh --base origin/main` to gate PRs on NEW
+      Tiger Style violations. Deferred deliberately: the pre-commit
+      hook already blocks NEW violations locally, and we want builds
+      green through the migration before enforcing in CI (the tree
+      still carries ~3442 pre-existing violations; `--base` only fails
+      on newly introduced ones, but enable CI once the debt is burned
+      down by the function-length, assertion, and cleanup phases).
+
 ## Project Goals
 - **Balance**: 80% of GNU's usefulness with 20% of the complexity
 - **High test coverage**: 90%+ with TDD approach
@@ -1373,6 +1385,22 @@ overwrite-hint tests.
       runUtil() with test-provided writers
 - [ ] Integration tests that exercise the compiled binary's
       actual I/O initialization
+
+### 6. dd MUST-tier conv= Integration Coverage
+Salvaged from closed PR #34. `tests/utilities/dd_test.sh`
+lacks behavioral coverage for several MUST-tier `conv=`
+values; some existing tests also compare against macOS
+`/usr/bin/dd`, which produces empty output and silently
+passes.
+
+- [ ] Replace macOS `/usr/bin/dd` comparisons with
+      hardcoded GNU-equivalent expected values
+- [ ] Add behavioral tests for `conv=sync` (NUL padding +
+      full block), `conv=notrunc` vs. truncate contrast,
+      `conv=fsync`, `conv=osync`, `conv=ascii`,
+      `conv=ebcdic`, `conv=ibm`, `conv=noerror`
+- [ ] Cross-check against the existing rejection tests
+      added in commit cc57c2a (`conv=sparse`/`par*`/`files=`)
 
 ## Bugs
 

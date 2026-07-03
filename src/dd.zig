@@ -10,6 +10,37 @@ const common = @import("common");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
+/// Upper bound on consecutive conv=noerror read errors on an input that
+/// cannot even be seeked past (a pipe or other non-seekable, wholly
+/// unreadable fd), before dd aborts. Such a read error never returns EOF and
+/// the bad block cannot be skipped, so without a cap the copy loop would spin
+/// forever when no count= is given. The counter resets only on a successful
+/// READ, so this measures a run of pure zero-progress attempts: no data read
+/// and no forward seek. count= usually bounds the retries first; this is the
+/// safety net for the no-count, zero-progress case and satisfies Tiger
+/// Style's "every loop is bounded" rule. Kept small because a wholly
+/// unseekable input never recovers, so there is nothing to be gained by
+/// retrying long.
+const dd_read_error_stall_max: usize = 4096; // tiger:allow:usize-arch counts loop retries
+
+/// Upper bound on consecutive conv=noerror read errors that DO seek past the
+/// bad block (forward progress on seekable media) but never read a single
+/// good block, before dd aborts. This is the seekable-but-unreadable case
+/// (e.g. a directory fd or a dead device that lseeks fine but fails every
+/// read): GNU dd spins on it forever, we bound it. Chosen far larger than
+/// dd_read_error_stall_max so a realistic run of clustered bad blocks on
+/// otherwise-recoverable media still completes the skip, while keeping the
+/// loop finite per Tiger Style. At bs=512 this tolerates ~2 GiB of
+/// consecutive unreadable region before aborting.
+const dd_read_error_skip_max: usize = 1 << 22; // tiger:allow:usize-arch counts loop retries
+
+comptime {
+    // The zero-progress stall cap must fire well before the skip cap: an
+    // input that never advances is hopeless, while a skipping input is
+    // making progress and earns the far larger budget.
+    std.debug.assert(dd_read_error_stall_max < dd_read_error_skip_max);
+}
+
 /// dd operand configuration parsed from command-line arguments
 const DdConfig = struct {
     input_file: ?[]const u8 = null,
@@ -26,6 +57,7 @@ const DdConfig = struct {
     conv_noerror: bool = false,
     conv_sync: bool = false,
     conv_fsync: bool = false,
+    conv_fdatasync: bool = false,
     conv_osync: bool = false,
     conv_swab: bool = false,
     conv_ascii: bool = false,
@@ -33,14 +65,8 @@ const DdConfig = struct {
     conv_ibm: bool = false,
     conv_block: bool = false,
     conv_unblock: bool = false,
-    conv_sparse: bool = false,
-    conv_pareven: bool = false,
-    conv_parnone: bool = false,
-    conv_parodd: bool = false,
-    conv_parset: bool = false,
     cbs: ?usize = null,
     fillchar: u8 = ' ',
-    files: usize = 1,
     status: StatusLevel = .default,
     help: bool = false,
     version: bool = false,
@@ -90,8 +116,12 @@ fn parseSingleSize(s: []const u8) !usize {
     // Find where the numeric part ends
     var num_end: usize = 0;
     while (num_end < s.len and s[num_end] >= '0' and s[num_end] <= '9') : (num_end += 1) {}
+    // Loop condition bounds num_end at s.len; the slices below are in range.
+    std.debug.assert(num_end <= s.len);
 
     if (num_end == 0) return error.InvalidValue;
+    // The early return above guarantees at least one digit was consumed.
+    std.debug.assert(num_end > 0);
 
     const num = std.fmt.parseInt(usize, s[0..num_end], 10) catch return error.InvalidValue;
     const suffix = s[num_end..];
@@ -130,73 +160,86 @@ fn parseOperands(args: []const []const u8) !DdConfig {
 
         // Parse operand=value
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            // indexOfScalar returns an index strictly inside arg, so the
+            // value slice arg[eq_pos + 1 ..] stays in bounds.
+            std.debug.assert(eq_pos < arg.len);
             const key = arg[0..eq_pos];
             const value = arg[eq_pos + 1 ..];
-
-            if (std.mem.eql(u8, key, "if")) {
-                config.input_file = value;
-            } else if (std.mem.eql(u8, key, "of")) {
-                config.output_file = value;
-            } else if (std.mem.eql(u8, key, "bs")) {
-                config.bs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "ibs")) {
-                config.ibs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "obs")) {
-                config.obs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "count")) {
-                config.count = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "skip")) {
-                config.skip = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "seek")) {
-                config.seek = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "cbs")) {
-                config.cbs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "files")) {
-                config.files = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "conv")) {
-                try parseConversions(&config, value);
-            } else if (std.mem.eql(u8, key, "iseek")) {
-                // Alias for skip
-                config.skip = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "oseek")) {
-                // Alias for seek
-                config.seek = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "fillchar")) {
-                if (value.len != 1) return error.InvalidValue;
-                config.fillchar = value[0];
-            } else if (std.mem.eql(u8, key, "iflag")) {
-                // Stub: accept comma-separated input flags, silently ignore
-            } else if (std.mem.eql(u8, key, "oflag")) {
-                // Stub: accept comma-separated output flags, silently ignore
-            } else if (std.mem.eql(u8, key, "speed")) {
-                // Stub: accept speed limit, silently ignore
-                _ = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "status")) {
-                if (std.mem.eql(u8, value, "none")) {
-                    config.status = .none;
-                } else if (std.mem.eql(u8, value, "noxfer")) {
-                    config.status = .noxfer;
-                } else if (std.mem.eql(u8, value, "progress")) {
-                    config.status = .progress;
-                } else {
-                    return error.InvalidValue;
-                }
-            } else {
-                return error.UnknownOperand;
-            }
+            std.debug.assert(key.len <= arg.len);
+            try parseOperands_applyKeyValue(&config, key, value);
         } else {
             return error.UnknownOperand;
         }
     }
 
     return config;
+}
+
+/// Apply a single parsed operand `key=value` to `config` in place.
+/// Straight-line dispatch over the supported operand keys; mirrors the
+/// behavior of the original inline if/else-if chain exactly.
+fn parseOperands_applyKeyValue(config: *DdConfig, key: []const u8, value: []const u8) !void {
+    if (std.mem.eql(u8, key, "if")) {
+        config.input_file = value;
+    } else if (std.mem.eql(u8, key, "of")) {
+        config.output_file = value;
+    } else if (std.mem.eql(u8, key, "bs")) {
+        config.bs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "ibs")) {
+        config.ibs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "obs")) {
+        config.obs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "count")) {
+        // Issue #43: count/skip/seek take the same multiplicative suffix
+        // grammar as bs=. Here the suffix is a pure block-count multiplier
+        // (count=1k means 1024 blocks), so parseByteSize's number is used
+        // verbatim without any byte conversion.
+        config.count = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "skip")) {
+        config.skip = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "seek")) {
+        config.seek = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "cbs")) {
+        config.cbs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "conv")) {
+        try parseConversions(config, value);
+    } else if (std.mem.eql(u8, key, "iseek")) {
+        // Alias for skip; same suffix grammar as skip=.
+        config.skip = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "oseek")) {
+        // Alias for seek; same suffix grammar as seek=.
+        config.seek = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "fillchar")) {
+        if (value.len != 1) return error.InvalidValue;
+        config.fillchar = value[0];
+    } else if (std.mem.eql(u8, key, "iflag")) {
+        // Stub: accept comma-separated input flags, silently ignore
+    } else if (std.mem.eql(u8, key, "oflag")) {
+        // Stub: accept comma-separated output flags, silently ignore
+    } else if (std.mem.eql(u8, key, "speed")) {
+        // Stub: accept speed limit, silently ignore
+        _ = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "status")) {
+        try parseOperands_applyKeyValue_status(config, value);
+    } else {
+        return error.UnknownOperand;
+    }
+}
+
+/// Apply a `status=LEVEL` operand to `config`. Split out of
+/// parseOperands_applyKeyValue so both helpers stay well within the
+/// line budget; behavior is identical to the original inline block.
+fn parseOperands_applyKeyValue_status(config: *DdConfig, value: []const u8) !void {
+    if (std.mem.eql(u8, value, "none")) {
+        config.status = .none;
+    } else if (std.mem.eql(u8, value, "noxfer")) {
+        config.status = .noxfer;
+    } else if (std.mem.eql(u8, value, "progress")) {
+        config.status = .progress;
+    } else {
+        return error.InvalidValue;
+    }
 }
 
 /// Parse comma-separated conversion options
@@ -216,6 +259,8 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_sync = true;
         } else if (std.mem.eql(u8, conv, "fsync")) {
             config.conv_fsync = true;
+        } else if (std.mem.eql(u8, conv, "fdatasync")) {
+            config.conv_fdatasync = true;
         } else if (std.mem.eql(u8, conv, "osync")) {
             config.conv_osync = true;
         } else if (std.mem.eql(u8, conv, "swab")) {
@@ -236,16 +281,6 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_ebcdic = true;
         } else if (std.mem.eql(u8, conv, "oldibm")) {
             config.conv_ibm = true;
-        } else if (std.mem.eql(u8, conv, "sparse")) {
-            config.conv_sparse = true;
-        } else if (std.mem.eql(u8, conv, "pareven")) {
-            config.conv_pareven = true;
-        } else if (std.mem.eql(u8, conv, "parnone")) {
-            config.conv_parnone = true;
-        } else if (std.mem.eql(u8, conv, "parodd")) {
-            config.conv_parodd = true;
-        } else if (std.mem.eql(u8, conv, "parset")) {
-            config.conv_parset = true;
         } else {
             return error.InvalidValue;
         }
@@ -393,6 +428,9 @@ fn printStats(io: std.Io, stderr: *std.Io.Writer, stats: DdStats, status: Status
     const elapsed_ns = std.Io.Timestamp.now(io, .real).nanoseconds - stats.start_ns;
     const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
     const elapsed_display = if (elapsed_s < 0.0001) 0.0001 else elapsed_s;
+    // Clamped to >= 0.0001 above (covers clock skew), so the rate
+    // division by elapsed_display below can never divide by zero.
+    std.debug.assert(elapsed_display > 0.0);
 
     var size_buf: [128]u8 = undefined;
     const size_str = formatByteCount(&size_buf, stats.bytes_copied);
@@ -435,7 +473,6 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  count=N         copy only N input blocks
         \\  skip=N          skip N ibs-sized blocks at start of input
         \\  seek=N          skip N obs-sized blocks at start of output
-        \\  files=N         copy and concatenate N input files (default: 1)
         \\  conv=CONVS      convert the file as per the comma-separated list
         \\  status=LEVEL    transfer information to print to stderr;
         \\                  LEVEL is one of: none, noxfer, progress
@@ -459,6 +496,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  noerror   continue after read errors
         \\  sync      pad input blocks with NULs to ibs size
         \\  fsync     fsync output file before closing
+        \\  fdatasync fdatasync output data before closing
         \\  osync     pad final output block with NULs to obs size
         \\
         \\Examples:
@@ -473,8 +511,708 @@ fn printVersion(writer: anytype) !void {
     try writer.print("dd ({s}) {s}\n", .{ common.name, common.version });
 }
 
-/// Execute the dd copy operation
-pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+/// Scan args for operands that are parsed but not implemented.
+/// Returns the operand name if an unsupported operand is found, null otherwise.
+fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
+    for (args) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            // indexOfScalar found '=' inside arg, so the value slice
+            // arg[eq_pos + 1 ..] is in bounds.
+            std.debug.assert(eq_pos < arg.len);
+            const key = arg[0..eq_pos];
+            const value = arg[eq_pos + 1 ..];
+            if (std.mem.eql(u8, key, "files")) {
+                return "files";
+            }
+            if (std.mem.eql(u8, key, "conv")) {
+                var iter = std.mem.splitScalar(u8, value, ',');
+                while (iter.next()) |conv| {
+                    if (std.mem.eql(u8, conv, "sparse")) return "sparse";
+                    if (std.mem.eql(u8, conv, "pareven")) return "pareven";
+                    if (std.mem.eql(u8, conv, "parnone")) return "parnone";
+                    if (std.mem.eql(u8, conv, "parodd")) return "parodd";
+                    if (std.mem.eql(u8, conv, "parset")) return "parset";
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/// Outcome of handling a read error inside the main copy loop.
+/// `continue_loop` resumes the loop; `fatal` carries the exit code the
+/// caller must return immediately (stats already printed where the
+/// original inline code printed them).
+const ReadErrorOutcome = union(enum) {
+    continue_loop,
+    fatal: u8,
+};
+
+/// Outcome of one copy-loop read attempt. `eof` ends the loop, `retry`
+/// resumes it after a recovered conv=noerror error, `bytes` carries the
+/// count read, and `fatal` carries an exit code the caller must return.
+const ReadOutcome = union(enum) {
+    eof,
+    retry,
+    bytes: usize, // tiger:allow:usize-arch byte count uses slice index type
+    fatal: u8,
+};
+
+/// The pair of files dd copies between, returned by runDd_openFiles.
+const DdFiles = struct {
+    input_file: std.Io.File,
+    output_file: std.Io.File,
+};
+
+/// Result of opening the dd input/output files: either both files or
+/// an exit code to return. Lets runDd keep the branching while the
+/// straight-line open logic lives in the helper.
+const DdOpenResult = union(enum) {
+    files: DdFiles,
+    fatal: u8,
+};
+
+/// Invariant context shared by every per-block write helper. Bundling
+/// these together keeps the helper signatures and the copy-loop call
+/// sites short; `stats` is a mutable pointer so increments persist.
+const DdWriteCtx = struct {
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    output_file: std.Io.File,
+    status: StatusLevel,
+    stats: *DdStats,
+};
+
+/// The input and output working buffers dd always needs. The caller
+/// owns freeing them.
+const DdBuffers = struct {
+    in_buf: []u8,
+    out_buf: []u8,
+};
+
+/// Result of allocating the dd working buffers: the buffers or a fatal
+/// exit code after printing the allocation-failure message.
+const DdBuffersResult = union(enum) {
+    buffers: DdBuffers,
+    fatal: u8,
+};
+
+/// Result of allocating the optional conv=block conversion buffer: the
+/// optional buffer (null when not needed) or a fatal exit code.
+const DdCbsResult = union(enum) {
+    buffer: ?[]u8,
+    fatal: u8,
+};
+
+/// Immutable per-run parameters of the copy: the open input file, the
+/// working buffers, the effective block sizes, and the chosen copy
+/// mode. Bundling these keeps the copy-loop and finish call sites short.
+const DdPlan = struct {
+    input_file: std.Io.File,
+    in_buf: []u8,
+    out_buf: []u8,
+    cbs_buf: ?[]u8,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    simple_copy: bool,
+};
+
+/// Mutable position state carried across copy-loop iterations and into
+/// the tail-flush phase: the output buffer fill level, the conv=block
+/// record position, and the conv=unblock record position.
+const DdPositions = struct {
+    out_pos: usize = 0, // tiger:allow:usize-arch byte position uses slice index type
+    cbs_pos: usize = 0, // tiger:allow:usize-arch byte position uses slice index type
+    unblock_pos: usize = 0, // tiger:allow:usize-arch byte position uses slice index type
+};
+
+/// Validate mutually-exclusive conversion combinations and the cbs
+/// requirement for block/unblock. Returns 0 when the config is valid,
+/// or a misuse exit code after printing the matching error message.
+fn runDd_validateConfig(allocator: Allocator, stderr: *std.Io.Writer, config: *const DdConfig) u8 {
+    // lcase and ucase are mutually exclusive
+    if (config.conv_lcase and config.conv_ucase) {
+        const message = "conv=lcase and conv=ucase are mutually exclusive";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // ascii, ebcdic, and ibm are mutually exclusive
+    const charset_count = @as(u8, @intFromBool(config.conv_ascii)) +
+        @as(u8, @intFromBool(config.conv_ebcdic)) +
+        @as(u8, @intFromBool(config.conv_ibm));
+    // Sum of three booleans, so it stays within 0..3 inclusive.
+    std.debug.assert(charset_count <= 3);
+    if (charset_count > 1) {
+        const message = "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // block and unblock are mutually exclusive
+    if (config.conv_block and config.conv_unblock) {
+        const message = "conv=block and conv=unblock are mutually exclusive";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // block and unblock require cbs
+    if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
+        const message = "conv=block/unblock requires cbs operand";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Allocate the input and output working buffers. Returns the buffers
+/// or a fatal exit code after printing the allocation-failure message.
+/// The caller registers the free defers.
+fn runDd_allocBuffers(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) DdBuffersResult {
+    std.debug.assert(ibs > 0);
+    std.debug.assert(obs > 0);
+
+    const in_buf = allocator.alloc(u8, ibs) catch {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "dd",
+            "failed to allocate input buffer",
+            .{},
+        );
+        return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+    };
+    const out_buf = allocator.alloc(u8, obs) catch {
+        allocator.free(in_buf);
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "dd",
+            "failed to allocate output buffer",
+            .{},
+        );
+        return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+    };
+    // Postcondition: a successful alloc returns a slice of exactly the
+    // requested length, so the buffers match the requested block sizes.
+    std.debug.assert(in_buf.len == ibs);
+    std.debug.assert(out_buf.len == obs);
+    return .{ .buffers = .{ .in_buf = in_buf, .out_buf = out_buf } };
+}
+
+/// Open the input and output files per the config. Returns the opened
+/// pair or a fatal exit code (after printing the OS error). The caller
+/// owns closing the files when paths were supplied.
+fn runDd_openFiles(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    config: *const DdConfig,
+) DdOpenResult {
+    // Open input
+    const input_file: std.Io.File = if (config.input_file) |path| blk: {
+        break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+            const message = common.posixErrorString(err);
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, message });
+            return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+        };
+    } else std.Io.File.stdin();
+
+    // Open output
+    const output_file: std.Io.File = if (config.output_file) |path| blk: {
+        const flags: std.Io.File.CreateFlags = .{
+            .truncate = !config.conv_notrunc,
+        };
+        break :blk std.Io.Dir.cwd().createFile(io, path, flags) catch |err| {
+            // Close the already-opened input file on output failure to
+            // match the original runDd defer cleanup order.
+            if (config.input_file != null) input_file.close(io);
+            const message = common.posixErrorString(err);
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, message });
+            return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+        };
+    } else std.Io.File.stdout();
+
+    return .{ .files = .{ .input_file = input_file, .output_file = output_file } };
+}
+
+/// Skip `skip_blocks` ibs-sized blocks at the start of the input by
+/// reading and discarding them. Returns 0 on success (including early
+/// EOF), or a fatal exit code. Skip errors do NOT print stats.
+fn runDd_skipInput(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    input_file: std.Io.File,
+    in_buf: []u8,
+    skip_blocks: usize, // tiger:allow:usize-arch block count uses slice index type
+) u8 {
+    std.debug.assert(skip_blocks > 0);
+    std.debug.assert(in_buf.len > 0);
+
+    var skipped: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+    while (skipped < skip_blocks) : (skipped += 1) {
+        _ = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
+            error.EndOfStream => break, // EOF before all skips done
+            else => {
+                const message = common.posixErrorString(err);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr,
+                    "dd",
+                    "error skipping input: {s}",
+                    .{message},
+                );
+                return @intFromEnum(common.ExitCode.general_error);
+            },
+        };
+    }
+    // The loop stops at skipped == skip_blocks, or breaks earlier on EOF.
+    std.debug.assert(skipped <= skip_blocks);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Seek the output forward by `seek_blocks` obs-sized blocks. Falls
+/// back to writing zero blocks when the file cannot seek (e.g. stdout).
+/// Returns 0 on success, or a fatal exit code. Seek errors do NOT
+/// print stats.
+fn runDd_seekOutput(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    output_file: std.Io.File,
+    out_buf: []u8,
+    seek_blocks: usize, // tiger:allow:usize-arch block count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) u8 {
+    std.debug.assert(seek_blocks > 0);
+    std.debug.assert(obs > 0);
+
+    const seek_bytes = seek_blocks * obs;
+    io.vtable.fileSeekTo(io.userdata, output_file, seek_bytes) catch {
+        // If seeking fails (e.g., stdout), try writing zeros
+        var seeked: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+        @memset(out_buf, 0);
+        while (seeked < seek_blocks) : (seeked += 1) {
+            output_file.writeStreamingAll(io, out_buf) catch |write_err| {
+                const message = common.posixErrorString(write_err);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr,
+                    "dd",
+                    "error seeking output: {s}",
+                    .{message},
+                );
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        }
+        // The fallback loop stops at seeked == seek_blocks (or returned
+        // early on write error), so it never overshoots the request.
+        std.debug.assert(seeked <= seek_blocks);
+    };
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Apply the skip= and seek= operands, in that order, by delegating to
+/// the skip and seek helpers. Returns 0 when both succeed (or are not
+/// requested), or the first fatal exit code encountered.
+fn runDd_skipAndSeek(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    files: DdFiles,
+    bufs: DdBuffers,
+    config: *const DdConfig,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) u8 {
+    std.debug.assert(bufs.in_buf.len > 0);
+    std.debug.assert(bufs.out_buf.len == obs);
+
+    if (config.skip > 0) {
+        const input = files.input_file;
+        const code = runDd_skipInput(allocator, io, stderr, input, bufs.in_buf, config.skip);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
+    }
+    if (config.seek > 0) {
+        const output = files.output_file;
+        const out_buf = bufs.out_buf;
+        const code = runDd_seekOutput(allocator, io, stderr, output, out_buf, config.seek, obs);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Allocate the conv=block conversion buffer when conv=block is active.
+/// Returns the optional buffer (null when not needed) or a fatal exit
+/// code after printing the allocation-failure message.
+fn runDd_allocCbs(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    need_cbs: bool,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) DdCbsResult {
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
+
+    if (!need_cbs) return .{ .buffer = null };
+    const cbs_buf = allocator.alloc(u8, cbs) catch {
+        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate cbs buffer", .{});
+        return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+    };
+    // Postcondition: a successful alloc returns exactly cbs bytes.
+    std.debug.assert(cbs_buf.len == cbs);
+    return .{ .buffer = cbs_buf };
+}
+
+/// Handle a non-EOF read error in the main copy loop. With conv=noerror
+/// this prints the error, optionally NUL-fills/accounts a synced block
+/// (writing it in simple-copy mode), and asks the caller to continue.
+/// Otherwise it prints the error and stats and returns a fatal code.
+fn runDd_handleReadError(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    in_buf: []u8,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    simple_copy: bool,
+    blocks_read: *usize, // tiger:allow:usize-arch block counter uses slice index type
+    err: anyerror,
+) ReadErrorOutcome {
+    std.debug.assert(in_buf.len > 0);
+    std.debug.assert(ibs > 0);
+
+    if (config.conv_noerror) {
+        // Continue after read errors
+        const read_message = common.posixErrorString(err);
+        common.printErrorWithProgram(
+            ctx.allocator,
+            ctx.stderr,
+            "dd",
+            "read error: {s}",
+            .{read_message},
+        );
+        // Consume the count= budget on every failed read attempt. A
+        // persistent, non-advancing read (e.g. a directory fd returning
+        // EISDIR with zero bytes consumed) otherwise never increments
+        // blocks_read, so count= could not bound the loop and dd spun
+        // forever. Incrementing here makes count= bound the retries, as
+        // the sync path already did.
+        blocks_read.* += 1;
+        if (config.conv_sync) {
+            // Fill with NULs when sync is specified
+            @memset(in_buf, 0);
+            // Count as a full block
+            ctx.stats.full_blocks_in += 1;
+            if (simple_copy) {
+                // Write the NUL-filled block
+                ctx.output_file.writeStreamingAll(ctx.io, in_buf) catch |werr| {
+                    const write_message = common.posixErrorString(werr);
+                    common.printErrorWithProgram(
+                        ctx.allocator,
+                        ctx.stderr,
+                        "dd",
+                        "write error: {s}",
+                        .{write_message},
+                    );
+                    return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+                };
+                ctx.stats.full_blocks_out += 1;
+                ctx.stats.bytes_copied += ibs;
+            }
+        }
+        return .continue_loop;
+    }
+    const read_message = common.posixErrorString(err);
+    common.printErrorWithProgram(
+        ctx.allocator,
+        ctx.stderr,
+        "dd",
+        "read error: {s}",
+        .{read_message},
+    );
+    printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+    return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+}
+
+/// Report a write failure the way every copy-loop and flush write does:
+/// print the OS error, emit transfer stats, and yield the general-error
+/// exit code. Centralizes the repeated catch arm without changing it.
+fn runDd_writeError(ctx: *const DdWriteCtx, err: anyerror) u8 {
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
+
+    const message = common.posixErrorString(err);
+    common.printErrorWithProgram(ctx.allocator, ctx.stderr, "dd", "write error: {s}", .{message});
+    printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+/// Process one converted data block under conv=block: emit cbs-sized,
+/// fill-padded records on each newline and truncate overlong records.
+/// `cbs_pos` tracks the position within the in-progress record across
+/// blocks. Returns 0 to continue, or a fatal code (stats printed).
+fn runDd_writeBlockRecord(
+    ctx: *const DdWriteCtx,
+    record_buf: []u8,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    fillchar: u8,
+    data: []const u8,
+    cbs_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(record_buf.len == cbs);
+    std.debug.assert(cbs_pos.* <= cbs);
+
+    for (data) |byte| {
+        if (byte == '\n') {
+            // End of record: pad with fill character to cbs and write
+            if (cbs_pos.* < cbs) {
+                @memset(record_buf[cbs_pos.*..], fillchar);
+            }
+            ctx.output_file.writeStreamingAll(ctx.io, record_buf[0..cbs]) catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.stats.bytes_copied += cbs;
+            ctx.stats.full_blocks_out += 1;
+            cbs_pos.* = 0;
+        } else {
+            // Accumulate byte into record (truncate if > cbs)
+            if (cbs_pos.* < cbs) {
+                record_buf[cbs_pos.*] = byte;
+                cbs_pos.* += 1;
+            }
+        }
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Process one converted data block under conv=unblock: split it into
+/// cbs-sized records, strip trailing spaces, and emit each with a
+/// newline. `unblock_pos` tracks the partial record across blocks.
+/// Returns 0 to continue, or a fatal code (stats printed).
+fn runDd_writeUnblockRecords(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    data: []const u8,
+    unblock_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(unblock_pos.* <= cbs);
+
+    // Process data in cbs-sized chunks
+    var data_pos: usize = 0; // tiger:allow:usize-arch byte position uses slice index type
+    while (data_pos < data.len) {
+        const remaining_in_record = cbs - unblock_pos.*;
+        const remaining_in_data = data.len - data_pos;
+        const to_consume = @min(remaining_in_record, remaining_in_data);
+
+        // Copy bytes into output buffer temporarily
+        @memcpy(out_buf[unblock_pos.*..][0..to_consume], data[data_pos..][0..to_consume]);
+        unblock_pos.* += to_consume;
+        data_pos += to_consume;
+
+        if (unblock_pos.* == cbs) {
+            // Complete record: strip trailing spaces and add newline
+            var end: usize = cbs; // tiger:allow:usize-arch byte position uses slice index type
+            while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
+            ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..end]) catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.output_file.writeStreamingAll(ctx.io, "\n") catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.stats.bytes_copied += end + 1;
+            ctx.stats.full_blocks_out += 1;
+            unblock_pos.* = 0;
+        }
+    }
+    // Loop invariant: each step advances data_pos by at most the bytes
+    // remaining, so it never runs past the end of the data slice.
+    std.debug.assert(data_pos <= data.len);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Write one converted block in simple-copy mode: each input block is
+/// written directly, with conv=osync padding a partial final block to
+/// obs with NULs. Updates stats. Returns 0 to continue, or a fatal
+/// code (stats printed).
+fn runDd_writeSimpleBlock(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    data: []const u8,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    conv_osync: bool,
+) u8 {
+    std.debug.assert(obs != 0);
+    std.debug.assert(out_buf.len == obs);
+    // simple_copy is chosen only when bs= forces ibs == obs, so an input
+    // block never exceeds the output buffer it is copied into.
+    std.debug.assert(data.len <= out_buf.len);
+
+    if (conv_osync and data.len < obs) {
+        // Pad partial block to obs size with NULs
+        @memcpy(out_buf[0..data.len], data);
+        @memset(out_buf[data.len..obs], 0);
+        ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..obs]) catch |err| {
+            return runDd_writeError(ctx, err);
+        };
+        ctx.stats.bytes_copied += obs;
+        ctx.stats.full_blocks_out += 1;
+    } else {
+        ctx.output_file.writeStreamingAll(ctx.io, data) catch |err| {
+            return runDd_writeError(ctx, err);
+        };
+        ctx.stats.bytes_copied += data.len;
+        if (data.len == obs) {
+            ctx.stats.full_blocks_out += 1;
+        } else {
+            ctx.stats.partial_blocks_out += 1;
+        }
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Write one converted block in buffered mode: accumulate into out_buf
+/// and flush whenever it fills to obs. `out_pos` carries the buffer
+/// fill level across blocks. Returns 0 to continue, or a fatal code
+/// (stats printed).
+fn runDd_writeBufferedBlock(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    data: []const u8,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    out_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(obs != 0);
+    std.debug.assert(out_pos.* < obs);
+
+    var data_pos: usize = 0; // tiger:allow:usize-arch byte position uses slice index type
+    while (data_pos < data.len) {
+        const space_in_out = obs - out_pos.*;
+        const to_copy = @min(space_in_out, data.len - data_pos);
+        @memcpy(out_buf[out_pos.*..][0..to_copy], data[data_pos..][0..to_copy]);
+        out_pos.* += to_copy;
+        data_pos += to_copy;
+
+        if (out_pos.* == obs) {
+            // Output buffer is full, write it
+            ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..obs]) catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.stats.full_blocks_out += 1;
+            ctx.stats.bytes_copied += obs;
+            out_pos.* = 0;
+        }
+    }
+    // Loop invariant: data_pos advances by at most the bytes remaining,
+    // so it never runs past the end of the data slice.
+    std.debug.assert(data_pos <= data.len);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the conv=block tail: a partial record left without a trailing
+/// newline is fill-padded to cbs and written. Returns 0, or a fatal
+/// code (stats printed). Caller guards with conv_block and cbs_pos > 0.
+fn runDd_flushTails_block(
+    ctx: *const DdWriteCtx,
+    record_buf: []u8,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    cbs_pos: usize, // tiger:allow:usize-arch byte position uses slice index type
+    fillchar: u8,
+) u8 {
+    std.debug.assert(record_buf.len == cbs);
+    std.debug.assert(cbs_pos > 0);
+    // writeBlockRecord only ever leaves cbs_pos in 0..cbs, so padding the
+    // tail with record_buf[cbs_pos..] stays in bounds.
+    std.debug.assert(cbs_pos <= cbs);
+
+    @memset(record_buf[cbs_pos..], fillchar);
+    ctx.output_file.writeStreamingAll(ctx.io, record_buf[0..cbs]) catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    ctx.stats.bytes_copied += cbs;
+    ctx.stats.partial_blocks_out += 1;
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the conv=unblock tail: the partial record is space-stripped
+/// and written with a trailing newline. Returns 0, or a fatal code
+/// (stats printed). Caller guards with conv_unblock and unblock_pos > 0.
+fn runDd_flushTails_unblock(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    unblock_pos: usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(unblock_pos > 0);
+    std.debug.assert(unblock_pos <= out_buf.len);
+
+    var end: usize = unblock_pos; // tiger:allow:usize-arch byte position uses slice index type
+    while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
+    ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..end]) catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    ctx.output_file.writeStreamingAll(ctx.io, "\n") catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    ctx.stats.bytes_copied += end + 1;
+    ctx.stats.partial_blocks_out += 1;
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the generic output buffer tail (non-simple, non-block,
+/// non-unblock): conv=osync pads the final block to obs. Returns 0, or
+/// a fatal code (stats printed). Caller guards with out_pos > 0.
+fn runDd_flushTails_buffer(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    out_pos: usize, // tiger:allow:usize-arch byte position uses slice index type
+    conv_osync: bool,
+) u8 {
+    std.debug.assert(out_pos > 0);
+    std.debug.assert(out_pos <= obs);
+    // out_buf is the obs-sized output buffer, so padding to obs and the
+    // out_buf[0..write_len] write (write_len <= obs) both stay in bounds.
+    std.debug.assert(obs <= out_buf.len);
+
+    const write_len = if (conv_osync) blk: {
+        // Pad the final block to obs size with NULs
+        @memset(out_buf[out_pos..obs], 0);
+        break :blk obs;
+    } else out_pos;
+    ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..write_len]) catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    if (conv_osync) {
+        ctx.stats.full_blocks_out += 1;
+        ctx.stats.bytes_copied += obs;
+    } else {
+        ctx.stats.partial_blocks_out += 1;
+        ctx.stats.bytes_copied += out_pos;
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Execute the dd copy operation. Handles the argument-level outcomes
+/// (unsupported operand, parse errors, --help, --version) here and
+/// delegates the actual copy to runDd_copy once the config is valid.
+pub fn runDd(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) anyerror!u8 {
+    if (findUnsupportedOperand(args)) |name| {
+        const message = "unsupported operand '{s}' (not implemented)";
+        common.printErrorWithProgram(allocator, stderr, "dd", message, .{name});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
     const config = parseOperands(args) catch |err| {
         switch (err) {
             error.InvalidValue => {
@@ -497,372 +1235,416 @@ pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // lcase and ucase are mutually exclusive
-    if (config.conv_lcase and config.conv_ucase) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=lcase and conv=ucase are mutually exclusive", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
+    return runDd_copy(allocator, io, stderr, &config);
+}
 
-    // ascii, ebcdic, and ibm are mutually exclusive
-    const charset_count = @as(u8, @intFromBool(config.conv_ascii)) +
-        @as(u8, @intFromBool(config.conv_ebcdic)) +
-        @as(u8, @intFromBool(config.conv_ibm));
-    if (charset_count > 1) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // block and unblock are mutually exclusive
-    if (config.conv_block and config.conv_unblock) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=block and conv=unblock are mutually exclusive", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // block and unblock require cbs
-    if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=block/unblock requires cbs operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
+/// Set up the copy (validate, size, allocate, open, skip, seek), then
+/// run the copy loop and flush the tails. Owns every buffer/file defer
+/// so the lifecycle stays in one scope; returns the final exit code.
+fn runDd_copy(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    config: *const DdConfig,
+) u8 {
+    const validate_code = runDd_validateConfig(allocator, stderr, config);
+    if (validate_code != @intFromEnum(common.ExitCode.success)) return validate_code;
 
     // Determine effective block sizes
     const ibs = if (config.bs) |bs| bs else config.ibs;
     const obs = if (config.bs) |bs| bs else config.obs;
-
     if (ibs == 0 or obs == 0) {
         common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
+    // The guard above rejected zero block sizes, so both are positive
+    // before the buffers are allocated against them.
+    std.debug.assert(ibs > 0);
+    std.debug.assert(obs > 0);
 
-    // Allocate input and output buffers
-    const in_buf = allocator.alloc(u8, ibs) catch {
-        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate input buffer", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+    const bufs = switch (runDd_allocBuffers(allocator, stderr, ibs, obs)) {
+        .fatal => |code| return code,
+        .buffers => |b| b,
     };
-    defer allocator.free(in_buf);
+    defer allocator.free(bufs.in_buf);
+    defer allocator.free(bufs.out_buf);
 
-    const out_buf = allocator.alloc(u8, obs) catch {
-        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate output buffer", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+    const files = switch (runDd_openFiles(allocator, io, stderr, config)) {
+        .fatal => |code| return code,
+        .files => |f| f,
     };
-    defer allocator.free(out_buf);
+    defer if (config.input_file != null) files.input_file.close(io);
+    defer if (config.output_file != null) files.output_file.close(io);
 
-    // Open input
-    const input_file: std.Io.File = if (config.input_file) |path| blk: {
-        break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    } else std.Io.File.stdin();
-    defer if (config.input_file != null) input_file.close(io);
+    const ss_code = runDd_skipAndSeek(allocator, io, stderr, files, bufs, config, obs);
+    if (ss_code != @intFromEnum(common.ExitCode.success)) return ss_code;
 
-    // Open output
-    const output_file: std.Io.File = if (config.output_file) |path| blk: {
-        const flags: std.Io.File.CreateFlags = .{
-            .truncate = !config.conv_notrunc,
-        };
-        break :blk std.Io.Dir.cwd().createFile(io, path, flags) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    } else std.Io.File.stdout();
-    defer if (config.output_file != null) output_file.close(io);
-
-    // Skip input blocks
-    if (config.skip > 0) {
-        var skipped: usize = 0;
-        while (skipped < config.skip) : (skipped += 1) {
-            _ = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
-                error.EndOfStream => break, // EOF before all skips done
-                else => {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{common.posixErrorString(err)});
-                    return @intFromEnum(common.ExitCode.general_error);
-                },
-            };
-        }
-    }
-
-    // Seek output blocks
-    if (config.seek > 0) {
-        const seek_bytes = config.seek * obs;
-        io.vtable.fileSeekTo(io.userdata, output_file, seek_bytes) catch {
-            // If seeking fails (e.g., stdout), try writing zeros
-            var seeked: usize = 0;
-            @memset(out_buf, 0);
-            while (seeked < config.seek) : (seeked += 1) {
-                output_file.writeStreamingAll(io, out_buf) catch |write_err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "error seeking output: {s}", .{common.posixErrorString(write_err)});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-        };
-    }
-
-    // Allocate block/unblock conversion buffer if needed
     const cbs = config.cbs orelse 0;
-    var cbs_buf: ?[]u8 = null;
-    var cbs_pos: usize = 0;
-    if (config.conv_block) {
-        cbs_buf = allocator.alloc(u8, cbs) catch {
-            common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate cbs buffer", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    }
+    const cbs_buf = switch (runDd_allocCbs(allocator, stderr, config.conv_block, cbs)) {
+        .fatal => |code| return code,
+        .buffer => |b| b,
+    };
     defer if (cbs_buf) |b| allocator.free(b);
 
-    var stats = DdStats{
-        .start_ns = std.Io.Timestamp.now(io, .real).nanoseconds,
+    var stats = DdStats{ .start_ns = std.Io.Timestamp.now(io, .real).nanoseconds };
+    const ctx = DdWriteCtx{
+        .allocator = allocator,
+        .io = io,
+        .stderr = stderr,
+        .output_file = files.output_file,
+        .status = config.status,
+        .stats = &stats,
     };
+    const plan = DdPlan{
+        .input_file = files.input_file,
+        .in_buf = bufs.in_buf,
+        .out_buf = bufs.out_buf,
+        .cbs_buf = cbs_buf,
+        .ibs = ibs,
+        .obs = obs,
+        .cbs = cbs,
+        // Use simple copy when bs= is set and no block/unblock conversion.
+        .simple_copy = config.bs != null and !config.conv_block and !config.conv_unblock,
+    };
+    var positions = DdPositions{};
 
-    // Use simple copy mode when bs= is set and no block/unblock conversion
-    const simple_copy = config.bs != null and !config.conv_block and !config.conv_unblock;
+    const loop_code = runDd_copyLoop(&ctx, config, &plan, &positions);
+    if (loop_code != @intFromEnum(common.ExitCode.success)) return loop_code;
 
-    // Main copy loop
-    var out_pos: usize = 0; // Current position in output buffer (for non-simple mode)
-    var blocks_read: usize = 0;
+    return runDd_finish(&ctx, config, &plan, &positions);
+}
 
-    // Unblock position tracker: position within current cbs-sized record
-    var unblock_pos: usize = 0;
+/// Advance past a conv=noerror read error and enforce the two retry bounds.
+/// Called only after a read has already failed, so every call is one more
+/// consecutive non-reading retry: the counter is incremented here and reset
+/// ONLY on a successful READ back in the copy loop, so it measures how long
+/// the input has gone without yielding data. Two finite bounds keep every
+/// no-count run terminating:
+///   - Seek past the bad block SUCCEEDS (seekable media): this is the
+///     seekable-but-unreadable case GNU dd spins on forever; we cap it at
+///     the large dd_read_error_skip_max with a "while skipping" diagnostic.
+///   - Seek FAILS (non-seekable input such as a pipe, ESPIPE): no progress
+///     at all, so cap it at the small dd_read_error_stall_max with the
+///     "without progress" diagnostic.
+/// Returns a fatal exit code at the matching bound, or null to continue.
+fn runDd_advanceAfterReadError(
+    ctx: *const DdWriteCtx,
+    input_file: std.Io.File,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    read_errors_stalled: *usize, // tiger:allow:usize-arch counts loop retries
+) ?u8 {
+    std.debug.assert(ibs > 0);
+    // The caller aborts at whichever bound fires and never continues past
+    // it, so on entry the counter is always still below the larger cap.
+    std.debug.assert(read_errors_stalled.* < dd_read_error_skip_max);
 
-    while (true) {
+    // Every failed read is one more consecutive non-reading retry. The reset
+    // lives on the successful-read path in the copy loop, so this counter
+    // only ever grows here.
+    read_errors_stalled.* += 1;
+
+    // Try to skip past the bad block on seekable inputs. A successful seek is
+    // forward progress (GNU dd keeps skipping bad blocks on damaged seekable
+    // media), so continue; only the large skip cap bounds this path.
+    if (ctx.io.vtable.fileSeekBy(ctx.io.userdata, input_file, @intCast(ibs))) |_| {
+        if (read_errors_stalled.* >= dd_read_error_skip_max) {
+            common.printErrorWithProgram(
+                ctx.allocator,
+                ctx.stderr,
+                "dd",
+                "too many consecutive read errors while skipping; aborting",
+                .{},
+            );
+            printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        }
+        return null;
+    } else |_| {
+        // Seek failed (non-seekable input): neither the read nor the seek
+        // advanced, so this is a genuine zero-progress stall. Abort at the
+        // small bound rather than spinning forever.
+        if (read_errors_stalled.* >= dd_read_error_stall_max) {
+            common.printErrorWithProgram(
+                ctx.allocator,
+                ctx.stderr,
+                "dd",
+                "too many consecutive read errors without progress; aborting",
+                .{},
+            );
+            printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        }
+        return null;
+    }
+}
+
+/// Read one input block for the copy loop, folding EOF, recovered
+/// conv=noerror errors (print, count, seek past, retry-bound), and fatal
+/// errors into a single outcome. Mutates blocks_read on the noerror error
+/// path and increments read_errors_stalled on every failed read.
+fn runDd_readBlock(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    blocks_read: *usize, // tiger:allow:usize-arch block counter uses slice index type
+    read_errors_stalled: *usize, // tiger:allow:usize-arch counts loop retries
+) ReadOutcome {
+    std.debug.assert(plan.in_buf.len == plan.ibs);
+    std.debug.assert(plan.ibs > 0);
+
+    const read_result = plan.input_file.readStreaming(ctx.io, &.{plan.in_buf});
+    const bytes_read = read_result catch |err| switch (err) {
+        error.EndOfStream => return .eof,
+        else => switch (runDd_handleReadError(
+            ctx,
+            config,
+            plan.in_buf,
+            plan.ibs,
+            plan.simple_copy,
+            blocks_read,
+            err,
+        )) {
+            .continue_loop => {
+                if (runDd_advanceAfterReadError(
+                    ctx,
+                    plan.input_file,
+                    plan.ibs,
+                    read_errors_stalled,
+                )) |code| return .{ .fatal = code };
+                return .retry;
+            },
+            .fatal => |code| return .{ .fatal = code },
+        },
+    };
+    return .{ .bytes = bytes_read };
+}
+
+/// The main dd copy loop: read a block, account it, sync-pad, convert,
+/// and dispatch to the matching per-mode write helper. Position state
+/// is carried via pointers so the tail-flush phase can finish records.
+/// Returns 0 when the loop completes, or a fatal exit code.
+fn runDd_copyLoop(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    positions: *DdPositions,
+) u8 {
+    std.debug.assert(plan.in_buf.len == plan.ibs);
+    std.debug.assert(plan.out_buf.len == plan.obs);
+    // runDd_copy gates ibs > 0 before building the plan, so every read
+    // presents a nonempty buffer and the loop makes forward progress.
+    std.debug.assert(plan.ibs > 0);
+
+    const in_buf = plan.in_buf;
+    var blocks_read: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+    // Consecutive conv=noerror read errors that made no forward progress,
+    // neither reading data nor seeking past the bad block. Reset on any
+    // good read or successful skip; bounds a truly non-advancing spin.
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+    while (true) { // tiger:allow:unbounded-loop bounded by EOF, count=/stall, or fatal I/O
         // Check count limit
         if (config.count) |count| {
             if (blocks_read >= count) break;
         }
 
-        // Read one input block
-        const bytes_read = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
-            error.EndOfStream => break, // EOF
-            else => {
-                if (config.conv_noerror) {
-                    // Continue after read errors
-                    common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
-                    if (config.conv_sync) {
-                        // Fill with NULs when sync is specified
-                        @memset(in_buf, 0);
-                        // Count as a full block
-                        stats.full_blocks_in += 1;
-                        blocks_read += 1;
-                        if (simple_copy) {
-                            // Write the NUL-filled block
-                            output_file.writeStreamingAll(io, in_buf) catch |werr| {
-                                common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(werr)});
-                                return @intFromEnum(common.ExitCode.general_error);
-                            };
-                            stats.full_blocks_out += 1;
-                            stats.bytes_copied += ibs;
-                        }
-                    }
-                    continue;
-                }
-                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
-                printStats(io, stderr, stats, config.status);
-                return @intFromEnum(common.ExitCode.general_error);
-            },
+        const outcome = runDd_readBlock(ctx, config, plan, &blocks_read, &read_errors_stalled);
+        const bytes_read = switch (outcome) {
+            .eof => break,
+            .retry => continue,
+            .fatal => |code| return code,
+            .bytes => |count| count,
         };
 
+        // A successful read means forward progress: clear the stall count.
+        read_errors_stalled = 0;
         blocks_read += 1;
 
         // Track input block statistics
-        if (bytes_read == ibs) {
-            stats.full_blocks_in += 1;
+        if (bytes_read == plan.ibs) {
+            ctx.stats.full_blocks_in += 1;
         } else {
-            stats.partial_blocks_in += 1;
+            ctx.stats.partial_blocks_in += 1;
         }
 
         // Get the data to process
         var data = in_buf[0..bytes_read];
 
-        // Apply sync padding if needed
-        // GNU dd pads with spaces when conv=block or conv=unblock is active,
-        // and with NUL bytes otherwise.
-        if (config.conv_sync and bytes_read < ibs) {
+        // Apply sync padding if needed. GNU dd pads with spaces when
+        // conv=block or conv=unblock is active, and with NUL otherwise.
+        if (config.conv_sync and bytes_read < plan.ibs) {
             const pad_byte: u8 = if (config.conv_block or config.conv_unblock) ' ' else 0;
             @memset(in_buf[bytes_read..], pad_byte);
-            data = in_buf[0..ibs];
+            data = in_buf[0..plan.ibs];
         }
 
         // Apply conversions (swab, charset, case)
-        applyConversions(data, config);
+        applyConversions(data, config.*);
 
-        // Handle conv=block: convert newline-terminated records to fixed-size
-        if (config.conv_block) {
-            const record_buf = cbs_buf.?;
-            for (data) |byte| {
-                if (byte == '\n') {
-                    // End of record: pad with fill character to cbs and write
-                    if (cbs_pos < cbs) {
-                        @memset(record_buf[cbs_pos..], config.fillchar);
-                    }
-                    output_file.writeStreamingAll(io, record_buf[0..cbs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stats.bytes_copied += cbs;
-                    stats.full_blocks_out += 1;
-                    cbs_pos = 0;
-                } else {
-                    // Accumulate byte into record (truncate if > cbs)
-                    if (cbs_pos < cbs) {
-                        record_buf[cbs_pos] = byte;
-                        cbs_pos += 1;
-                    }
-                }
-            }
-            continue;
-        }
-
-        // Handle conv=unblock: convert fixed-size records to newline-terminated
-        if (config.conv_unblock) {
-            // Process data in cbs-sized chunks
-            var data_pos: usize = 0;
-            while (data_pos < data.len) {
-                const remaining_in_record = cbs - unblock_pos;
-                const remaining_in_data = data.len - data_pos;
-                const to_consume = @min(remaining_in_record, remaining_in_data);
-
-                // Copy bytes into output buffer temporarily
-                @memcpy(out_buf[unblock_pos..][0..to_consume], data[data_pos..][0..to_consume]);
-                unblock_pos += to_consume;
-                data_pos += to_consume;
-
-                if (unblock_pos == cbs) {
-                    // Complete record: strip trailing spaces and add newline
-                    var end: usize = cbs;
-                    while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
-                    output_file.writeStreamingAll(io, out_buf[0..end]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    output_file.writeStreamingAll(io, "\n") catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stats.bytes_copied += end + 1;
-                    stats.full_blocks_out += 1;
-                    unblock_pos = 0;
-                }
-            }
-            continue;
-        }
-
-        if (simple_copy) {
-            // Simple copy: write each input block directly as output
-            if (config.conv_osync and data.len < obs) {
-                // Pad partial block to obs size with NULs
-                @memcpy(out_buf[0..data.len], data);
-                @memset(out_buf[data.len..obs], 0);
-                output_file.writeStreamingAll(io, out_buf[0..obs]) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                    printStats(io, stderr, stats, config.status);
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-                stats.bytes_copied += obs;
-                stats.full_blocks_out += 1;
-            } else {
-                output_file.writeStreamingAll(io, data) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                    printStats(io, stderr, stats, config.status);
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-                stats.bytes_copied += data.len;
-                if (data.len == obs) {
-                    stats.full_blocks_out += 1;
-                } else {
-                    stats.partial_blocks_out += 1;
-                }
-            }
-        } else {
-            // Buffered copy: accumulate data in output buffer, write when full
-            var data_pos: usize = 0;
-            while (data_pos < data.len) {
-                const space_in_out = obs - out_pos;
-                const to_copy = @min(space_in_out, data.len - data_pos);
-                @memcpy(out_buf[out_pos..][0..to_copy], data[data_pos..][0..to_copy]);
-                out_pos += to_copy;
-                data_pos += to_copy;
-
-                if (out_pos == obs) {
-                    // Output buffer is full, write it
-                    output_file.writeStreamingAll(io, out_buf[0..obs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stats.full_blocks_out += 1;
-                    stats.bytes_copied += obs;
-                    out_pos = 0;
-                }
-            }
-        }
+        const code = runDd_copyLoop_dispatch(ctx, config, plan, data, positions);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Dispatch one converted block to the matching write mode, mutating
+/// the carried position state. Returns 0 to continue the loop, or a
+/// fatal exit code. Branch order matches the original inline dispatch.
+fn runDd_copyLoop_dispatch(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    data: []u8,
+    positions: *DdPositions,
+) u8 {
+    std.debug.assert(plan.out_buf.len == plan.obs);
+    std.debug.assert(data.len <= plan.in_buf.len);
+
+    if (config.conv_block) {
+        return runDd_writeBlockRecord(
+            ctx,
+            plan.cbs_buf.?,
+            plan.cbs,
+            config.fillchar,
+            data,
+            &positions.cbs_pos,
+        );
+    }
+    if (config.conv_unblock) {
+        return runDd_writeUnblockRecords(ctx, plan.out_buf, plan.cbs, data, &positions.unblock_pos);
+    }
+    if (plan.simple_copy) {
+        return runDd_writeSimpleBlock(ctx, plan.out_buf, data, plan.obs, config.conv_osync);
+    }
+    return runDd_writeBufferedBlock(ctx, plan.out_buf, data, plan.obs, &positions.out_pos);
+}
+
+/// Flush the conversion tails left after the copy loop, fsync the
+/// output when requested, and print final transfer statistics. Returns
+/// success, or a fatal exit code if a tail write or fsync fails.
+fn runDd_finish(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    positions: *const DdPositions,
+) u8 {
+    std.debug.assert(plan.out_buf.len == plan.obs);
 
     // Flush remaining record for conv=block (partial record without newline)
-    if (config.conv_block and cbs_pos > 0) {
-        const record_buf = cbs_buf.?;
-        @memset(record_buf[cbs_pos..], config.fillchar);
-        output_file.writeStreamingAll(io, record_buf[0..cbs]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        stats.bytes_copied += cbs;
-        stats.partial_blocks_out += 1;
+    if (config.conv_block and positions.cbs_pos > 0) {
+        const code = runDd_flushTails_block(
+            ctx,
+            plan.cbs_buf.?,
+            plan.cbs,
+            positions.cbs_pos,
+            config.fillchar,
+        );
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
     // Flush remaining data for conv=unblock (partial record)
-    if (config.conv_unblock and unblock_pos > 0) {
-        var end: usize = unblock_pos;
-        while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
-        output_file.writeStreamingAll(io, out_buf[0..end]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        output_file.writeStreamingAll(io, "\n") catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        stats.bytes_copied += end + 1;
-        stats.partial_blocks_out += 1;
+    if (config.conv_unblock and positions.unblock_pos > 0) {
+        const code = runDd_flushTails_unblock(ctx, plan.out_buf, positions.unblock_pos);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
     // Flush remaining data in output buffer (non-simple mode, non-block/unblock)
-    if (!simple_copy and !config.conv_block and !config.conv_unblock and out_pos > 0) {
-        const write_len = if (config.conv_osync) blk: {
-            // Pad the final block to obs size with NULs
-            @memset(out_buf[out_pos..obs], 0);
-            break :blk obs;
-        } else out_pos;
-        output_file.writeStreamingAll(io, out_buf[0..write_len]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        if (config.conv_osync) {
-            stats.full_blocks_out += 1;
-            stats.bytes_copied += obs;
-        } else {
-            stats.partial_blocks_out += 1;
-            stats.bytes_copied += out_pos;
+    const buffered_mode = !plan.simple_copy and !config.conv_block and !config.conv_unblock;
+    if (buffered_mode and positions.out_pos > 0) {
+        const code = runDd_flushTails_buffer(
+            ctx,
+            plan.out_buf,
+            plan.obs,
+            positions.out_pos,
+            config.conv_osync,
+        );
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
+    }
+
+    // Sync the output file if conv=fsync or conv=fdatasync was requested.
+    const sync_code = runDd_finish_sync(ctx, config);
+    if (sync_code != @intFromEnum(common.ExitCode.success)) return sync_code;
+
+    // Print statistics
+    printStats(ctx.io, ctx.stderr, ctx.stats.*, config.status);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the output file to disk for conv=fsync and/or conv=fdatasync.
+/// conv=fdatasync flushes data only via fdatasync(2); conv=fsync flushes
+/// data and metadata. A full fsync subsumes a data-only sync, so when both
+/// are requested a single fsync suffices (matching GNU dd). fdatasync is
+/// Linux-only; on other platforms a full fsync is performed instead.
+///
+/// We issue the raw syscalls and inspect errno directly rather than call
+/// std.posix.fdatasync / File.sync: those mark EINVAL "unreachable" and so
+/// panic (SIGABRT) when the output is a pipe or other object that cannot be
+/// synced. Like gnulib's fdatasync replacement, EINVAL/ENOSYS from
+/// fdatasync fall back to a full fsync; a genuine fsync failure (e.g. the
+/// output is a pipe) is reported GNU-style and exits nonzero.
+fn runDd_finish_sync(ctx: *const DdWriteCtx, config: *const DdConfig) u8 {
+    const want_full = config.conv_fsync;
+    const want_data = config.conv_fdatasync;
+    if (!want_full and !want_data) return @intFromEnum(common.ExitCode.success);
+
+    const fd = ctx.output_file.handle;
+    const target = config.output_file orelse "standard output";
+    const use_fdatasync = want_data and !want_full and builtin.os.tag == .linux;
+    if (use_fdatasync) {
+        // A data-only sync is chosen only when no full fsync was requested.
+        std.debug.assert(!want_full);
+        // The fdatasync(2) path is reachable on Linux alone.
+        std.debug.assert(builtin.os.tag == .linux);
+        switch (std.posix.errno(std.posix.system.fdatasync(fd))) {
+            .SUCCESS => return @intFromEnum(common.ExitCode.success),
+            // No fdatasync for this fd/filesystem: fall through to fsync.
+            .INVAL, .NOSYS => {},
+            else => |err| return runDd_finish_sync_fail(ctx, "fdatasync", target, err),
         }
     }
 
-    // fsync the output file if requested
-    if (config.conv_fsync) {
-        output_file.sync(io) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "fsync error: {s}", .{common.posixErrorString(err)});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
+    // Full fsync: conv=fsync, the fdatasync fallback, or non-Linux fdatasync.
+    switch (std.posix.errno(std.posix.system.fsync(fd))) {
+        .SUCCESS => return @intFromEnum(common.ExitCode.success),
+        else => |err| return runDd_finish_sync_fail(ctx, "fsync", target, err),
     }
+}
 
-    // Print statistics
-    printStats(io, stderr, stats, config.status);
+/// Report a failed output sync GNU-style ("dd: fsync failed for
+/// 'standard output': Invalid argument") and map it to dd's fatal exit
+/// code. `op` names the syscall and `target` names the output operand.
+fn runDd_finish_sync_fail(
+    ctx: *const DdWriteCtx,
+    op: []const u8,
+    target: []const u8,
+    err: std.posix.E,
+) u8 {
+    std.debug.assert(op.len > 0);
+    std.debug.assert(err != .SUCCESS);
 
-    return @intFromEnum(common.ExitCode.success);
+    const detail = runDd_finish_sync_errnoString(err);
+    common.printErrorWithProgram(
+        ctx.allocator,
+        ctx.stderr,
+        "dd",
+        "{s} failed for '{s}': {s}",
+        .{ op, target, detail },
+    );
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+/// Human-readable text for the errno values an output sync can report, so
+/// dd's diagnostics read like GNU's rather than exposing raw errno tags.
+fn runDd_finish_sync_errnoString(err: std.posix.E) []const u8 {
+    std.debug.assert(err != .SUCCESS);
+    return switch (err) {
+        .INVAL => "Invalid argument",
+        .BADF => "Bad file descriptor",
+        .IO => "Input/output error",
+        .NOSPC => "No space left on device",
+        .DQUOT => "Disk quota exceeded",
+        .ROFS => "Read-only file system",
+        else => @tagName(err),
+    };
 }
 
 /// Process files or stdin with dd operands
@@ -929,6 +1711,83 @@ test "parseOperands - count skip seek" {
     try testing.expectEqual(@as(?usize, 10), config.count);
     try testing.expectEqual(@as(usize, 5), config.skip);
     try testing.expectEqual(@as(usize, 3), config.seek);
+}
+
+// Issue #43: count=/skip=/seek= must accept the same K/M/G/b suffix
+// grammar that bs= already honors. GNU applies the multiplicative
+// suffix table to both N (count/skip/seek) and BYTES (bs) operands.
+test "parseOperands - count suffix k" {
+    const args = [_][]const u8{"count=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 1024), config.count);
+    // Sibling operands must remain at their defaults.
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - count suffix M" {
+    const args = [_][]const u8{"count=2M"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 2 * 1048576), config.count);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - count suffix b block" {
+    const args = [_][]const u8{"count=1b"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 512), config.count);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - skip suffix k" {
+    const args = [_][]const u8{"skip=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.skip);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - seek suffix k" {
+    const args = [_][]const u8{"seek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.seek);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+test "parseOperands - iseek suffix maps to skip" {
+    const args = [_][]const u8{"iseek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.skip);
+    try testing.expectEqual(@as(usize, 0), config.seek);
+}
+
+test "parseOperands - oseek suffix maps to seek" {
+    const args = [_][]const u8{"oseek=1k"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 1024), config.seek);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+// Regression guard: plain integer counts must parse identically after
+// routing through parseByteSize. Must be GREEN before and after the fix.
+test "parseOperands - plain integer count skip seek unchanged" {
+    const args = [_][]const u8{ "count=2", "skip=3", "seek=4" };
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 2), config.count);
+    try testing.expectEqual(@as(usize, 3), config.skip);
+    try testing.expectEqual(@as(usize, 4), config.seek);
+}
+
+test "parseOperands - count zero stays zero" {
+    const args = [_][]const u8{"count=0"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 0), config.count);
+    try testing.expectEqual(@as(usize, 0), config.skip);
+}
+
+// Lowercase 'm' is not in the bs= suffix table; count= must reject it
+// exactly as bs= does. Pins that we did not loosen the grammar.
+test "parseOperands - count lowercase m rejected" {
+    const args = [_][]const u8{"count=1m"};
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
 }
 
 test "parseOperands - conversions" {
@@ -1015,14 +1874,8 @@ test "parseOperands - defaults" {
     try testing.expect(!config.conv_ibm);
     try testing.expect(!config.conv_block);
     try testing.expect(!config.conv_unblock);
-    try testing.expect(!config.conv_sparse);
-    try testing.expect(!config.conv_pareven);
-    try testing.expect(!config.conv_parnone);
-    try testing.expect(!config.conv_parodd);
-    try testing.expect(!config.conv_parset);
     try testing.expect(config.cbs == null);
     try testing.expectEqual(@as(u8, ' '), config.fillchar);
-    try testing.expectEqual(@as(usize, 1), config.files);
     try testing.expectEqual(StatusLevel.default, config.status);
 }
 
@@ -1116,7 +1969,13 @@ test "runDd - basic file copy" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1149,7 +2008,13 @@ test "runDd - copy with count" {
 
     // Copy 1 block of 10 bytes
     const args = [_][]const u8{ if_arg, of_arg, "bs=10", "count=1", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1179,7 +2044,13 @@ test "runDd - copy with conv=ucase" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ucase", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1208,7 +2079,13 @@ test "runDd - copy with conv=lcase" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=lcase", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1238,7 +2115,13 @@ test "runDd - skip blocks" {
 
     // Skip 1 block of 4 bytes, should get "BBBB"
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "skip=1", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1270,7 +2153,13 @@ test "runDd - statistics output" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain records in/out
@@ -1302,7 +2191,13 @@ test "runDd - status=none suppresses output" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
@@ -1331,7 +2226,13 @@ test "runDd - status=noxfer omits transfer line" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "status=noxfer" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have records but not bytes line
@@ -1346,7 +2247,13 @@ test "runDd - mutually exclusive lcase and ucase" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=lcase,ucase"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1357,7 +2264,13 @@ test "runDd - nonexistent input file" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "if=/nonexistent/path/to/file.txt", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(stderr_aw.writer.buffered().len > 0);
@@ -1369,7 +2282,13 @@ test "runDd - invalid operand" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"invalid=operand"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1380,7 +2299,13 @@ test "runDd - zero block size" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"bs=0"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1406,7 +2331,13 @@ test "runDd - different ibs and obs" {
 
     // Read 4 bytes at a time, write 8 bytes at a time
     const args = [_][]const u8{ if_arg, of_arg, "ibs=4", "obs=8", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1435,7 +2366,13 @@ test "runDd - count=0 copies nothing" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "count=0", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1456,15 +2393,25 @@ test "parseOperands - cbs default is null" {
     try testing.expect(config.cbs == null);
 }
 
-test "parseOperands - files operand" {
-    const args = [_][]const u8{"files=3"};
-    const config = try parseOperands(&args);
-    try testing.expectEqual(@as(usize, 3), config.files);
-}
-
 test "parseConversions - fsync" {
     const args = [_][]const u8{"conv=fsync"};
     const config = try parseOperands(&args);
+    try testing.expect(config.conv_fsync);
+}
+
+// Issue #43: conv=fdatasync flushes output data before exit, like
+// conv=fsync but data-only. Must parse to its own independent flag.
+test "parseConversions - fdatasync" {
+    const args = [_][]const u8{"conv=fdatasync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fdatasync);
+    try testing.expect(!config.conv_fsync);
+}
+
+test "parseConversions - fdatasync and fsync independent" {
+    const args = [_][]const u8{"conv=fdatasync,fsync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fdatasync);
     try testing.expect(config.conv_fsync);
 }
 
@@ -1579,7 +2526,13 @@ test "runDd - conv=swab swaps byte pairs" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=swab", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1608,7 +2561,13 @@ test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ebcdic", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1638,7 +2597,13 @@ test "runDd - conv=ascii converts EBCDIC to ASCII" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ascii", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1668,7 +2633,13 @@ test "runDd - conv=osync pads final block" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "obs=8", "conv=osync", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1704,7 +2675,13 @@ test "runDd - conv=block pads records to cbs size" {
 
     // cbs=5: each record padded to 5 bytes with spaces
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1737,7 +2714,13 @@ test "runDd - conv=unblock replaces trailing spaces with newline" {
 
     // cbs=5: each 5-byte record, trailing spaces replaced with newline
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=unblock", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1752,7 +2735,13 @@ test "runDd - conv=noxfer is rejected" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=noxfer"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // conv=noxfer should be rejected; noxfer is only valid as status=noxfer
     try testing.expect(exit_code != 0);
@@ -1764,7 +2753,13 @@ test "runDd - mutually exclusive ascii and ebcdic" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=ascii,ebcdic"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1775,7 +2770,13 @@ test "runDd - mutually exclusive block and unblock" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=block,unblock"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1786,7 +2787,13 @@ test "runDd - block requires cbs" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=block"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1797,7 +2804,13 @@ test "runDd - unblock requires cbs" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=unblock"};
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1882,44 +2895,6 @@ test "parseConversions - oldibm maps to ibm" {
     try testing.expect(config.conv_ibm);
 }
 
-test "parseConversions - sparse accepted as no-op" {
-    const args = [_][]const u8{"conv=sparse"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_sparse);
-}
-
-test "parseConversions - pareven accepted as no-op" {
-    const args = [_][]const u8{"conv=pareven"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_pareven);
-}
-
-test "parseConversions - parnone accepted as no-op" {
-    const args = [_][]const u8{"conv=parnone"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_parnone);
-}
-
-test "parseConversions - parodd accepted as no-op" {
-    const args = [_][]const u8{"conv=parodd"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_parodd);
-}
-
-test "parseConversions - parset accepted as no-op" {
-    const args = [_][]const u8{"conv=parset"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_parset);
-}
-
-test "parseConversions - multiple parity and sparse" {
-    const args = [_][]const u8{"conv=sparse,pareven,lcase"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_sparse);
-    try testing.expect(config.conv_pareven);
-    try testing.expect(config.conv_lcase);
-}
-
 test "runDd - conv=block with fillchar" {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
@@ -1940,8 +2915,21 @@ test "runDd - conv=block with fillchar" {
     defer testing.allocator.free(of_arg);
 
     // cbs=5, fillchar=X: record "ab" padded to "abXXX"
-    const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "fillchar=X", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const args = [_][]const u8{
+        if_arg,
+        of_arg,
+        "cbs=5",
+        "conv=block",
+        "fillchar=X",
+        "status=none",
+    };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1972,7 +2960,13 @@ test "runDd - iseek skips input blocks" {
 
     // iseek=1 with bs=4 should skip first 4 bytes, get "BBBB"
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "iseek=1", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2002,7 +2996,13 @@ test "runDd - multi-block copy with bs and count" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "count=3", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2076,8 +3076,22 @@ test "audit: conv=sync pads with spaces when conv=block is active" {
     // With correct space padding: "X\n    " -> record "X" padded to "X     ",
     // then 4 trailing spaces form another record "    " padded to "      ".
     // Output = "X     " (6 bytes) + "      " (6 bytes) = 12 bytes, no NUL.
-    const args = [_][]const u8{ if_arg, of_arg, "ibs=6", "obs=6", "cbs=6", "conv=sync,block", "status=none" };
-    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
+    const args = [_][]const u8{
+        if_arg,
+        of_arg,
+        "ibs=6",
+        "obs=6",
+        "cbs=6",
+        "conv=sync,block",
+        "status=none",
+    };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2111,4 +3125,261 @@ test "audit: conv=ibm produces different output than conv=ebcdic for caret" {
     try testing.expect(ebcdic_buf[0] != ibm_buf[0]);
     try testing.expectEqual(@as(u8, 0x9A), ebcdic_buf[0]);
     try testing.expectEqual(@as(u8, 0x5F), ibm_buf[0]);
+}
+
+// Audit G5: dd parses conv=sparse, conv=par{even,none,odd,set}, and
+// the files=N operand but never applies them. The audit calls for
+// rejecting these at parse time so users are not silently misled.
+// These tests assert each operand is rejected at parse time with a
+// non-zero exit status and a diagnostic on stderr that names the
+// offending operand. We always provide if=/of= so the bug-path copy
+// loop has a controlled, finite stdin replacement (no hang on real
+// stdin if the parser silently accepts the operand).
+
+/// Run dd with a single unsupported operand against a real tmp input file
+/// and assert misuse exit (2) with `expected_needle` in stderr.
+fn expectDdRejectsOperand(operand: []const u8, expected_needle: []const u8) !void {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ if_arg, of_arg, operand, "status=none" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), expected_needle) != null);
+}
+
+test "audit G5: runDd rejects conv=sparse with diagnostic" {
+    try expectDdRejectsOperand("conv=sparse", "sparse");
+}
+
+test "audit G5: runDd rejects conv=pareven with diagnostic" {
+    try expectDdRejectsOperand("conv=pareven", "pareven");
+}
+
+test "audit G5: runDd rejects conv=parnone with diagnostic" {
+    try expectDdRejectsOperand("conv=parnone", "parnone");
+}
+
+test "audit G5: runDd rejects conv=parodd with diagnostic" {
+    try expectDdRejectsOperand("conv=parodd", "parodd");
+}
+
+test "audit G5: runDd rejects conv=parset with diagnostic" {
+    try expectDdRejectsOperand("conv=parset", "parset");
+}
+
+test "audit G5: runDd rejects files= operand with diagnostic" {
+    try expectDdRejectsOperand("files=3", "files");
+}
+
+// Regression tests for issue #44 (round 3 semantics): the conv=noerror
+// stall counter resets ONLY on a successful READ, never on a successful
+// seek. Two finite bounds keep every no-count path terminating:
+//   - Seek FAILED (cannot advance; pipes/ESPIPE): abort at the small
+//     dd_read_error_stall_max with the "without progress" diagnostic.
+//   - Seek SUCCEEDED but reads never succeed (seekable-but-unreadable,
+//     e.g. a directory fd or a dead device): abort at the much larger
+//     dd_read_error_skip_max with a distinct "while skipping" diagnostic.
+// GNU dd spins forever in the second case; we deliberately bound it. These
+// three tests pin all three halves of that decision (small-bound exemption
+// for seeks, small-bound abort on seek failure, large-bound abort on
+// endless skip).
+
+test "successful seeks are exempt from the small stall bound" {
+    // Goal: a seekable input whose seek always succeeds must NOT trip the
+    // small dd_read_error_stall_max bound, no matter how many consecutive
+    // read errors occur; that small bound is reserved for the seek-failure
+    // (zero-progress) case. Method: drive runDd_advanceAfterReadError
+    // against a real regular file (fileSeekBy succeeds) one past the small
+    // bound and require every call to return null (no abort). Because the
+    // stall counter now resets only on a good READ (never on seek success),
+    // it grows monotonically with each call; assert it equals the iteration
+    // count to pin that monotonic growth. Against round-2 code, which reset
+    // the counter on every successful seek, that final equality fails
+    // (counter stayed 0), which is part of the round-3 red evidence.
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // An empty regular file is seekable: lseek(SEEK_CUR, +ibs) past EOF
+    // succeeds, so every advance reports forward progress.
+    var seekable_file = try tmp_dir.dir.createFile(io, "seekable.bin", .{});
+    defer seekable_file.close(io);
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = common.null_writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+    };
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+
+    // One iteration past the small bound proves the small bound never fires
+    // while seeks keep succeeding.
+    const iterations = dd_read_error_stall_max + 1;
+    var i: usize = 0; // tiger:allow:usize-arch loop index
+    while (i < iterations) : (i += 1) {
+        const result = runDd_advanceAfterReadError(&ctx, seekable_file, ibs, &read_errors_stalled);
+        try testing.expectEqual(@as(?u8, null), result);
+    }
+    // The counter resets only on a good read, so with only successful seeks
+    // it grows once per call, staying far below the large skip bound.
+    try testing.expectEqual(iterations, read_errors_stalled);
+    try testing.expect(read_errors_stalled < dd_read_error_skip_max);
+}
+
+test "stall bound aborts when seek cannot advance" {
+    // Goal: a non-seekable input with persistent read errors (issue #44's
+    // class, where GNU dd spins forever) must abort at the bound with the
+    // distinct diagnostic. Method: drive runDd_advanceAfterReadError against
+    // a pipe read end, whose fileSeekBy fails (ESPIPE), so no call reports
+    // progress; assert the fatal exit arrives exactly at the
+    // dd_read_error_stall_max'th consecutive stall with the diagnostic.
+    const io = testing.io;
+
+    // A pipe read end is not seekable, so the advance's fileSeekBy fails and
+    // the stall counter must accumulate on every call.
+    const pipe_fds = try std.Io.Threaded.pipe2(.{});
+    const pipe_read = std.Io.File{ .handle = pipe_fds[0], .flags = .{ .nonblocking = false } };
+    const pipe_write = std.Io.File{ .handle = pipe_fds[1], .flags = .{ .nonblocking = false } };
+    defer pipe_read.close(io);
+    defer pipe_write.close(io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = &stderr_aw.writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+    };
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+
+    var result: ?u8 = null;
+    var calls: usize = 0; // tiger:allow:usize-arch counts calls
+    while (calls < dd_read_error_stall_max) : (calls += 1) {
+        result = runDd_advanceAfterReadError(&ctx, pipe_read, ibs, &read_errors_stalled);
+        if (result != null) break;
+    }
+
+    // The bound fires, returning a fatal general_error exit code...
+    try testing.expect(result != null);
+    try testing.expectEqual(@intFromEnum(common.ExitCode.general_error), result.?);
+    // ...exactly at the dd_read_error_stall_max'th consecutive stall...
+    try testing.expectEqual(dd_read_error_stall_max, read_errors_stalled);
+    try testing.expectEqual(dd_read_error_stall_max, calls + 1);
+    // ...and prints the distinct non-advancing-read diagnostic.
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "too many consecutive read errors",
+    ) != null);
+}
+
+test "skip bound aborts a seekable input that never reads" {
+    // Goal: a seekable-but-unreadable input (seek always succeeds, read
+    // always fails, e.g. a directory fd or dead device) must not spin
+    // forever; it must abort at the large dd_read_error_skip_max bound with
+    // a distinct "while skipping" diagnostic. GNU dd loops here without
+    // bound; we deliberately diverge and cap it. Method: drive
+    // runDd_advanceAfterReadError against a real regular file (fileSeekBy
+    // succeeds every call, modelling the endless-skip path since the read
+    // failure that precedes each advance has already happened) up to the
+    // skip bound and require the fatal general_error at exactly that bound.
+    //
+    // RED under round-2 code: seek success there resets the counter, so the
+    // helper returns null on every one of the dd_read_error_skip_max calls
+    // and NEVER aborts; the result != null assertion below fails. The
+    // implementer makes it GREEN by counting successful seeks toward
+    // dd_read_error_skip_max and emitting the "while skipping" diagnostic.
+    //
+    // DIAGNOSTIC CONTRACT for the implementer: the seek-succeeds-but-never-
+    // reads abort must print a message containing "while skipping" so it is
+    // distinguishable from the seek-fails "without progress" stall message.
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // An empty regular file is seekable: lseek(SEEK_CUR, +ibs) past EOF
+    // succeeds on every advance, so no seek ever fails and only the large
+    // skip bound can terminate the run.
+    var seekable_file = try tmp_dir.dir.createFile(io, "endless_skip.bin", .{});
+    defer seekable_file.close(io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    var stats: DdStats = .{};
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = &stderr_aw.writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+    };
+
+    const ibs: usize = 512; // tiger:allow:usize-arch byte count uses slice index type
+    var read_errors_stalled: usize = 0; // tiger:allow:usize-arch counts loop retries
+
+    var result: ?u8 = null;
+    var calls: usize = 0; // tiger:allow:usize-arch counts calls
+    while (calls < dd_read_error_skip_max) : (calls += 1) {
+        result = runDd_advanceAfterReadError(&ctx, seekable_file, ibs, &read_errors_stalled);
+        if (result != null) break;
+    }
+
+    // The large skip bound fires, returning a fatal general_error exit
+    // code...
+    try testing.expect(result != null);
+    try testing.expectEqual(@intFromEnum(common.ExitCode.general_error), result.?);
+    // ...exactly at the dd_read_error_skip_max'th consecutive skipped
+    // block...
+    try testing.expectEqual(dd_read_error_skip_max, read_errors_stalled);
+    try testing.expectEqual(dd_read_error_skip_max, calls + 1);
+    // ...and prints the distinct endless-skip diagnostic (not the stall
+    // one).
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "while skipping",
+    ) != null);
 }

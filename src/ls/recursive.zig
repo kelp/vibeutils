@@ -19,12 +19,32 @@ pub fn recurseIntoSubdirectory(
     visited_fs_ids: *common.directory.FileSystemIdSet,
     git_context: ?*types.GitContext,
 ) anyerror!void {
+    // subdir_path is built by collectSubdirectories as base_path + "/" +
+    // entry.name, so it is always a non-empty joined path.
+    std.debug.assert(subdir_path.len > 0);
     // Import core module to avoid circular dependency
     const core = @import("core.zig");
-    core.listDirectoryImplWithVisited(io, sub_dir, subdir_path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context) catch |err| switch (err) {
+    core.listDirectoryImplWithVisited(
+        io,
+        sub_dir,
+        subdir_path,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        style,
+        visited_fs_ids,
+        git_context,
+    ) catch |err| switch (err) {
         error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ subdir_path, err });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "ls",
+                "{s}: {}",
+                .{ subdir_path, err },
+            );
             // Continue with other directories even if one fails
         },
     };

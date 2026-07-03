@@ -30,7 +30,11 @@ const TacArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .before = .{ .short = 'b', .desc = "Attach separator before instead of after" },
         .regex = .{ .short = 'r', .desc = "Interpret separator as a regular expression" },
-        .separator = .{ .short = 's', .desc = "Use STRING as separator instead of newline", .value_name = "STRING" },
+        .separator = .{
+            .short = 's',
+            .desc = "Use STRING as separator instead of newline",
+            .value_name = "STRING",
+        },
     };
 };
 
@@ -40,9 +44,21 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Public API that reads from stdin when no files given
-pub fn runTac(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runTac(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Parse arguments
-    const parsed = common.argparse.ArgParser.parseOrExit(TacArgs, allocator, args, "tac", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed = common.argparse.ArgParser.parseOrExit(
+        TacArgs,
+        allocator,
+        args,
+        "tac",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -56,7 +72,13 @@ pub fn runTac(allocator: Allocator, io: std.Io, args: []const []const u8, stdout
     }
 
     if (parsed.regex) {
-        common.printErrorWithProgram(allocator, stderr_writer, "tac", "-r (--regex) is not supported", .{});
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tac",
+            "-r (--regex) is not supported",
+            .{},
+        );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -66,28 +88,90 @@ pub fn runTac(allocator: Allocator, io: std.Io, args: []const []const u8, stdout
     if (files.len == 0) {
         // Read from stdin
         const stdin_file = std.Io.File.stdin();
-        return runTacOnInput(allocator, io, stdin_file, separator, parsed.before, stdout_writer, stderr_writer);
+        return runTacOnInput(
+            allocator,
+            io,
+            stdin_file,
+            separator,
+            parsed.before,
+            stdout_writer,
+            stderr_writer,
+        );
     }
 
+    return runTacOnFiles(
+        allocator,
+        io,
+        files,
+        separator,
+        parsed.before,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+/// Process each named file (or stdin for "-") and combine exit codes
+fn runTacOnFiles(
+    allocator: Allocator,
+    io: std.Io,
+    files: []const []const u8,
+    separator: []const u8,
+    before: bool,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     var has_error = false;
     for (files) |file_path| {
         if (std.mem.eql(u8, file_path, "-")) {
             const stdin_file = std.Io.File.stdin();
-            const rc = try runTacOnInput(allocator, io, stdin_file, separator, parsed.before, stdout_writer, stderr_writer);
+            const rc = try runTacOnInput(
+                allocator,
+                io,
+                stdin_file,
+                separator,
+                before,
+                stdout_writer,
+                stderr_writer,
+            );
             if (rc != 0) has_error = true;
         } else {
-            const rc = try runTacOnFile(allocator, io, file_path, separator, parsed.before, stdout_writer, stderr_writer);
+            const rc = try runTacOnFile(
+                allocator,
+                io,
+                file_path,
+                separator,
+                before,
+                stdout_writer,
+                stderr_writer,
+            );
             if (rc != 0) has_error = true;
         }
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
 }
 
 /// Process a named file
-fn runTacOnFile(allocator: Allocator, io: std.Io, file_path: []const u8, separator: []const u8, before: bool, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+fn runTacOnFile(
+    allocator: Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    separator: []const u8,
+    before: bool,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "tac", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tac",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer file.close(io);
@@ -96,7 +180,15 @@ fn runTacOnFile(allocator: Allocator, io: std.Io, file_path: []const u8, separat
 }
 
 /// Core implementation: read all input, split by separator, output in reverse
-fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, separator: []const u8, before: bool, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+fn runTacOnInput(
+    allocator: Allocator,
+    io: std.Io,
+    input_file: std.Io.File,
+    separator: []const u8,
+    before: bool,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = stderr_writer;
 
     // Read all input into memory
@@ -106,11 +198,13 @@ fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, sepa
     var read_buf: [8192]u8 = undefined;
     var file_reader = input_file.readerStreaming(io, &read_buf);
     const reader = &file_reader.interface;
-    while (true) {
+    while (true) { // tiger:allow:unbounded-loop terminates at EOF (readSliceShort == 0 -> break)
         var chunk: [4096]u8 = undefined;
         const bytes_read = reader.readSliceShort(&chunk) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
+        // readSliceShort reads at most chunk.len bytes; guards the slice below.
+        std.debug.assert(bytes_read <= chunk.len);
         if (bytes_read == 0) break;
         try content.appendSlice(allocator, chunk[0..bytes_read]);
     }
@@ -118,6 +212,9 @@ fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, sepa
     if (content.items.len == 0) {
         return @intFromEnum(common.ExitCode.success);
     }
+
+    // The empty-content early return above guarantees a non-empty buffer here.
+    std.debug.assert(content.items.len > 0);
 
     // Split content by separator and reverse
     if (separator.len == 0) {
@@ -133,7 +230,13 @@ fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, sepa
 }
 
 /// Reverse records delimited by a single byte
-fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, before: bool, writer: *std.Io.Writer) !void {
+fn reverseByByteSeparator(
+    allocator: Allocator,
+    data: []const u8,
+    sep: u8,
+    before: bool,
+    writer: *std.Io.Writer,
+) !void {
     var records: std.ArrayListUnmanaged([]const u8) = .empty;
     defer records.deinit(allocator);
 
@@ -153,7 +256,9 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
                 // Just continue; the separator is part of the next record
             }
         }
-        // Remaining content from start to end
+        // Remaining content from start to end.
+        // start is only ever assigned i where i < data.len, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -166,6 +271,8 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
                 start = i + 1;
             }
         }
+        // start is only ever assigned i + 1 where i < data.len, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -176,7 +283,17 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
 }
 
 /// Reverse records delimited by a multi-byte string
-fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const u8, before: bool, writer: *std.Io.Writer) !void {
+fn reverseByStringSeparator(
+    allocator: Allocator,
+    data: []const u8,
+    sep: []const u8,
+    before: bool,
+    writer: *std.Io.Writer,
+) !void {
+    // Caller dispatches the len==0 and len==1 cases to reverseByByteSeparator;
+    // a multi-byte separator is required so the match loop makes progress.
+    std.debug.assert(sep.len >= 2);
+
     var records: std.ArrayListUnmanaged([]const u8) = .empty;
     defer records.deinit(allocator);
 
@@ -196,6 +313,9 @@ fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const
                 pos += 1;
             }
         }
+        // The while guard keeps pos + sep.len <= data.len at every match, and
+        // start is only assigned pos there, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -212,6 +332,9 @@ fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const
                 pos += 1;
             }
         }
+        // The while guard keeps pos + sep.len <= data.len at every match, and
+        // start is only assigned pos + sep.len there, so start <= data.len.
+        std.debug.assert(start <= data.len);
         if (start < data.len) {
             try records.append(allocator, data[start..]);
         }
@@ -228,6 +351,9 @@ fn writeRecordsReversed(records: []const []const u8, writer: *std.Io.Writer) !vo
     var i: usize = records.len;
     while (i > 0) {
         i -= 1;
+        // i starts at records.len and the loop only enters when i > 0, so after
+        // the decrement i is a valid index into records.
+        std.debug.assert(i < records.len);
         try writer.writeAll(records[i]);
     }
 }
@@ -289,7 +415,9 @@ test "tac with unknown flag returns misuse" {
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
+    const found_unrecognized =
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null;
+    try testing.expect(found_unrecognized);
 }
 
 test "tac -r returns error (unsupported)" {
@@ -498,7 +626,9 @@ test "tac with nonexistent file returns error" {
     const args = [_][]const u8{"/nonexistent/file.txt"};
     const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
+    const found_no_such_file =
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null;
+    try testing.expect(found_no_such_file);
 }
 
 test "tac reverseByByteSeparator basic" {

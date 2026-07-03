@@ -15,7 +15,7 @@ pub const GitStatus = enum {
     not_in_repo, // File is not in a git repository
 
     pub fn getIndicator(self: GitStatus) []const u8 {
-        return switch (self) {
+        const indicator: []const u8 = switch (self) {
             .untracked => "??",
             .modified => "M ",
             .added => "A ",
@@ -27,6 +27,10 @@ pub const GitStatus = enum {
             .clean => "  ",
             .not_in_repo => "  ",
         };
+        // Every arm is a 2-byte literal; callers rely on the fixed column
+        // width for alignment, so guard the cross-arm contract.
+        std.debug.assert(indicator.len == 2);
+        return indicator;
     }
 };
 
@@ -76,6 +80,9 @@ pub const GitRepo = struct {
             };
             self.status_loaded = true;
         }
+        // The lazy loader exists to enforce load-once; by here every path
+        // through the block above has set this true.
+        std.debug.assert(self.status_loaded);
 
         // Convert absolute path to relative path from git root
         const relative_path = self.makeRelativePath(file_path) catch return .not_in_repo;
@@ -126,10 +133,15 @@ pub const GitRepo = struct {
         var lines = std.mem.splitScalar(u8, porcelain, '\n');
         while (lines.next()) |line| {
             if (line.len < 3) continue; // Need at least "XY filename"
+            // Short lines were just skipped, so the [0..2] and [3..] slices
+            // below are always in bounds.
+            std.debug.assert(line.len >= 3);
 
             const status_chars = line[0..2];
             const filename = std.mem.trim(u8, line[3..], " ");
             if (filename.len == 0) continue;
+            // Lines whose filename trims to empty were just skipped.
+            std.debug.assert(filename.len > 0);
 
             const status = parseGitStatus(status_chars);
             // Porcelain v1 can list the same filename twice (e.g. `D  foo`
@@ -157,6 +169,9 @@ pub const GitRepo = struct {
 
         // Strip the git root prefix to get a relative path
         if (std.mem.startsWith(u8, file_path, self.root_path)) {
+            // startsWith is true only when the haystack is at least as long
+            // as the needle, so the slice below cannot go out of bounds.
+            std.debug.assert(file_path.len >= self.root_path.len);
             const rel = file_path[self.root_path.len..];
             // Skip leading slash
             if (rel.len > 0 and rel[0] == '/') {
@@ -228,6 +243,8 @@ fn findGitRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8)
 /// Parse git status characters into GitStatus enum
 fn parseGitStatus(status_chars: []const u8) GitStatus {
     if (status_chars.len != 2) return .clean;
+    // Non-2-length inputs returned above, so the two indexes below are safe.
+    std.debug.assert(status_chars.len == 2);
 
     const index_status = status_chars[0];
     const worktree_status = status_chars[1];

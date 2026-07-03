@@ -55,7 +55,10 @@ test "FileSystemId - identical device/inode pairs are equal" {
 test "CycleDetector - basic same-directory detection" {
     // Test that visiting the same directory twice is detected
     // NOTE: This is basic cycle detection, not security against malicious structures
-    var visited = common.directory.FileSystemIdSet.initContext(testing.allocator, common.directory.FileSystemId.Context{});
+    var visited = common.directory.FileSystemIdSet.initContext(
+        testing.allocator,
+        common.directory.FileSystemId.Context{},
+    );
     defer visited.deinit();
 
     var detector = common.directory.CycleDetector.init(&visited);
@@ -166,7 +169,10 @@ test "Cycle detection - performance with nested directories" {
     }
 
     // Test cycle detection through the directory hierarchy
-    var visited = common.directory.FileSystemIdSet.initContext(testing.allocator, common.directory.FileSystemId.Context{});
+    var visited = common.directory.FileSystemIdSet.initContext(
+        testing.allocator,
+        common.directory.FileSystemId.Context{},
+    );
     defer visited.deinit();
     var detector = common.directory.CycleDetector.init(&visited);
 

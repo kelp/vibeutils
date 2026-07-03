@@ -3,7 +3,6 @@
 /// In test builds (common tests run without -lc), reads from std.testing.environ
 /// and std.Io.File.isTty. In release builds (utilities link libc), delegates
 /// to std.c.getenv and std.c.isatty.
-
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -16,8 +15,14 @@ pub fn getEnv(key: []const u8) ?[]const u8 {
     if (builtin.link_libc) {
         var key_buf: [256]u8 = undefined;
         if (key.len >= key_buf.len) return null;
+        // The guard above returns early for any key too large for the buffer,
+        // so reaching here means the copy and sentinel write are in bounds.
+        std.debug.assert(key.len < key_buf.len);
         @memcpy(key_buf[0..key.len], key);
         key_buf[key.len] = 0;
+        // Postcondition of the NUL-sentinel write, paired with the bounds
+        // invariant before forming the sentinel-terminated slice below.
+        std.debug.assert(key_buf[key.len] == 0);
         const ptr = std.c.getenv(key_buf[0..key.len :0]) orelse return null;
         return std.mem.span(ptr);
     }

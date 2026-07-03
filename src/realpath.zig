@@ -10,13 +10,28 @@ const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-/// Resolve an absolute path to its canonical form, returning a heap-allocated
-/// `[]u8` (not sentinel-terminated). Using a stack buffer + `allocator.dupe`
-/// avoids the debug-allocator size mismatch from `realPathFileAbsoluteAlloc`
-/// returning `[:0]u8` which when freed as `[]u8` reports the wrong size.
-fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+/// Resolve a path to its canonical form, returning a heap-allocated `[]u8` (not
+/// sentinel-terminated). Handles all three input classes: an empty path is
+/// rejected as ENOENT (GNU parity), while relative and absolute paths both route
+/// through `cwd().realPathFile`. Using a stack buffer + `allocator.dupe` avoids
+/// the debug-allocator size mismatch from `realPathFileAbsoluteAlloc` returning
+/// `[:0]u8` which when freed as `[]u8` reports the wrong size.
+fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    // GNU realpath reports "No such file or directory" for an empty operand
+    // rather than treating it as the cwd. Rejecting it here also keeps it away
+    // from realPathFileAbsolute, whose isAbsolute assert would abort the process.
+    if (path.len == 0) {
+        return error.FileNotFound;
+    }
+    std.debug.assert(path.len > 0);
+
+    // cwd().realPathFile resolves absolute paths (the dir handle is ignored) and
+    // paths relative to the cwd, without asserting isAbsolute. Avoid
+    // cwd().realPath (issue #51: broken under Threaded io; readlinks AT_FDCWD).
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    std.debug.assert(len > 0);
+    std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
 
@@ -52,22 +67,42 @@ const RealpathArgs = struct {
         .zero = .{ .short = 'z', .desc = "End each output line with NUL, not newline" },
         .quiet = .{ .short = 'q', .desc = "Suppress most error messages" },
         .relative_to = .{ .short = 0, .desc = "Print path relative to DIR", .value_name = "DIR" },
-        .relative_base = .{ .short = 0, .desc = "Print relative if path is under DIR", .value_name = "DIR" },
+        .relative_base = .{
+            .short = 0,
+            .desc = "Print relative if path is under DIR",
+            .value_name = "DIR",
+        },
     };
 };
 
 /// Resolve a path without following symlinks, just cleaning . and .. components.
 /// Makes the path absolute and removes redundant separators and dot components.
 fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    // GNU realpath -s reports "No such file or directory" for an empty operand
+    // rather than resolving it to the cwd. Reject it here so an empty
+    // --relative-to= base routed through this path errors like GNU.
+    if (path.len == 0) {
+        return error.FileNotFound;
+    }
+    std.debug.assert(path.len > 0);
+
     // Get absolute path by prepending cwd if relative
     const abs_path = if (std.fs.path.isAbsolute(path))
         try allocator.dupe(u8, path)
     else blk: {
+        // cwd().realPathFile(".", ...) resolves the cwd via a real dir handle.
+        // Avoid cwd().realPath (issue #51: broken under Threaded io; it
+        // readlinks the AT_FDCWD pseudo-fd and fails with ENOENT).
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return error.FileNotFound;
+        const cwd_len = std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch
+            return error.FileNotFound;
         break :blk try std.fs.path.join(allocator, &.{ cwd_buf[0..cwd_len], path });
     };
     defer allocator.free(abs_path);
+    // abs_path is always a non-empty absolute path: the isAbsolute branch dups
+    // an already-absolute path, the else branch joins onto an absolute cwd.
+    std.debug.assert(abs_path.len > 0);
+    std.debug.assert(abs_path[0] == '/');
 
     // Split into components and resolve . and ..
     var components: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -105,8 +140,165 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
         @memcpy(result[pos .. pos + comp.len], comp);
         pos += comp.len;
     }
+    // The build loop writes exactly total_len bytes, so pos lands on total_len.
+    std.debug.assert(pos == total_len);
 
     return result;
+}
+
+/// Print a "name: message" resolution error with the program prefix. Shared by
+/// the resolve helpers, which all format the identical "{s}: {s}" diagnostic.
+fn printResolveError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    name: []const u8,
+    err: anyerror,
+) void {
+    // posixErrorString never yields an empty string for a real error.
+    const message = common.posixErrorString(err);
+    std.debug.assert(message.len > 0);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "realpath",
+        "{s}: {s}",
+        .{ name, message },
+    );
+}
+
+/// Resolve the target path according to the active canonicalization mode.
+/// Returns the owned resolved slice, or null when an error was already
+/// reported (the caller then returns false). `opts` passed `*const` (>16 bytes).
+fn processPath_resolveTarget(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    opts: *const RealpathArgs,
+    stderr_writer: *std.Io.Writer,
+) !?[]u8 {
+    if (opts.no_symlinks) {
+        return resolveLogical(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    } else if (opts.canonicalize_missing) {
+        return path_utils.canonicalizeMissing(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    } else if (opts.canonicalize_existing) {
+        // -e: all components must exist
+        return realPathDupe(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    } else {
+        // Default (-E semantics): all but last component must exist.
+        return path_utils.canonicalizeParentMustExist(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    }
+}
+
+/// Resolve the relative base directory. Distinct from `processPath_resolveTarget`:
+/// the default branch uses `realPathDupe` (no parent-must-exist mode). An empty
+/// base surfaces as ENOENT via `realPathDupe`, matching GNU realpath.
+/// Returns the owned resolved slice, or null when an error was already reported.
+fn processPath_resolveBase(
+    allocator: Allocator,
+    io: std.Io,
+    base_dir: []const u8,
+    opts: *const RealpathArgs,
+    stderr_writer: *std.Io.Writer,
+) !?[]u8 {
+    if (opts.no_symlinks) {
+        return resolveLogical(allocator, io, base_dir) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, base_dir, err);
+            }
+            return null;
+        };
+    } else if (opts.canonicalize_missing) {
+        return path_utils.canonicalizeMissing(allocator, io, base_dir) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, base_dir, err);
+            }
+            return null;
+        };
+    } else {
+        return realPathDupe(allocator, io, base_dir) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, base_dir, err);
+            }
+            return null;
+        };
+    }
+}
+
+/// Compute the relative-output form of `resolved` against `resolved_base`.
+/// When `relative_base_only` is true (--relative-base without --relative-to),
+/// only print relative if `resolved` is under `resolved_base`; otherwise always
+/// print relative. Returns an owned slice (the caller frees it).
+fn processPath_makeRelative(
+    allocator: Allocator,
+    resolved: []const u8,
+    resolved_base: []const u8,
+    relative_base_only: bool,
+) ![]u8 {
+    std.debug.assert(resolved.len > 0);
+    std.debug.assert(resolved_base.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(resolved));
+
+    if (relative_base_only) {
+        // --relative-base only: print relative if under base, absolute otherwise
+        if (std.mem.startsWith(u8, resolved, resolved_base) and
+            (resolved.len == resolved_base.len or resolved[resolved_base.len] == '/'))
+        {
+            const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
+                return try allocator.dupe(u8, resolved);
+            };
+            // Empty relative path means same directory
+            if (rel.len == 0) {
+                allocator.free(rel);
+                return try allocator.dupe(u8, ".");
+            }
+            return rel;
+        } else {
+            return try allocator.dupe(u8, resolved);
+        }
+    } else {
+        // --relative-to: always print relative
+        const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
+            return try allocator.dupe(u8, resolved);
+        };
+        // Empty relative path means same directory
+        if (rel.len == 0) {
+            allocator.free(rel);
+            return try allocator.dupe(u8, ".");
+        }
+        return rel;
+    }
+}
+
+/// Write the resolved output followed by the line delimiter (NUL or newline).
+fn processPath_writeOutput(stdout_writer: *std.Io.Writer, output: []const u8, zero: bool) !void {
+    std.debug.assert(output.len > 0);
+
+    try stdout_writer.writeAll(output);
+    if (zero) {
+        try stdout_writer.writeByte(0);
+    } else {
+        try stdout_writer.writeByte('\n');
+    }
 }
 
 /// Process a single path and write the result
@@ -118,113 +310,47 @@ fn processPath(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !bool {
-    const resolved = if (opts.no_symlinks) blk: {
-        break :blk resolveLogical(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    } else if (opts.canonicalize_missing) blk: {
-        break :blk path_utils.canonicalizeMissing(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    } else if (opts.canonicalize_existing) blk: {
-        // -e: all components must exist
-        break :blk realPathAbsoluteDupe(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    } else blk: {
-        // Default (-E semantics): all but last component must exist.
-        break :blk path_utils.canonicalizeParentMustExist(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    };
+    const resolved =
+        (try processPath_resolveTarget(allocator, io, path, &opts, stderr_writer)) orelse
+        return false;
     defer allocator.free(resolved);
+    // Every resolver branch returns an absolute path; null was excluded above.
+    std.debug.assert(std.fs.path.isAbsolute(resolved));
 
     // Handle --relative-to and --relative-base
     const output = if (opts.relative_to != null or opts.relative_base != null) blk: {
         const base_dir = opts.relative_to orelse opts.relative_base.?;
 
-        // Resolve the base dir itself
-        const resolved_base = if (opts.no_symlinks)
-            resolveLogical(allocator, io, base_dir) catch |err| {
-                if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
-                }
-                return false;
-            }
-        else if (opts.canonicalize_missing)
-            path_utils.canonicalizeMissing(allocator, io, base_dir) catch |err| {
-                if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
-                }
-                return false;
-            }
-        else
-            realPathAbsoluteDupe(allocator, io, base_dir) catch |err| {
-                if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
-                }
-                return false;
-            };
+        const resolved_base =
+            (try processPath_resolveBase(allocator, io, base_dir, &opts, stderr_writer)) orelse
+            return false;
         defer allocator.free(resolved_base);
 
-        if (opts.relative_base != null and opts.relative_to == null) {
-            // --relative-base only: print relative if under base, absolute otherwise
-            if (std.mem.startsWith(u8, resolved, resolved_base) and
-                (resolved.len == resolved_base.len or resolved[resolved_base.len] == '/'))
-            {
-                const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
-                    break :blk try allocator.dupe(u8, resolved);
-                };
-                // Empty relative path means same directory
-                if (rel.len == 0) {
-                    allocator.free(rel);
-                    break :blk try allocator.dupe(u8, ".");
-                }
-                break :blk rel;
-            } else {
-                break :blk try allocator.dupe(u8, resolved);
-            }
-        } else {
-            // --relative-to: always print relative
-            const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
-                break :blk try allocator.dupe(u8, resolved);
-            };
-            // Empty relative path means same directory
-            if (rel.len == 0) {
-                allocator.free(rel);
-                break :blk try allocator.dupe(u8, ".");
-            }
-            break :blk rel;
-        }
+        const relative_base_only = opts.relative_base != null and opts.relative_to == null;
+        break :blk try processPath_makeRelative(
+            allocator,
+            resolved,
+            resolved_base,
+            relative_base_only,
+        );
     } else blk: {
         break :blk try allocator.dupe(u8, resolved);
     };
     defer allocator.free(output);
 
-    try stdout_writer.writeAll(output);
-    if (opts.zero) {
-        try stdout_writer.writeByte(0);
-    } else {
-        try stdout_writer.writeByte('\n');
-    }
+    try processPath_writeOutput(stdout_writer, output, opts.zero);
 
     return true;
 }
 
 /// Main entry point for the realpath utility
-pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+pub fn runRealpath(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Pre-process args to handle --strip alias for --no-symlinks
     var processed_args: std.ArrayListUnmanaged([]const u8) = .empty;
     defer processed_args.deinit(allocator);
@@ -237,7 +363,13 @@ pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, s
         }
     }
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(RealpathArgs, allocator, processed_args.items, "realpath", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        RealpathArgs,
+        allocator,
+        processed_args.items,
+        "realpath",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -255,13 +387,20 @@ pub fn runRealpath(allocator: Allocator, io: std.Io, args: []const []const u8, s
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // The missing-operand guard above returns before reaching this loop, so at
+    // least one positional remains (it may be empty, but the count is nonzero).
+    std.debug.assert(parsed_args.positionals.len > 0);
+
     var has_error = false;
     for (parsed_args.positionals) |path| {
         const ok = try processPath(allocator, io, path, parsed_args, stdout_writer, stderr_writer);
         if (!ok) has_error = true;
     }
 
-    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
+    return if (has_error)
+        @intFromEnum(common.ExitCode.general_error)
+    else
+        @intFromEnum(common.ExitCode.success);
 }
 
 /// Print help message
@@ -308,7 +447,13 @@ test "realpath: help flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -322,7 +467,13 @@ test "realpath: version flag" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -336,7 +487,13 @@ test "realpath: missing operand" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
@@ -348,7 +505,13 @@ test "realpath: unknown flag" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 2), result);
 }
@@ -359,7 +522,13 @@ test "realpath: existing path" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/tmp"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -374,7 +543,13 @@ test "realpath: nonexistent path fails by default when parent missing" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent/path/that/does/not/exist"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
 }
@@ -385,10 +560,20 @@ test "realpath: nonexistent last component succeeds by default" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent_vibeutils_last_component"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "nonexistent_vibeutils_last_component") != null);
+    try testing.expect(std.mem.find(
+        u8,
+        stdout_aw.writer.buffered(),
+        "nonexistent_vibeutils_last_component",
+    ) != null);
 }
 
 test "realpath: canonicalize-missing accepts nonexistent paths" {
@@ -397,7 +582,13 @@ test "realpath: canonicalize-missing accepts nonexistent paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/tmp/nonexistent_vibeutils_test_path" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -411,7 +602,13 @@ test "realpath: no-symlinks resolves . and .." {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "/usr/bin/../lib" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/lib\n", stdout_aw.writer.buffered());
@@ -423,7 +620,13 @@ test "realpath: strip alias works" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--strip", "/usr/bin/../lib" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/lib\n", stdout_aw.writer.buffered());
@@ -435,7 +638,13 @@ test "realpath: zero delimiter" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-z", "-s", "/usr/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/bin\x00", stdout_aw.writer.buffered());
@@ -447,7 +656,13 @@ test "realpath: quiet suppresses errors" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-q", "-e", "/nonexistent/path" };
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
@@ -459,7 +674,13 @@ test "realpath: multiple paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "/usr/bin", "/usr/lib" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr/bin\n/usr/lib\n", stdout_aw.writer.buffered());
@@ -473,7 +694,13 @@ test "realpath: multiple paths with some failing" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-s", "/usr/bin", "/nonexistent_vibeutils_xyz" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     _ = result;
 }
 
@@ -485,7 +712,13 @@ test "realpath: default mode allows nonexistent last component" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent_vibeutils_test"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/nonexistent_vibeutils_test\n", stdout_aw.writer.buffered());
@@ -556,7 +789,13 @@ test "realpath: relative-to with no-symlinks" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-to=/usr", "/usr/bin/ls" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin/ls\n", stdout_aw.writer.buffered());
@@ -568,7 +807,13 @@ test "realpath: relative-base under base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr/bin/ls" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin/ls\n", stdout_aw.writer.buffered());
@@ -580,7 +825,13 @@ test "realpath: relative-base not under base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/etc/hosts" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/etc/hosts\n", stdout_aw.writer.buffered());
@@ -592,7 +843,13 @@ test "realpath: relative-base path correctly under base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin\n", stdout_aw.writer.buffered());
@@ -604,7 +861,13 @@ test "realpath: relative-base prefix false positive" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr2/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr2/bin\n", stdout_aw.writer.buffered());
@@ -616,7 +879,13 @@ test "realpath: relative-base path equals base" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(".\n", stdout_aw.writer.buffered());
@@ -628,7 +897,13 @@ test "realpath: canonicalize-missing .. past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/usr/nonexistent_vibeutils_test/../.." };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
@@ -640,7 +915,13 @@ test "realpath: canonicalize-missing multiple .. past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/usr/nonexistent_vibeutils_test/../../.." };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
@@ -652,7 +933,13 @@ test "realpath: canonicalize-missing deeper path .. past root returns root" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/usr/bin/nonexistent_vibeutils_test/../../.." };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_aw.writer.buffered());
@@ -666,10 +953,18 @@ test "realpath: default mode allows missing last component (GNU -E semantics)" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp/nonexistent_vibeutils_test_xyz"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "nonexistent_vibeutils_test_xyz") != null);
+    try testing.expect(
+        std.mem.find(u8, stdout_aw.writer.buffered(), "nonexistent_vibeutils_test_xyz") != null,
+    );
 }
 
 test "realpath: default mode fails when intermediate component missing" {
@@ -680,7 +975,13 @@ test "realpath: default mode fails when intermediate component missing" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent_vibeutils_dir/somefile"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(stderr_aw.writer.buffered().len > 0);
@@ -694,7 +995,13 @@ test "realpath: -e flag fails when last component missing (stricter than default
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-e", "/tmp/nonexistent_vibeutils_test_xyz" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
@@ -707,7 +1014,13 @@ test "realpath: error message uses POSIX string not Zig @errorName" {
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-e", "/nonexistent_vibeutils_xyz" };
-    const result = try runRealpath(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 1), result);
     const err_out = stderr_aw.writer.buffered();
@@ -721,7 +1034,13 @@ test "realpath: -e on existing path outputs resolved path" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-e", "/tmp" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -736,10 +1055,519 @@ test "realpath: --relative-to without -s resolves existing paths" {
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--relative-to=/usr", "/usr/bin" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin\n", stdout_aw.writer.buffered());
+}
+
+// ============================================================================
+// Issue #46: empty --relative-to= / --relative-base= base must error, not panic
+// ============================================================================
+
+// An empty --relative-to= value must produce a clean error (exit 1) matching
+// GNU realpath ("realpath: '': No such file or directory"), not an
+// unreachable-code panic from realPathFileAbsolute asserting isAbsolute.
+test "realpath: empty --relative-to= errors instead of panicking" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-to=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// Same guard for the --relative-base= spelling: an empty base must not be
+// forwarded to realPathFileAbsolute (which asserts an absolute path).
+test "realpath: empty --relative-base= errors instead of panicking" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-base=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// ============================================================================
+// Issue #46 (round 2): non-absolute paths must be resolved, not forwarded raw
+// to realPathFileAbsolute (which asserts isAbsolute and aborts the process).
+// The round-1 fix only guarded the EMPTY base in processPath_resolveBase; these
+// pin the still-uncovered cases: a relative (but non-empty) base, an empty
+// target operand, and a relative target operand.
+// ============================================================================
+
+// A RELATIVE --relative-to base must be resolved against the cwd. Before the
+// fix the default (symlink-following) base branch calls realPathAbsoluteDupe(".")
+// -> realPathFileAbsolute, which asserts isAbsolute and aborts (SIGABRT / exit
+// 134), killing the in-process test runner. GNU prints the target relative to
+// the resolved base. We chdir into a tmp dir so "." is deterministic and does
+// not depend on the repo cwd; the cwd handle is restored via fchdir on exit.
+test "realpath: relative --relative-to=. resolves against cwd (issue #46)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    // Absolute target under the resolved base; expected relative form is "sub".
+    const target = try std.fmt.allocPrint(testing.allocator, "{s}/sub", .{tmp_abs});
+    defer testing.allocator.free(target);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-to=.", target };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("sub\n", stdout_aw.writer.buffered());
+}
+
+// A RELATIVE --relative-base value hits the same crashing default branch of
+// processPath_resolveBase. GNU resolves the base against the cwd and, since the
+// target is under it, prints the relative form ("child").
+test "realpath: relative --relative-base=sub resolves against cwd (issue #46)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub/child");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const target = try std.fmt.allocPrint(testing.allocator, "{s}/sub/child", .{tmp_abs});
+    defer testing.allocator.free(target);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--relative-base=sub", target };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("child\n", stdout_aw.writer.buffered());
+}
+
+// An empty TARGET operand under -e reaches processPath_resolveTarget's
+// canonicalize_existing branch, which the round-1 base guard does not cover.
+// realPathAbsoluteDupe("") aborts on the isAbsolute assert; GNU reports ENOENT.
+test "realpath: -e with empty operand errors instead of panicking (issue #46)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-e", "" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(err_out.len > 0);
+    try testing.expect(std.mem.find(u8, err_out, "No such file or directory") != null);
+}
+
+// A RELATIVE existing TARGET under -e must be resolved to its absolute canonical
+// path. Before the fix realPathAbsoluteDupe("existing.txt") aborts on the
+// isAbsolute assert. GNU prints the absolute resolved path and exits 0.
+test "realpath: -e resolves a relative existing file to an absolute path (issue #46)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "existing.txt", .{});
+        file.close(io);
+    }
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/existing.txt\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-e", "existing.txt" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// ============================================================================
+// Issue #51: -s / -m with relative paths must resolve against the cwd.
+// cwd().realPath is broken under 0.16 Threaded io (it readlinks the AT_FDCWD
+// pseudo-fd /proc/self/fd/-100), so resolveLogical (-s) and canonicalizeMissing
+// (-m) fail with ENOENT for existing relative paths where GNU succeeds. We chdir
+// into a tmp dir so "." is deterministic and independent of the repo cwd; the
+// original cwd handle is restored via setCurrentDir on exit.
+// ============================================================================
+
+// -s on a relative existing path must resolve to its absolute form via the cwd.
+// Before the fix resolveLogical's relative branch calls cwd().realPath and
+// aborts with ENOENT; GNU prints the absolute path and exits 0.
+test "realpath: -s relative existing path resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "motd", .{});
+        file.close(io);
+    }
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/motd\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "./motd" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// -s on a relative path carrying "." and ".." exercises resolveLogical's
+// relative-branch cleanup, not just a bare relative name. ./sub/./../sub must
+// clean to <cwd>/sub.
+test "realpath: -s relative path with dot components resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/sub\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "./sub/./../sub" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// -m on a relative path with a missing tail must resolve the whole thing
+// against the cwd. Before the fix canonicalizeMissing_absolutePath calls
+// cwd().realPath and aborts with ENOENT; GNU prints <cwd>/nosuch/dir, exit 0.
+test "realpath: -m relative path with missing tail resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/dir\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "nosuch/dir" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// -m on a relative path whose components all exist must resolve to the
+// canonical absolute path via the cwd.
+test "realpath: -m relative path with existing components resolves via cwd (issue #51)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/sub\n", .{tmp_abs});
+    defer testing.allocator.free(expected);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "sub" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// ----------------------------------------------------------------------------
+// Issue #51 addendum: once cwd().realPath works, the empty-as-cwd special cases
+// masked by the breakage must still reject a zero-length operand with ENOENT to
+// match GNU (`realpath -s ''` / `-m ''` -> "No such file or directory", exit 1),
+// rather than silently resolving to the cwd. These guard against a naive fix
+// that drops the empty-path guards; they must stay green before AND after.
+// ----------------------------------------------------------------------------
+
+test "realpath: -s empty operand errors, not resolves to cwd (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+test "realpath: -m empty operand errors, not resolves to cwd (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// -s with an empty --relative-to= routes the empty base through resolveLogical
+// (processPath_resolveBase's no_symlinks branch); it must error, not resolve
+// the base to the cwd.
+test "realpath: -s empty --relative-to= errors (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-s", "--relative-to=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
+}
+
+// -m with an empty --relative-base= routes the empty base through
+// canonicalizeMissing (processPath_resolveBase's canonicalize_missing branch);
+// it must error, not resolve the base to the cwd.
+test "realpath: -m empty --relative-base= errors (issue #51)" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-m", "--relative-base=", "/tmp" };
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null,
+    );
 }
 
 // ============================================================================
@@ -767,7 +1595,13 @@ test "realpath: default mode resolves canonical path when last component missing
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{nonexistent};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
@@ -779,7 +1613,13 @@ test "realpath: default mode uses canonicalizeMissing (result is canonical not r
     defer stdout_aw.deinit();
 
     const args = [_][]const u8{"/tmp/e7_vibeutils_realpath_test"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const out = stdout_aw.writer.buffered();
@@ -803,7 +1643,13 @@ test "realpath: default mode dotdot past root is clamped" {
     defer testing.allocator.free(expected);
 
     const args = [_][]const u8{"/../../tmp"};
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
@@ -824,7 +1670,13 @@ test "realpath: -m dotdot past root is clamped" {
     defer testing.allocator.free(expected);
 
     const args = [_][]const u8{ "-m", "/../../tmp/e7_nonexistent" };
-    const result = try runRealpath(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const result = try runRealpath(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());

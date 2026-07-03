@@ -27,29 +27,8 @@ pub fn runYes(
 ) !u8 {
     _ = io;
     // Parse arguments using common argparse
-    const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                // GNU yes exits 1 for unrecognized options and includes the flag name
-                const bad_flag = findUnknownFlag(args);
-                if (bad_flag) |flag| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option '{s}'", .{flag});
-                } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option", .{});
-                }
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err|
+        return runYes_handleParseError(allocator, stderr_writer, err, args);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help flag
@@ -78,17 +57,101 @@ pub fn runYes(
     };
     defer if (parsed_args.positionals.len > 0) allocator.free(output_str);
 
+    // By construction output_str is non-empty: empty positionals -> "y\n",
+    // otherwise join(...) + "\n" which is "\n" even for `yes ''`.
+    std.debug.assert(output_str.len > 0);
+    // Both construction branches terminate the line with a newline.
+    std.debug.assert(output_str[output_str.len - 1] == '\n');
+
+    return runYes_outputForever(stdout_writer, output_str);
+}
+
+/// Handles a parse error from the argument parser, emitting the GNU-compatible
+/// diagnostic and returning the matching exit code. Re-returns any error not in
+/// the handled set so behavior is identical to the inline switch it replaced.
+fn runYes_handleParseError(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    err: common.argparse.ArgParser.ParseError,
+    args: []const []const u8,
+) common.argparse.ArgParser.ParseError!u8 {
+    // Positive space: an UnknownFlag failure implies at least one arg was given.
+    if (err == error.UnknownFlag) {
+        std.debug.assert(args.len > 0);
+    }
+    // Negative space: the args slice length is a sane, non-huge count.
+    std.debug.assert(args.len < std.math.maxInt(u32));
+    switch (err) {
+        error.UnknownFlag => {
+            // GNU yes exits 1 for unrecognized options and includes the flag name
+            const bad_flag = findUnknownFlag(args);
+            if (bad_flag) |flag| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "yes",
+                    "unrecognized option '{s}'",
+                    .{flag},
+                );
+            } else {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "yes",
+                    "unrecognized option",
+                    .{},
+                );
+            }
+            return @intFromEnum(common.ExitCode.general_error);
+        },
+        error.MissingValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "yes",
+                "option requires an argument",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "yes",
+                "invalid option value",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        else => return err,
+    }
+}
+
+/// Repeatedly writes `output_str` to `stdout_writer` until a write error occurs.
+/// Mirrors GNU yes: it never returns normally except by exiting success on a
+/// write error (such as BrokenPipe when piping to head). The two `while (true)`
+/// loops are intentional run-forever emitters terminated only by write error.
+fn runYes_outputForever(stdout_writer: *std.Io.Writer, output_str: []const u8) !u8 {
+    // By construction the output line is non-empty and newline-terminated.
+    std.debug.assert(output_str.len > 0);
+    std.debug.assert(output_str[output_str.len - 1] == '\n');
+
     // Create a larger buffer for efficient output
     const buffer_size = 8192;
 
     if (output_str.len > buffer_size) {
-        // Large string: write directly each iteration (output_str already has trailing newline)
-        while (true) {
+        // Large string: write directly each iteration (output_str already has trailing newline).
+        // GNU yes emits forever; sole exit is the write-error catch (e.g. BrokenPipe to head).
+        while (true) { // tiger:allow:unbounded-loop exits on write error (BrokenPipe to head)
             stdout_writer.writeAll(output_str) catch {
                 return @intFromEnum(common.ExitCode.success);
             };
         }
     }
+
+    // The large-string path returned above, so the line fits the fixed buffer.
+    std.debug.assert(output_str.len <= buffer_size);
 
     var buffer: [buffer_size]u8 = undefined;
 
@@ -99,8 +162,13 @@ pub fn runYes(
         pos += output_str.len;
     }
 
-    // Output forever
-    while (true) {
+    // The fill loop ran at least once (len <= buffer.len), so pos is non-empty.
+    std.debug.assert(pos > 0);
+    // Loop invariant on exit: pos never advances past the buffer length.
+    std.debug.assert(pos <= buffer.len);
+
+    // Output forever. GNU yes emits forever; sole exit is the write-error catch.
+    while (true) { // tiger:allow:unbounded-loop exits on write error (BrokenPipe to head)
         stdout_writer.writeAll(buffer[0..pos]) catch {
             // Any write error (including BrokenPipe) is expected when piping to head, etc.
             // yes traditionally exits silently on write errors
@@ -179,7 +247,13 @@ test "yes handles --help flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"--help"}, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"--help"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage:") != null);
@@ -193,7 +267,13 @@ test "yes handles --version flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"--version"}, &stdout_aw.writer, &stderr_aw.writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"--version"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "yes") != null);
@@ -232,7 +312,11 @@ const LimitedWriter = struct {
         return self.captured[0..self.pos];
     }
 
-    pub fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+    pub fn drain(
+        w: *std.Io.Writer,
+        data: []const []const u8,
+        splat: usize, // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
+    ) std.Io.Writer.Error!usize { // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
         const self: *LimitedWriter = @alignCast(@fieldParentPtr("writer", w));
         if (self.pos >= self.limit) return error.WriteFailed;
         const last = data[data.len - 1];
@@ -268,7 +352,11 @@ const CallBoundedWriter = struct {
     allocator: std.mem.Allocator,
     writer: std.Io.Writer,
 
-    pub fn init(allocator: std.mem.Allocator, capture_size: usize, max_calls: usize) !CallBoundedWriter {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        capture_size: usize, // tiger:allow:usize-arch byte-count capacity argument
+        max_calls: usize, // tiger:allow:usize-arch call-count threshold argument
+    ) !CallBoundedWriter {
         var self = CallBoundedWriter{
             .bytes_written = 0,
             .calls = 0,
@@ -293,7 +381,11 @@ const CallBoundedWriter = struct {
         return self.captured[0..self.captured_len];
     }
 
-    pub fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+    pub fn drain(
+        w: *std.Io.Writer,
+        data: []const []const u8,
+        splat: usize, // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
+    ) std.Io.Writer.Error!usize { // tiger:allow:usize-arch std.Io.Writer.drain vtable signature
         const self: *CallBoundedWriter = @alignCast(@fieldParentPtr("writer", w));
         self.calls += 1;
         if (self.calls > self.max_calls) return error.WriteFailed;
@@ -350,7 +442,13 @@ test "yes outputs custom string" {
     var capture = try LimitedWriter.init(testing.allocator, 256);
     defer capture.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"hello"}, &capture.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"hello"},
+        &capture.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     const output = capture.items();
@@ -380,7 +478,13 @@ test "yes with string longer than 8192 bytes produces output" {
     var writer = try CallBoundedWriter.init(testing.allocator, 16384, 100);
     defer writer.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{long_str}, &writer.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{long_str},
+        &writer.writer,
+        common.null_writer,
+    );
 
     // yes exits 0 on write error (broken pipe)
     try testing.expectEqual(@as(u8, 0), result);
@@ -402,7 +506,13 @@ test "yes with string of exactly 8193 bytes works correctly" {
     var writer = try CallBoundedWriter.init(testing.allocator, 16384, 100);
     defer writer.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{str_8193}, &writer.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{str_8193},
+        &writer.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(writer.bytes_written > 0);
@@ -422,7 +532,13 @@ test "yes unknown flag exits 1 (GNU behavior), not 2" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{"--unknown-flag"}, common.null_writer, &stderr_aw.writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{"--unknown-flag"},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
 
     // GNU yes exits 1 for unrecognized options
     try testing.expectEqual(@as(u8, 1), result);
@@ -447,7 +563,13 @@ test "yes with string much larger than buffer produces output" {
     var writer = try CallBoundedWriter.init(testing.allocator, 8192 * 4, 100);
     defer writer.deinit();
 
-    const result = try runYes(testing.allocator, io, &.{huge_str}, &writer.writer, common.null_writer);
+    const result = try runYes(
+        testing.allocator,
+        io,
+        &.{huge_str},
+        &writer.writer,
+        common.null_writer,
+    );
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(writer.bytes_written > 0);

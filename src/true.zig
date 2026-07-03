@@ -46,7 +46,13 @@ test "true always returns 0 and ignores all arguments" {
     };
 
     for (test_cases) |args| {
-        const result = try runTrue(testing.allocator, io, args, common.null_writer, common.null_writer);
+        const result = try runTrue(
+            testing.allocator,
+            io,
+            args,
+            common.null_writer,
+            common.null_writer,
+        );
         try testing.expectEqual(@as(u8, 0), result);
     }
 }
@@ -65,7 +71,13 @@ test "true produces no output" {
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 
     // Test with arguments
-    _ = try runTrue(testing.allocator, io, &.{ "--help", "--version", "test" }, &stdout_aw.writer, &stderr_aw.writer);
+    _ = try runTrue(
+        testing.allocator,
+        io,
+        &.{ "--help", "--version", "test" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
