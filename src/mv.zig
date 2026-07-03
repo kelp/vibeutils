@@ -580,7 +580,7 @@ fn crossFilesystemMove(
             options,
             stdout_writer,
             stderr_writer,
-            .{ .order = .both, .symlinks = .no_follow, .detect_cycles = true },
+            .{ .order = .both, .symlinks = .no_follow, .cycle_mode = .ancestors_and_visited },
         );
     } else {
         errdefer std.Io.Dir.cwd().deleteFile(io, dest) catch {};
@@ -3023,7 +3023,12 @@ test "copyDirectoryTree halts on EntryLimitExceeded instead of looping (issue #4
         .{},
         common.null_writer,
         &stderr_w,
-        .{ .order = .both, .symlinks = .no_follow, .detect_cycles = true, .max_entries = 3 },
+        .{
+            .order = .both,
+            .symlinks = .no_follow,
+            .cycle_mode = .ancestors_and_visited,
+            .max_entries = 3,
+        },
     );
     try testing.expectError(error.SomeCopyFailed, result);
 }

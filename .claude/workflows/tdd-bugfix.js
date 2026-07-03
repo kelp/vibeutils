@@ -419,7 +419,7 @@ async function runRed() {
       '  - Do NOT commit. Return a short summary: each test added, where it lives, the behavior it guards,',
       '    and the exact failure message you observed (proof of red-for-the-right-reason).',
     ].join('\n'),
-    { label: `test-writer:${a.utility}#${a.issue}`, phase: 'Author tests', model: 'opus', agentType: 'tdd-pipeline:test-writer' },
+    { label: `test-writer:${a.utility}#${a.issue}`, phase: 'Author tests', model: 'sonnet', agentType: 'tdd-pipeline:test-writer' },
   );
 
   phase('Review tests');
@@ -460,7 +460,7 @@ async function runRed() {
         'Apply every fix; the tests must still FAIL on current code for the right reason. Do NOT commit.',
         'Return a short summary.',
       ].join('\n'),
-      { label: `test-writer:${a.utility}#fix${round}`, phase: 'Review tests', model: 'opus', agentType: 'tdd-pipeline:test-writer' },
+      { label: `test-writer:${a.utility}#fix${round}`, phase: 'Review tests', model: 'sonnet', agentType: 'tdd-pipeline:test-writer' },
     );
   }
   if (testReview.assessment !== 'APPROVED') {
