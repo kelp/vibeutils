@@ -507,4 +507,54 @@ test_dd() {
         print_test_result "dd conv=noerror,sync count= bounds read-error retries" "FAIL" \
             "expected non-124 exit and <=10 read-error lines, got rc=$noerror_sync_rc lines=$noerror_sync_lines"
     fi
+
+    # ==================================================================
+    #   ISSUE #59: conv=noerror,sync error-synthesized block accounting
+    # ==================================================================
+    # A directory fd yields a persistent read error with zero bytes ever
+    # consumed. With conv=noerror,sync, dd synthesizes a NUL-padded block
+    # per failed read. GNU dd 9.5 counts each synthesized input block as a
+    # PARTIAL record in and each padded write as a FULL record out; pinned
+    # for count=5 the final stats block is "0+5 records in" / "5+0 records
+    # out". The buggy code counted the synthesized block as a FULL record
+    # in, printing "5+0 records in". We omit status=none so the final stats
+    # block reaches stderr, then assert the LAST records-in/out lines (only
+    # one stats block is emitted; unlike GNU we do not print a block per
+    # attempt) match the pinned GNU output exactly.
+    echo -e "${CYAN}Testing conv=noerror,sync record accounting (issue #59)...${NC}"
+
+    local acct_err="$TEMP_DIR/dd_noerror_sync_acct.txt"
+    run_with_limit 5 "$binary" if="$noerror_baddir" of=/dev/null \
+        conv=noerror,sync bs=512 count=5 2>"$acct_err"
+    local acct_rc=$?
+    local acct_in acct_out
+    acct_in=$(grep "records in" "$acct_err" 2>/dev/null | tail -1)
+    acct_out=$(grep "records out" "$acct_err" 2>/dev/null | tail -1)
+    if [[ "$acct_rc" -ne 124 ]] \
+        && [[ "$acct_in" == "0+5 records in" ]] \
+        && [[ "$acct_out" == "5+0 records out" ]]; then
+        print_test_result "dd conv=noerror,sync counts synthesized blocks as partial in" "PASS"
+    else
+        print_test_result "dd conv=noerror,sync counts synthesized blocks as partial in" "FAIL" \
+            "expected '0+5 records in'/'5+0 records out', got rc=$acct_rc in='$acct_in' out='$acct_out'"
+    fi
+
+    # Guard the non-error path: a genuine short read with conv=sync (3 bytes
+    # piped in, bs=512, no read error) must still report "0+1 records in" /
+    # "1+0 records out" per pinned GNU output. This ensures the issue #59
+    # fix does not disturb normal conv=sync accounting.
+    local sync_err="$TEMP_DIR/dd_sync_partial.txt"
+    printf 'abc' | run_with_limit 5 "$binary" of=/dev/null conv=sync bs=512 2>"$sync_err"
+    local sync_rc=$?
+    local sync_in sync_out
+    sync_in=$(grep "records in" "$sync_err" 2>/dev/null | tail -1)
+    sync_out=$(grep "records out" "$sync_err" 2>/dev/null | tail -1)
+    if [[ "$sync_rc" -ne 124 ]] \
+        && [[ "$sync_in" == "0+1 records in" ]] \
+        && [[ "$sync_out" == "1+0 records out" ]]; then
+        print_test_result "dd conv=sync partial read accounting unchanged" "PASS"
+    else
+        print_test_result "dd conv=sync partial read accounting unchanged" "FAIL" \
+            "expected '0+1 records in'/'1+0 records out', got rc=$sync_rc in='$sync_in' out='$sync_out'"
+    fi
 }
