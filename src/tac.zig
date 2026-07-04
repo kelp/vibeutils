@@ -169,7 +169,7 @@ fn runTacOnFile(
             allocator,
             stderr_writer,
             "tac",
-            "{s}: {s}",
+            "failed to open '{s}' for reading: {s}",
             .{ file_path, common.posixErrorString(err) },
         );
         return @intFromEnum(common.ExitCode.general_error);

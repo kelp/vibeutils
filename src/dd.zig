@@ -816,7 +816,13 @@ fn runDd_openFiles(
     const input_file: std.Io.File = if (config.input_file) |path| blk: {
         break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
             const message = common.posixErrorString(err);
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, message });
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                "dd",
+                "failed to open '{s}': {s}",
+                .{ path, message },
+            );
             return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
         };
     } else std.Io.File.stdin();
@@ -831,7 +837,13 @@ fn runDd_openFiles(
             // match the original runDd defer cleanup order.
             if (config.input_file != null) input_file.close(io);
             const message = common.posixErrorString(err);
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, message });
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                "dd",
+                "failed to open '{s}': {s}",
+                .{ path, message },
+            );
             return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
         };
     } else std.Io.File.stdout();

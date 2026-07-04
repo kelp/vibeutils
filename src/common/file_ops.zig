@@ -98,7 +98,7 @@ fn setPermissionsWarnStripped(
             allocator,
             stderr_writer,
             program_name,
-            "Stripped special permissions on {s} (Linux fakeroot limitation)",
+            "Stripped special permissions on '{s}' (Linux fakeroot limitation)",
             .{ctx},
         );
     } else {
@@ -132,7 +132,7 @@ fn setPermissionsWarnMacosFailed(
             allocator,
             stderr_writer,
             program_name,
-            "Failed to set permissions on {s} (macOS limitation): {s}",
+            "Failed to set permissions on '{s}' (macOS limitation): {s}",
             .{ ctx, lib.posixErrorString(err) },
         );
     } else {

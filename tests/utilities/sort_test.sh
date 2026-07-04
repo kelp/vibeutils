@@ -192,6 +192,62 @@ test_sort() {
     test_command_output "sort -k2 -s preserves input order" $'b 1\na 1' \
         bash -c "printf 'b 1\na 1\n' | '$binary' -k2,2 -s"
 
+    echo -e "${CYAN}Testing error diagnostics on bad files (issue #63 GNU parity)...${NC}"
+
+    local simple_file_for_m=$(create_temp_file $'a\nb')
+
+    # Regression test: GNU sort prints nonexistent-file operands unquoted,
+    # with a "cannot read: " prefix distinct from other utilities' "cannot
+    # access". Pinned against GNU coreutils 9.5 (LC_ALL=C):
+    #   sort: cannot read: /nonexistent/file: No such file or directory
+    local sort_err_cmd sort_err_out sort_err_stderr sort_err_exit
+    run_command sort_err_cmd sort_err_out sort_err_stderr sort_err_exit \
+        "$binary" /nonexistent/file
+    if [[ "$sort_err_stderr" == "sort: cannot read: /nonexistent/file: No such file or directory" ]]; then
+        print_test_result "sort nonexistent file bare operand (GNU parity)" "PASS"
+    else
+        print_test_result "sort nonexistent file bare operand (GNU parity)" "FAIL" \
+            "Expected 'sort: cannot read: /nonexistent/file: No such file or directory', got: '$sort_err_stderr'"
+    fi
+
+    # Regression test: sort -m (merge mode) uses the same bare, unquoted
+    # "cannot read: " message for a nonexistent file operand.
+    local sort_m_cmd sort_m_out sort_m_stderr sort_m_exit
+    run_command sort_m_cmd sort_m_out sort_m_stderr sort_m_exit \
+        "$binary" -m /nonexistent/file "$simple_file_for_m"
+    if [[ "$sort_m_stderr" == "sort: cannot read: /nonexistent/file: No such file or directory" ]]; then
+        print_test_result "sort -m nonexistent file bare operand (GNU parity)" "PASS"
+    else
+        print_test_result "sort -m nonexistent file bare operand (GNU parity)" "FAIL" \
+            "Expected 'sort: cannot read: /nonexistent/file: No such file or directory', got: '$sort_m_stderr'"
+    fi
+
+    # Regression test: sort -o to an unwritable path prints a bare, unquoted
+    # "open failed: " message. Pinned against GNU coreutils 9.5 (LC_ALL=C):
+    #   sort: open failed: /nonexistent/dir/out: No such file or directory
+    local sort_o_cmd sort_o_out sort_o_stderr sort_o_exit
+    run_command sort_o_cmd sort_o_out sort_o_stderr sort_o_exit \
+        "$binary" -o /nonexistent/dir/out "$simple_file_for_m"
+    if [[ "$sort_o_stderr" == "sort: open failed: /nonexistent/dir/out: No such file or directory" ]]; then
+        print_test_result "sort -o bad path bare operand (GNU parity)" "PASS"
+    else
+        print_test_result "sort -o bad path bare operand (GNU parity)" "FAIL" \
+            "Expected 'sort: open failed: /nonexistent/dir/out: No such file or directory', got: '$sort_o_stderr'"
+    fi
+
+    # Regression test: sort -c disorder diagnostic prints the (possibly "-")
+    # file name and line number bare, unquoted. Pinned against GNU coreutils
+    # 9.5 (LC_ALL=C): sort: -:2: disorder: a
+    local sort_c_cmd sort_c_out sort_c_stderr sort_c_exit
+    run_command sort_c_cmd sort_c_out sort_c_stderr sort_c_exit \
+        bash -c "printf 'b\na\n' | '$binary' -c"
+    if [[ "$sort_c_stderr" == "sort: -:2: disorder: a" ]]; then
+        print_test_result "sort -c disorder bare operand (GNU parity)" "PASS"
+    else
+        print_test_result "sort -c disorder bare operand (GNU parity)" "FAIL" \
+            "Expected 'sort: -:2: disorder: a', got: '$sort_c_stderr'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}sort tests completed${NC}"

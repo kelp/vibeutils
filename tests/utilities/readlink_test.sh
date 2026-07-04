@@ -289,6 +289,25 @@ test_readlink() {
             "Expected error output, exit: $v_exit, err: '$v_err'"
     fi
 
+    # Issue #63: GNU readlink -v prints the operand bare for ordinary paths
+    # and only quotes it (via quotearg shell-escape style) when it needs
+    # shell quoting (pinned on coreutils 9.5:
+    # `readlink: /nonexistent_vibeutils_xyz: No such file or directory`, no
+    # quotes). Use a static operand so the expected message is exact. Lock in
+    # the bare form so a future "helpful" fix doesn't wrap it in quotes
+    # without re-verifying against GNU.
+    local v_static_err=""
+    local v_static_out=""
+    local v_static_exit=""
+    run_command v_static_cmd v_static_out v_static_err v_static_exit \
+        "$binary" -v "/nonexistent_vibeutils_xyz"
+    if [[ "$v_static_err" == "readlink: /nonexistent_vibeutils_xyz: No such file or directory" ]]; then
+        print_test_result "readlink -v error message operand is unquoted (GNU parity)" "PASS"
+    else
+        print_test_result "readlink -v error message operand is unquoted (GNU parity)" "FAIL" \
+            "Got: '$v_static_err'"
+    fi
+
     echo -e "${CYAN}Testing quiet flag (-q)...${NC}"
 
     # Quiet should suppress error messages

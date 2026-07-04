@@ -332,6 +332,7 @@ fn runWc_processFile(
     const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
         const message = common.posixErrorString(err);
         const args = .{ file_path, message };
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", args);
         has_error.* = true;
         return null;
@@ -339,6 +340,7 @@ fn runWc_processFile(
 
     if (stat.kind == .directory) {
         const args = .{file_path};
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: Is a directory", args);
         has_error.* = true;
         return null;
@@ -348,6 +350,7 @@ fn runWc_processFile(
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
         const message = common.posixErrorString(err);
         const args = .{ file_path, message };
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", args);
         has_error.* = true;
         return null;
@@ -359,6 +362,7 @@ fn runWc_processFile(
     const stats = countReader(&file_reader.interface, opts) catch |err| {
         const message = common.posixErrorString(err);
         const args = .{ file_path, message };
+        // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", args);
         has_error.* = true;
         return null;

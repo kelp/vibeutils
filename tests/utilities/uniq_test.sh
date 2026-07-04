@@ -216,6 +216,25 @@ test_uniq() {
             "Expected non-empty stderr"
     fi
 
+    # GNU uniq prints the missing input operand unquoted (no quotes around the path).
+    if [[ "$uniq_err_stderr" == *"uniq: /nonexistent/file: No such file or directory"* ]]; then
+        print_test_result "uniq nonexistent file message is unquoted" "PASS"
+    else
+        print_test_result "uniq nonexistent file message is unquoted" "FAIL" \
+            "Expected bare 'uniq: /nonexistent/file: No such file or directory', got: '$uniq_err_stderr'"
+    fi
+
+    # GNU uniq also prints the OUTPUT operand unquoted when it can't be created.
+    local out_err_cmd out_err_out out_err_stderr out_err_exit
+    run_command out_err_cmd out_err_out out_err_stderr out_err_exit \
+        "$binary" "$input_file" "/nonexistent_dir_$$/out.txt"
+    if [[ "$out_err_stderr" == *"uniq: /nonexistent_dir_$$/out.txt: No such file or directory"* ]]; then
+        print_test_result "uniq nonexistent output dir message is unquoted" "PASS"
+    else
+        print_test_result "uniq nonexistent output dir message is unquoted" "FAIL" \
+            "Expected bare 'uniq: /nonexistent_dir_$$/out.txt: No such file or directory', got: '$out_err_stderr'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}uniq tests completed${NC}"

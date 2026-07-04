@@ -212,6 +212,15 @@ test_wc() {
     test_command_exit_code "wc non-existent file" 1 "$binary" "/tmp/nonexistent_file_$$" 2>/dev/null
     test_command_fails "wc non-existent file stderr" "$binary" "/tmp/nonexistent_file_$$"
 
+    # GNU wc prints the missing operand unquoted (no quotes around the path).
+    local nx_cmd="" nx_out="" nx_err="" nx_exit=""
+    run_command nx_cmd nx_out nx_err nx_exit "$binary" "/tmp/nonexistent_file_$$"
+    if [[ "$nx_err" == *"wc: /tmp/nonexistent_file_$$: No such file or directory"* ]]; then
+        print_test_result "wc non-existent file message is unquoted" "PASS"
+    else
+        print_test_result "wc non-existent file message is unquoted" "FAIL" "Expected bare 'wc: /tmp/nonexistent_file_$$: No such file or directory', got: '$nx_err'"
+    fi
+
     # Permission denied
     local perm_file=$(create_temp_file "Permission test")
     chmod 000 "$perm_file"

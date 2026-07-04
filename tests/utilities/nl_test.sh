@@ -333,6 +333,22 @@ $'     1\tline1\n     2\tline2\n\n     1\tline3\n     2\tline4' \
 $'     1\tline1\n     2\tline2\n\n     3\tline3\n     4\tline4' \
         "$binary" -p -b a -h a "$aud_pfile"
 
+    echo -e "${CYAN}Testing error diagnostics on bad files (issue #63 GNU parity)...${NC}"
+
+    # Regression test: GNU nl prints a nonexistent-file operand unquoted, as
+    # "prog: path: message" with no "cannot access"/"cannot open" wording.
+    # Pinned against GNU coreutils 9.5 (LC_ALL=C):
+    #   nl: /nonexistent/file: No such file or directory
+    local nl_err_cmd nl_err_out nl_err_stderr nl_err_exit
+    run_command nl_err_cmd nl_err_out nl_err_stderr nl_err_exit \
+        "$binary" /nonexistent/file
+    if [[ "$nl_err_stderr" == "nl: /nonexistent/file: No such file or directory" ]]; then
+        print_test_result "nl nonexistent file bare operand (GNU parity)" "PASS"
+    else
+        print_test_result "nl nonexistent file bare operand (GNU parity)" "FAIL" \
+            "Expected 'nl: /nonexistent/file: No such file or directory', got: '$nl_err_stderr'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}nl tests completed${NC}"

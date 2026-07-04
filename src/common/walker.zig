@@ -214,10 +214,16 @@ pub const Walker = struct {
     /// config.cycle_mode == .ancestors_and_visited.
     visited: ?directory.FileSystemIdSet,
 
-    /// Path of the directory that triggered the most recent
-    /// error.DirectoryCycle. Valid until the next next() call; exposed via
-    /// cyclePath(). Only ever populated under cycle_mode == .ancestors.
-    cycle_path_buf: std.ArrayListUnmanaged(u8),
+    /// Full path of the entry that triggered the most recent per-entry error
+    /// from next(): a directory cycle, or a failed openDir during descent.
+    /// Valid until the next next() call; exposed via errorPath() (and, for the
+    /// cycle case, cyclePath()). error_path_valid gates a meaningful value.
+    error_path_buf: std.ArrayListUnmanaged(u8),
+
+    /// True when error_path_buf names the entry behind the error the most
+    /// recent next() returned. Reset at the start of every next() so a
+    /// successful call clears it.
+    error_path_valid: bool,
 
     /// Root operand queue. The walker drains this before declaring done.
     roots: std.ArrayListUnmanaged(RootSpec),
@@ -266,7 +272,8 @@ pub const Walker = struct {
             .config = config,
             .stack = .empty,
             .visited = visited,
-            .cycle_path_buf = .empty,
+            .error_path_buf = .empty,
+            .error_path_valid = false,
             .roots = .empty,
             .root_cursor = 0,
             .current_root_dev = null,
@@ -303,6 +310,9 @@ pub const Walker = struct {
     pub fn next(self: *Walker, io: std.Io) !?Entry {
         assert(self.stack.items.len <= self.config.max_depth);
         assert(self.root_cursor <= self.roots.items.len);
+        // Any previously recorded error path belongs to the prior call; clear
+        // it so errorPath() reflects only what THIS next() produces.
+        self.error_path_valid = false;
         if (self.entries_emitted >= self.config.max_entries) {
             return error.EntryLimitExceeded;
         }
@@ -375,30 +385,46 @@ pub const Walker = struct {
         for (self.roots.items) |root| self.allocator.free(root.path);
         self.roots.deinit(self.allocator);
         self.path_buf.deinit(self.allocator);
-        self.cycle_path_buf.deinit(self.allocator);
+        self.error_path_buf.deinit(self.allocator);
         if (self.visited) |*v| v.deinit();
         self.stack.deinit(self.allocator);
     }
 
-    /// Path of the directory that triggered the most recent
-    /// error.DirectoryCycle from next(). Owned by the walker; valid only until
-    /// the next next() call. Empty before any cycle is detected.
-    pub fn cyclePath(self: *const Walker) []const u8 {
-        assert(self.config.cycle_mode == .ancestors or self.cycle_path_buf.items.len == 0);
+    /// Full path of the entry behind the per-entry error the most recent next()
+    /// returned: a directory cycle, or a directory that failed to open during
+    /// descent. Owned by the walker; the returned slice is valid only until the
+    /// next next() call. Returns null when the last next() named no specific
+    /// entry (a limit error, or a successful call).
+    pub fn errorPath(self: *const Walker) ?[]const u8 {
         assert(self.stack.items.len <= self.config.max_depth);
-        return self.cycle_path_buf.items;
+        if (!self.error_path_valid) return null;
+        assert(self.error_path_buf.items.len > 0);
+        return self.error_path_buf.items;
     }
 
-    /// Record `path` as the offending cycle path for a later cyclePath() call.
-    fn setCyclePath(self: *Walker, path: []const u8) void {
+    /// Path of the directory that triggered the most recent
+    /// error.DirectoryCycle from next(). Owned by the walker; valid only until
+    /// the next next() call. Empty before any cycle is detected. Delegates to
+    /// errorPath(); consumers call it only after error.DirectoryCycle.
+    pub fn cyclePath(self: *const Walker) []const u8 {
+        assert(self.stack.items.len <= self.config.max_depth);
+        assert(self.config.cycle_mode == .ancestors or !self.error_path_valid);
+        return self.errorPath() orelse &.{};
+    }
+
+    /// Record `path` as the offending entry for a later errorPath()/cyclePath()
+    /// call. Marks the buffer valid only on success; OOM leaves it invalid so
+    /// the accessors report null/empty rather than a stale path.
+    fn setErrorPath(self: *Walker, path: []const u8) void {
         assert(path.len > 0);
-        assert(self.config.cycle_mode == .ancestors);
-        self.cycle_path_buf.clearRetainingCapacity();
-        self.cycle_path_buf.appendSlice(self.allocator, path) catch {
-            // On OOM leave the buffer empty; cyclePath() reports empty rather
-            // than a stale path.
-            self.cycle_path_buf.clearRetainingCapacity();
+        assert(self.stack.items.len <= self.config.max_depth);
+        self.error_path_valid = false;
+        self.error_path_buf.clearRetainingCapacity();
+        self.error_path_buf.appendSlice(self.allocator, path) catch {
+            self.error_path_buf.clearRetainingCapacity();
+            return;
         };
+        self.error_path_valid = true;
     }
 
     // -----------------------------------------------------------------------
@@ -619,6 +645,9 @@ pub const Walker = struct {
             child_path,
             .{ .iterate = true },
         ) catch |err| {
+            // Record the child that failed to open so consumers can name the
+            // exact path (e.g. grep's "Permission denied") before it is dropped.
+            self.setErrorPath(self.path_buf.items[0..child_path_len]);
             self.path_buf.items.len = parent_path_len;
             return err;
         };
@@ -632,7 +661,7 @@ pub const Walker = struct {
                 return null;
             },
             .cycle => {
-                self.setCyclePath(self.path_buf.items[0..child_path_len]);
+                self.setErrorPath(self.path_buf.items[0..child_path_len]);
                 child_dir.close(io);
                 self.path_buf.items.len = parent_path_len;
                 return error.DirectoryCycle;

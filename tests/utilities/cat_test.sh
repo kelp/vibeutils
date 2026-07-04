@@ -191,6 +191,33 @@ test_cat() {
     test_command_exit_code "cat success exit code" 0 "$binary" "$test_file1"
     test_command_exit_code "cat failure exit code" 1 "$binary" "/nonexistent/file" 2>/dev/null || true
 
+    # GNU cat prints the missing-operand diagnostic unquoted:
+    # "cat: /nonexistent/file: No such file or directory". Pinned against
+    # GNU coreutils 9.5 (LC_ALL=C). Verify our operand stays bare (no
+    # quotes) to keep parity.
+    local nonexist_stderr
+    nonexist_stderr=$("$binary" "/nonexistent/file" 2>&1 >/dev/null)
+    if [[ "$nonexist_stderr" == *"cat: /nonexistent/file: No such file or directory"* ]]; then
+        print_test_result "cat nonexistent file operand stays unquoted" "PASS"
+    else
+        print_test_result "cat nonexistent file operand stays unquoted" "FAIL" \
+            "Expected bare 'cat: /nonexistent/file: No such file or directory', got: '$nonexist_stderr'"
+    fi
+
+    # GNU cat also prints the "Is a directory" diagnostic unquoted:
+    # "cat: DIR: Is a directory". Pinned against GNU coreutils 9.5
+    # (LC_ALL=C).
+    local dir_arg
+    dir_arg=$(create_temp_dir)
+    local dir_stderr
+    dir_stderr=$("$binary" "$dir_arg" 2>&1 >/dev/null)
+    if [[ "$dir_stderr" == *"cat: $dir_arg: Is a directory"* ]]; then
+        print_test_result "cat directory operand stays unquoted" "PASS"
+    else
+        print_test_result "cat directory operand stays unquoted" "FAIL" \
+            "Expected bare 'cat: $dir_arg: Is a directory', got: '$dir_stderr'"
+    fi
+
     echo -e "${CYAN}Testing regression fixes...${NC}"
 
     # Regression test: cat -v should show non-printing characters

@@ -295,7 +295,7 @@ fn runHead_processFile(
             allocator,
             stderr_writer,
             "head",
-            "{s}: {s}",
+            "cannot open '{s}' for reading: {s}",
             .{ file_path, common.posixErrorString(err) },
         );
         return true;

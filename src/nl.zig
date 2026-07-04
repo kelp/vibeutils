@@ -948,6 +948,7 @@ fn runNl_processInputs(
                 state,
                 allocator,
             ) catch |err| {
+                // GNU prints this operand unquoted; keep parity.
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,

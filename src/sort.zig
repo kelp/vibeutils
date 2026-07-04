@@ -726,6 +726,7 @@ fn runSort_runMerge(
             try readLines(allocator, io, stdin_file, &file_lines, delimiter, &merge_buffers);
         } else {
             const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+                // GNU prints this operand unquoted; keep parity.
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,
@@ -794,6 +795,7 @@ fn runSort_readAllFiles(
                 try readLines(allocator, io, stdin_file, lines, delimiter, buffers);
             } else {
                 const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+                    // GNU prints this operand unquoted; keep parity.
                     common.printErrorWithProgram(
                         allocator,
                         stderr_writer,
@@ -831,6 +833,7 @@ fn runSort_writeOutput(
             out_path,
             .{ .truncate = true },
         ) catch |err| {
+            // GNU prints this operand unquoted; keep parity.
             common.printErrorWithProgram(
                 allocator,
                 stderr_writer,
@@ -1659,6 +1662,7 @@ fn checkSorted(
             if (opts.check == .diagnose_first) {
                 // Get the first file name for the message
                 const file_name = if (opts.files.items.len > 0) opts.files.items[0] else "-";
+                // GNU prints this operand unquoted; keep parity.
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,

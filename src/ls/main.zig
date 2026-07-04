@@ -686,13 +686,15 @@ fn listDirectory(
         return err;
     };
 
-    // Get stat info to determine if it's a file or directory
+    // Get stat info to determine if it's a file or directory.
+    // GNU ls quotes the operand here (file_failure + quoteaf,
+    // "cannot access 'x': reason"); match placement.
     const stat = common.file.FileInfo.stat(io, path) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
             "ls",
-            "{s}: {s}",
+            "'{s}': {s}",
             .{ path, common.posixErrorString(err) },
         );
         return err;
@@ -710,12 +712,14 @@ fn listDirectory(
         return;
     }
 
+    // GNU ls quotes the operand here (file_failure + quoteaf,
+    // "cannot open directory 'x': reason"); match placement.
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
             "ls",
-            "{s}: {s}",
+            "'{s}': {s}",
             .{ path, common.posixErrorString(err) },
         );
         return err;
