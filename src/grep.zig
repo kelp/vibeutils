@@ -1774,7 +1774,7 @@ fn shouldExcludeDir(dirname: []const u8, opts: *const GrepOptions) bool {
 /// Mutable state threaded through one recursive search: the bounded walker
 /// plus the visited-inode set grep uses to terminate symlink cycles under -R.
 const TreeSearch = struct {
-    /// Arena allocator shared with runGrep; used for the duped last_dir_path.
+    /// Arena allocator shared with runGrep.
     allocator: Allocator,
     walker: common.walker.Walker,
     /// Device/inode of every directory grep actually descends: the root, each
@@ -1784,13 +1784,6 @@ const TreeSearch = struct {
     /// grep dedups by dev/inode for every directory it enters). null when -R
     /// is off (no symlink following, so no cycle is possible).
     visited_dirs: ?common.directory.FileSystemIdSet,
-    /// Full path of the directory whose children the walker is currently
-    /// iterating: the most recent pre-order .directory entry. When next()
-    /// surfaces a per-entry I/O error (the walker cannot carry the failing
-    /// child path), grep scans this directory to name the exact unreadable
-    /// subdirectory in the error message, matching GNU grep. null before the
-    /// first directory is emitted (an error there names the root operand).
-    last_dir_path: ?[]const u8,
 };
 
 /// Recursively search a directory tree using the bounded common.walker.
@@ -1834,7 +1827,6 @@ fn searchTree(
             common.directory.FileSystemIdSet.init(allocator)
         else
             null,
-        .last_dir_path = null,
     };
     defer search.walker.deinit(io);
     defer if (search.visited_dirs) |*set| set.deinit();
@@ -1851,7 +1843,7 @@ fn searchTree(
             // non-fatal: report it and let the walker resume at siblings. GNU
             // grep exits 2 on any read error, so latch had_error here.
             had_error.* = true;
-            reportWalkError(io, root_path, err, opts, stderr_writer, &search);
+            reportWalkError(root_path, err, opts, stderr_writer, &search);
             // The entry-count cap is terminal: next() latches this error and
             // re-returns it forever, so stop the walk instead of spinning.
             if (err == error.EntryLimitExceeded) break;
@@ -1875,16 +1867,12 @@ fn searchTree(
 
 /// Report a non-fatal per-entry walk error, naming the exact failing path.
 ///
-/// The bounded walker surfaces an I/O error from next() without the child path
-/// that triggered it (the failing directory's pre-order entry is never emitted,
-/// because the walker errors while opening it). To match GNU grep, which names
-/// the precise unreadable path, grep rescans the directory currently being
-/// iterated (last_dir_path, the most recent pre-order .directory entry) and
-/// reports the first subdirectory it cannot open. Falling back to the iterated
-/// directory, then the root operand, keeps the message useful when the scan
-/// finds nothing (e.g. a transient or non-EACCES failure).
+/// The bounded walker records the entry behind the error (the directory it
+/// failed to open) and exposes it via errorPath(), valid until the next next().
+/// grep prints that path to match GNU grep, which names the precise unreadable
+/// path. It falls back to the root operand when the walker recorded no specific
+/// entry (e.g. a limit error), keeping the message useful.
 fn reportWalkError(
-    io: std.Io,
     root_path: []const u8,
     err: anyerror,
     opts: *const GrepOptions,
@@ -1893,12 +1881,10 @@ fn reportWalkError(
 ) void {
     assert(root_path.len > 0);
     if (opts.no_messages) return;
-    // last_dir_path, when set, is a non-empty arena-duped directory path; the
-    // root operand fallback is likewise non-empty (asserted by the caller).
-    const parent_path = search.last_dir_path orelse root_path;
-    assert(parent_path.len > 0);
-    const failing_path =
-        findUnreadableChildDir(search.allocator, io, parent_path) orelse parent_path;
+    // errorPath(), when set, is the walker's non-empty failing path; the root
+    // operand fallback is likewise non-empty (asserted by the caller).
+    const failing_path = search.walker.errorPath() orelse root_path;
+    assert(failing_path.len > 0);
     // GNU prints this operand unquoted; keep parity.
     common.printErrorWithProgram(
         search.allocator,
@@ -1907,31 +1893,6 @@ fn reportWalkError(
         "{s}: {s}",
         .{ failing_path, common.posixErrorString(err) },
     );
-}
-
-/// Scan a directory for the first immediate subdirectory that cannot be opened,
-/// returning its full path (arena-owned) or null if every subdirectory opens.
-/// Used to name the exact unreadable path behind a walker error.
-fn findUnreadableChildDir(
-    allocator: Allocator,
-    io: std.Io,
-    parent_path: []const u8,
-) ?[]const u8 {
-    assert(parent_path.len > 0);
-    assert(parent_path[0] != 0);
-    var parent_dir =
-        std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true }) catch return null;
-    defer parent_dir.close(io);
-    var iterator = parent_dir.iterate();
-    while (iterator.next(io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
-        var child = parent_dir.openDir(io, entry.name, .{ .iterate = true }) catch {
-            // This is the subdirectory the walker failed to open. Name it.
-            return std.fs.path.join(allocator, &.{ parent_path, entry.name }) catch null;
-        };
-        child.close(io);
-    }
-    return null;
 }
 
 /// Record a directory's device/inode in the visited set, if -R is active.
@@ -1998,9 +1959,8 @@ fn searchTreeEntry(
 }
 
 /// Process a pre-order directory entry: prune excluded directories, otherwise
-/// remember it as the directory the walker is now iterating (for precise error
-/// reporting) and, under -R, record its device/inode so a directory symlink
-/// pointing back at it is recognized as already-visited (GNU-style dedup).
+/// (under -R) record its device/inode so a directory symlink pointing back at
+/// it is recognized as already-visited (GNU-style dedup).
 fn enterDir(
     io: std.Io,
     entry: common.walker.Entry,
@@ -2009,15 +1969,10 @@ fn enterDir(
 ) void {
     assert(entry.path.len > 0);
     assert(entry.kind == .directory);
-    // Pruning an excluded directory drops its whole subtree; the pruned dir is
-    // not iterated, so it must not become last_dir_path.
     if (shouldExcludeDir(entry.basename, opts)) {
         search.walker.pruneCurrent();
         return;
     }
-    // Remember the directory now being iterated so a child-open failure can be
-    // named precisely. Duped into the arena: entry.path dies on the next next().
-    search.last_dir_path = search.allocator.dupe(u8, entry.path) catch search.last_dir_path;
     // Under -R, record every real directory grep enters so a directory symlink
     // resolving to an already-walked subtree is not re-walked.
     if (search.visited_dirs != null) registerDir(io, entry.path, search);

@@ -21,6 +21,11 @@
   (`cat: somedir: ReadFailed`); cat now stats the operand and
   reports `cat: somedir: Is a directory` with exit 1, matching
   GNU. Found by the new quoting-parity tests.
+- **grep -r names the exact unreadable directory.** The walker
+  now records the path of a directory it fails to open, and
+  grep reports that path directly. The previous rescan
+  heuristic could name a readable sibling depending on readdir
+  order.
 
 ### Added
 - **dd accepts the full GNU size-suffix family with byte
