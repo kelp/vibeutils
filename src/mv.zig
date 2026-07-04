@@ -560,8 +560,8 @@ fn crossFilesystemMove(
             allocator,
             stderr_writer,
             "mv",
-            "cannot stat '{s}': {}",
-            .{ source, err },
+            "cannot stat '{s}': {s}",
+            .{ source, common.posixErrorString(err) },
         );
         return err;
     };
@@ -626,8 +626,8 @@ fn removeSourceAfterCopy(
                 allocator,
                 stderr_writer,
                 "mv",
-                "failed to remove source directory '{s}': {}",
-                .{ source, del_err },
+                "failed to remove source directory '{s}': {s}",
+                .{ source, common.posixErrorString(del_err) },
             );
             common.printErrorWithProgram(
                 allocator,
@@ -644,8 +644,8 @@ fn removeSourceAfterCopy(
                 allocator,
                 stderr_writer,
                 "mv",
-                "failed to remove source file '{s}': {}",
-                .{ source, del_err },
+                "failed to remove source file '{s}': {s}",
+                .{ source, common.posixErrorString(del_err) },
             );
             common.printErrorWithProgram(
                 allocator,
@@ -806,8 +806,8 @@ fn materializeDestDir(
                 allocator,
                 stderr_writer,
                 "mv",
-                "cannot create directory '{s}': {}",
-                .{ dest_path, err },
+                "cannot create directory '{s}': {s}",
+                .{ dest_path, common.posixErrorString(err) },
             );
             return err;
         },
@@ -833,8 +833,8 @@ fn preserveCopiedDir(
             allocator,
             stderr_writer,
             "mv",
-            "cannot stat directory '{s}': {}",
-            .{ source_path, err },
+            "cannot stat directory '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
         );
         return err;
     };
@@ -873,8 +873,8 @@ fn copyTreeFile(
             allocator,
             stderr_writer,
             "mv",
-            "cannot stat file '{s}': {}",
-            .{ source_path, err },
+            "cannot stat file '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
         );
         return err;
     };
@@ -911,8 +911,8 @@ fn recreateSymlink(
             allocator,
             stderr_writer,
             "mv",
-            "cannot read symlink '{s}': {}",
-            .{ source_path, err },
+            "cannot read symlink '{s}': {s}",
+            .{ source_path, common.posixErrorString(err) },
         );
         return err;
     };
@@ -922,8 +922,8 @@ fn recreateSymlink(
             allocator,
             stderr_writer,
             "mv",
-            "cannot create symlink '{s}': {}",
-            .{ dest_path, err },
+            "cannot create symlink '{s}': {s}",
+            .{ dest_path, common.posixErrorString(err) },
         );
         return err;
     };
@@ -953,8 +953,8 @@ fn recoverDescendError(
             allocator,
             stderr_writer,
             "mv",
-            "cannot access '{s}': {}",
-            .{ source, walk_err },
+            "cannot access '{s}': {s}",
+            .{ source, common.posixErrorString(walk_err) },
         );
         return;
     }
@@ -963,8 +963,8 @@ fn recoverDescendError(
             allocator,
             stderr_writer,
             "mv",
-            "cannot access '{s}': {}",
-            .{ parent_path, walk_err },
+            "cannot access '{s}': {s}",
+            .{ parent_path, common.posixErrorString(walk_err) },
         );
         return;
     };
@@ -1017,8 +1017,8 @@ fn recoverChild(
         allocator,
         stderr_writer,
         "mv",
-        "cannot access '{s}': {}",
-        .{ child_source, walk_err },
+        "cannot access '{s}': {s}",
+        .{ child_source, common.posixErrorString(walk_err) },
     );
 }
 
@@ -1226,8 +1226,8 @@ fn moveFile_handleSameFile(
             allocator,
             stderr_writer,
             "mv",
-            "cannot remove '{s}': {}",
-            .{ source, err },
+            "cannot remove '{s}': {s}",
+            .{ source, common.posixErrorString(err) },
         );
         return error.SameFile;
     };
@@ -1262,8 +1262,8 @@ fn moveFile_checkNoClobber(
                 allocator,
                 stderr_writer,
                 "mv",
-                "error checking destination '{s}': {}",
-                .{ dest, err },
+                "error checking destination '{s}': {s}",
+                .{ dest, common.posixErrorString(err) },
             );
             return err;
         },
@@ -1288,8 +1288,8 @@ fn moveFile_createBackup(
             allocator,
             stderr_writer,
             "mv",
-            "cannot create backup '{s}': {}",
-            .{ backup_name, backup_err },
+            "cannot create backup '{s}': {s}",
+            .{ backup_name, common.posixErrorString(backup_err) },
         );
         return backup_err;
     };
@@ -1340,8 +1340,8 @@ fn moveFile_handlePathExists(
             allocator,
             stderr_writer,
             "mv",
-            "cannot rename '{s}' to '{s}': {}",
-            .{ source, dest, retry_err },
+            "cannot rename '{s}' to '{s}': {s}",
+            .{ source, dest, common.posixErrorString(retry_err) },
         );
         return retry_err;
     };
@@ -1399,8 +1399,8 @@ fn moveFile_renameOrFallback(
                 allocator,
                 stderr_writer,
                 "mv",
-                "cannot rename '{s}' to '{s}': {}",
-                .{ source, dest, err },
+                "cannot rename '{s}' to '{s}': {s}",
+                .{ source, dest, common.posixErrorString(err) },
             );
             return err;
         },

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- **dd accepts the full GNU size-suffix family with byte
+  semantics.** `bs=`/`ibs=`/`obs=` and the count-like operands
+  now take `B`, decimal `kB`/`MB`/`GB`/`TB`/`PB`/`EB`, and
+  binary `K`/`KiB` through `E`/`EiB` suffixes. On
+  `count=`/`skip=`/`seek=`, a suffix ending in `B` counts
+  exact BYTES rather than blocks (`bs=512 count=1kB` copies
+  exactly 1000 bytes; byte-precise skip/seek offsets), matching
+  GNU. A zero multiplier such as `count=0x10` now emits GNU's
+  `'0x' is a zero multiplier` warning (#65).
+
 ### Changed
 - **Error messages quote operands exactly as GNU does.** Every
   diagnostic that names a user operand was audited against GNU
@@ -16,34 +27,16 @@
   verbatim (#63).
 
 ### Fixed
-- **cat reports `Is a directory` for directory operands.**
-  Reading a directory leaked Zig's raw `ReadFailed` error name
-  (`cat: somedir: ReadFailed`); cat now stats the operand and
-  reports `cat: somedir: Is a directory` with exit 1, matching
-  GNU. Found by the new quoting-parity tests.
-- **grep -r names the exact unreadable directory.** The walker
-  now records the path of a directory it fails to open, and
-  grep reports that path directly. The previous rescan
-  heuristic could name a readable sibling depending on readdir
-  order.
-
-### Added
-- **dd accepts the full GNU size-suffix family with byte
-  semantics.** `bs=`/`ibs=`/`obs=` and the count-like operands
-  now take `B`, decimal `kB`/`MB`/`GB`/`TB`/`PB`/`EB`, and
-  binary `K`/`KiB` through `E`/`EiB` suffixes. On
-  `count=`/`skip=`/`seek=`, a suffix ending in `B` counts
-  exact BYTES rather than blocks (`bs=512 count=1kB` copies
-  exactly 1000 bytes; byte-precise skip/seek offsets), matching
-  GNU. A zero multiplier such as `count=0x10` now emits GNU's
-  `'0x' is a zero multiplier` warning (#65).
-
-### Fixed
-- **dd names the offending value in operand errors.**
-  `dd count=1m` now reports `invalid number: '1m'` in GNU's
-  message shape instead of a generic `invalid operand value`;
-  the exit code stays 2 per the project-wide misuse convention
-  (#64).
+- **mv renders the errno string instead of a raw Zig error name.**
+  A failed move (missing source, unremovable source, backup
+  failure, and others) printed `error.FileNotFound` and similar
+  internal names; every mv diagnostic now maps the error to its
+  GNU strerror text (`No such file or directory`).
+- **chmod no longer appends a redundant error line for an invalid
+  mode.** An invalid numeric mode such as `999` reported `invalid
+  mode: '999'` and then a spurious `operation failed:
+  InvalidOctalMode` leaking the raw error variant; the redundant
+  second line is gone, matching GNU's single diagnostic.
 - **chown/chmod `-RL` reach directories aliased by sibling
   symlinks.** The walker's global visited set skipped whichever
   of a directory and a symlink to it was seen second, so the
@@ -69,11 +62,25 @@
   0/1 as if the truncated results were complete. Matching GNU,
   errors dominate a found match unless `-q` is given; under
   `-q` with no match, an error still exits 2 (#58).
+- **grep `-r` names the exact unreadable directory.** The walker
+  now records the path of a directory it fails to open, and grep
+  reports that path directly. The previous rescan heuristic could
+  name a readable sibling depending on readdir order.
+- **dd names the offending value in operand errors.**
+  `dd count=1m` now reports `invalid number: '1m'` in GNU's
+  message shape instead of a generic `invalid operand value`;
+  the exit code stays 2 per the project-wide misuse convention
+  (#64).
 - **dd `conv=noerror,sync` counts error-synthesized blocks as
   partial records in.** Blocks NUL-padded after a read error
   (zero bytes actually read) now report as `0+N records in`,
   matching GNU; they were previously counted as full. The
   padded writes still count as full records out (#59).
+- **cat reports `Is a directory` for directory operands.**
+  Reading a directory leaked Zig's raw `ReadFailed` error name
+  (`cat: somedir: ReadFailed`); cat now stats the operand and
+  reports `cat: somedir: Is a directory` with exit 1, matching
+  GNU. Found by the new quoting-parity tests.
 
 ### Infrastructure
 - **Walker cycle detection split into modes.** The single

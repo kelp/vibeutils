@@ -253,6 +253,20 @@ test_chmod() {
     test_command_fails "chmod invalid octal 999" "$binary" 999 "$test_file1"
     test_command_fails "chmod invalid octal 888" "$binary" 888 "$test_file1"
 
+    # Regression: an invalid numeric mode reports "invalid mode: '999'" once.
+    # It must NOT append a second "operation failed: InvalidOctalMode" line
+    # leaking the raw Zig error variant. GNU prints only "invalid mode".
+    local chmod_badmode_stderr
+    chmod_badmode_stderr=$("$binary" 999 "$test_file1" 2>&1 >/dev/null)
+    if [[ "$chmod_badmode_stderr" == *"invalid mode: '999'"* && \
+          "$chmod_badmode_stderr" != *"operation failed"* && \
+          "$chmod_badmode_stderr" != *"InvalidOctalMode"* ]]; then
+        print_test_result "chmod invalid numeric mode has no redundant error line" "PASS"
+    else
+        print_test_result "chmod invalid numeric mode has no redundant error line" "FAIL" \
+            "Expected single \"invalid mode: '999'\" line without raw variant, got: '$chmod_badmode_stderr'"
+    fi
+
     # Test invalid symbolic modes
     test_command_fails "chmod invalid symbolic xyz" "$binary" xyz "$test_file1"
     test_command_fails "chmod invalid operator u%r" "$binary" "u%r" "$test_file1"
