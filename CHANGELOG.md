@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.0 — 2026-07-03
 
 ### Added
 - **dd accepts the full GNU size-suffix family with byte
