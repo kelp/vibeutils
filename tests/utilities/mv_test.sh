@@ -334,6 +334,19 @@ test_mv() {
     # Non-existent source
     test_command_fails "mv non-existent source" "$binary" "/nonexistent/source.txt" "$TEMP_DIR/dest.txt"
 
+    # Regression: a missing source must render the errno string, never leak
+    # Zig's raw error name. GNU: "mv: cannot stat 'src': No such file or
+    # directory". We at minimum must not print "error.FileNotFound".
+    local mv_nonexist_stderr
+    mv_nonexist_stderr=$("$binary" "/nonexistent/mv_src.txt" "$TEMP_DIR/mv_dst.txt" 2>&1 >/dev/null)
+    if [[ "$mv_nonexist_stderr" != *"error."* && \
+          "$mv_nonexist_stderr" == *"No such file or directory"* ]]; then
+        print_test_result "mv missing source renders errno, not raw error name" "PASS"
+    else
+        print_test_result "mv missing source renders errno, not raw error name" "FAIL" \
+            "Expected 'No such file or directory' and no 'error.' leak, got: '$mv_nonexist_stderr'"
+    fi
+
     # Move to non-existent directory
     local exist_src=$(create_temp_file "Existing file")
     test_command_fails "mv to non-existent directory" "$binary" "$exist_src" "/nonexistent/dir/file.txt"

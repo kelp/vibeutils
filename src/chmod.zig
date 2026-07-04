@@ -139,20 +139,32 @@ pub fn runChmod(
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Report a top-level chmodFiles failure. FileOperationFailed means individual
-/// entries already printed their own diagnostics, so we stay silent; any other
-/// error is an unexpected operation failure worth surfacing once.
+/// Report a top-level chmodFiles failure. FileOperationFailed, InvalidMode, and
+/// InvalidOctalMode all mean a diagnostic was already printed upstream (either
+/// the per-file failure, or resolveModeSpec's "invalid mode" message), so we
+/// stay silent for those; any other error is an unexpected operation failure
+/// worth surfacing once.
 fn reportChmodFilesError(
     allocator: std.mem.Allocator,
     stderr_writer: anytype,
     err: anyerror,
     options: ChmodOptions,
 ) void {
+    // Precompute membership so each branch below asserts a single condition
+    // rather than a compound boolean (Tiger Style splits compound asserts).
+    const already_reported = err == ChmodError.FileOperationFailed or
+        err == ChmodError.InvalidMode or
+        err == ChmodError.InvalidOctalMode;
     switch (err) {
-        ChmodError.FileOperationFailed => {
-            // Specific file errors already reported, just return failure code.
+        ChmodError.FileOperationFailed, ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
+            // Positive space: this branch is only reached for the three
+            // variants already reported upstream.
+            assert(already_reported);
         },
         else => {
+            // Negative space: this branch never fires for the three variants
+            // already reported upstream.
+            assert(!already_reported);
             if (!options.quiet) {
                 common.printErrorWithProgram(
                     allocator,
