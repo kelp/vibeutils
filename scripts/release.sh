@@ -140,9 +140,22 @@ echo "Updated build.zig.zon"
 sed -i.bak "s/version = \"${CURRENT}\"/version = \"${VERSION}\"/" flake.nix && rm -f flake.nix.bak
 echo "Updated flake.nix"
 
-# Promote "## Unreleased" to "## v${VERSION} — <date>" in CHANGELOG.md
+# Promote "## Unreleased" to "## v${VERSION} — <date>" in CHANGELOG.md and
+# reopen a fresh empty "## Unreleased" above it for the next cycle. Without
+# the reopen, lint-changelog fails once the tag exists (the release-window
+# exemption that lets a version heading sit first expires at tag creation).
+# awk (not sed) so the newline insertion is portable across BSD and GNU.
 TODAY=$(date +%Y-%m-%d)
-sed -i.bak "s/^## Unreleased$/## v${VERSION} — ${TODAY}/" "$NOTES_FILE" && rm -f "$NOTES_FILE.bak"
+awk -v ver="$VERSION" -v today="$TODAY" '
+    !done && $0 == "## Unreleased" {
+        print "## Unreleased"
+        print ""
+        print "## v" ver " — " today
+        done = 1
+        next
+    }
+    { print }
+' "$NOTES_FILE" > "$NOTES_FILE.tmp" && mv "$NOTES_FILE.tmp" "$NOTES_FILE"
 echo "Updated $NOTES_FILE"
 
 # Verify the updates took effect
