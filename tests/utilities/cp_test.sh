@@ -952,4 +952,121 @@ test_cp() {
         print_test_result "cp -p preserves group in setgid dir" "SKIP" \
             "No supplementary groups available"
     fi
+
+    echo -e "${CYAN}Testing issue #77: new-destination mode duplicates source (no -p)...${NC}"
+
+    # Pin the process umask for the reproducible cases below (0o022 is GNU's
+    # documented reference umask). Source files/dirs are created BEFORE this
+    # so their own modes come from explicit chmod, not from umask-at-create.
+    local i77_saved_umask
+    i77_saved_umask=$(umask)
+
+    # I1: a new destination file duplicates the source's permission bits.
+    local i1_src=$(create_temp_file "issue 77 I1")
+    chmod 700 "$i1_src"
+    local i1_dst="$TEMP_DIR/i1_dst.txt"
+    umask 022
+    test_command_exit_code "cp new file duplicates source mode (I1)" 0 \
+        run_with_limit 10 "$binary" "$i1_src" "$i1_dst"
+    umask "$i77_saved_umask"
+    local i1_perms
+    i1_perms=$(get_file_permissions "$i1_dst")
+    if [[ "$i1_perms" == "700" ]]; then
+        print_test_result "cp new file mode is 700 (I1)" "PASS"
+    else
+        print_test_result "cp new file mode is 700 (I1)" "FAIL" \
+            "Expected 700, got $i1_perms"
+    fi
+
+    # I2: setuid is NOT duplicated without -p; the dest ends at the source's
+    # permission bits alone (0o755), stripped of the setuid bit.
+    local i2_src=$(create_temp_file "issue 77 I2")
+    chmod 755 "$i2_src"
+    if chmod 4755 "$i2_src" 2>/dev/null && [[ "$(get_file_permissions "$i2_src")" == "4755" ]]; then
+        local i2_dst="$TEMP_DIR/i2_dst.txt"
+        umask 022
+        test_command_exit_code "cp setuid source, no -p (I2)" 0 \
+            run_with_limit 10 "$binary" "$i2_src" "$i2_dst"
+        umask "$i77_saved_umask"
+        local i2_perms
+        i2_perms=$(get_file_permissions "$i2_dst")
+        if [[ "$i2_perms" == "755" ]]; then
+            print_test_result "cp setuid not duplicated without -p (I2)" "PASS"
+        else
+            print_test_result "cp setuid not duplicated without -p (I2)" "FAIL" \
+                "Expected 755, got $i2_perms"
+        fi
+    else
+        print_test_result "cp setuid not duplicated without -p (I2)" "SKIP" \
+            "Could not set/verify setuid bit (4755) on source"
+    fi
+
+    # I3: `cp -r` of a new destination directory duplicates the source dir's
+    # (and its child file's) permission bits.
+    local i3_src_dir="$TEMP_DIR/i3_src"
+    mkdir -p "$i3_src_dir"
+    create_temp_file "issue 77 I3 child" "$i3_src_dir/f.txt"
+    chmod 700 "$i3_src_dir/f.txt"
+    chmod 700 "$i3_src_dir"
+    local i3_dst_dir="$TEMP_DIR/i3_dst"
+    umask 022
+    test_command_exit_code "cp -r new directory duplicates source mode (I3)" 0 \
+        run_with_limit 10 "$binary" -r "$i3_src_dir" "$i3_dst_dir"
+    umask "$i77_saved_umask"
+    local i3_dir_perms i3_child_perms
+    i3_dir_perms=$(get_file_permissions "$i3_dst_dir")
+    i3_child_perms=$(get_file_permissions "$i3_dst_dir/f.txt")
+    if [[ "$i3_dir_perms" == "700" && "$i3_child_perms" == "700" ]]; then
+        print_test_result "cp -r new directory mode is 700 (I3)" "PASS"
+    else
+        print_test_result "cp -r new directory mode is 700 (I3)" "FAIL" \
+            "Expected dir=700 child=700, got dir=$i3_dir_perms child=$i3_child_perms"
+    fi
+
+    # I4 guard: an existing destination file keeps its own mode (600) while
+    # its content is replaced -- this already passes today.
+    local i4_src=$(create_temp_file "issue 77 I4 new")
+    chmod 755 "$i4_src"
+    local i4_dst=$(create_temp_file "issue 77 I4 old")
+    chmod 600 "$i4_dst"
+    umask 022
+    test_command_exit_code "cp onto existing destination file (I4)" 0 \
+        run_with_limit 10 "$binary" "$i4_src" "$i4_dst"
+    umask "$i77_saved_umask"
+    local i4_perms
+    i4_perms=$(get_file_permissions "$i4_dst")
+    if [[ "$i4_perms" == "600" ]]; then
+        print_test_result "cp guard: existing dest file keeps its mode (I4)" "PASS"
+    else
+        print_test_result "cp guard: existing dest file keeps its mode (I4)" "FAIL" \
+            "Expected 600, got $i4_perms"
+    fi
+    test_command_output "cp guard: existing dest file content replaced (I4)" \
+        "issue 77 I4 new" cat "$i4_dst"
+
+    # I5: `cp -r` of a read-only (0o555) source directory still populates the
+    # destination (GNU guarantees u+rwx during traversal) and finalizes the
+    # dest dir's mode to 0o555 post-order. Restore 755 before the framework's
+    # own cleanup runs so it can recurse in and delete the tree.
+    local i5_src_dir="$TEMP_DIR/i5_src"
+    mkdir -p "$i5_src_dir"
+    create_temp_file "issue 77 I5 child" "$i5_src_dir/f.txt"
+    chmod 555 "$i5_src_dir"
+    local i5_dst_dir="$TEMP_DIR/i5_dst"
+    umask 022
+    test_command_exit_code "cp -r read-only source directory (I5)" 0 \
+        run_with_limit 10 "$binary" -r "$i5_src_dir" "$i5_dst_dir"
+    umask "$i77_saved_umask"
+    chmod 755 "$i5_src_dir" 2>/dev/null || true
+    test_command_output "cp -r read-only source dir child copied (I5)" \
+        "issue 77 I5 child" cat "$i5_dst_dir/f.txt"
+    local i5_dir_perms
+    i5_dir_perms=$(get_file_permissions "$i5_dst_dir")
+    chmod 755 "$i5_dst_dir" 2>/dev/null || true
+    if [[ "$i5_dir_perms" == "555" ]]; then
+        print_test_result "cp -r read-only source dir finalized to 555 (I5)" "PASS"
+    else
+        print_test_result "cp -r read-only source dir finalized to 555 (I5)" "FAIL" \
+            "Expected 555, got $i5_dir_perms"
+    fi
 }
