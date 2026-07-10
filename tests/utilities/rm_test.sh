@@ -969,4 +969,63 @@ test_rm() {
             "Expected parent kept with exactly 1 file; got $remaining_count remaining, exit=$mixed_exit"
     fi
     rm -rf "$mixed_root"
+
+    echo -e "${CYAN}Testing issue #69: recursive removal of a dir aliased by a sibling symlink...${NC}"
+
+    # Issue #69: t/real/f and t/link -> real are SIBLINGS. GNU rm -r does no
+    # inode dedup between them and removes the whole tree (rc=0). The
+    # walker's default cycle_mode pre-registers "real"'s (dev,ino) via the
+    # sibling "link" before classifying "real" itself, so the walker
+    # silently skips descending into "real"; its file then survives the
+    # pre-order pass and the post-order rmdir on "real" fails with
+    # ENOTEMPTY -- rm prints an error and exits non-zero, leaving "t/real"
+    # (and its file) behind.
+    local issue69_root=$(create_temp_dir)
+    mkdir -p "$issue69_root/t/real"
+    create_temp_file "data" "$issue69_root/t/real/f"
+    ln -s real "$issue69_root/t/link"
+    test_command_exit_code "rm -r removes real dir aliased by sibling symlink (issue #69)" 0 \
+        "$binary" -r "$issue69_root/t"
+    if [[ ! -e "$issue69_root/t" ]]; then
+        print_test_result "rm -r fully removes tree with sibling symlink alias (issue #69)" "PASS"
+    else
+        print_test_result "rm -r fully removes tree with sibling symlink alias (issue #69)" "FAIL" \
+            "Tree still exists (real dir survived non-empty due to sibling-alias skip)"
+    fi
+    rm -rf "$issue69_root"
+
+    # Reversed alphabetical order twin: the symlink name sorts BEFORE the
+    # real dir name. Pre-registration is order-independent (the whole
+    # listing is drained before any child is classified), so this must
+    # behave identically to the case above.
+    local issue69_rev_root=$(create_temp_dir)
+    mkdir -p "$issue69_rev_root/t2/z_real"
+    create_temp_file "data" "$issue69_rev_root/t2/z_real/f"
+    ln -s z_real "$issue69_rev_root/t2/a_link"
+    test_command_exit_code "rm -r removes real dir aliased by sibling symlink, reversed order (issue #69)" 0 \
+        "$binary" -r "$issue69_rev_root/t2"
+    if [[ ! -e "$issue69_rev_root/t2" ]]; then
+        print_test_result "rm -r fully removes tree with reversed-order sibling alias (issue #69)" "PASS"
+    else
+        print_test_result "rm -r fully removes tree with reversed-order sibling alias (issue #69)" "FAIL" \
+            "Tree still exists (real dir survived non-empty due to sibling-alias skip)"
+    fi
+    rm -rf "$issue69_rev_root"
+
+    # GNU cross-check on a separate, identical fixture.
+    if command -v /usr/bin/rm >/dev/null 2>&1; then
+        local gnu69_root=$(create_temp_dir)
+        mkdir -p "$gnu69_root/t/real"
+        create_temp_file "gnu data" "$gnu69_root/t/real/f"
+        ln -s real "$gnu69_root/t/link"
+        /usr/bin/rm -r "$gnu69_root/t" >/dev/null 2>&1
+        local gnu69_exit=$?
+        if [[ $gnu69_exit -eq 0 ]] && [[ ! -e "$gnu69_root/t" ]]; then
+            print_test_result "rm -r sibling alias matches GNU behavior (issue #69)" "PASS"
+        else
+            print_test_result "rm -r sibling alias matches GNU behavior (issue #69)" "FAIL" \
+                "GNU rm reference fixture diverged: exit=$gnu69_exit"
+        fi
+        rm -rf "$gnu69_root"
+    fi
 }

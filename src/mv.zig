@@ -2906,6 +2906,67 @@ test "walker-migration: cross-device fallback preserves directory mtime" {
     try testing.expect(!test_dir.fileExists("src"));
 }
 
+test "walker-migration: cross-device fallback copies a real dir aliased by a sibling symlink (issue #69)" {
+    // Fully writable, no chmod/root-skip needed: the divergence is the
+    // walker's sibling-alias inode dedup, not permissions. crossFilesystemMove
+    // does copy+delete unconditionally, so no real EXDEV boundary is needed
+    // to exercise it directly.
+    //
+    // src/real/inner.txt and src/link -> real are SIBLINGS. GNU mv's copy
+    // stage (no inode dedup) produces dst/real/inner.txt AND dst/link (a
+    // symlink whose target is literally "real"), then deletes src. The
+    // walker's DEFAULT cycle_mode (.ancestors_and_visited, not spelled here)
+    // pre-registers "real"'s (dev,ino) via the sibling "link" before
+    // classifying "real" itself, so the copy's walker silently SKIPS
+    // descending into "real" -- dst ends up with only the symlink, the copy
+    // is reported as fully successful, and crossFilesystemMove then deletes
+    // src: data loss.
+    const allocator = testing.allocator;
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createDir("src/real");
+    try test_dir.inner.createFile("src/real/inner.txt", "aliased body", null);
+    test_dir.inner.createSymlink("real", "src/link") catch |err| {
+        if (err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+
+    const base_path = try test_dir.inner.getBasePath();
+    defer allocator.free(base_path);
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    defer allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+    defer allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    // Fully writable tree: the move must SUCCEED (no error), matching GNU.
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTIONS: today dst/real is entirely missing (the walker
+    // skipped it), so both of these fail.
+    try test_dir.inner.expectFileContent("dst/real/inner.txt", "aliased body");
+    try testing.expect(try test_dir.inner.isSymlink("dst/link"));
+    const link_target = try test_dir.inner.getSymlinkTarget("dst/link");
+    defer allocator.free(link_target);
+    try testing.expectEqualStrings("real", link_target);
+
+    // Green today: the success path deletes the source after copying.
+    try testing.expect(!test_dir.fileExists("src"));
+}
+
 test "walker-migration: cross-device fallback continues past unreadable subdir (GNU semantics)" {
     // Root bypasses read permissions, so a chmod-000 subdir would still open and
     // the continue-past-error divergence never triggers. Skip when euid is root.

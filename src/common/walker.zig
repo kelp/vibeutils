@@ -1796,6 +1796,125 @@ test "walker: follow_all + ancestors mode walks both sibling alias directories" 
     try testing.expect(saw_target_dir_direct);
 }
 
+// Issue #69, T1: under the DEFAULT cycle_mode (deliberately omitted below so
+// the struct default `.ancestors_and_visited` is exercised) with no_follow
+// symlinks, a real directory that has a SIBLING symlink pointing at it must
+// still be fully walked. collectAndPreprocess pre-registers every symlink's
+// followed target (dev, ino) into the shared visited set before any child is
+// classified, so classifyChildDir later finds the real dir's id already
+// `found_existing` and skips it -- this is the issue #69 bug. GNU rm/mv do
+// no such inode dedup between a symlink and an unrelated sibling real
+// directory: the real dir must be walked pre AND post (order=.both) and its
+// child file must appear, while the symlink itself is emitted once as a
+// .sym_link leaf and never descended (no emitted path contains "link/").
+test "walker: default cycle_mode does not skip a real dir aliased by a sibling symlink" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "real", .kind = .dir },
+        .{ .path = "real/inner.txt", .kind = .file },
+        .{ .path = "link", .kind = .symlink, .symlink_target = "real" },
+    });
+
+    // cycle_mode deliberately omitted -- pins the struct DEFAULT.
+    var w = try Walker.init(testing.allocator, .{
+        .symlinks = .no_follow,
+        .order = .both,
+    });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var saw_link_leaf = false;
+    var saw_real_pre = false;
+    var saw_real_post = false;
+    var saw_inner_file = false;
+    var saw_path_under_link = false;
+    while (try w.next(io)) |entry| {
+        if (std.mem.find(u8, entry.path, "link/") != null) saw_path_under_link = true;
+        if (std.mem.eql(u8, entry.basename, "link")) {
+            saw_link_leaf = true;
+            try testing.expectEqual(std.Io.File.Kind.sym_link, entry.kind);
+        }
+        if (std.mem.eql(u8, entry.basename, "real") and entry.kind == .directory) {
+            if (entry.visit == .pre) saw_real_pre = true;
+            if (entry.visit == .post) saw_real_post = true;
+        }
+        if (std.mem.eql(u8, entry.basename, "inner.txt")) saw_inner_file = true;
+    }
+    // RED today: collectAndPreprocess pre-registers "real"'s (dev,ino) via
+    // the "link" sibling before classifyChildDir ever sees "real", so
+    // saw_real_pre/saw_real_post/saw_inner_file stay false.
+    try testing.expect(saw_link_leaf);
+    try testing.expect(!saw_path_under_link);
+    try testing.expect(saw_real_pre);
+    try testing.expect(saw_real_post);
+    try testing.expect(saw_inner_file);
+}
+
+// Issue #69, T2: the pre-registration bug above is order-independent -- the
+// whole directory listing is drained by collectAndPreprocess before any
+// child is classified, so it does not matter whether the symlink's name
+// sorts before or after the real directory's name. Pin both orders.
+fn checkSiblingAliasWalkedRegardlessOfSortOrder(
+    real_name: []const u8,
+    link_name: []const u8,
+) !void {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const real_inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/inner.txt", .{real_name});
+    defer testing.allocator.free(real_inner_path);
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = real_name, .kind = .dir },
+        .{ .path = real_inner_path, .kind = .file },
+        .{ .path = link_name, .kind = .symlink, .symlink_target = real_name },
+    });
+
+    // cycle_mode deliberately omitted -- pins the struct DEFAULT.
+    var w = try Walker.init(testing.allocator, .{
+        .symlinks = .no_follow,
+        .order = .both,
+    });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var saw_real_pre = false;
+    var saw_inner_file = false;
+    while (try w.next(io)) |entry| {
+        if (std.mem.eql(u8, entry.basename, real_name) and entry.kind == .directory and
+            entry.visit == .pre)
+        {
+            saw_real_pre = true;
+        }
+        if (std.mem.eql(u8, entry.basename, "inner.txt")) saw_inner_file = true;
+    }
+    // RED today regardless of alphabetical order: real dir's id gets
+    // pre-registered via the sibling symlink before classification, in
+    // either sort order, since the whole listing is drained up front.
+    try testing.expect(saw_real_pre);
+    try testing.expect(saw_inner_file);
+}
+
+test "walker: default cycle_mode sibling-alias skip is order-independent (a_real, z_link)" {
+    // Symlink name sorts AFTER the real dir name alphabetically.
+    try checkSiblingAliasWalkedRegardlessOfSortOrder("a_real", "z_link");
+}
+
+test "walker: default cycle_mode sibling-alias skip is order-independent (z_real, a_link)" {
+    // Symlink name sorts BEFORE the real dir name alphabetically.
+    try checkSiblingAliasWalkedRegardlessOfSortOrder("z_real", "a_link");
+}
+
 test "walker: ancestors mode terminates a mutual sibling symlink loop" {
     // Termination trace (from the approved design): a/link_b -> ../b and
     // b/link_a -> ../a form a 2-node mutual cycle with no shared ancestor

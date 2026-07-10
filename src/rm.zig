@@ -1959,6 +1959,69 @@ test "rm: directory symlink is removed as a link and not descended under no-foll
     _ = try tmp.dir.statFile(io, "real_target/precious.txt", .{});
 }
 
+test "rm: recursive removal succeeds when a real dir has a sibling symlink alias (issue #69)" {
+    // Goal: unlike the test above (where the symlink target lives OUTSIDE
+    // the removed tree), here the symlink's target is a SIBLING directory
+    // INSIDE the tree being removed: tree/real/inner.txt and
+    // tree/link -> real. GNU rm does no inode dedup between them and
+    // removes the whole tree (rc=0). removeFiles uses the walker's DEFAULT
+    // cycle_mode (.ancestors_and_visited, not spelled here), which
+    // pre-registers "real"'s (dev,ino) via the sibling "link" before
+    // classifying "real" itself, so the walker silently skips descending
+    // into "real". Its file then survives the pre-order pass, and the
+    // post-order rmdir on "real" fails with ENOTEMPTY -- removeFiles
+    // reports failure instead of fully removing the tree.
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "tree", std.Io.File.Permissions.fromMode(0o755));
+    var tree_dir = try tmp.dir.openDir(io, "tree", .{});
+    try tree_dir.createDir(io, "real", std.Io.File.Permissions.fromMode(0o755));
+    var real_dir = try tree_dir.openDir(io, "real", .{});
+    const rf = try real_dir.createFile(io, "inner.txt", .{});
+    rf.close(io);
+    real_dir.close(io);
+    tree_dir.symLink(io, "real", "link", .{}) catch |err| {
+        if (err == error.AccessDenied) return; // skip where symlinks disallowed
+        tree_dir.close(io);
+        return err;
+    };
+    tree_dir.close(io);
+
+    const tree_path = try tmp.dir.realPathFileAlloc(io, "tree", testing.allocator);
+    defer testing.allocator.free(tree_path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const options = RmOptions{
+        .force = false,
+        .interactive = false,
+        .interactive_once = false,
+        .recursive = true,
+        .verbose = true,
+        .preserve_root = true,
+    };
+
+    const success = try removeFiles(
+        testing.allocator,
+        io,
+        &[_][]const u8{tree_path},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        options,
+    );
+    // RED today: the sibling-alias skip leaves "real" non-empty, so the
+    // post-order rmdir fails and removeFiles returns false.
+    try testing.expect(success);
+
+    // The whole tree, including the aliased real dir, must be gone.
+    try testing.expect(tmp.dir.statFile(io, "tree", .{}) == error.FileNotFound);
+}
+
 test "rm: deep directory chain is fully removed without stack overflow" {
     // Goal: a long single-branch chain is removed completely. Methodology:
     // build a chain many hundreds of levels deep with a file at the bottom,

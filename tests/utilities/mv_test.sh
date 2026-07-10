@@ -860,4 +860,101 @@ test_mv() {
     fi
 
     rm -f "$audit_hl_src" "$audit_hl_dst" "$audit_hl_stderr_file" "$TEMP_DIR/audit_hl_stdout" 2>/dev/null
+
+    echo -e "${CYAN}Testing issue #69: cross-filesystem move of a dir aliased by a sibling symlink...${NC}"
+
+    # Issue #69: src/real/f.txt and src/link -> real are SIBLINGS. GNU mv's
+    # cross-device copy+delete fallback does no inode dedup between them: it
+    # copies BOTH the real directory and the symlink, then removes the
+    # source. The walker's default cycle_mode pre-registers "real"'s
+    # (dev,ino) via the sibling "link" before classifying "real" itself, so
+    # the copy silently omits the real directory entirely -- dest ends up
+    # with ONLY the symlink, the copy reports success, and mv then deletes
+    # the source: data loss. A red run therefore DESTROYS the source, so
+    # every assertion below reports FAIL via print_test_result rather than
+    # crashing the harness when files are missing.
+    local issue69_cross_possible=false
+    if [[ "$TEMP_DIR" != "/tmp"* ]]; then
+        local issue69_tmp_dev issue69_temp_dev
+        issue69_tmp_dev=$(stat -c %d /tmp 2>/dev/null || stat -f %d /tmp 2>/dev/null || echo "")
+        issue69_temp_dev=$(stat -c %d "$TEMP_DIR" 2>/dev/null || stat -f %d "$TEMP_DIR" 2>/dev/null || echo "")
+        if [[ -n "$issue69_tmp_dev" ]] && [[ -n "$issue69_temp_dev" ]] \
+            && [[ "$issue69_tmp_dev" != "$issue69_temp_dev" ]]; then
+            issue69_cross_possible=true
+        fi
+    fi
+
+    if [[ "$issue69_cross_possible" == "true" ]]; then
+        local issue69_src="$TEMP_DIR/issue69_src"
+        mkdir -p "$issue69_src/real"
+        echo -n "aliased body" > "$issue69_src/real/f.txt"
+        ln -s real "$issue69_src/link"
+        local issue69_dst="/tmp/vibeutils_issue69_dst_$$"
+        rm -rf "$issue69_dst" 2>/dev/null
+
+        "$binary" "$issue69_src" "$issue69_dst" >/dev/null 2>&1
+        local issue69_exit=$?
+
+        if [[ $issue69_exit -eq 0 ]]; then
+            print_test_result "mv cross-filesystem sibling alias exits 0 (issue #69)" "PASS"
+        else
+            print_test_result "mv cross-filesystem sibling alias exits 0 (issue #69)" "FAIL" \
+                "Expected exit 0, got $issue69_exit"
+        fi
+
+        if [[ -f "$issue69_dst/real/f.txt" ]]; then
+            local issue69_content
+            issue69_content=$(<"$issue69_dst/real/f.txt")
+            if [[ "$issue69_content" == "aliased body" ]]; then
+                print_test_result "mv cross-filesystem sibling alias copies real dir (issue #69)" "PASS"
+            else
+                print_test_result "mv cross-filesystem sibling alias copies real dir (issue #69)" "FAIL" \
+                    "Content mismatch: '$issue69_content'"
+            fi
+        else
+            print_test_result "mv cross-filesystem sibling alias copies real dir (issue #69)" "FAIL" \
+                "dest/real/f.txt missing -- real directory was silently skipped"
+        fi
+
+        if [[ -L "$issue69_dst/link" ]]; then
+            print_test_result "mv cross-filesystem sibling alias preserves symlink (issue #69)" "PASS"
+        else
+            print_test_result "mv cross-filesystem sibling alias preserves symlink (issue #69)" "FAIL" \
+                "dest/link missing or not a symlink"
+        fi
+
+        if [[ ! -e "$issue69_src" ]]; then
+            print_test_result "mv cross-filesystem sibling alias removes source (issue #69)" "PASS"
+        else
+            print_test_result "mv cross-filesystem sibling alias removes source (issue #69)" "FAIL" \
+                "Source still exists after move"
+        fi
+
+        # GNU cross-check on a separate, identical fixture.
+        if command -v /usr/bin/mv >/dev/null 2>&1; then
+            local gnu69_src="$TEMP_DIR/gnu_issue69_src"
+            mkdir -p "$gnu69_src/real"
+            echo -n "gnu aliased body" > "$gnu69_src/real/f.txt"
+            ln -s real "$gnu69_src/link"
+            local gnu69_dst="/tmp/vibeutils_gnu_issue69_dst_$$"
+            rm -rf "$gnu69_dst" 2>/dev/null
+
+            /usr/bin/mv "$gnu69_src" "$gnu69_dst" >/dev/null 2>&1
+            local gnu69_exit=$?
+
+            if [[ $gnu69_exit -eq 0 ]] && [[ -f "$gnu69_dst/real/f.txt" ]] && [[ -L "$gnu69_dst/link" ]] \
+                && [[ ! -e "$gnu69_src" ]]; then
+                print_test_result "mv cross-filesystem sibling alias matches GNU behavior (issue #69)" "PASS"
+            else
+                print_test_result "mv cross-filesystem sibling alias matches GNU behavior (issue #69)" "FAIL" \
+                    "GNU mv reference fixture diverged: exit=$gnu69_exit"
+            fi
+            rm -rf "$gnu69_src" "$gnu69_dst" 2>/dev/null
+        fi
+
+        rm -rf "$issue69_src" "$issue69_dst" 2>/dev/null
+    else
+        print_test_result "mv cross-filesystem sibling alias (issue #69)" "SKIP" \
+            "Same filesystem or cannot determine"
+    fi
 }
