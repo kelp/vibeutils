@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+- **rm -r and mv no longer silently skip a directory aliased by
+  a sibling symlink.** The walker's global visited set
+  pre-registered every symlink's followed target, so `rm -r tree`
+  with `tree/link -> tree/real` left `real`'s contents undeleted
+  and exited 1, and mv's cross-device fallback copied the tree
+  without `real`'s contents while still deleting the source
+  (data loss). Both now use ancestor-only cycle detection (GNU
+  fts semantics, matching GNU rm/mv), and the now-unused
+  `ancestors_and_visited` walker mode is deleted (#69).
+
 ## v0.12.0 — 2026-07-03
 
 ### Added
