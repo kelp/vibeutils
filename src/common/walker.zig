@@ -36,13 +36,11 @@ pub const CycleMode = enum {
     /// GNU fts semantics: a child directory is a cycle only when its
     /// (device, inode) matches an ANCESTOR on the current descent path. On
     /// detection next() returns error.DirectoryCycle and cyclePath() names
-    /// the offending path. Aliases reached by distinct paths are re-walked.
+    /// the offending path. Aliases reached by distinct paths are re-walked,
+    /// which matches GNU rm/mv: a real directory and a sibling symlink that
+    /// points at it are independent paths, so the real directory is walked
+    /// even though the symlink names the same inode.
     ancestors,
-    /// Ancestor detection PLUS a global visited set: any directory inode seen
-    /// anywhere in the walk is visited at most once (silent skip on repeat).
-    /// This is the default and preserves the historical detect_cycles=true
-    /// behavior used by mv and rm.
-    ancestors_and_visited,
 };
 
 /// Configuration for a Walker instance.
@@ -74,9 +72,9 @@ pub const WalkConfig = struct {
 
     /// How directory cycles are detected. Must not be `.none` when
     /// `symlinks == .follow_all` (a followed loop would otherwise run to the
-    /// depth/entry bound). Default `.ancestors_and_visited` preserves the
-    /// historical global-visited-set behavior for untouched consumers.
-    cycle_mode: CycleMode = .ancestors_and_visited,
+    /// depth/entry bound). Default `.ancestors` gives GNU fts semantics:
+    /// ancestor-only cycle detection, with distinct-path aliases re-walked.
+    cycle_mode: CycleMode = .ancestors,
 
     /// When true, skip "." and ".." entries (always true in practice;
     /// kept as flag because stdlib iterators differ on this).
@@ -178,7 +176,8 @@ const Frame = struct {
 const ChildOutcome = union(enum) {
     /// Descend; the carried id (when present) is stored in the pushed frame.
     proceed: ?directory.FileSystemId,
-    /// Skip silently (already-visited dedup or a filesystem boundary).
+    /// Skip silently: the child's id could not be verified, or it lies across
+    /// a filesystem boundary under stay_on_filesystem. No visited-set dedup.
     skip,
     /// Ancestor cycle: next() must return error.DirectoryCycle.
     cycle,
@@ -209,10 +208,6 @@ pub const Walker = struct {
 
     /// Explicit stack of in-progress directory frames. Never exceeds max_depth.
     stack: std.ArrayListUnmanaged(Frame),
-
-    /// Global visited set (dev, inode). Non-null iff
-    /// config.cycle_mode == .ancestors_and_visited.
-    visited: ?directory.FileSystemIdSet,
 
     /// Full path of the entry that triggered the most recent per-entry error
     /// from next(): a directory cycle, or a failed openDir during descent.
@@ -263,15 +258,10 @@ pub const Walker = struct {
         // A followed symlink loop has no other stopping mechanism, so
         // follow_all requires a cycle detector.
         assert(config.symlinks != .follow_all or config.cycle_mode != .none);
-        var visited: ?directory.FileSystemIdSet = null;
-        if (config.cycle_mode == .ancestors_and_visited) {
-            visited = directory.FileSystemIdSet.init(allocator);
-        }
         return Walker{
             .allocator = allocator,
             .config = config,
             .stack = .empty,
-            .visited = visited,
             .error_path_buf = .empty,
             .error_path_valid = false,
             .roots = .empty,
@@ -386,7 +376,6 @@ pub const Walker = struct {
         self.roots.deinit(self.allocator);
         self.path_buf.deinit(self.allocator);
         self.error_path_buf.deinit(self.allocator);
-        if (self.visited) |*v| v.deinit();
         self.stack.deinit(self.allocator);
     }
 
@@ -470,26 +459,14 @@ pub const Walker = struct {
             .sorted_index = 0,
             .fs_id = fs_id,
         };
-        // Pre-register symlink targets in the global visited set only under
-        // .ancestors_and_visited: scan symlinks and add their followed targets
-        // so a real dir reached via both a real path and a not-followed symlink
-        // is visited once. Never for follow_all (the symlink IS the path) and
-        // never for .ancestors (which re-walks distinct-path aliases).
-        const reg = (self.config.cycle_mode == .ancestors_and_visited) and
-            (self.config.symlinks != .follow_all);
-        // Collect entries when sorting is requested or when the visited-set
-        // pre-registration needs to run (both consume the iterator up front).
-        const collect = self.config.sort_children or
-            (self.config.cycle_mode == .ancestors_and_visited);
-        if (collect) {
+        // Collect entries up front only when sorting is requested; otherwise
+        // the live iterator is drained lazily during traversal.
+        if (self.config.sort_children) {
             try collectAndPreprocess(
                 self.allocator,
                 io,
                 &frame,
                 self.config.skip_dot_entries,
-                self.config.sort_children,
-                reg,
-                if (reg) &self.visited else null,
             );
         }
         try self.stack.append(self.allocator, frame);
@@ -538,23 +515,12 @@ pub const Walker = struct {
         assert(self.stack.items.len == 0);
         assert(dir.handle >= 0);
         assert(bn_start <= path_len);
-        // Cycle bookkeeping for the root. Every non-.none mode records the
-        // root's id in its frame so the descent stack is a complete ancestor
-        // chain; .ancestors_and_visited additionally seeds the global set.
+        // Cycle bookkeeping for the root. Under .ancestors we record the root's
+        // id in its frame so the descent stack is a complete ancestor chain;
+        // under .none no id is needed.
         var root_fs_id: ?directory.FileSystemId = null;
         switch (self.config.cycle_mode) {
             .none => {},
-            .ancestors_and_visited => {
-                if (self.visited) |*v| {
-                    const fs_id = try directory.FileSystemId.fromDir(dir);
-                    const gop = try v.getOrPut(fs_id);
-                    if (gop.found_existing) {
-                        dir.close(io);
-                        return null;
-                    }
-                    root_fs_id = fs_id;
-                }
-            },
             .ancestors => {
                 root_fs_id = directory.FileSystemId.fromDir(dir) catch null;
             },
@@ -700,8 +666,8 @@ pub const Walker = struct {
     /// Classify an opened child dir: proceed (and carry its id), skip silently,
     /// or report an ancestor cycle. The caller closes the dir and restores
     /// path_buf on skip/cycle; this helper only inspects. The id is computed at
-    /// most once and reused for the visited set, the ancestor scan, and the
-    /// stay-on-filesystem check.
+    /// most once and reused for the ancestor scan and the stay-on-filesystem
+    /// check.
     fn classifyChildDir(
         self: *Walker,
         child_dir: std.Io.Dir,
@@ -713,17 +679,10 @@ pub const Walker = struct {
             directory.FileSystemId.fromDir(child_dir) catch null
         else
             null;
-        // Cycle detection first (mirrors the historical ordering so the
-        // visited-set insert happens before the stay-on-filesystem check).
+        // Cycle detection runs before the stay-on-filesystem check so an
+        // ancestor loop is reported regardless of device boundaries.
         switch (self.config.cycle_mode) {
             .none => {},
-            .ancestors_and_visited => {
-                if (self.visited) |*v| {
-                    const id = fs_id orelse return .skip;
-                    const gop = v.getOrPut(id) catch return .skip;
-                    if (gop.found_existing) return .skip; // Already visited.
-                }
-            },
             .ancestors => {
                 // Cannot verify identity: skip to guarantee termination.
                 const id = fs_id orelse return .skip;
@@ -880,22 +839,17 @@ fn freeSortedEntries(allocator: std.mem.Allocator, frame: *Frame) void {
     }
 }
 
-/// Collect children of a directory frame into sorted_entries.
-/// When sort_entries=true, sort by name ascending.
-/// When register_symlink_targets=true, scan all symlinks and add their
-/// followed targets to visited before normal iteration. This prevents a
-/// real directory from being descended when a not-followed symlink
-/// pointing to it appears in the same directory listing.
+/// Collect children of a directory frame into sorted_entries, sorted by name
+/// ascending. Only called when sort_children is requested; draining the whole
+/// listing up front is the cost of a deterministic emission order.
 fn collectAndPreprocess(
     allocator: std.mem.Allocator,
     io: std.Io,
     frame: *Frame,
     skip_dot: bool,
-    sort_entries: bool,
-    register_symlink_targets: bool,
-    visited: ?*?directory.FileSystemIdSet,
 ) !void {
     assert(frame.sorted_entries == null);
+    assert(frame.sorted_index == 0);
     var entries: std.ArrayListUnmanaged(DirEntry) = .empty;
     errdefer {
         for (entries.items) |de| allocator.free(de.name);
@@ -907,35 +861,11 @@ fn collectAndPreprocess(
         errdefer allocator.free(name_copy);
         try entries.append(allocator, DirEntry{ .name = name_copy, .kind = entry.kind });
     }
-    if (sort_entries) {
-        std.mem.sort(DirEntry, entries.items, {}, struct {
-            fn cmp(_: void, a: DirEntry, b: DirEntry) bool {
-                return std.mem.order(u8, a.name, b.name) == .lt;
-            }
-        }.cmp);
-    }
-    // Pre-register symlink targets in the cycle set so that real dirs
-    // pointing to the same inode are skipped when the iterator gets to them.
-    // Only done when we are NOT following symlinks (no_follow / follow_cmdline)
-    // — in follow_all mode the symlink IS the traversal path and must not be
-    // pre-emptively blocked by cycle detection.
-    if (register_symlink_targets) {
-        if (visited) |v_ptr| {
-            if (v_ptr.*) |*v| {
-                for (entries.items) |de| {
-                    if (de.kind != .sym_link) continue;
-                    // Open the symlink target (follows symlink) to get its id.
-                    const target_dir = frame.dir.openDir(io, de.name, .{}) catch continue;
-                    const fs_id = directory.FileSystemId.fromDir(target_dir) catch {
-                        target_dir.close(io);
-                        continue;
-                    };
-                    target_dir.close(io);
-                    _ = v.getOrPut(fs_id) catch {};
-                }
-            }
+    std.mem.sort(DirEntry, entries.items, {}, struct {
+        fn cmp(_: void, a: DirEntry, b: DirEntry) bool {
+            return std.mem.order(u8, a.name, b.name) == .lt;
         }
-    }
+    }.cmp);
     frame.sorted_entries = entries;
     assert(frame.sorted_index == 0);
 }
@@ -1455,60 +1385,6 @@ test "walker: pruneCurrent on a non-directory is a no-op" {
     try testing.expect(count >= 2);
 }
 
-test "walker: ancestors_and_visited prevents infinite loop on symlink loop" {
-    // §5.1 #9, companion for the default cycle_mode: a symlink pointing back
-    // into its own ancestor creates a cycle. Under .ancestors_and_visited
-    // (the historical detect_cycles=true default, still used by mv/rm), the
-    // global visited set catches the loop silently — next() must never
-    // surface error.DirectoryCycle here, and every path is emitted once.
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try createFile(io, tmp.dir, "real.txt");
-    try tmp.dir.createDirPath(io, "subdir");
-    // loop -> .. (symlink to parent, creating a cycle).
-    try tmp.dir.symLink(io, "..", "subdir/loop", .{});
-
-    // Use a generous max_entries so we would spin many times if cycle
-    // detection were broken, making a failure loud rather than silent.
-    var w = try Walker.init(testing.allocator, .{
-        .symlinks = .follow_all,
-        .cycle_mode = .ancestors_and_visited,
-        .max_entries = 50,
-    });
-    defer w.deinit(io);
-
-    const root = try tmpPath(testing.allocator, io, &tmp, "");
-    defer testing.allocator.free(root);
-    try w.addRoot(root);
-
-    var entries: std.ArrayListUnmanaged(Entry) = .empty;
-    defer {
-        for (entries.items) |e| testing.allocator.free(e.path);
-        entries.deinit(testing.allocator);
-    }
-    // Would fail loudly with error.DirectoryCycle if this mode incorrectly
-    // started raising the per-entry error instead of silently deduping.
-    try drainEntries(&w, io, testing.allocator, &entries);
-
-    // Must terminate and emit the real file. RED: stub emits 0.
-    var saw_real = false;
-    for (entries.items) |e| {
-        if (std.mem.endsWith(u8, e.path, "real.txt")) saw_real = true;
-    }
-    try testing.expect(saw_real);
-
-    // Per-path uniqueness: no path should appear twice. Broken cycle
-    // detection would produce duplicates before hitting max_entries.
-    var seen: std.StringHashMapUnmanaged(void) = .{};
-    defer seen.deinit(testing.allocator);
-    for (entries.items) |e| {
-        const gop = try seen.getOrPut(testing.allocator, e.path);
-        try testing.expect(!gop.found_existing); // path emitted at most once
-    }
-}
-
 test "walker: ancestors mode raises DirectoryCycle on an ancestor symlink loop" {
     // GNU fts semantics: under .ancestors, a directory cycle is only a cycle
     // when it matches an ANCESTOR on the current descent path. Detection
@@ -1620,17 +1496,23 @@ test "walker: symlink policy no_follow emits symlink but does not descend" {
 
     var saw_symlink = false;
     var saw_hidden = false;
+    var saw_path_under_link = false;
     while (try w.next(io)) |entry| {
+        if (std.mem.find(u8, entry.path, "link_dir/") != null) saw_path_under_link = true;
         if (std.mem.eql(u8, entry.basename, "link_dir")) {
             saw_symlink = true;
             try testing.expectEqual(std.Io.File.Kind.sym_link, entry.kind);
         }
         if (std.mem.eql(u8, entry.basename, "hidden.txt")) saw_hidden = true;
     }
-    // Must emit the symlink but NOT its target's contents.
+    // Must emit the symlink itself but never descend THROUGH it: no emitted
+    // path may live under link_dir/. hidden.txt is reachable via the REAL
+    // real_dir/ path (GNU fts semantics — a real sibling directory is always
+    // walked, regardless of an aliasing symlink), so saw_hidden must be true.
     // RED: stub returns null, so saw_symlink=false, fails the expect.
     try testing.expect(saw_symlink);
-    try testing.expect(!saw_hidden);
+    try testing.expect(saw_hidden);
+    try testing.expect(!saw_path_under_link);
 }
 
 test "walker: symlink policy follow_cmdline follows only depth-0 symlinks" {
@@ -1684,77 +1566,12 @@ test "walker: symlink policy follow_cmdline follows only depth-0 symlinks" {
     try testing.expect(!saw_nested_link_followed);
 }
 
-test "walker: follow_all + ancestors_and_visited dedups the sibling alias" {
-    // §5.1 #13, companion for the default cycle_mode: with follow_all (-L),
-    // all symlinks are followed. The root holds BOTH the real target_dir and
-    // link_to_dir -> target_dir (siblings, same inode). Under
-    // .ancestors_and_visited (the historical global-visited-set default),
-    // whichever of the two is visited first is fully descended and the other
-    // is skipped ENTIRELY — not just deduped per-file: the second alias's
-    // directory entry itself must never be emitted. This pins the exact
-    // dedup behavior mv/rm depend on continuing unchanged.
-    //
-    // Without sort_children the visit order is the filesystem's readdir
-    // order, which differs across platforms (it descended the link on
-    // x86_64 but the real dir on arm CI, making saw_via_link flaky).
-    // sort_children=true makes the order deterministic: "link_to_dir" sorts
-    // before "target_dir", so the symlink is descended first on every
-    // platform, and "target_dir" is therefore the alias that gets skipped.
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try buildTree(io, tmp.dir, &.{
-        .{ .path = "target_dir", .kind = .dir },
-        .{ .path = "target_dir/target_file.txt", .kind = .file },
-        .{ .path = "link_to_dir", .kind = .symlink, .symlink_target = "target_dir" },
-    });
-
-    var w = try Walker.init(testing.allocator, .{
-        .symlinks = .follow_all,
-        .cycle_mode = .ancestors_and_visited,
-        .order = .pre,
-        .sort_children = true,
-    });
-    defer w.deinit(io);
-
-    const root = try tmpPath(testing.allocator, io, &tmp, "");
-    defer testing.allocator.free(root);
-    try w.addRoot(root);
-
-    var saw_via_link = false;
-    var saw_target_dir_direct = false;
-    while (try w.next(io)) |entry| {
-        // When link_to_dir is followed, we expect to see target_file.txt
-        // under the link_to_dir path.
-        if (std.mem.eql(u8, entry.basename, "target_file.txt") and
-            std.mem.find(u8, entry.path, "link_to_dir") != null)
-        {
-            saw_via_link = true;
-        }
-        // "target_dir" reached directly (not through the symlink) must never
-        // surface as its own entry: it was already visited via link_to_dir.
-        if (std.mem.eql(u8, entry.basename, "target_dir")) {
-            saw_target_dir_direct = true;
-        }
-    }
-    // Must have followed the symlink and descended into it.
-    // RED: stub returns null, saw_via_link stays false.
-    try testing.expect(saw_via_link);
-    // RED against a wrong .ancestors_and_visited implementation that dedups
-    // per-file instead of at the whole-subtree/directory-entry level, or
-    // that stops deduping aliases at all: saw_target_dir_direct would
-    // flip true.
-    try testing.expect(!saw_target_dir_direct);
-}
-
 test "walker: follow_all + ancestors mode walks both sibling alias directories" {
     // GNU fts semantics: .ancestors only prunes when a directory matches an
     // ANCESTOR on the current descent path. link_to_dir and target_dir are
     // SIBLINGS, not ancestor/descendant, so under .ancestors both aliases
-    // must be independently, fully walked — unlike the
-    // .ancestors_and_visited companion above, which dedups this exact
-    // fixture down to a single alias.
+    // must be independently, fully walked — there is no global visited set to
+    // dedup this fixture down to a single alias.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1790,19 +1607,18 @@ test "walker: follow_all + ancestors mode walks both sibling alias directories" 
         }
     }
     // RED against a wrong implementation that still applies a global
-    // visited-set under .ancestors: saw_target_dir_direct would stay false,
-    // just like the .ancestors_and_visited companion above.
+    // visited-set under .ancestors: saw_target_dir_direct would stay false.
     try testing.expect(saw_via_link);
     try testing.expect(saw_target_dir_direct);
 }
 
 // Issue #69, T1: under the DEFAULT cycle_mode (deliberately omitted below so
-// the struct default `.ancestors_and_visited` is exercised) with no_follow
-// symlinks, a real directory that has a SIBLING symlink pointing at it must
-// still be fully walked. collectAndPreprocess pre-registers every symlink's
-// followed target (dev, ino) into the shared visited set before any child is
-// classified, so classifyChildDir later finds the real dir's id already
-// `found_existing` and skips it -- this is the issue #69 bug. GNU rm/mv do
+// the struct default `.ancestors`, GNU fts semantics, is exercised) with
+// no_follow symlinks, a real directory that has a SIBLING symlink pointing at
+// it must still be fully walked. The historical bug pre-registered every
+// symlink's followed target (dev, ino) into a shared visited set before any
+// child was classified, so classifyChildDir later found the real dir's id
+// already `found_existing` and skipped it. GNU rm/mv do
 // no such inode dedup between a symlink and an unrelated sibling real
 // directory: the real dir must be walked pre AND post (order=.both) and its
 // child file must appear, while the symlink itself is emitted once as a
@@ -1868,7 +1684,8 @@ fn checkSiblingAliasWalkedRegardlessOfSortOrder(
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const real_inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/inner.txt", .{real_name});
+    const real_inner_path =
+        try std.fmt.allocPrint(testing.allocator, "{s}/inner.txt", .{real_name});
     defer testing.allocator.free(real_inner_path);
 
     try buildTree(io, tmp.dir, &.{
@@ -1995,8 +1812,8 @@ test "walker: ancestors mode terminates a mutual sibling symlink loop" {
     // RED against a wrong implementation: an ancestor scan that never fires
     // would spin toward the 30-call cap (terminated stays false); one that
     // over-fires (degenerates to a global visited set) would report fewer
-    // than 5 directory entries (one alias silently skipped, mirroring the
-    // .ancestors_and_visited fixture above) and fewer than 2 cycle errors.
+    // than 5 directory entries (one alias silently skipped) and fewer than 2
+    // cycle errors.
     try testing.expect(terminated);
     try testing.expectEqual(@as(u32, 5), dir_entries); // root, a, a/link_b, b, b/link_a
     try testing.expectEqual(@as(u32, 2), cycle_errors);
@@ -2022,7 +1839,7 @@ test "walker: follow_all emits a symlink-to-file as a file leaf" {
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
-        .cycle_mode = .ancestors_and_visited,
+        .cycle_mode = .ancestors,
         .order = .pre,
         .sort_children = true,
     });
@@ -2071,7 +1888,7 @@ test "walker: follow_all descends symlink-to-dir and leafs symlink-to-file" {
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
-        .cycle_mode = .ancestors_and_visited,
+        .cycle_mode = .ancestors,
         .order = .pre,
         .sort_children = true,
     });
@@ -2123,7 +1940,7 @@ test "walker: follow_all emits a broken symlink as a sym_link leaf" {
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
-        .cycle_mode = .ancestors_and_visited,
+        .cycle_mode = .ancestors,
         .order = .pre,
         .sort_children = true,
     });
@@ -2172,7 +1989,7 @@ test "walker: follow_all does not hang or error on a symlink loop" {
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
-        .cycle_mode = .ancestors_and_visited,
+        .cycle_mode = .ancestors,
         .order = .pre,
         .sort_children = true,
         .max_depth = 8,

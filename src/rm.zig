@@ -631,6 +631,7 @@ fn removeDirectoryWithWalker(
     const config = common.walker.WalkConfig{
         .order = .both,
         .symlinks = .no_follow,
+        .cycle_mode = .ancestors,
         .stay_on_filesystem = options.no_cross_device,
     };
 
@@ -1965,9 +1966,9 @@ test "rm: recursive removal succeeds when a real dir has a sibling symlink alias
     // INSIDE the tree being removed: tree/real/inner.txt and
     // tree/link -> real. GNU rm does no inode dedup between them and
     // removes the whole tree (rc=0). removeFiles uses the walker's DEFAULT
-    // cycle_mode (.ancestors_and_visited, not spelled here), which
-    // pre-registers "real"'s (dev,ino) via the sibling "link" before
-    // classifying "real" itself, so the walker silently skips descending
+    // cycle_mode (.ancestors, GNU fts semantics). The historical bug
+    // pre-registered "real"'s (dev,ino) via the sibling "link" before
+    // classifying "real" itself, so the walker silently skipped descending
     // into "real". Its file then survives the pre-order pass, and the
     // post-order rmdir on "real" fails with ENOTEMPTY -- removeFiles
     // reports failure instead of fully removing the tree.

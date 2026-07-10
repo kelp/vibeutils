@@ -580,7 +580,7 @@ fn crossFilesystemMove(
             options,
             stdout_writer,
             stderr_writer,
-            .{ .order = .both, .symlinks = .no_follow, .cycle_mode = .ancestors_and_visited },
+            .{ .order = .both, .symlinks = .no_follow, .cycle_mode = .ancestors },
         );
     } else {
         errdefer std.Io.Dir.cwd().deleteFile(io, dest) catch {};
@@ -2906,7 +2906,7 @@ test "walker-migration: cross-device fallback preserves directory mtime" {
     try testing.expect(!test_dir.fileExists("src"));
 }
 
-test "walker-migration: cross-device fallback copies a real dir aliased by a sibling symlink (issue #69)" {
+test "walker-migration: cross-device copies a real dir aliased by a sibling symlink (issue #69)" {
     // Fully writable, no chmod/root-skip needed: the divergence is the
     // walker's sibling-alias inode dedup, not permissions. crossFilesystemMove
     // does copy+delete unconditionally, so no real EXDEV boundary is needed
@@ -2915,9 +2915,9 @@ test "walker-migration: cross-device fallback copies a real dir aliased by a sib
     // src/real/inner.txt and src/link -> real are SIBLINGS. GNU mv's copy
     // stage (no inode dedup) produces dst/real/inner.txt AND dst/link (a
     // symlink whose target is literally "real"), then deletes src. The
-    // walker's DEFAULT cycle_mode (.ancestors_and_visited, not spelled here)
-    // pre-registers "real"'s (dev,ino) via the sibling "link" before
-    // classifying "real" itself, so the copy's walker silently SKIPS
+    // walker's DEFAULT cycle_mode (.ancestors, GNU fts semantics) — the
+    // historical bug pre-registered "real"'s (dev,ino) via the sibling "link"
+    // before classifying "real" itself, so the copy's walker silently SKIPPED
     // descending into "real" -- dst ends up with only the symlink, the copy
     // is reported as fully successful, and crossFilesystemMove then deletes
     // src: data loss.
@@ -3087,7 +3087,7 @@ test "copyDirectoryTree halts on EntryLimitExceeded instead of looping (issue #4
         .{
             .order = .both,
             .symlinks = .no_follow,
-            .cycle_mode = .ancestors_and_visited,
+            .cycle_mode = .ancestors,
             .max_entries = 3,
         },
     );
