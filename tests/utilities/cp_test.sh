@@ -827,29 +827,42 @@ test_cp() {
     # with an error message rather than silently proceeding.
     echo -e "${CYAN}Testing force-overwrite error in read-only directory...${NC}"
 
-    local ro_dir=$(create_temp_dir)
-    local ro_src=$(create_temp_file "force overwrite source")
-    create_temp_file "existing dest" "$ro_dir/dest.txt"
-    chmod 444 "$ro_dir/dest.txt"
-    chmod 555 "$ro_dir"
-
-    local ro_cmd ro_out ro_err ro_exit
-    run_command ro_cmd ro_out ro_err ro_exit "$binary" -f "$ro_src" "$ro_dir/dest.txt"
-    if [[ $ro_exit -ne 0 ]]; then
-        print_test_result "cp -f read-only dir exits non-zero" "PASS"
+    # Root bypasses directory-write permission bits at the kernel level, so a
+    # write into a chmod 555 directory succeeds under root and cp exits 0 with
+    # no error (GNU cp behaves identically). The read-only precondition only
+    # holds for an unprivileged user, so skip these assertions under root
+    # rather than assert an outcome the kernel makes impossible; the assertions
+    # keep their teeth on unprivileged CI runners.
+    if [[ $(id -u) -eq 0 ]]; then
+        print_test_result "cp -f read-only dir exits non-zero" "SKIP" \
+            "root bypasses directory permissions"
+        print_test_result "cp -f read-only dir reports error on stderr" "SKIP" \
+            "root bypasses directory permissions"
     else
-        print_test_result "cp -f read-only dir exits non-zero" "FAIL" \
-            "Expected non-zero exit, got 0"
-    fi
-    if [[ -n "$ro_err" ]]; then
-        print_test_result "cp -f read-only dir reports error on stderr" "PASS"
-    else
-        print_test_result "cp -f read-only dir reports error on stderr" "FAIL" \
-            "Expected error message on stderr, got nothing"
-    fi
+        local ro_dir=$(create_temp_dir)
+        local ro_src=$(create_temp_file "force overwrite source")
+        create_temp_file "existing dest" "$ro_dir/dest.txt"
+        chmod 444 "$ro_dir/dest.txt"
+        chmod 555 "$ro_dir"
 
-    # Restore for cleanup
-    chmod 755 "$ro_dir"
+        local ro_cmd ro_out ro_err ro_exit
+        run_command ro_cmd ro_out ro_err ro_exit "$binary" -f "$ro_src" "$ro_dir/dest.txt"
+        if [[ $ro_exit -ne 0 ]]; then
+            print_test_result "cp -f read-only dir exits non-zero" "PASS"
+        else
+            print_test_result "cp -f read-only dir exits non-zero" "FAIL" \
+                "Expected non-zero exit, got 0"
+        fi
+        if [[ -n "$ro_err" ]]; then
+            print_test_result "cp -f read-only dir reports error on stderr" "PASS"
+        else
+            print_test_result "cp -f read-only dir reports error on stderr" "FAIL" \
+                "Expected error message on stderr, got nothing"
+        fi
+
+        # Restore for cleanup
+        chmod 755 "$ro_dir"
+    fi
 
     echo -e "${CYAN}Testing regression fixes...${NC}"
 

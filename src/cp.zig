@@ -918,7 +918,14 @@ fn copyRegularFile(
         };
         return true;
     }
-    return copyRegularFile_simpleCopy(allocator, io, stderr_writer, source_path, dest_path);
+    return copyRegularFile_simpleCopy(
+        allocator,
+        io,
+        stderr_writer,
+        source_path,
+        dest_path,
+        source_info.mode,
+    );
 }
 
 /// Apply the GNU force-overwrite rule before copying a regular file: "if an
@@ -963,7 +970,15 @@ fn copyRegularFile_simpleCopy(
     stderr_writer: *std.Io.Writer,
     source_path: []const u8,
     dest_path: []const u8,
+    source_mode: std.posix.mode_t,
 ) bool {
+    // Sole caller copyRegularFile forwards its own asserted non-empty source.
+    assert(source_path.len > 0);
+    // source_mode comes from a successful stat, so it always carries file-type
+    // bits; a zero IFMT field would mean we were handed a fabricated mode. The
+    // permission bits are masked to 0o777 at createFile below (special bits are
+    // not duplicated without -p; the kernel then applies the umask).
+    assert(source_mode & std.c.S.IFMT != 0);
     const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
         common.printErrorWithProgram(
             allocator,
@@ -976,7 +991,9 @@ fn copyRegularFile_simpleCopy(
     };
     defer source_file.close(io);
 
-    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{}) catch |err| {
+    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
+        .permissions = std.Io.File.Permissions.fromMode(source_mode & 0o777),
+    }) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -1293,8 +1310,16 @@ const TreeWalk = struct {
     /// (dev, inode) of the directory at each walker depth, for ancestor-only
     /// cycle detection. Seeded with the task's inherited ancestors.
     ancestors: std.ArrayList(NodeId),
+    /// Pending post-order chmod for each dest_paths entry, lockstep with it. A
+    /// non-null value is the final mode for a directory THIS walk created (no
+    /// -p); null means pre-existing, preserved (-p), or unknown source mode —
+    /// none of which get a non-preserve chmod.
+    dir_modes: std.ArrayList(?std.posix.mode_t),
     /// Count of inherited ancestors (always kept at the front of `ancestors`).
     inherited_len: usize,
+    /// Process umask, read once per walk. Post-order chmod bypasses the kernel
+    /// umask that createDir already applied, so we re-apply it ourselves.
+    umask: std.posix.mode_t,
 };
 
 /// Walk one TreeTask's source tree and materialize it under the task's dest.
@@ -1331,12 +1356,15 @@ fn copyOneTree(
     var state = TreeWalk{
         .dest_paths = .empty,
         .ancestors = .empty,
+        .dir_modes = .empty,
         .inherited_len = task.ancestors.len,
+        .umask = common.file_ops.getUmask(),
     };
     defer {
         for (state.dest_paths.items) |dp| allocator.free(dp);
         state.dest_paths.deinit(allocator);
         state.ancestors.deinit(allocator);
+        state.dir_modes.deinit(allocator);
     }
     // Restate the construction invariant the post-order pop relies on: the
     // inherited prefix length matches the ancestors just seeded below.
@@ -1436,33 +1464,85 @@ fn handleTreeDir(
 ) bool {
     assert(entry.kind == .directory);
     if (entry.visit == .pre) {
-        const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
-            return false;
-        // Ownership of `dest` transfers to the dest_paths stack on success.
-        if (!createTreeDir(allocator, io, stdout_writer, stderr_writer, entry, dest, options)) {
-            allocator.free(dest);
-            return false;
-        }
-        state.dest_paths.append(allocator, dest) catch {
-            allocator.free(dest);
-            return false;
-        };
-        const node = nodeIdForPath(io, entry.path) orelse NodeId{ .dev = 0, .inode = 0 };
-        state.ancestors.append(allocator, node) catch {};
-        return true;
+        return handleTreeDirPre(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            entry,
+            task,
+            options,
+            state,
+        );
     }
     // Post-order: preserve mode and mtime AFTER children are written, then pop.
     assert(entry.visit == .post);
     assert(state.dest_paths.items.len > 0);
-    const dest = state.dest_paths.items[state.dest_paths.items.len - 1];
+    const last = state.dest_paths.items.len - 1;
+    const dest = state.dest_paths.items[last];
     var success = true;
     if (options.preserve) {
+        // The -p path owns mode+mtime; the pending non-preserve chmod (if any)
+        // is unreachable under -p, so it stays byte-identical to before.
         success = preserveTreeDir(allocator, io, stderr_writer, entry.path, dest);
+    } else if (state.dir_modes.items[last]) |final_mode| {
+        // A directory THIS walk created without -p: restore the source mode,
+        // umask already folded in, bypassing the u+rwx traversal grant.
+        common.file_ops.chmodPath(allocator, dest, final_mode);
     }
     allocator.free(state.dest_paths.pop().?);
+    _ = state.dir_modes.pop();
     assert(state.ancestors.items.len > state.inherited_len);
     _ = state.ancestors.pop();
     return success;
+}
+
+/// Pre-order half of handleTreeDir: create the dest directory, push its dest
+/// path, its pending post-order mode, and its node id in lockstep. Split out to
+/// keep handleTreeDir within the line limit.
+fn handleTreeDirPre(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    task: TreeTask,
+    options: RuntimeOptions,
+    state: *TreeWalk,
+) bool {
+    assert(entry.kind == .directory);
+    assert(entry.visit == .pre);
+    const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
+        return false;
+    // Ownership of `dest` transfers to the dest_paths stack on success.
+    const result = createTreeDir(allocator, io, stdout_writer, stderr_writer, entry, dest, options);
+    // A created dir without -p gets a pending post-order chmod to the source
+    // mode with the umask applied; everything else (existed, -p, unknown mode)
+    // gets none so the pre-existing or preserved mode is left untouched.
+    const pending: ?std.posix.mode_t = switch (result) {
+        .failed => {
+            allocator.free(dest);
+            return false;
+        },
+        .existed => null,
+        .created => |src_mode| if (!options.preserve and src_mode != null)
+            (src_mode.? & 0o777) & ~state.umask
+        else
+            null,
+    };
+    state.dest_paths.append(allocator, dest) catch {
+        allocator.free(dest);
+        return false;
+    };
+    state.dir_modes.append(allocator, pending) catch {
+        allocator.free(state.dest_paths.pop().?);
+        return false;
+    };
+    // The three stacks advance together; the post-order pop relies on it.
+    assert(state.dir_modes.items.len == state.dest_paths.items.len);
+    const node = nodeIdForPath(io, entry.path) orelse NodeId{ .dev = 0, .inode = 0 };
+    state.ancestors.append(allocator, node) catch {};
+    return true;
 }
 
 /// Compute the destination path for an entry from its parent's dest path.
@@ -1489,8 +1569,20 @@ fn treeEntryDest(
     };
 }
 
+/// Outcome of creating a pre-order destination directory. `created` carries the
+/// source directory's permission bits (masked to 0o777) so the caller can plan
+/// the post-order chmod, or null when the source mode could not be resolved.
+const TreeDirResult = union(enum) {
+    failed,
+    existed,
+    created: ?std.posix.mode_t,
+};
+
 /// Create a destination directory for a pre-order directory entry. Prints the
-/// verbose line if requested. Returns false on a hard error.
+/// verbose line if requested. Duplicates the source directory's permission bits
+/// (masked to 0o777) with u+rwx forced on during traversal, matching GNU: a
+/// read-only (e.g. 0o555) source dir must stay writable until its children are
+/// copied; the final mode is restored post-order by the caller.
 fn createTreeDir(
     allocator: Allocator,
     io: std.Io,
@@ -1499,12 +1591,21 @@ fn createTreeDir(
     entry: common.walker.Entry,
     dest: []const u8,
     options: RuntimeOptions,
-) bool {
+) TreeDirResult {
     // dest is the entry's resolved destination; it may be empty when the tree
     // root inherits an empty dest operand (`cp -r dir ''`). createDir rejects it.
     assert(entry.kind == .directory);
-    std.Io.Dir.cwd().createDir(io, dest, .default_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
+    assert(entry.path.len > 0);
+    const src_mode = resolveTreeDirMode(io, entry);
+    // Force u+rwx during traversal so a read-only source dir can still be
+    // populated; fall back to the default when the source mode is unknown.
+    const create_mode: std.posix.mode_t = if (src_mode) |m| (m & 0o777) | 0o700 else 0o777;
+    std.Io.Dir.cwd().createDir(
+        io,
+        dest,
+        std.Io.File.Permissions.fromMode(create_mode),
+    ) catch |err| switch (err) {
+        error.PathAlreadyExists => return .existed,
         else => {
             common.printErrorWithProgram(
                 allocator,
@@ -1513,13 +1614,24 @@ fn createTreeDir(
                 "cannot create directory '{s}': {s}",
                 .{ dest, common.posixErrorString(err) },
             );
-            return false;
+            return .failed;
         },
     };
     if (options.verbose) {
         stdout_writer.print("'{s}' -> '{s}'\n", .{ entry.path, dest }) catch {};
     }
-    return true;
+    return .{ .created = src_mode };
+}
+
+/// Resolve a source directory's permission bits (masked to 0o777). Prefers the
+/// walker's cached stat, falling back to a fresh stat; returns null if that
+/// fails so the caller creates the dir with the default mode.
+fn resolveTreeDirMode(io: std.Io, entry: common.walker.Entry) ?std.posix.mode_t {
+    assert(entry.kind == .directory);
+    assert(entry.path.len > 0);
+    if (entry.stat) |st| return st.mode & 0o777;
+    const info = common.file.FileInfo.stat(io, entry.path) catch return null;
+    return info.mode & 0o777;
 }
 
 /// Preserve a source directory's mode and mtime onto the destination directory.
