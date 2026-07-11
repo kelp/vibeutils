@@ -14,6 +14,15 @@
   mangles a `\|` that appears inside brackets. Word boundaries
   (`\b`, `\<`, `\>`) remain unsupported and are tracked
   separately (#78).
+- **cp now duplicates the source's permission bits when creating
+  a new destination.** A 755 executable no longer silently
+  becomes 644 on copy: new files get the source mode (special
+  bits stripped, umask applied — POSIX baseline semantics, not
+  `-p` behavior), and `cp -r` creates directories with the source
+  directory's mode, kept user-writable during traversal so
+  read-only trees still copy, then fixed up post-order, matching
+  GNU. Existing destinations keep their own mode, and `-p`
+  behavior is unchanged (#77).
 - **rm -r and mv no longer silently skip a directory aliased by
   a sibling symlink.** The walker's global visited set
   pre-registered every symlink's followed target, so `rm -r tree`

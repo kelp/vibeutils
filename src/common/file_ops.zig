@@ -388,6 +388,41 @@ fn copyFileWithAttributesPreserveOwnership(
     }
 }
 
+/// Read the process umask without disturbing it.
+///
+/// POSIX offers no non-destructive umask read, so we install 0 to learn the old
+/// value, then immediately restore it. Callers need this because a post-order
+/// chmod bypasses the kernel umask that createDir applied at creation time.
+/// Idiom lifted from mkdir's getUmask.
+pub fn getUmask() std.posix.mode_t {
+    const original = std.c.umask(0);
+    const restored = std.c.umask(original);
+    // The kernel defines the umask over the nine permission bits only, and the
+    // restore must observe the zero we just installed, else our two calls raced.
+    assert(original <= 0o777);
+    assert(restored == 0);
+    return original;
+}
+
+/// Apply a mode to a named path with a libc chmod(2), masked to the twelve
+/// permission bits. Path-based rather than fchmod because fchmod on a freshly
+/// created directory handle returns EBADF on Linux. Best-effort: failure is
+/// ignored because callers use this on mode fixups where the copy already
+/// succeeded and the OS reports its own errors elsewhere.
+pub fn chmodPath(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    mode: std.posix.mode_t,
+) void {
+    // An empty path would name no file, and a mode above the twelve permission
+    // bits carries file-type bits the caller failed to strip — a caller bug.
+    assert(path.len > 0);
+    assert(mode <= 0o7777);
+    const path_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{path}, 0) catch return;
+    defer allocator.free(path_z);
+    _ = std.c.chmod(path_z, @intCast(mode & 0o7777));
+}
+
 /// Preserve a copied directory's timestamps and mode onto the destination dir.
 ///
 /// Shared so cp's tree walk and mv's EXDEV directory fallback apply the same
@@ -430,9 +465,9 @@ pub fn preserveDirAttributes(
             .{ dest_path, lib.posixErrorString(err) },
         );
     };
-    const dest_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{dest_path}, 0) catch return true;
-    defer allocator.free(dest_z);
-    _ = std.c.chmod(dest_z, @intCast(mode & 0o7777));
+    // The source mode still carries file-type bits (S_IFDIR); strip them so the
+    // shared chmod leaf sees only permission bits.
+    chmodPath(allocator, dest_path, mode & 0o7777);
     return true;
 }
 
