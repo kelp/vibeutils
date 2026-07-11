@@ -3814,7 +3814,8 @@ test "F29: grep -i composes with \\s (GNU extension; red on macOS/BSD libc)" {
     try testing.expectEqualStrings("A B\n", result.output);
 }
 
-test "F29: grep -x '[a\\|]' keeps backslash literal inside brackets (pre-existing bug; red on Linux AND macOS)" {
+// Pre-existing bug pin; was red on Linux AND macOS before the fix.
+test "F29: grep -x '[a\\|]' keeps backslash literal inside brackets" {
     // Pinned: printf '%s\n' '\' | grep -x '[a\|]' matches a line consisting
     // of a lone backslash, exit 0. anchorBreAlternatives scans for \|
     // without tracking bracket-expression state, so it splits inside
@@ -3827,7 +3828,8 @@ test "F29: grep -x '[a\\|]' keeps backslash literal inside brackets (pre-existin
     try testing.expectEqualStrings("\\\n", result.output);
 }
 
-test "F29: grep '[\\s]' keeps backslash literal inside brackets, not [[:space:]] (stays green everywhere)" {
+// Negative pin; stays green everywhere.
+test "F29: grep '[\\s]' keeps bracket backslash literal, not [[:space:]]" {
     // Pinned: printf '%s\n' 's' '\' ' ' | grep '[\s]' matches 's' and '\'
     // but NOT the space-only line -- inside brackets backslash is a
     // literal POSIX bracket-expression member, never translated to
@@ -3848,7 +3850,8 @@ test "F29: grep 'a\\\\sb' matches literal backslash-s, not GNU \\s (stays green 
     try testing.expectEqualStrings("a\\sb\n", result.output);
 }
 
-test "F29: grep -E 'foo\\|bar' keeps \\| as literal pipe, not alternation (stays green everywhere)" {
+// Negative pin; stays green everywhere.
+test "F29: grep -E 'foo\\|bar' keeps \\| literal pipe, not alternation" {
     // Pinned: printf '%s\n' 'foo|bar' 'foo' | grep -E 'foo\|bar' matches
     // only the literal 'foo|bar' line -- in ERE, \| is an escaped literal
     // pipe, never alternation (ERE alternation is unescaped |).
