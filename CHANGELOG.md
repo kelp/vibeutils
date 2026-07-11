@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Fixed
+- **grep now supports the GNU regex escape extensions on macOS.**
+  `\s`, `\S`, `\w`, `\W` (in both BRE and ERE) and `\|`
+  alternation (in BRE) are translated to portable POSIX
+  constructs before compilation, so patterns like
+  `grep -E '^\s+plan'` or `grep 'foo\|bar'` match on macOS
+  exactly as they do with GNU grep instead of silently matching
+  nothing. Bracket expressions keep their POSIX literal meaning
+  (`[\s]` still matches `\` or `s`), and `grep -x` no longer
+  mangles a `\|` that appears inside brackets. Word boundaries
+  (`\b`, `\<`, `\>`) remain unsupported and are tracked
+  separately (#78).
 - **cp now duplicates the source's permission bits when creating
   a new destination.** A 755 executable no longer silently
   becomes 644 on copy: new files get the source mode (special
