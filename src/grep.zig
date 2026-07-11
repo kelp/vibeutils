@@ -795,55 +795,277 @@ fn loadPatternsFromFile(
 // Pattern Compilation
 // ============================================================================
 
-const AnchorResult = struct {
-    pattern: ?[]const u8,
-    use_ere: bool,
+/// Result of translating GNU regex escape extensions. `force_ere` is set
+/// when a BRE pattern was transpiled to ERE (top-level `\|` alternation),
+/// so the caller compiles it with REG_EXTENDED.
+const TranslatedPattern = struct {
+    pattern: []const u8,
+    force_ere: bool,
 };
 
-/// For BRE -x: split a pattern on \| alternation and anchor each
-/// alternative with ^...$. When alternation is present, produce an
-/// ERE pattern instead of BRE to avoid \| which macOS doesn't support.
-fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult {
-    var parts = std.ArrayListUnmanaged([]const u8).empty;
-    var start: usize = 0;
-    var i: usize = 0;
+/// POSIX bracket-class replacement for a GNU class escape, or null if `ch`
+/// is not one of s/S/w/W. `\w`/`\W` use `[[:alnum:]_]` to match the word
+/// character set used by `-w`.
+fn classEscapeReplacement(ch: u8) ?[]const u8 {
+    const rep: ?[]const u8 = switch (ch) {
+        's' => "[[:space:]]",
+        'S' => "[^[:space:]]",
+        'w' => "[[:alnum:]_]",
+        'W' => "[^[:alnum:]_]",
+        else => null,
+    };
+    // The replacement table is fixed-width POSIX classes; guard both bounds.
+    assert(rep == null or rep.?.len >= 11);
+    assert(rep == null or rep.?.len <= 13);
+    return rep;
+}
+
+/// Skip a `[:class:]`/`[.coll.]`/`[=equiv=]` construct whose contents start at
+/// `i_start` and close with `closer` + `]`. Returns the index just past the
+/// closing `]`, or `pattern.len` if unterminated (regcomp reports the error).
+fn skipBracketClass(pattern: []const u8, i_start: usize, closer: u8) usize {
+    assert(closer == ':' or closer == '.' or closer == '=');
+    assert(i_start <= pattern.len);
+    var i: usize = i_start;
+    while (i + 1 < pattern.len) {
+        if (pattern[i] == closer and pattern[i + 1] == ']') return i + 2;
+        i += 1;
+    }
+    return pattern.len;
+}
+
+/// Scan a POSIX bracket expression starting at `start` (pattern[start]=='[').
+/// Returns the index just past the closing ']', or pattern.len if
+/// unterminated. Handles the leading-']' literal quirk (`[]...]`/`[^]...]`)
+/// and `[:class:]`/`[.coll.]`/`[=equiv=]` nesting so an inner ']' does not
+/// close the expression.
+fn copyBracketExpression(pattern: []const u8, start: usize) usize {
+    assert(start < pattern.len);
+    assert(pattern[start] == '[');
+    var i: usize = start + 1;
+    if (i < pattern.len and pattern[i] == '^') i += 1;
+    // A ']' as the first member is a literal, not the terminator.
+    if (i < pattern.len and pattern[i] == ']') i += 1;
     while (i < pattern.len) {
-        if (i + 1 < pattern.len and pattern[i] == '\\' and pattern[i + 1] == '|') {
-            parts.append(allocator, pattern[start..i]) catch
-                return .{ .pattern = null, .use_ere = false };
-            start = i + 2;
-            i = start;
+        const ch = pattern[i];
+        if (ch == ']') return i + 1;
+        if (ch == '[' and i + 1 < pattern.len and
+            (pattern[i + 1] == ':' or pattern[i + 1] == '.' or pattern[i + 1] == '='))
+        {
+            i = skipBracketClass(pattern, i + 2, pattern[i + 1]);
         } else {
             i += 1;
         }
     }
-    assert(start <= pattern.len);
-    parts.append(allocator, pattern[start..]) catch return .{ .pattern = null, .use_ere = false };
-    assert(parts.items.len >= 1);
+    return pattern.len;
+}
 
-    if (parts.items.len == 1) {
-        const anchored = std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch
-            return .{ .pattern = null, .use_ere = false };
-        return .{
-            .pattern = anchored,
-            .use_ere = false,
-        };
-    }
-
-    // Alternation present: produce ERE "^(alt1|alt2|...)$"
-    var buf = std.ArrayListUnmanaged(u8).empty;
-    buf.appendSlice(allocator, "^(") catch return .{ .pattern = null, .use_ere = false };
-    for (parts.items, 0..) |part, idx| {
-        if (idx > 0) {
-            buf.append(allocator, '|') catch return .{ .pattern = null, .use_ere = false };
+/// Substitute GNU class escapes (`\s`/`\S`/`\w`/`\W`) with POSIX bracket
+/// equivalents, outside bracket expressions only. Backslash pairs (`\\`) are
+/// consumed verbatim so an escaped backslash is never re-interpreted. The
+/// escapes mean the same in BRE and ERE, so this runs uniformly on both.
+fn translateClassEscapes(allocator: Allocator, pattern: []const u8) ?[]u8 {
+    assert(pattern.len < std.math.maxInt(u32));
+    var out = std.ArrayListUnmanaged(u8).empty;
+    const bound: usize = pattern.len * 7 + 1;
+    var i: usize = 0;
+    while (i < pattern.len) {
+        const prev_i = i;
+        const ch = pattern[i];
+        if (ch == '[') {
+            const end = copyBracketExpression(pattern, i);
+            assert(end > i);
+            out.appendSlice(allocator, pattern[i..end]) catch return null;
+            i = end;
+        } else if (ch == '\\' and i + 1 < pattern.len) {
+            if (classEscapeReplacement(pattern[i + 1])) |rep| {
+                out.appendSlice(allocator, rep) catch return null;
+            } else {
+                // Verbatim escape pair: \\ pairwise, backrefs, other escapes.
+                out.append(allocator, '\\') catch return null;
+                out.append(allocator, pattern[i + 1]) catch return null;
+            }
+            i += 2;
+        } else {
+            out.append(allocator, ch) catch return null;
+            i += 1;
         }
-        buf.appendSlice(allocator, part) catch return .{ .pattern = null, .use_ere = false };
+        assert(i > prev_i);
+        assert(out.items.len <= bound);
     }
-    buf.appendSlice(allocator, ")$") catch return .{ .pattern = null, .use_ere = false };
-    return .{
-        .pattern = buf.toOwnedSlice(allocator) catch return .{ .pattern = null, .use_ere = false },
-        .use_ere = true,
+    return out.toOwnedSlice(allocator) catch null;
+}
+
+/// Detect a top-level `\|` (GNU BRE alternation) that is outside any bracket
+/// expression and not itself escaped. Scan-only; allocates nothing.
+fn breHasTopLevelAlternation(pattern: []const u8) bool {
+    assert(pattern.len < std.math.maxInt(u32));
+    var i: usize = 0;
+    while (i < pattern.len) {
+        const prev_i = i;
+        const ch = pattern[i];
+        if (ch == '[') {
+            i = copyBracketExpression(pattern, i);
+        } else if (ch == '\\' and i + 1 < pattern.len) {
+            if (pattern[i + 1] == '|') return true;
+            i += 2;
+        } else {
+            i += 1;
+        }
+        assert(i > prev_i);
+    }
+    return false;
+}
+
+/// Translate the escape at `pattern[i]` ('\\') during a BRE->ERE transpile,
+/// appending to `out`. Swaps BRE grouping/quantifier escapes to their ERE
+/// bare forms and back; passes through backrefs and class escapes verbatim
+/// (the later class pass handles \s/\S/\w/\W). Returns the index past the
+/// escape. Updates `at_expr_start` (true after emitting `(` or `|`).
+fn transpileBreEscape(
+    allocator: Allocator,
+    pattern: []const u8,
+    i: usize,
+    out: *std.ArrayListUnmanaged(u8),
+    at_expr_start: *bool,
+) ?usize {
+    assert(i < pattern.len);
+    assert(pattern[i] == '\\');
+    if (i + 1 >= pattern.len) {
+        // Trailing backslash: emit verbatim, regcomp reports the error.
+        out.append(allocator, '\\') catch return null;
+        return i + 1;
+    }
+    const nxt = pattern[i + 1];
+    at_expr_start.* = false;
+    switch (nxt) {
+        '|' => {
+            out.append(allocator, '|') catch return null;
+            at_expr_start.* = true;
+        },
+        '(' => {
+            out.append(allocator, '(') catch return null;
+            at_expr_start.* = true;
+        },
+        ')' => out.append(allocator, ')') catch return null,
+        '{' => out.append(allocator, '{') catch return null,
+        '}' => out.append(allocator, '}') catch return null,
+        '+' => out.append(allocator, '+') catch return null,
+        '?' => out.append(allocator, '?') catch return null,
+        else => {
+            // \\ pairwise, backrefs \1-\9, class escapes, other escapes.
+            out.append(allocator, '\\') catch return null;
+            out.append(allocator, nxt) catch return null;
+        },
+    }
+    return i + 2;
+}
+
+/// Emit the ERE form of a bare (unescaped) BRE character. Bare grouping and
+/// quantifier metacharacters are literals in BRE, so they gain a backslash;
+/// `*` at expression start and `^`/`$` off-anchor are also literal. Returns
+/// false on allocation failure.
+fn transpileBreBare(
+    allocator: Allocator,
+    ch: u8,
+    dollar_is_anchor: bool,
+    out: *std.ArrayListUnmanaged(u8),
+    at_expr_start: *bool,
+) bool {
+    assert(ch != '\\');
+    assert(ch != '[');
+    const start = at_expr_start.*;
+    at_expr_start.* = false;
+    const text: []const u8 = switch (ch) {
+        '|' => "\\|",
+        '(' => "\\(",
+        ')' => "\\)",
+        '{' => "\\{",
+        '}' => "\\}",
+        '+' => "\\+",
+        '?' => "\\?",
+        '*' => if (start) "\\*" else "*",
+        '^' => if (start) "^" else "\\^",
+        '$' => if (dollar_is_anchor) "$" else "\\$",
+        else => {
+            out.append(allocator, ch) catch return false;
+            return true;
+        },
     };
+    out.appendSlice(allocator, text) catch return false;
+    return true;
+}
+
+/// Transpile a whole BRE pattern to an equivalent ERE. Bracket expressions
+/// are copied verbatim; grouping/quantifier metacharacters swap escaped and
+/// bare forms per BRE<->ERE rules. Used when a BRE has top-level `\|`
+/// alternation, which POSIX BRE cannot express portably.
+fn transpileBreToEre(allocator: Allocator, pattern: []const u8) ?[]u8 {
+    assert(pattern.len < std.math.maxInt(u32));
+    var out = std.ArrayListUnmanaged(u8).empty;
+    const bound: usize = pattern.len * 2 + 1;
+    var at_expr_start = true;
+    var i: usize = 0;
+    while (i < pattern.len) {
+        const prev_i = i;
+        const ch = pattern[i];
+        if (ch == '[') {
+            const end = copyBracketExpression(pattern, i);
+            assert(end > i);
+            out.appendSlice(allocator, pattern[i..end]) catch return null;
+            i = end;
+            at_expr_start = false;
+        } else if (ch == '\\') {
+            i = transpileBreEscape(allocator, pattern, i, &out, &at_expr_start) orelse return null;
+        } else {
+            // `$` is an anchor only at end-of-pattern or right before \) / \|.
+            const dollar_is_anchor = (i + 1 >= pattern.len) or
+                (i + 2 < pattern.len and pattern[i + 1] == '\\' and
+                    (pattern[i + 2] == ')' or pattern[i + 2] == '|'));
+            const ok = transpileBreBare(allocator, ch, dollar_is_anchor, &out, &at_expr_start);
+            if (!ok) return null;
+            i += 1;
+        }
+        assert(i > prev_i);
+        assert(out.items.len <= bound);
+    }
+    return out.toOwnedSlice(allocator) catch null;
+}
+
+/// Translate GNU regex escape extensions before handing a pattern to regcomp.
+/// glibc supports these natively; BSD/macOS libc does not, so we normalize on
+/// all platforms for uniform behavior. `\s`/`\S`/`\w`/`\W` become POSIX
+/// bracket classes in both BRE and ERE; a BRE with top-level `\|` alternation
+/// is transpiled wholesale to ERE with force_ere set. Returns null on
+/// allocation failure. Intermediates are arena-leaked per this file.
+fn translateGnuEscapes(
+    allocator: Allocator,
+    pattern: []const u8,
+    mode: RegexMode,
+) ?TranslatedPattern {
+    assert(mode != .fixed);
+    assert(@intFromEnum(mode) <= @intFromEnum(RegexMode.extended));
+    if (mode == .basic and breHasTopLevelAlternation(pattern)) {
+        const ere = transpileBreToEre(allocator, pattern) orelse return null;
+        defer allocator.free(ere);
+        const out = translateClassEscapes(allocator, ere) orelse return null;
+        return .{ .pattern = out, .force_ere = true };
+    }
+    const out = translateClassEscapes(allocator, pattern) orelse return null;
+    return .{ .pattern = out, .force_ere = false };
+}
+
+/// Anchor a pattern for -x (line_regexp). ERE (or a force_ere BRE) needs a
+/// group so alternation stays whole line; plain BRE anchors bare. Returns
+/// null on allocation failure.
+fn wrapLineRegexp(allocator: Allocator, pattern: []const u8, use_ere: bool) ?[]u8 {
+    assert(pattern.len < std.math.maxInt(u32));
+    const wrapped = if (use_ere)
+        std.fmt.allocPrint(allocator, "^({s})$", .{pattern}) catch return null
+    else
+        std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch return null;
+    assert(wrapped.len > pattern.len);
+    return wrapped;
 }
 
 /// Compile a single pattern. Returns null on error.
@@ -862,20 +1084,22 @@ fn compilePattern(
         return .{ .fixed = .{ .text = pattern, .lower = null } };
     }
 
-    // Build the actual regex pattern, handling -x wrapping.
+    // Translate GNU escape extensions (\s \S \w \W in BRE/ERE, and BRE \|
+    // alternation) before regcomp; see translateGnuEscapes. force_ere is set
+    // when a BRE was transpiled to ERE, so -x wraps and REG_EXTENDED follow.
     // Note: -w (word_regexp) is handled via post-match validation in matchLine,
     // not by wrapping the pattern, to avoid \| in BRE on macOS.
-    var actual_pattern: []const u8 = pattern;
-    var force_ere = false;
+    const tr = translateGnuEscapes(allocator, pattern, opts.regex_mode) orelse return null;
+    defer allocator.free(tr.pattern);
+    const force_ere = tr.force_ere;
 
+    var actual_pattern: []const u8 = tr.pattern;
+    var wrapped: ?[]u8 = null;
+    defer if (wrapped) |w| allocator.free(w);
     if (opts.line_regexp) {
-        if (opts.regex_mode == .extended) {
-            actual_pattern = std.fmt.allocPrint(allocator, "^({s})$", .{pattern}) catch return null;
-        } else {
-            const bre_result = anchorBreAlternatives(allocator, pattern);
-            actual_pattern = bre_result.pattern orelse return null;
-            if (bre_result.use_ere) force_ere = true;
-        }
+        const use_ere = opts.regex_mode == .extended or force_ere;
+        wrapped = wrapLineRegexp(allocator, actual_pattern, use_ere) orelse return null;
+        actual_pattern = wrapped.?;
     }
 
     var cflags: c_int = 0;
@@ -3632,6 +3856,117 @@ test "F29: grep -E 'foo\\|bar' keeps \\| as literal pipe, not alternation (stays
     defer result.arena.deinit();
     try testing.expectEqual(@as(u8, 0), result.exit_code);
     try testing.expectEqualStrings("foo|bar\n", result.output);
+}
+
+// =============================================================
+// F30: translateGnuEscapes unit tests (#78)
+// Table-driven unit coverage for the GNU-escape pattern
+// translator: \s/\S/\w/\W class substitution (outside bracket
+// expressions only, pairwise backslash consumption), and the
+// BRE->ERE transpile triggered by top-level \| alternation
+// (force_ere). Expectations pinned against GNU grep semantics
+// and verified against the reviewed implementation.
+// =============================================================
+
+const TranslateCase = struct {
+    input: []const u8,
+    expected: []const u8,
+};
+
+test "F30: translateGnuEscapes ERE class escapes and passthrough (table)" {
+    const cases = [_]TranslateCase{
+        .{ .input = "\\s", .expected = "[[:space:]]" },
+        .{ .input = "^\\s+plan\\s*:", .expected = "^[[:space:]]+plan[[:space:]]*:" },
+        .{ .input = "a\\Sb", .expected = "a[^[:space:]]b" },
+        .{ .input = "\\w", .expected = "[[:alnum:]_]" },
+        .{ .input = "\\W", .expected = "[^[:alnum:]_]" },
+        // ERE \| is an escaped literal pipe, never alternation: untouched.
+        .{ .input = "foo\\|bar", .expected = "foo\\|bar" },
+        // No translation inside bracket expressions.
+        .{ .input = "[\\s]", .expected = "[\\s]" },
+        // Leading-']' literal quirk: the ']' is a member, not the closer.
+        .{ .input = "[]\\s]", .expected = "[]\\s]" },
+        .{ .input = "[^]\\s]", .expected = "[^]\\s]" },
+        // Nested [:class:] does not end the bracket expression.
+        .{ .input = "[[:alpha:]\\s]", .expected = "[[:alpha:]\\s]" },
+        // Escaped backslash consumed pairwise: \\s stays literal.
+        .{ .input = "\\\\s", .expected = "\\\\s" },
+        // Odd backslash run: third backslash starts a real \s.
+        .{ .input = "\\\\\\s", .expected = "\\\\[[:space:]]" },
+        // Trailing lone backslash emitted verbatim, no crash.
+        .{ .input = "abc\\", .expected = "abc\\" },
+        .{ .input = "", .expected = "" },
+    };
+    for (cases) |case| {
+        const tr = translateGnuEscapes(testing.allocator, case.input, .extended) orelse
+            return error.OutOfMemory;
+        defer testing.allocator.free(tr.pattern);
+        try testing.expectEqualStrings(case.expected, tr.pattern);
+        try testing.expectEqual(false, tr.force_ere);
+    }
+}
+
+test "F30: translateGnuEscapes BRE without alternation keeps BRE (table)" {
+    const cases = [_]TranslateCase{
+        .{ .input = "a\\sb", .expected = "a[[:space:]]b" },
+        // The F29 bug pin at translator level: \| inside a bracket
+        // expression is a literal member, so no transpile happens.
+        .{ .input = "[a\\|]", .expected = "[a\\|]" },
+    };
+    for (cases) |case| {
+        const tr = translateGnuEscapes(testing.allocator, case.input, .basic) orelse
+            return error.OutOfMemory;
+        defer testing.allocator.free(tr.pattern);
+        try testing.expectEqualStrings(case.expected, tr.pattern);
+        try testing.expectEqual(false, tr.force_ere);
+    }
+}
+
+test "F30: translateGnuEscapes BRE with top-level \\| transpiles to ERE (table)" {
+    const cases = [_]TranslateCase{
+        .{ .input = "foo\\|bar", .expected = "foo|bar" },
+        .{ .input = "foo\\|bar\\|baz", .expected = "foo|bar|baz" },
+        .{ .input = "\\(ab\\)\\|c", .expected = "(ab)|c" },
+        // Bare parens are BRE literals: escaped in the ERE output.
+        .{ .input = "a(b\\|c", .expected = "a\\(b|c" },
+        // Bare + is a BRE literal; GNU BRE \+ is a quantifier.
+        .{ .input = "a+b\\|c", .expected = "a\\+b|c" },
+        .{ .input = "a\\+\\|b", .expected = "a+|b" },
+        .{ .input = "x\\{2\\}\\|y", .expected = "x{2}|y" },
+        .{ .input = "a{b\\|c", .expected = "a\\{b|c" },
+        // Mid-pattern ^ and $ are literals in BRE.
+        .{ .input = "a^b\\|c", .expected = "a\\^b|c" },
+        .{ .input = "a$b\\|c", .expected = "a\\$b|c" },
+        // Anchors kept at expression edges.
+        .{ .input = "^a\\|b$", .expected = "^a|b$" },
+        // ^ right after \( is still an anchor (expression start).
+        .{ .input = "\\(^a\\|b\\)", .expected = "(^a|b)" },
+        // * at expression start is a BRE literal.
+        .{ .input = "*a\\|b", .expected = "\\*a|b" },
+        // Backreferences pass through untouched.
+        .{ .input = "\\1x\\|y", .expected = "\\1x|y" },
+        // Class escapes compose with the transpile output.
+        .{ .input = "\\s\\|\\w", .expected = "[[:space:]]|[[:alnum:]_]" },
+        // Bracket expressions copied verbatim during the transpile.
+        .{ .input = "[a\\|]x\\|y", .expected = "[a\\|]x|y" },
+    };
+    for (cases) |case| {
+        const tr = translateGnuEscapes(testing.allocator, case.input, .basic) orelse
+            return error.OutOfMemory;
+        defer testing.allocator.free(tr.pattern);
+        try testing.expectEqualStrings(case.expected, tr.pattern);
+        try testing.expectEqual(true, tr.force_ere);
+    }
+}
+
+test "F30: breHasTopLevelAlternation detects only unescaped top-level \\|" {
+    // A real top-level \| outside brackets is alternation.
+    try testing.expect(breHasTopLevelAlternation("foo\\|bar"));
+    // \| inside a bracket expression is a literal member.
+    try testing.expect(!breHasTopLevelAlternation("[a\\|]"));
+    // Escaped backslash (\\) then a bare | -- pairwise consumption means
+    // the pipe is bare, and a bare | is a BRE literal, not alternation.
+    try testing.expect(!breHasTopLevelAlternation("a\\\\|b"));
 }
 
 // =============================================================
