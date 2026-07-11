@@ -222,5 +222,22 @@ specification, with additional GNU extensions for
 .Fl Fl exclude ,
 and
 .Fl Fl exclude-dir .
+The GNU pattern escape extensions
+.Ql \es ,
+.Ql \eS ,
+.Ql \ew ,
+and
+.Ql \eW
+are supported in both basic and extended regular expressions,
+and
+.Ql \e|
+alternation is supported in basic regular expressions,
+on all platforms.
+The word-boundary escapes
+.Ql \eb ,
+.Ql \e< ,
+and
+.Ql \e>
+are not supported.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
