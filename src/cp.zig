@@ -1579,7 +1579,9 @@ const TreeDirResult = union(enum) {
 };
 
 /// Create a destination directory for a pre-order directory entry. Prints the
-/// verbose line if requested. Duplicates the source directory's permission bits
+/// verbose line only for directories it actually creates — GNU cp -rv is
+/// silent about destination directories that already exist during a merge.
+/// Duplicates the source directory's permission bits
 /// (masked to 0o777) with u+rwx forced on during traversal, matching GNU: a
 /// read-only (e.g. 0o555) source dir must stay writable until its children are
 /// copied; the final mode is restored post-order by the caller.
@@ -1629,7 +1631,9 @@ fn createTreeDir(
 fn resolveTreeDirMode(io: std.Io, entry: common.walker.Entry) ?std.posix.mode_t {
     assert(entry.kind == .directory);
     assert(entry.path.len > 0);
-    if (entry.stat) |st| return st.mode & 0o777;
+    // The walker caches mode as u32; posix mode_t is u16 on macOS. The 0o777
+    // mask guarantees the value fits either width.
+    if (entry.stat) |st| return @intCast(st.mode & 0o777);
     const info = common.file.FileInfo.stat(io, entry.path) catch return null;
     return info.mode & 0o777;
 }
