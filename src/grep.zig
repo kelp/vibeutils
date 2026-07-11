@@ -3520,6 +3520,121 @@ test "F27: grep -x BRE with alternation" {
 }
 
 // =============================================================
+// F29: GNU regex escape extensions (\s \S \w \W \|)
+// GNU grep supports \s/\S/\w/\W in both BRE and ERE, and \| as BRE
+// alternation, as libc regcomp extensions. glibc (Linux) implements
+// these natively so the tests below pass locally; BSD/Darwin libc
+// treats them as literal escaped characters, so they are expected to
+// go red on macOS CI (macos-26 legs of test.yml/integration.yml)
+// until compilePattern translates these escapes before calling
+// regcomp. Pinned against GNU grep 3.11 (see issue #78).
+// The -x '[a\|]' case is a separate, pre-existing bug in
+// anchorBreAlternatives (bracket-expression-unaware \| scanning) and
+// is red on BOTH platforms.
+// =============================================================
+
+test "F29: grep -E \\s matches whitespace (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf '  plan: x\n' | grep -E '^\s+plan\s*:' matches, exit 0.
+    var result = try testRunGrepOutput("  plan: x\n", &.{ "-E", "^\\s+plan\\s*:" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("  plan: x\n", result.output);
+}
+
+test "F29: grep BRE \\s matches whitespace (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf 'a b\n' | grep 'a\sb' matches, exit 0 (default BRE mode).
+    var result = try testRunGrepOutput("a b\n", &.{"a\\sb"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a b\n", result.output);
+}
+
+test "F29: grep -E \\S matches non-whitespace (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf 'a b\nacb\n' | grep -E 'a\Sb' outputs only 'acb'.
+    var result = try testRunGrepOutput("a b\nacb\n", &.{ "-E", "a\\Sb" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("acb\n", result.output);
+}
+
+test "F29: grep BRE \\w matches word characters (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf 'foo_1\n' | grep '\w\w\w_\w' matches, exit 0.
+    var result = try testRunGrepOutput("foo_1\n", &.{"\\w\\w\\w_\\w"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo_1\n", result.output);
+}
+
+test "F29: grep BRE \\W matches non-word characters (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf 'a-b\naxb\n' | grep 'a\Wb' outputs only 'a-b'.
+    var result = try testRunGrepOutput("a-b\naxb\n", &.{"a\\Wb"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a-b\n", result.output);
+}
+
+test "F29: grep BRE \\| is alternation without -x (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf 'foo\nbar\nbaz\n' | grep 'foo\|bar' outputs 'foo' and
+    // 'bar', not 'baz'.
+    var result = try testRunGrepOutput("foo\nbar\nbaz\n", &.{"foo\\|bar"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\nbar\n", result.output);
+}
+
+test "F29: grep -i composes with \\s (GNU extension; red on macOS/BSD libc)" {
+    // Pinned: printf 'A B\n' | grep -i 'a\sb' matches, exit 0.
+    var result = try testRunGrepOutput("A B\n", &.{ "-i", "a\\sb" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("A B\n", result.output);
+}
+
+test "F29: grep -x '[a\\|]' keeps backslash literal inside brackets (pre-existing bug; red on Linux AND macOS)" {
+    // Pinned: printf '%s\n' '\' | grep -x '[a\|]' matches a line consisting
+    // of a lone backslash, exit 0. anchorBreAlternatives scans for \|
+    // without tracking bracket-expression state, so it splits inside
+    // [a\|] and mangles the pattern into ERE ^([a|])$, which does not
+    // match a lone backslash. This bug reproduces on Linux (this box)
+    // as well as macOS -- it is not a libc extension gap.
+    var result = try testRunGrepOutput("\\\n", &.{ "-x", "[a\\|]" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("\\\n", result.output);
+}
+
+test "F29: grep '[\\s]' keeps backslash literal inside brackets, not [[:space:]] (stays green everywhere)" {
+    // Pinned: printf '%s\n' 's' '\' ' ' | grep '[\s]' matches 's' and '\'
+    // but NOT the space-only line -- inside brackets backslash is a
+    // literal POSIX bracket-expression member, never translated to
+    // [[:space:]].
+    var result = try testRunGrepOutput("s\n\\\n \n", &.{"[\\s]"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("s\n\\\n", result.output);
+}
+
+test "F29: grep 'a\\\\sb' matches literal backslash-s, not GNU \\s (stays green everywhere)" {
+    // Pinned: printf '%s\n' 'a\sb' 'a b' | grep 'a\\sb' matches only the
+    // literal 'a\sb' line -- an escaped backslash (\\) followed by 's'
+    // must NOT be re-interpreted as the GNU \s extension.
+    var result = try testRunGrepOutput("a\\sb\na b\n", &.{"a\\\\sb"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\\sb\n", result.output);
+}
+
+test "F29: grep -E 'foo\\|bar' keeps \\| as literal pipe, not alternation (stays green everywhere)" {
+    // Pinned: printf '%s\n' 'foo|bar' 'foo' | grep -E 'foo\|bar' matches
+    // only the literal 'foo|bar' line -- in ERE, \| is an escaped literal
+    // pipe, never alternation (ERE alternation is unescaped |).
+    var result = try testRunGrepOutput("foo|bar\nfoo\n", &.{ "-E", "foo\\|bar" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo|bar\n", result.output);
+}
+
+// =============================================================
 // F28: grep -o prints only first match per line
 // GNU grep -o prints each non-overlapping match on its own line.
 // Our implementation prints only the first match per line.
