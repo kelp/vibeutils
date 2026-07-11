@@ -3987,7 +3987,8 @@ test "issue 77 U3: setuid bit is not duplicated without -p" {
     try test_dir.createFile("src.txt", "content", 0o755);
     const source_path = try test_dir.getPath("src.txt");
     defer testing.allocator.free(source_path);
-    const source_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
     defer testing.allocator.free(source_path_z);
 
     // chmod is not umask-masked, so this sets the exact bits requested. If the
@@ -4076,7 +4077,8 @@ test "issue 77 U5: cp -r duplicates source directory and file mode without -p" {
     try test_dir.createFile("src/f.txt", "child content", 0o700);
     const src_dir_path = try test_dir.getPath("src");
     defer testing.allocator.free(src_dir_path);
-    const src_dir_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{src_dir_path}, 0);
+    const src_dir_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{src_dir_path}, 0);
     defer testing.allocator.free(src_dir_path_z);
     // createDir always uses default_dir (0o777); chmod down to the mode under
     // test explicitly rather than relying on umask-at-creation-time.
