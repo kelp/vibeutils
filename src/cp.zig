@@ -918,7 +918,14 @@ fn copyRegularFile(
         };
         return true;
     }
-    return copyRegularFile_simpleCopy(allocator, io, stderr_writer, source_path, dest_path);
+    return copyRegularFile_simpleCopy(
+        allocator,
+        io,
+        stderr_writer,
+        source_path,
+        dest_path,
+        source_info.mode,
+    );
 }
 
 /// Apply the GNU force-overwrite rule before copying a regular file: "if an
@@ -963,7 +970,15 @@ fn copyRegularFile_simpleCopy(
     stderr_writer: *std.Io.Writer,
     source_path: []const u8,
     dest_path: []const u8,
+    source_mode: std.posix.mode_t,
 ) bool {
+    // Sole caller copyRegularFile forwards its own asserted non-empty source.
+    assert(source_path.len > 0);
+    // source_mode comes from a successful stat, so it always carries file-type
+    // bits; a zero IFMT field would mean we were handed a fabricated mode. The
+    // permission bits are masked to 0o777 at createFile below (special bits are
+    // not duplicated without -p; the kernel then applies the umask).
+    assert(source_mode & std.c.S.IFMT != 0);
     const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
         common.printErrorWithProgram(
             allocator,
@@ -976,7 +991,9 @@ fn copyRegularFile_simpleCopy(
     };
     defer source_file.close(io);
 
-    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{}) catch |err| {
+    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
+        .permissions = std.Io.File.Permissions.fromMode(source_mode & 0o777),
+    }) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -1293,8 +1310,16 @@ const TreeWalk = struct {
     /// (dev, inode) of the directory at each walker depth, for ancestor-only
     /// cycle detection. Seeded with the task's inherited ancestors.
     ancestors: std.ArrayList(NodeId),
+    /// Pending post-order chmod for each dest_paths entry, lockstep with it. A
+    /// non-null value is the final mode for a directory THIS walk created (no
+    /// -p); null means pre-existing, preserved (-p), or unknown source mode —
+    /// none of which get a non-preserve chmod.
+    dir_modes: std.ArrayList(?std.posix.mode_t),
     /// Count of inherited ancestors (always kept at the front of `ancestors`).
     inherited_len: usize,
+    /// Process umask, read once per walk. Post-order chmod bypasses the kernel
+    /// umask that createDir already applied, so we re-apply it ourselves.
+    umask: std.posix.mode_t,
 };
 
 /// Walk one TreeTask's source tree and materialize it under the task's dest.
@@ -1331,12 +1356,15 @@ fn copyOneTree(
     var state = TreeWalk{
         .dest_paths = .empty,
         .ancestors = .empty,
+        .dir_modes = .empty,
         .inherited_len = task.ancestors.len,
+        .umask = common.file_ops.getUmask(),
     };
     defer {
         for (state.dest_paths.items) |dp| allocator.free(dp);
         state.dest_paths.deinit(allocator);
         state.ancestors.deinit(allocator);
+        state.dir_modes.deinit(allocator);
     }
     // Restate the construction invariant the post-order pop relies on: the
     // inherited prefix length matches the ancestors just seeded below.
@@ -1436,33 +1464,85 @@ fn handleTreeDir(
 ) bool {
     assert(entry.kind == .directory);
     if (entry.visit == .pre) {
-        const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
-            return false;
-        // Ownership of `dest` transfers to the dest_paths stack on success.
-        if (!createTreeDir(allocator, io, stdout_writer, stderr_writer, entry, dest, options)) {
-            allocator.free(dest);
-            return false;
-        }
-        state.dest_paths.append(allocator, dest) catch {
-            allocator.free(dest);
-            return false;
-        };
-        const node = nodeIdForPath(io, entry.path) orelse NodeId{ .dev = 0, .inode = 0 };
-        state.ancestors.append(allocator, node) catch {};
-        return true;
+        return handleTreeDirPre(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            entry,
+            task,
+            options,
+            state,
+        );
     }
     // Post-order: preserve mode and mtime AFTER children are written, then pop.
     assert(entry.visit == .post);
     assert(state.dest_paths.items.len > 0);
-    const dest = state.dest_paths.items[state.dest_paths.items.len - 1];
+    const last = state.dest_paths.items.len - 1;
+    const dest = state.dest_paths.items[last];
     var success = true;
     if (options.preserve) {
+        // The -p path owns mode+mtime; the pending non-preserve chmod (if any)
+        // is unreachable under -p, so it stays byte-identical to before.
         success = preserveTreeDir(allocator, io, stderr_writer, entry.path, dest);
+    } else if (state.dir_modes.items[last]) |final_mode| {
+        // A directory THIS walk created without -p: restore the source mode,
+        // umask already folded in, bypassing the u+rwx traversal grant.
+        common.file_ops.chmodPath(allocator, dest, final_mode);
     }
     allocator.free(state.dest_paths.pop().?);
+    _ = state.dir_modes.pop();
     assert(state.ancestors.items.len > state.inherited_len);
     _ = state.ancestors.pop();
     return success;
+}
+
+/// Pre-order half of handleTreeDir: create the dest directory, push its dest
+/// path, its pending post-order mode, and its node id in lockstep. Split out to
+/// keep handleTreeDir within the line limit.
+fn handleTreeDirPre(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    task: TreeTask,
+    options: RuntimeOptions,
+    state: *TreeWalk,
+) bool {
+    assert(entry.kind == .directory);
+    assert(entry.visit == .pre);
+    const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
+        return false;
+    // Ownership of `dest` transfers to the dest_paths stack on success.
+    const result = createTreeDir(allocator, io, stdout_writer, stderr_writer, entry, dest, options);
+    // A created dir without -p gets a pending post-order chmod to the source
+    // mode with the umask applied; everything else (existed, -p, unknown mode)
+    // gets none so the pre-existing or preserved mode is left untouched.
+    const pending: ?std.posix.mode_t = switch (result) {
+        .failed => {
+            allocator.free(dest);
+            return false;
+        },
+        .existed => null,
+        .created => |src_mode| if (!options.preserve and src_mode != null)
+            (src_mode.? & 0o777) & ~state.umask
+        else
+            null,
+    };
+    state.dest_paths.append(allocator, dest) catch {
+        allocator.free(dest);
+        return false;
+    };
+    state.dir_modes.append(allocator, pending) catch {
+        allocator.free(state.dest_paths.pop().?);
+        return false;
+    };
+    // The three stacks advance together; the post-order pop relies on it.
+    assert(state.dir_modes.items.len == state.dest_paths.items.len);
+    const node = nodeIdForPath(io, entry.path) orelse NodeId{ .dev = 0, .inode = 0 };
+    state.ancestors.append(allocator, node) catch {};
+    return true;
 }
 
 /// Compute the destination path for an entry from its parent's dest path.
@@ -1489,8 +1569,22 @@ fn treeEntryDest(
     };
 }
 
+/// Outcome of creating a pre-order destination directory. `created` carries the
+/// source directory's permission bits (masked to 0o777) so the caller can plan
+/// the post-order chmod, or null when the source mode could not be resolved.
+const TreeDirResult = union(enum) {
+    failed,
+    existed,
+    created: ?std.posix.mode_t,
+};
+
 /// Create a destination directory for a pre-order directory entry. Prints the
-/// verbose line if requested. Returns false on a hard error.
+/// verbose line only for directories it actually creates — GNU cp -rv is
+/// silent about destination directories that already exist during a merge.
+/// Duplicates the source directory's permission bits
+/// (masked to 0o777) with u+rwx forced on during traversal, matching GNU: a
+/// read-only (e.g. 0o555) source dir must stay writable until its children are
+/// copied; the final mode is restored post-order by the caller.
 fn createTreeDir(
     allocator: Allocator,
     io: std.Io,
@@ -1499,12 +1593,21 @@ fn createTreeDir(
     entry: common.walker.Entry,
     dest: []const u8,
     options: RuntimeOptions,
-) bool {
+) TreeDirResult {
     // dest is the entry's resolved destination; it may be empty when the tree
     // root inherits an empty dest operand (`cp -r dir ''`). createDir rejects it.
     assert(entry.kind == .directory);
-    std.Io.Dir.cwd().createDir(io, dest, .default_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
+    assert(entry.path.len > 0);
+    const src_mode = resolveTreeDirMode(io, entry);
+    // Force u+rwx during traversal so a read-only source dir can still be
+    // populated; fall back to the default when the source mode is unknown.
+    const create_mode: std.posix.mode_t = if (src_mode) |m| (m & 0o777) | 0o700 else 0o777;
+    std.Io.Dir.cwd().createDir(
+        io,
+        dest,
+        std.Io.File.Permissions.fromMode(create_mode),
+    ) catch |err| switch (err) {
+        error.PathAlreadyExists => return .existed,
         else => {
             common.printErrorWithProgram(
                 allocator,
@@ -1513,13 +1616,26 @@ fn createTreeDir(
                 "cannot create directory '{s}': {s}",
                 .{ dest, common.posixErrorString(err) },
             );
-            return false;
+            return .failed;
         },
     };
     if (options.verbose) {
         stdout_writer.print("'{s}' -> '{s}'\n", .{ entry.path, dest }) catch {};
     }
-    return true;
+    return .{ .created = src_mode };
+}
+
+/// Resolve a source directory's permission bits (masked to 0o777). Prefers the
+/// walker's cached stat, falling back to a fresh stat; returns null if that
+/// fails so the caller creates the dir with the default mode.
+fn resolveTreeDirMode(io: std.Io, entry: common.walker.Entry) ?std.posix.mode_t {
+    assert(entry.kind == .directory);
+    assert(entry.path.len > 0);
+    // The walker caches mode as u32; posix mode_t is u16 on macOS. The 0o777
+    // mask guarantees the value fits either width.
+    if (entry.stat) |st| return @intCast(st.mode & 0o777);
+    const info = common.file.FileInfo.stat(io, entry.path) catch return null;
+    return info.mode & 0o777;
 }
 
 /// Preserve a source directory's mode and mtime onto the destination directory.
@@ -3762,4 +3878,372 @@ test "walker-migration: -rL reports symlink cycle without materializing junk" {
     // before copying f.txt due to iteration order, the summary notes it rather
     // than weakening this assertion -- GNU semantics is the spec.
     try test_dir.expectFileContent("dst/sub/f.txt", "sibling content");
+}
+
+// ===========================================================================
+// Intended-RED tests for issue #77: cp creates NEW destinations with default
+// permissions (0o666/0o777 minus umask) instead of duplicating the source's
+// mode bits. GNU cp step 3(b): when the destination does not already exist,
+// create it with the source's permission bits modified by the umask; only -p
+// additionally bypasses the umask and duplicates setuid/setgid. When the
+// destination already exists, its own mode is retained (untouched guard
+// paths: copyInPlace for files, PathAlreadyExists in createTreeDir for
+// dirs). Each non-guard test below must FAIL today on its KEY assertion (a
+// mode mismatch), not on a compile error or crash, and go GREEN once
+// copyRegularFile_simpleCopy and the tree-walk directory creation duplicate
+// the source mode (masked by umask, sans special bits without -p).
+// ===========================================================================
+
+test "issue 77 U1: new dest file duplicates source permission bits" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "content", 0o700);
+    const src_stat = try test_dir.getFileStat("src.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), src_stat.permissions.toMode() & 0o777);
+
+    // Only the cp invocation itself runs under the reproducible umask; source
+    // creation above ran under umask 0 so its mode stuck exactly.
+    _ = std.c.umask(0o022);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: the new destination must carry the source's 0o700
+    // bits. Today copyRegularFile_simpleCopy creates with `.{}` (default
+    // 0o666 masked by umask 0o022 = 0o644), so this fails.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), dest_info.mode & 0o777);
+}
+
+test "issue 77 U2: umask is applied to the duplicated mode without -p" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    // Source created under umask 0 so 0o777 sticks exactly; stat-verify the
+    // precondition before the cp run is even attempted.
+    try test_dir.createFile("src.txt", "content", 0o777);
+    const src_stat = try test_dir.getFileStat("src.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), src_stat.permissions.toMode() & 0o777);
+
+    _ = std.c.umask(0o022);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: 0o777 masked by umask 0o022 is 0o755, proving the
+    // umask still applies to the duplicated mode even without -p. Today the
+    // dest is created via default_file (0o666) masked by the same umask,
+    // giving 0o644, so this fails.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), dest_info.mode & 0o777);
+}
+
+test "issue 77 U3: setuid bit is not duplicated without -p" {
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "content", 0o755);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    defer testing.allocator.free(source_path_z);
+
+    // chmod is not umask-masked, so this sets the exact bits requested. If the
+    // platform silently drops or alters the setuid bit (root/fakeroot
+    // oddities), skip rather than assert on an unverified precondition.
+    if (std.c.chmod(source_path_z, 0o4755) != 0) return error.SkipZigTest;
+    const source_info = try common.file.FileInfo.stat(testing.io, source_path);
+    if (source_info.mode & 0o7777 != 0o4755) return error.SkipZigTest;
+
+    _ = std.c.umask(0o022);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: without -p the setuid bit must NOT be duplicated;
+    // the dest ends at 0o755 (0o4755 & 0o777, unaffected by umask 0o022
+    // since 0o755 has no group/other write bits). Today the buggy path
+    // ignores source mode entirely and produces 0o644 (default_file 0o666
+    // masked by umask), also failing this assertion, but for the wrong
+    // reason -- once fixed to duplicate 0o777 bits, the special-bit masking
+    // is the only thing standing between the fix and this test.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), dest_info.mode & 0o7777);
+}
+
+test "issue 77 U4 guard: existing destination file keeps its own mode" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "new content", 0o755);
+    try test_dir.createFile("dst.txt", "old content", 0o600);
+
+    _ = std.c.umask(0o022);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dst.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Guard: the pre-existing destination's own mode is retained, and its
+    // content is replaced -- this already passes today via copyInPlace.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), dest_info.mode & 0o777);
+    try test_dir.expectFileContent("dst.txt", "new content");
+}
+
+test "issue 77 U5: cp -r duplicates source directory and file mode without -p" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/f.txt", "child content", 0o700);
+    const src_dir_path = try test_dir.getPath("src");
+    defer testing.allocator.free(src_dir_path);
+    const src_dir_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{src_dir_path}, 0);
+    defer testing.allocator.free(src_dir_path_z);
+    // createDir always uses default_dir (0o777); chmod down to the mode under
+    // test explicitly rather than relying on umask-at-creation-time.
+    if (std.c.chmod(src_dir_path_z, 0o700) != 0) return error.SkipZigTest;
+
+    const src_dir_info = try common.file.FileInfo.stat(testing.io, src_dir_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), src_dir_info.mode & 0o777);
+    const child_src_path = try test_dir.getPath("src/f.txt");
+    defer testing.allocator.free(child_src_path);
+    const child_src_info = try common.file.FileInfo.stat(testing.io, child_src_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), child_src_info.mode & 0o777);
+
+    _ = std.c.umask(0o022);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", src_dir_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: the newly created dest dir and its child file must
+    // both carry the source's 0o700 bits. Today createTreeDir hardcodes
+    // .default_dir (0o777 masked by umask -> 0o755) and the file copy uses
+    // default_file (0o666 masked by umask -> 0o644), so both fail.
+    const dest_dir_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), dest_dir_info.mode & 0o777);
+    const dest_child_path = try std.fmt.allocPrint(testing.allocator, "{s}/f.txt", .{dest_path});
+    defer testing.allocator.free(dest_child_path);
+    const dest_child_info = try common.file.FileInfo.stat(testing.io, dest_child_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), dest_child_info.mode & 0o777);
+}
+
+test "issue 77 U6: cp -r populates and finalizes a read-only source directory without -p" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/inside.txt", "read only dir content", null);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const src_path_z = try std.fmt.allocPrintSentinel(
+        testing.allocator,
+        "{s}/src",
+        .{base_path},
+        0,
+    );
+    defer testing.allocator.free(src_path_z);
+
+    // Make the source dir read-only. Restore 0o755 in defer so TmpDir cleanup
+    // can recurse in and delete it. If the platform refuses the chmod, skip.
+    if (std.c.chmod(src_path_z, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(src_path_z, 0o755);
+
+    _ = std.c.umask(0o022);
+
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/src", .{base_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    // Restore u+w on the dest dir in defer too so TmpDir cleanup can unlink
+    // its child; otherwise a leaked read-only dir fails cache-purge cleanup.
+    const dest_path_z = try std.fmt.allocPrintSentinel(
+        testing.allocator,
+        "{s}/dst",
+        .{base_path},
+        0,
+    );
+    defer testing.allocator.free(dest_path_z);
+    defer _ = std.c.chmod(dest_path_z, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // GNU makes created dirs at least u+rwx during traversal so a read-only
+    // source dir can still be populated -- this already succeeds today.
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dst/inside.txt", "read only dir content");
+
+    // KEY RED ASSERTION: the dest dir must be fixed to the source's 0o555
+    // mode post-order (after the child was written). Today the non-preserve
+    // path never revisits the creation-time 0o755, so this fails.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o555), dest_info.mode & 0o777);
+}
+
+test "issue 77 U7 guard: cp -r merges into an existing destination directory keeping its mode" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    // dd/sd pre-exists with its own mode; cp -r sd dd resolves the walk root
+    // to dd/sd (resolveFinalDestination appends the source basename because
+    // dd is an existing directory), so createTreeDir hits PathAlreadyExists
+    // for dd/sd and must leave its mode untouched.
+    try test_dir.createDir("dd");
+    try test_dir.createDir("dd/sd");
+    const existing_sub_path = try test_dir.getPath("dd/sd");
+    defer testing.allocator.free(existing_sub_path);
+    const existing_sub_path_z = try std.fmt.allocPrintSentinel(
+        testing.allocator,
+        "{s}",
+        .{existing_sub_path},
+        0,
+    );
+    defer testing.allocator.free(existing_sub_path_z);
+    if (std.c.chmod(existing_sub_path_z, 0o700) != 0) return error.SkipZigTest;
+
+    try test_dir.createDir("sd");
+    try test_dir.createFile("sd/f.txt", "content", null);
+
+    _ = std.c.umask(0o022);
+
+    const source_path = try test_dir.getPath("sd");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dd");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Guard: the pre-existing dd/sd keeps its own 0o700 mode -- this already
+    // passes today via createTreeDir's PathAlreadyExists no-op.
+    const dest_info = try common.file.FileInfo.stat(testing.io, existing_sub_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), dest_info.mode & 0o777);
+    try test_dir.expectFileContent("dd/sd/f.txt", "content");
 }
