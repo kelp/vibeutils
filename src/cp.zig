@@ -3589,6 +3589,203 @@ test "cp -r refuses to copy a directory onto itself (same-file guard)" {
     try testing.expect(std.mem.find(u8, err, "src/sub") != null);
 }
 
+// ===========================================================================
+// Issue #82: `cp -r dir/.` panics or misbehaves when the destination lives
+// inside the source tree. These tests pin the GNU-verified reference behavior
+// scouted on a Linux VM with `cp (GNU coreutils) 9.4` (see the issue #82
+// scouting notes). The exact runaway/panic repro (dest strictly nested inside
+// source, discovered mid-walk) is deliberately NOT exercised here as a unit
+// test: it currently aborts the process (SIGABRT from a debug assert), which
+// would crash this entire test binary rather than failing cleanly -- that
+// scenario is covered by an integration test that runs cp as a subprocess
+// under a hard time limit instead. The four unit tests below cover the parts
+// of the fix reachable without ever triggering that abort.
+// ===========================================================================
+
+test "cp -r source/.. copies the resolved parent's contents into dest, not a literal '..' path" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // GNU rule (root cause #3): a source path whose final component is ".."
+    // behaves like "." for destination-naming purposes -- no basename is
+    // appended, so the CONTENTS of the resolved parent land directly under
+    // dest. Today std.fs.path.basename("p/x/..") returns the literal string
+    // "..", which resolveFinalDestination joins onto dest verbatim, producing
+    // "dest/..": the OS resolves that to dest's PARENT, so the copy silently
+    // escapes dest and writes as a sibling instead of inside it.
+    try test_dir.createDir("p");
+    try test_dir.createDir("p/x");
+    try test_dir.createFile("p/x/f", "escaped content", null);
+    try test_dir.createDir("d");
+
+    const p_x_path = try test_dir.getPath("p/x");
+    defer testing.allocator.free(p_x_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/..", .{p_x_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("d");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Pinned GNU tree: d/x/f holds the copied content, with no literal ".."
+    // path component anywhere under d.
+    try test_dir.expectFileContent("d/x/f", "escaped content");
+    // The bug writes "x/f" as a SIBLING of d (in d's parent) instead; guard
+    // against the escape directly so the test fails for the right reason even
+    // if a future regression reintroduces it under a different guise.
+    try testing.expect(!test_dir.fileExists("x"));
+}
+
+test "cp -r dir/. into a dest with an existing child file where source has a child dir fails without a stack-underflow panic" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Root cause #2's root-safe trigger: createTreeDir's `PathAlreadyExists =>
+    // .existed` never checks that the pre-existing entry is actually a
+    // directory. `mkdir` returns EEXIST whether the blocker is a dir or a
+    // regular file, so today this reports .existed (success) and the copy
+    // fails much later and more confusingly (a stat ENOTDIR deep inside
+    // copySingleFile) instead of GNU's clean, immediate
+    // "cannot overwrite non-directory" refusal at the directory entry itself.
+    try test_dir.createDir("s");
+    try test_dir.createDir("s/sub");
+    try test_dir.createFile("s/sub/g", "deep content", null);
+    try test_dir.createDir("d");
+    try test_dir.createFile("d/sub", "blocking file", null);
+
+    const s_path = try test_dir.getPath("s");
+    defer testing.allocator.free(s_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/.", .{s_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("d");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // Pinned GNU: `cp: cannot overwrite non-directory '<dest>' with directory
+    // '<source>'`, exit 1. The source fragment is robust to pin exactly: the
+    // walker enumerates the literal ".../s/." operand, so its child paths
+    // always contain the literal "." component regardless of how
+    // resolveFinalDestination treats a trailing "." on the destination side.
+    // The dest fragment's exact spelling is deliberately NOT pinned to
+    // "/./sub": today's accidental "d/." collapsing happens to produce
+    // "d/./sub", but a clean, equally-correct fix for the GNU ".." rule (root
+    // cause #3) could plausibly normalize dest to plain "d" (yielding
+    // "d/sub") without being wrong. Assert the dest path and the "sub"
+    // component are both named in the message instead of pinning what falls
+    // in between.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    const err = stderr_aw.written();
+    try testing.expect(std.mem.find(u8, err, "cannot overwrite non-directory") != null);
+    const expected_source_frag = try std.fmt.allocPrint(testing.allocator, "{s}/./sub", .{s_path});
+    defer testing.allocator.free(expected_source_frag);
+    try testing.expect(std.mem.find(u8, err, expected_source_frag) != null);
+    try testing.expect(std.mem.find(u8, err, dest_path) != null);
+    try testing.expect(std.mem.find(u8, err, "sub") != null);
+    // The blocking regular file must be left untouched, not silently
+    // overwritten or partially clobbered while failing.
+    try test_dir.expectFileContent("d/sub", "blocking file");
+}
+
+test "cp -r dir/. into an existing disjoint directory copies contents with no nesting layer" {
+    // Characterizes behavior that is ALREADY correct today (accidentally, via
+    // resolveFinalDestination joining dest with the literal "." basename,
+    // which the OS collapses to dest itself): the fix must not regress it.
+    // This locks in the "no basename append for a trailing-dot source" half of
+    // GNU's rule alongside the ".." half tested above.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("s");
+    try test_dir.createFile("s/f", "top content", null);
+    try test_dir.createDir("s/sub");
+    try test_dir.createFile("s/sub/g", "nested content", null);
+    try test_dir.createDir("d");
+
+    const s_path = try test_dir.getPath("s");
+    defer testing.allocator.free(s_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/.", .{s_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("d");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("d/f", "top content");
+    try test_dir.expectFileContent("d/sub/g", "nested content");
+    // No "d/s" nesting layer: the source basename must never be appended.
+    try testing.expect(!test_dir.fileExists("d/s"));
+}
+
+test "cp -r dir/. to a nonexistent dest creates dest holding the contents" {
+    // Same already-correct behavior as above, for the nonexistent-dest case
+    // (GNU behavior #5). Locked in separately since resolveFinalDestination
+    // takes a different branch (FileNotFound -> dest used as-is) than the
+    // existing-directory branch above.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("s");
+    try test_dir.createFile("s/f", "fresh content", null);
+
+    const s_path = try test_dir.getPath("s");
+    defer testing.allocator.free(s_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/.", .{s_path});
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/new", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("new/f", "fresh content");
+    try testing.expect(!test_dir.fileExists("new/s"));
+}
+
 test "cp -rp preserves regular file mode and mtime on copied files" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
