@@ -1095,6 +1095,24 @@ fn wrapLineRegexp(allocator: Allocator, pattern: []const u8, use_ere: bool) ?[]u
     return wrapped;
 }
 
+fn rejectUnsupportedBoundaryEscapes(
+    allocator: Allocator,
+    pattern: []const u8,
+    stderr_writer: *std.Io.Writer,
+) bool {
+    if (is_linux or !hasGnuUndirectedBoundaryEscape(pattern)) return false;
+
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "invalid regular expression: \\b and \\B word-boundary escapes " ++
+            "are unsupported on this platform",
+        .{},
+    );
+    return true;
+}
+
 /// Compile a single pattern. Returns null on error.
 fn compilePattern(
     allocator: Allocator,
@@ -1117,16 +1135,11 @@ fn compilePattern(
     // capture numbering, so reject them clearly instead of silently failing.
     // Note: -w (word_regexp) is handled via post-match validation in matchLine,
     // not by wrapping the pattern, to avoid \| in BRE on macOS.
-    if (!is_linux and hasGnuUndirectedBoundaryEscape(pattern)) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "invalid regular expression: \\b and \\B word-boundary escapes are unsupported on this platform",
-            .{},
-        );
-        return null;
-    }
+    if (rejectUnsupportedBoundaryEscapes(
+        allocator,
+        pattern,
+        stderr_writer,
+    )) return null;
     const tr = translateGnuEscapes(allocator, pattern, opts.regex_mode) orelse return null;
     defer allocator.free(tr.pattern);
     const force_ere = tr.force_ere;
@@ -4111,7 +4124,8 @@ test "F31: Darwin rejects \\b and \\B with a clear diagnostic" {
 
     const cases = [_][]const u8{ "\\bfoo", "foo\\B" };
     const expected =
-        "grep: invalid regular expression: \\b and \\B word-boundary escapes are unsupported on this platform\n";
+        "grep: invalid regular expression: \\b and \\B word-boundary escapes " ++
+        "are unsupported on this platform\n";
     for (cases) |pattern| {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
