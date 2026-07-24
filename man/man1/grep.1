@@ -233,11 +233,17 @@ and
 .Ql \e|
 alternation is supported in basic regular expressions,
 on all platforms.
-The word-boundary escapes
-.Ql \eb ,
+The directional word-boundary escapes
 .Ql \e< ,
 and
 .Ql \e>
-are not supported.
+are supported on all platforms.
+On Linux,
+.Ql \eb
+and
+.Ql \eB
+use the native libc implementation.
+On macOS, those two undirected boundary escapes are rejected with
+an unsupported-pattern diagnostic instead of silently matching nothing.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

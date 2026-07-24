@@ -803,19 +803,23 @@ const TranslatedPattern = struct {
     force_ere: bool,
 };
 
-/// POSIX bracket-class replacement for a GNU class escape, or null if `ch`
-/// is not one of s/S/w/W. `\w`/`\W` use `[[:alnum:]_]` to match the word
-/// character set used by `-w`.
-fn classEscapeReplacement(ch: u8) ?[]const u8 {
+/// Portable replacement for a GNU escape, or null when libc should receive
+/// the escape unchanged. `\s`/`\S`/`\w`/`\W` normalize on every platform.
+/// Darwin additionally uses its zero-width `[[:<:]]`/`[[:>:]]` classes for
+/// `\<`/`\>`; glibc supports the GNU escapes natively and rejects those BSD
+/// class names, so Linux keeps them verbatim.
+fn gnuEscapeReplacement(ch: u8) ?[]const u8 {
     const rep: ?[]const u8 = switch (ch) {
         's' => "[[:space:]]",
         'S' => "[^[:space:]]",
         'w' => "[[:alnum:]_]",
         'W' => "[^[:alnum:]_]",
+        '<' => if (is_linux) null else "[[:<:]]",
+        '>' => if (is_linux) null else "[[:>:]]",
         else => null,
     };
-    // The replacement table is fixed-width POSIX classes; guard both bounds.
-    assert(rep == null or rep.?.len >= 11);
+    // The replacement table contains fixed-width POSIX classes; guard bounds.
+    assert(rep == null or rep.?.len >= 7);
     assert(rep == null or rep.?.len <= 13);
     return rep;
 }
@@ -860,11 +864,11 @@ fn copyBracketExpression(pattern: []const u8, start: usize) usize {
     return pattern.len;
 }
 
-/// Substitute GNU class escapes (`\s`/`\S`/`\w`/`\W`) with POSIX bracket
-/// equivalents, outside bracket expressions only. Backslash pairs (`\\`) are
-/// consumed verbatim so an escaped backslash is never re-interpreted. The
-/// escapes mean the same in BRE and ERE, so this runs uniformly on both.
-fn translateClassEscapes(allocator: Allocator, pattern: []const u8) ?[]u8 {
+/// Substitute simple GNU escapes with portable libc equivalents outside
+/// bracket expressions. Backslash pairs (`\\`) are consumed verbatim so an
+/// escaped backslash is never re-interpreted. This handles `\s`/`\S`/`\w`/`\W`
+/// everywhere and `\<`/`\>` on Darwin; see `gnuEscapeReplacement`.
+fn translateSimpleGnuEscapes(allocator: Allocator, pattern: []const u8) ?[]u8 {
     assert(pattern.len < std.math.maxInt(u32));
     var out = std.ArrayListUnmanaged(u8).empty;
     const bound: usize = pattern.len * 7 + 1;
@@ -878,7 +882,7 @@ fn translateClassEscapes(allocator: Allocator, pattern: []const u8) ?[]u8 {
             out.appendSlice(allocator, pattern[i..end]) catch return null;
             i = end;
         } else if (ch == '\\' and i + 1 < pattern.len) {
-            if (classEscapeReplacement(pattern[i + 1])) |rep| {
+            if (gnuEscapeReplacement(pattern[i + 1])) |rep| {
                 out.appendSlice(allocator, rep) catch return null;
             } else {
                 // Verbatim escape pair: \\ pairwise, backrefs, other escapes.
@@ -894,6 +898,29 @@ fn translateClassEscapes(allocator: Allocator, pattern: []const u8) ?[]u8 {
         assert(out.items.len <= bound);
     }
     return out.toOwnedSlice(allocator) catch null;
+}
+
+/// Detect GNU `\b`/`\B` assertions outside bracket expressions. Backslash
+/// pairs are consumed together, so `\\b` is a literal escaped backslash plus
+/// `b`, not a boundary assertion. Darwin libc cannot express these assertions
+/// without adding capture groups and changing backreference numbering.
+fn hasGnuUndirectedBoundaryEscape(pattern: []const u8) bool {
+    assert(pattern.len < std.math.maxInt(u32));
+    var i: usize = 0;
+    while (i < pattern.len) {
+        const prev_i = i;
+        const ch = pattern[i];
+        if (ch == '[') {
+            i = copyBracketExpression(pattern, i);
+        } else if (ch == '\\' and i + 1 < pattern.len) {
+            if (pattern[i + 1] == 'b' or pattern[i + 1] == 'B') return true;
+            i += 2;
+        } else {
+            i += 1;
+        }
+        assert(i > prev_i);
+    }
+    return false;
 }
 
 /// Detect a top-level `\|` (GNU BRE alternation) that is outside any bracket
@@ -919,9 +946,9 @@ fn breHasTopLevelAlternation(pattern: []const u8) bool {
 
 /// Translate the escape at `pattern[i]` ('\\') during a BRE->ERE transpile,
 /// appending to `out`. Swaps BRE grouping/quantifier escapes to their ERE
-/// bare forms and back; passes through backrefs and class escapes verbatim
-/// (the later class pass handles \s/\S/\w/\W). Returns the index past the
-/// escape. Updates `at_expr_start` (true after emitting `(` or `|`).
+/// bare forms and back; passes through backrefs and GNU escapes verbatim (the
+/// later simple-escape pass handles portable replacements). Returns the index
+/// past the escape. Updates `at_expr_start` (true after emitting `(` or `|`).
 fn transpileBreEscape(
     allocator: Allocator,
     pattern: []const u8,
@@ -953,7 +980,7 @@ fn transpileBreEscape(
         '+' => out.append(allocator, '+') catch return null,
         '?' => out.append(allocator, '?') catch return null,
         else => {
-            // \\ pairwise, backrefs \1-\9, class escapes, other escapes.
+            // \\ pairwise, backrefs \1-\9, GNU escapes, other escapes.
             out.append(allocator, '\\') catch return null;
             out.append(allocator, nxt) catch return null;
         },
@@ -1033,9 +1060,9 @@ fn transpileBreToEre(allocator: Allocator, pattern: []const u8) ?[]u8 {
 }
 
 /// Translate GNU regex escape extensions before handing a pattern to regcomp.
-/// glibc supports these natively; BSD/macOS libc does not, so we normalize on
-/// all platforms for uniform behavior. `\s`/`\S`/`\w`/`\W` become POSIX
-/// bracket classes in both BRE and ERE; a BRE with top-level `\|` alternation
+/// `\s`/`\S`/`\w`/`\W` become POSIX bracket classes on every platform.
+/// Darwin also maps `\<`/`\>` to its zero-width boundary classes, while Linux
+/// leaves all boundary escapes for glibc. A BRE with top-level `\|` alternation
 /// is transpiled wholesale to ERE with force_ere set. Returns null on
 /// allocation failure. Intermediates are arena-leaked per this file.
 fn translateGnuEscapes(
@@ -1048,10 +1075,10 @@ fn translateGnuEscapes(
     if (mode == .basic and breHasTopLevelAlternation(pattern)) {
         const ere = transpileBreToEre(allocator, pattern) orelse return null;
         defer allocator.free(ere);
-        const out = translateClassEscapes(allocator, ere) orelse return null;
+        const out = translateSimpleGnuEscapes(allocator, ere) orelse return null;
         return .{ .pattern = out, .force_ere = true };
     }
-    const out = translateClassEscapes(allocator, pattern) orelse return null;
+    const out = translateSimpleGnuEscapes(allocator, pattern) orelse return null;
     return .{ .pattern = out, .force_ere = false };
 }
 
@@ -1084,11 +1111,22 @@ fn compilePattern(
         return .{ .fixed = .{ .text = pattern, .lower = null } };
     }
 
-    // Translate GNU escape extensions (\s \S \w \W in BRE/ERE, and BRE \|
-    // alternation) before regcomp; see translateGnuEscapes. force_ere is set
-    // when a BRE was transpiled to ERE, so -x wraps and REG_EXTENDED follow.
+    // Translate GNU escape extensions (\s \S \w \W and boundary escapes in
+    // BRE/ERE, plus BRE \| alternation) before regcomp; see
+    // translateGnuEscapes. Darwin cannot emulate \b/\B without changing
+    // capture numbering, so reject them clearly instead of silently failing.
     // Note: -w (word_regexp) is handled via post-match validation in matchLine,
     // not by wrapping the pattern, to avoid \| in BRE on macOS.
+    if (!is_linux and hasGnuUndirectedBoundaryEscape(pattern)) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "invalid regular expression: \\b and \\B word-boundary escapes are unsupported on this platform",
+            .{},
+        );
+        return null;
+    }
     const tr = translateGnuEscapes(allocator, pattern, opts.regex_mode) orelse return null;
     defer allocator.free(tr.pattern);
     const force_ere = tr.force_ere;
@@ -3746,18 +3784,12 @@ test "F27: grep -x BRE with alternation" {
 // =============================================================
 // F29: GNU regex escape extensions (\s \S \w \W \|)
 // GNU grep supports \s/\S/\w/\W in both BRE and ERE, and \| as BRE
-// alternation, as libc regcomp extensions. glibc (Linux) implements
-// these natively so the tests below pass locally; BSD/Darwin libc
-// treats them as literal escaped characters, so they are expected to
-// go red on macOS CI (macos-26 legs of test.yml/integration.yml)
-// until compilePattern translates these escapes before calling
-// regcomp. Pinned against GNU grep 3.11 (see issue #78).
-// The -x '[a\|]' case is a separate, pre-existing bug in
-// anchorBreAlternatives (bracket-expression-unaware \| scanning) and
-// is red on BOTH platforms.
+// alternation, as libc regcomp extensions. translateGnuEscapes
+// normalizes them before regcomp for consistent Linux/Darwin behavior.
+// Pinned against GNU grep 3.11 (see issue #78).
 // =============================================================
 
-test "F29: grep -E \\s matches whitespace (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep -E \\s matches whitespace (GNU extension)" {
     // Pinned: printf '  plan: x\n' | grep -E '^\s+plan\s*:' matches, exit 0.
     var result = try testRunGrepOutput("  plan: x\n", &.{ "-E", "^\\s+plan\\s*:" });
     defer result.arena.deinit();
@@ -3765,7 +3797,7 @@ test "F29: grep -E \\s matches whitespace (GNU extension; red on macOS/BSD libc)
     try testing.expectEqualStrings("  plan: x\n", result.output);
 }
 
-test "F29: grep BRE \\s matches whitespace (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep BRE \\s matches whitespace (GNU extension)" {
     // Pinned: printf 'a b\n' | grep 'a\sb' matches, exit 0 (default BRE mode).
     var result = try testRunGrepOutput("a b\n", &.{"a\\sb"});
     defer result.arena.deinit();
@@ -3773,7 +3805,7 @@ test "F29: grep BRE \\s matches whitespace (GNU extension; red on macOS/BSD libc
     try testing.expectEqualStrings("a b\n", result.output);
 }
 
-test "F29: grep -E \\S matches non-whitespace (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep -E \\S matches non-whitespace (GNU extension)" {
     // Pinned: printf 'a b\nacb\n' | grep -E 'a\Sb' outputs only 'acb'.
     var result = try testRunGrepOutput("a b\nacb\n", &.{ "-E", "a\\Sb" });
     defer result.arena.deinit();
@@ -3781,7 +3813,7 @@ test "F29: grep -E \\S matches non-whitespace (GNU extension; red on macOS/BSD l
     try testing.expectEqualStrings("acb\n", result.output);
 }
 
-test "F29: grep BRE \\w matches word characters (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep BRE \\w matches word characters (GNU extension)" {
     // Pinned: printf 'foo_1\n' | grep '\w\w\w_\w' matches, exit 0.
     var result = try testRunGrepOutput("foo_1\n", &.{"\\w\\w\\w_\\w"});
     defer result.arena.deinit();
@@ -3789,7 +3821,7 @@ test "F29: grep BRE \\w matches word characters (GNU extension; red on macOS/BSD
     try testing.expectEqualStrings("foo_1\n", result.output);
 }
 
-test "F29: grep BRE \\W matches non-word characters (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep BRE \\W matches non-word characters (GNU extension)" {
     // Pinned: printf 'a-b\naxb\n' | grep 'a\Wb' outputs only 'a-b'.
     var result = try testRunGrepOutput("a-b\naxb\n", &.{"a\\Wb"});
     defer result.arena.deinit();
@@ -3797,7 +3829,7 @@ test "F29: grep BRE \\W matches non-word characters (GNU extension; red on macOS
     try testing.expectEqualStrings("a-b\n", result.output);
 }
 
-test "F29: grep BRE \\| is alternation without -x (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep BRE \\| is alternation without -x (GNU extension)" {
     // Pinned: printf 'foo\nbar\nbaz\n' | grep 'foo\|bar' outputs 'foo' and
     // 'bar', not 'baz'.
     var result = try testRunGrepOutput("foo\nbar\nbaz\n", &.{"foo\\|bar"});
@@ -3806,7 +3838,7 @@ test "F29: grep BRE \\| is alternation without -x (GNU extension; red on macOS/B
     try testing.expectEqualStrings("foo\nbar\n", result.output);
 }
 
-test "F29: grep -i composes with \\s (GNU extension; red on macOS/BSD libc)" {
+test "F29: grep -i composes with \\s (GNU extension)" {
     // Pinned: printf 'A B\n' | grep -i 'a\sb' matches, exit 0.
     var result = try testRunGrepOutput("A B\n", &.{ "-i", "a\\sb" });
     defer result.arena.deinit();
@@ -3883,6 +3915,12 @@ test "F30: translateGnuEscapes ERE class escapes and passthrough (table)" {
         .{ .input = "a\\Sb", .expected = "a[^[:space:]]b" },
         .{ .input = "\\w", .expected = "[[:alnum:]_]" },
         .{ .input = "\\W", .expected = "[^[:alnum:]_]" },
+        .{
+            .input = "\\<word\\>",
+            .expected = if (is_linux) "\\<word\\>" else "[[:<:]]word[[:>:]]",
+        },
+        // \b/\B validation happens before translation; the pass preserves them.
+        .{ .input = "\\bword\\B", .expected = "\\bword\\B" },
         // ERE \| is an escaped literal pipe, never alternation: untouched.
         .{ .input = "foo\\|bar", .expected = "foo\\|bar" },
         // No translation inside bracket expressions.
@@ -3894,6 +3932,8 @@ test "F30: translateGnuEscapes ERE class escapes and passthrough (table)" {
         .{ .input = "[[:alpha:]\\s]", .expected = "[[:alpha:]\\s]" },
         // Escaped backslash consumed pairwise: \\s stays literal.
         .{ .input = "\\\\s", .expected = "\\\\s" },
+        .{ .input = "\\\\<", .expected = "\\\\<" },
+        .{ .input = "\\\\b", .expected = "\\\\b" },
         // Odd backslash run: third backslash starts a real \s.
         .{ .input = "\\\\\\s", .expected = "\\\\[[:space:]]" },
         // Trailing lone backslash emitted verbatim, no crash.
@@ -3912,6 +3952,10 @@ test "F30: translateGnuEscapes ERE class escapes and passthrough (table)" {
 test "F30: translateGnuEscapes BRE without alternation keeps BRE (table)" {
     const cases = [_]TranslateCase{
         .{ .input = "a\\sb", .expected = "a[[:space:]]b" },
+        .{
+            .input = "\\<word\\>",
+            .expected = if (is_linux) "\\<word\\>" else "[[:<:]]word[[:>:]]",
+        },
         // The F29 bug pin at translator level: \| inside a bracket
         // expression is a literal member, so no transpile happens.
         .{ .input = "[a\\|]", .expected = "[a\\|]" },
@@ -3950,6 +3994,11 @@ test "F30: translateGnuEscapes BRE with top-level \\| transpiles to ERE (table)"
         .{ .input = "\\1x\\|y", .expected = "\\1x|y" },
         // Class escapes compose with the transpile output.
         .{ .input = "\\s\\|\\w", .expected = "[[:space:]]|[[:alnum:]_]" },
+        // Darwin boundary replacements compose with the BRE->ERE pass.
+        .{
+            .input = "\\<foo\\>\\|bar",
+            .expected = if (is_linux) "\\<foo\\>|bar" else "[[:<:]]foo[[:>:]]|bar",
+        },
         // Bracket expressions copied verbatim during the transpile.
         .{ .input = "[a\\|]x\\|y", .expected = "[a\\|]x|y" },
     };
@@ -3970,6 +4019,115 @@ test "F30: breHasTopLevelAlternation detects only unescaped top-level \\|" {
     // Escaped backslash (\\) then a bare | -- pairwise consumption means
     // the pipe is bare, and a bare | is a BRE literal, not alternation.
     try testing.expect(!breHasTopLevelAlternation("a\\\\|b"));
+}
+
+// =============================================================
+// F31: GNU word-boundary escapes (#84)
+// Darwin translates directional boundaries (\</\>) to BSD zero-width
+// classes. glibc handles all four boundary escapes natively. Darwin
+// rejects \b/\B because POSIX rewrites would add capture groups and
+// change backreference numbering.
+// =============================================================
+
+test "F31: boundary scanner ignores brackets and escaped backslashes" {
+    try testing.expect(hasGnuUndirectedBoundaryEscape("\\bword\\B"));
+    try testing.expect(hasGnuUndirectedBoundaryEscape("a\\Bb"));
+    try testing.expect(!hasGnuUndirectedBoundaryEscape("[\\b\\B]"));
+    try testing.expect(!hasGnuUndirectedBoundaryEscape("\\\\b"));
+    try testing.expect(!hasGnuUndirectedBoundaryEscape("\\\\B"));
+    try testing.expect(!hasGnuUndirectedBoundaryEscape(""));
+}
+
+test "F31: grep BRE \\< and \\> match directional word boundaries" {
+    var result = try testRunGrepOutput(
+        "foo\nfoobar\nxfoo\nfoo_\nfoo-\n",
+        &.{"\\<foo\\>"},
+    );
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\nfoo-\n", result.output);
+}
+
+test "F31: grep -E supports separate start and end word boundaries" {
+    var start_result = try testRunGrepOutput(
+        "foo\nfoobar\nxfoo\n",
+        &.{ "-E", "\\<foo" },
+    );
+    defer start_result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), start_result.exit_code);
+    try testing.expectEqualStrings("foo\nfoobar\n", start_result.output);
+
+    var end_result = try testRunGrepOutput(
+        "foo\nxfoo\nfoobar\n",
+        &.{ "-E", "foo\\>" },
+    );
+    defer end_result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), end_result.exit_code);
+    try testing.expectEqualStrings("foo\nxfoo\n", end_result.output);
+}
+
+test "F31: directional boundaries compose with -i and -o" {
+    var result = try testRunGrepOutput(
+        "say FOO! foobar\n",
+        &.{ "-io", "\\<foo\\>" },
+    );
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("FOO\n", result.output);
+}
+
+test "F31: directional boundaries preserve BRE backreference numbering" {
+    var result = try testRunGrepOutput(
+        "foo foo\nfoo food\n",
+        &.{"\\<\\(foo\\) \\1\\>"},
+    );
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo foo\n", result.output);
+}
+
+test "F31: Linux keeps native \\b and \\B behavior" {
+    if (!is_linux) return;
+
+    var boundary = try testRunGrepOutput(
+        "foo\nfoobar\n",
+        &.{"\\bfoo\\b"},
+    );
+    defer boundary.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), boundary.exit_code);
+    try testing.expectEqualStrings("foo\n", boundary.output);
+
+    var non_boundary = try testRunGrepOutput(
+        "foo\nf-o\n",
+        &.{"f\\Bo"},
+    );
+    defer non_boundary.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), non_boundary.exit_code);
+    try testing.expectEqualStrings("foo\n", non_boundary.output);
+}
+
+test "F31: Darwin rejects \\b and \\B with a clear diagnostic" {
+    if (is_linux) return;
+
+    const cases = [_][]const u8{ "\\bfoo", "foo\\B" };
+    const expected =
+        "grep: invalid regular expression: \\b and \\B word-boundary escapes are unsupported on this platform\n";
+    for (cases) |pattern| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+        const args = [_][]const u8{ "--color=never", pattern, "/dev/null" };
+        const exit_code = try runGrep(
+            arena.allocator(),
+            testing.io,
+            &args,
+            common.null_writer,
+            &stderr_aw.writer,
+        );
+        try testing.expectEqual(@as(u8, 2), exit_code);
+        try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+    }
 }
 
 // =============================================================
