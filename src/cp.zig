@@ -3731,7 +3731,7 @@ test "cp -r source/.. copies the resolved parent's contents into dest, not a lit
     try testing.expect(!test_dir.fileExists("x"));
 }
 
-test "cp -r dir/. into a dest with an existing child file where source has a child dir fails without a stack-underflow panic" {
+test "cp -r dir/. into a dest whose child is a file where source has a dir: no panic" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
