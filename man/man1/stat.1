@@ -4,137 +4,368 @@
 .Os
 .Sh NAME
 .Nm stat
-.Nd display file or file system status
+.Nd display file status
 .Sh SYNOPSIS
 .Nm stat
-.Op Fl LfthV
-.Op Fl c Ar FORMAT
-.Op Fl Fl format Ns = Ns Ar FORMAT
-.Op Fl Fl printf Ns = Ns Ar FORMAT
-.Ar
+.Op Fl FLnq
+.Oo
+.Fl f Ar format |
+.Fl l |
+.Fl r |
+.Fl s |
+.Fl x
+.Oc
+.Op Fl t Ar timefmt
+.Op Ar
 .Sh DESCRIPTION
 The
 .Nm
-utility displays information about files or file systems.
-By default it shows file status; with
+utility displays information about the file pointed to by
+.Ar file .
+Read, write, or execute permissions of the named file are
+not required, but all directories listed in the pathname
+leading to the file must be searchable.
+If no argument is given,
+.Nm
+displays information about the file descriptor for
+standard input.
+.Pp
+.Nm
+follows the BSD interface, as on
+.Ox
+and macOS.
+Where BSD and GNU assign different meanings to the same
+flag, vibeutils follows BSD; GNU's long spellings are kept
+alongside, since a long option is not a collision.
+Two consequences are easy to misread:
+.Bl -bullet -compact
+.It
 .Fl f
-it shows file system status.
+is
+.Em not
+an alias of
+.Fl Fl file-system ,
+and
+.Fl t
+is
+.Em not
+an alias of
+.Fl Fl terse .
+BSD defines the short spellings; GNU defines the long ones.
+.It
+Two format-directive languages coexist, selected by the flag
+that introduced the string.
+.Fl c ,
+.Fl Fl format
+and
+.Fl Fl printf
+parse GNU directives;
+.Fl f
+parses the BSD directives described below.
+.El
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl F
+As in
+.Xr ls 1 ,
+display a slash
+.Pq Ql /
+immediately after each pathname that is a directory, an
+asterisk
+.Pq Ql *
+after each that is executable, an at sign
+.Pq Ql @
+after each symbolic link, an equal sign
+.Pq Ql =
+after each socket, and a vertical bar
+.Pq Ql |
+after each that is a FIFO.
+The use of
+.Fl F
+implies
+.Fl l .
 .It Fl L , Fl Fl dereference
-Follow symbolic links.
-By default
-.Nm
-reports on the link itself, not the file it refers to.
-.It Fl f , Fl Fl file-system
-Display file system status instead of file status.
+Use
+.Xr stat 2
+instead of
+.Xr lstat 2 .
+The information reported refers to the target of
+.Ar file
+if it is a symbolic link.
+If the link is broken or the target does not exist, fall
+back on
+.Xr lstat 2
+and report information about the link.
+.It Fl f Ar format
+Display information using the specified format.
+See
+.Sx FORMATS .
+.It Fl l
+Display output in
+.Ic ls -lT
+format.
+.It Fl n
+Do not force a newline to appear at the end of each piece
+of output.
+.It Fl q
+Suppress failure messages if calls to
+.Xr stat 2
+or
+.Xr lstat 2
+fail.
+.It Fl r
+Display raw information: for all fields in the stat
+structure, the raw numerical value, such as times in
+seconds since the Epoch.
+.It Fl s
+Display information in shell output format, suitable for
+initializing variables.
+.It Fl t Ar timefmt
+Display timestamps using the specified format, passed
+directly to
+.Xr strftime 3 .
+.It Fl x
+Display information in a more verbose way, as known from
+some Linux distributions.
 .It Fl c Ar FORMAT , Fl Fl format Ns = Ns Ar FORMAT
-Use the specified
-.Ar FORMAT
-instead of the default, outputting a newline after each
-use of FORMAT.
+Use the specified GNU-style
+.Ar FORMAT ,
+outputting a newline after each use of it.
 .It Fl Fl printf Ns = Ns Ar FORMAT
 Like
 .Fl Fl format
 but interpret backslash escapes and do not output a
 mandatory trailing newline.
-.It Fl t , Fl Fl terse
-Print the information in terse form.
+.It Fl Fl file-system
+Display file system status instead of file status
+.Pq GNU behavior; see the note above .
+.It Fl Fl terse
+Print the information in GNU terse form.
 .It Fl h , Fl Fl help
 Display a help message and exit.
 .It Fl V , Fl Fl version
 Output version information and exit.
 .El
 .Pp
-The valid format sequences for files (without
-.Fl f ) :
+.Fl f , Fl l , Fl r , Fl s
+and
+.Fl x
+are mutually exclusive.
+.Ss FORMATS
+Format strings are similar to
+.Xr printf 3
+formats: they start with
+.Ql % ,
+are followed by a sequence of formatting characters, and
+end in a character selecting the field of
+.Vt struct stat
+to format.
+If the
+.Ql %
+is immediately followed by
+.Cm n , t , %
+or
+.Cm @ ,
+then a newline, a tab, a percent character, or the current
+file number is printed.
+Otherwise the string is examined for the following.
+.Pp
+Any of these optional flags:
 .Bl -tag -width Ds -compact
-.It Li %a
-Access rights in octal.
-.It Li \&%A
-Access rights in human readable form.
-.It Li %b
-Number of blocks allocated.
-.It Li \&%B
-The size in bytes of each block reported by %b.
-.It Li %d
-Device number in decimal.
-.It Li \&%D
-Device number in hex.
-.It Li %f
-Raw mode in hex.
-.It Li %F
-File type.
-.It Li %g
-Group ID of owner.
-.It Li %G
-Group name of owner.
-.It Li %h
-Number of hard links.
-.It Li %i
-Inode number.
-.It Li %m
-Mount point.
-.It Li %n
-File name.
-.It Li \&%N
-Quoted file name with dereference if symbolic link.
-.It Li %o
-Optimal I/O transfer size hint.
-.It Li %s
-Total size, in bytes.
-.It Li %t
-Major device type in hex, for device special files.
-.It Li \&%T
-Minor device type in hex, for device special files.
-.It Li %u
-User ID of owner.
-.It Li \&%U
-User name of owner.
-.It Li %w
-Time of file birth, human-readable; - if unknown.
-.It Li %W
-Time of file birth, seconds since Epoch; 0 if unknown.
-.It Li %x
-Time of last access, human-readable.
-.It Li %X
-Time of last access, seconds since Epoch.
-.It Li %y
-Time of last data modification, human-readable.
-.It Li %Y
-Time of last data modification, seconds since Epoch.
-.It Li %z
-Time of last status change, human-readable.
-.It Li %Z
-Time of last status change, seconds since Epoch.
+.It Cm #
+Select an alternate form for octal and hexadecimal output.
+.It Cm +
+Always print a sign for numeric output.
+.It Cm -
+Align string output to the left of the field.
+.It Cm 0
+Pad on the left with
+.Ql 0
+rather than spaces.
+.It Cm space
+Reserve a space at the front of non-negative signed output.
+A
+.Ql +
+overrides a space if both are used.
 .El
+.Pp
+Then the following fields:
+.Bl -tag -width Ds
+.It Ar size
+An optional decimal digit string giving the minimum field
+width.
+.It Ar prec
+An optional precision, a
+.Ql \&.
+followed by a decimal digit string.
+.It Ar fmt
+An optional output format, one of
+.Cm D , O , U , X , F
+or
+.Cm S
+for signed decimal, octal, unsigned decimal, hexadecimal,
+floating point, and string output respectively.
+Floating point applies only to the
+.Cm a , m
+and
+.Cm c
+fields.
+.Pp
+The
+.Cm S
+specifier may be combined with:
+.Bl -tag -width "amc" -compact
+.It Cm amc
+Display date in
+.Xr strftime 3
+format.
+.It Cm dr
+Display actual device name.
+.It Cm f
+Display the file flags as in
+.Ic ls -lTdo .
+.It Cm gu
+Display group or user name.
+.It Cm p
+Display the mode as in
+.Ic ls -lTd .
+.It Cm N
+Display the name of the file.
+.It Cm T
+Display the type of the file.
+.It Cm Y
+Insert
+.Ql " -> "
+into the output.
+.El
+.It Ar sub
+An optional sub-field specifier, applying only to the
+.Cm p , d , r
+and
+.Cm T
+formats:
+.Bl -tag -width Ds -compact
+.It Cm H
+High: the major number for devices, the user bits of a
+string-form mode, the type bits of a numeric mode, or the
+long form of
+.Cm T .
+.It Cm M
+Middle: the group bits of a string-form mode, or the setuid,
+setgid and sticky bits of a numeric mode.
+.It Cm L
+Low: the minor number for devices, the other bits of a
+string-form mode, or the
+.Ic ls -F
+style character for
+.Cm T .
+.El
+.It Ar datum
+A required field specifier, one of:
+.Bl -tag -width Ds -compact
+.It Cm d
+Device upon which the file resides.
+.It Cm i
+Inode number.
+.It Cm p
+File type and permissions.
+.It Cm l
+Number of hard links.
+.It Cm u , g
+User ID and group ID of the owner.
+.It Cm r
+Device number for character and block special files.
+.It Cm a , m , c , B
+Time of last access or modification, time the inode was
+last changed, or the birth time of the inode.
+.It Cm z
+Size of the file in bytes.
+.It Cm b
+Number of blocks allocated.
+.It Cm k
+Optimal file system I/O block size.
+.It Cm f
+User-defined flags.
+Always zero on Linux, which has no equivalent field.
+.It Cm v
+Inode generation number.
+Always zero on Linux.
+.It Cm N
+The name of the file.
+.It Cm R
+The absolute pathname corresponding to the file.
+.It Cm T
+The file type, as in
+.Ic ls -F
+or, with the
+.Cm H
+sub-field, in a more descriptive form.
+.It Cm Y
+The target of a symbolic link.
+.It Cm Z
+Expands to
+.Dq major,minor
+for character or block special files, and to the size for
+all others.
+.El
+.El
+.Pp
+Only the
+.Ql %
+and the datum are required.
+Most datums default to
+.Cm U ;
+.Cm p
+defaults to
+.Cm O ;
+.Cm a , m
+and
+.Cm c
+default to
+.Cm D ;
+and
+.Cm Y , T
+and
+.Cm N
+default to
+.Cm S .
 .Sh EXIT STATUS
 .Ex -std stat
 .Sh EXAMPLES
-Display file information:
+With no options the default format is equivalent to:
 .Bd -literal -offset indent
-$ stat /etc/passwd
-  File: /etc/passwd
-  Size: 6804      Blocks: 16         IO Block: 4096   regular file
-Device: 1000004h/16777220d  Inode: 3541246     Links: 1
-Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/   wheel)
-Access: 2024-01-15 10:30:45.000000000 -0500
-Modify: 2024-01-14 09:20:30.000000000 -0500
-Change: 2024-01-14 09:20:30.000000000 -0500
- Birth: 2023-06-01 12:00:00.000000000 -0500
+%d %i %Sp %l %Su %Sg %r %z "%Sa" "%Sm" "%Sc" "%SB" %k %b %#Xf %N
 .Ed
 .Pp
-Show only the file size:
+producing one line per file:
 .Bd -literal -offset indent
-$ stat -c '%s' /etc/passwd
-6804
+$ stat /tmp/bar
+0 78852 -rw-r--r-- 1 root wheel 0 0 "Jul  8 10:26:03 2004" ...
 .Ed
 .Pp
-Show file type and permissions:
+Determine the permissions set on a file separately:
 .Bd -literal -offset indent
-$ stat -c '%F %A' /etc/passwd
-regular file -rw-r--r--
+$ stat -f "%Sp -> owner=%SHp group=%SMp other=%SLp" .
+drwxr-xr-x -> owner=rwx group=r-x other=r-x
+.Ed
+.Pp
+Display a modification time as an epoch, readable, and in a
+sortable form:
+.Bd -literal -offset indent
+$ stat -f %m /tmp/foo
+1177697733
+$ stat -f %Sm /tmp/foo
+Apr 27 11:15:33 2007
+$ stat -f %Sm -t %Y%m%d%H%M%S /tmp/foo
+20070427111533
+.Ed
+.Pp
+Initialize shell variables:
+.Bd -literal -offset indent
+$ eval $(stat -s .profile)
+$ echo $st_size
+1148
 .Ed
 .Sh SEE ALSO
 .Xr ls 1 ,
@@ -143,6 +374,16 @@ regular file -rw-r--r--
 The
 .Nm
 utility is not specified by POSIX.
-The behavior is compatible with GNU coreutils.
+The interface follows the BSD
+.Nm
+of
+.Ox
+and macOS.
+The GNU interface is reachable through the long options
+.Fl Fl format ,
+.Fl Fl printf ,
+.Fl Fl file-system
+and
+.Fl Fl terse .
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
