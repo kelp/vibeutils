@@ -957,4 +957,111 @@ test_mv() {
         print_test_result "mv cross-filesystem sibling alias (issue #69)" "SKIP" \
             "Same filesystem or cannot determine"
     fi
+
+    echo -e "${CYAN}Testing issue #81: mv cross-filesystem mode preservation bypasses umask...${NC}"
+
+    # mv's EXDEV fallback shares common.file_ops.copyFileWithAttributes with
+    # cp -p, so it inherits the same bug: the destination mode is masked by
+    # the process umask and an existing destination's mode is never updated.
+    # Same SKIP-gated cross-device detection as the issue #69/cross-filesystem
+    # blocks above: TEMP_DIR vs /tmp first (matches the existing convention),
+    # falling back to /dev/shm (present and a different device from /tmp on
+    # many Linux systems) when TEMP_DIR is already under /tmp -- not a hard
+    # dependency, just a second candidate before giving up.
+    local i81_cross_dir=""
+    local i81_tmp_dev
+    i81_tmp_dev=$(stat -c %d /tmp 2>/dev/null || stat -f %d /tmp 2>/dev/null || echo "")
+    if [[ "$TEMP_DIR" != "/tmp"* ]]; then
+        local i81_temp_dev
+        i81_temp_dev=$(stat -c %d "$TEMP_DIR" 2>/dev/null || stat -f %d "$TEMP_DIR" 2>/dev/null || echo "")
+        if [[ -n "$i81_tmp_dev" ]] && [[ -n "$i81_temp_dev" ]] && [[ "$i81_tmp_dev" != "$i81_temp_dev" ]]; then
+            i81_cross_dir="/tmp"
+        fi
+    fi
+    if [[ -z "$i81_cross_dir" ]] && [[ -d "/dev/shm" ]] && [[ -w "/dev/shm" ]]; then
+        local i81_shm_dev
+        i81_shm_dev=$(stat -c %d /dev/shm 2>/dev/null || stat -f %d /dev/shm 2>/dev/null || echo "")
+        if [[ -n "$i81_tmp_dev" ]] && [[ -n "$i81_shm_dev" ]] && [[ "$i81_tmp_dev" != "$i81_shm_dev" ]]; then
+            i81_cross_dir="/dev/shm"
+        fi
+    fi
+
+    if [[ -n "$i81_cross_dir" ]]; then
+        local i81_saved_umask
+        i81_saved_umask=$(umask)
+
+        # K1: mv across a real filesystem boundary bypasses the umask for a
+        # new destination, matching cp -p (issue #81 J1).
+        local k1_src=$(create_temp_file "issue 81 K1")
+        chmod 644 "$k1_src"
+        local k1_dst="$i81_cross_dir/vibeutils_i81_k1_$$"
+        rm -f "$k1_dst" 2>/dev/null
+        umask 077
+        test_command_exit_code "mv cross-filesystem new destination bypasses umask (K1)" 0 \
+            run_with_limit 10 "$binary" "$k1_src" "$k1_dst"
+        umask "$i81_saved_umask"
+        local k1_perms
+        k1_perms=$(get_file_permissions "$k1_dst")
+        # Normalize a BSD-style 4-digit "0644" (macOS `stat -f %A`) down to
+        # GNU's 3-digit "644" so this comparison is platform-proof;
+        # special-bit modes elsewhere in this block (e.g. K2's "4755") do not
+        # match this pattern and are left untouched.
+        if [[ "$k1_perms" =~ ^0([0-7]{3})$ ]]; then k1_perms="${BASH_REMATCH[1]}"; fi
+        if [[ "$k1_perms" == "644" ]]; then
+            print_test_result "mv cross-filesystem destination mode is 644 under umask 077 (K1)" "PASS"
+        else
+            print_test_result "mv cross-filesystem destination mode is 644 under umask 077 (K1)" "FAIL" \
+                "Expected 644, got $k1_perms"
+        fi
+        rm -f "$k1_dst" 2>/dev/null
+
+        # K2: mv across a real filesystem boundary preserves setuid.
+        local k2_src=$(create_temp_file "issue 81 K2")
+        chmod 755 "$k2_src"
+        if chmod 4755 "$k2_src" 2>/dev/null && [[ "$(get_file_permissions "$k2_src")" == "4755" ]]; then
+            local k2_dst="$i81_cross_dir/vibeutils_i81_k2_$$"
+            rm -f "$k2_dst" 2>/dev/null
+            test_command_exit_code "mv cross-filesystem preserves setuid (K2)" 0 \
+                run_with_limit 10 "$binary" "$k2_src" "$k2_dst"
+            local k2_perms
+            k2_perms=$(get_file_permissions "$k2_dst")
+            if [[ "$k2_perms" == "4755" ]]; then
+                print_test_result "mv cross-filesystem setuid preserved (K2)" "PASS"
+            else
+                print_test_result "mv cross-filesystem setuid preserved (K2)" "FAIL" \
+                    "Expected 4755, got $k2_perms"
+            fi
+            rm -f "$k2_dst" 2>/dev/null
+        else
+            print_test_result "mv cross-filesystem setuid preserved (K2)" "SKIP" \
+                "Could not set/verify setuid bit (4755) on source"
+        fi
+
+        # K3: mv across a real filesystem boundary over an EXISTING
+        # destination takes the source's mode, not the destination's own.
+        local k3_src=$(create_temp_file "issue 81 K3 new")
+        chmod 644 "$k3_src"
+        local k3_dst="$i81_cross_dir/vibeutils_i81_k3_$$"
+        create_temp_file "issue 81 K3 old" "$k3_dst"
+        chmod 600 "$k3_dst"
+        test_command_exit_code "mv cross-filesystem over existing destination (K3)" 0 \
+            run_with_limit 10 "$binary" "$k3_src" "$k3_dst"
+        local k3_perms
+        k3_perms=$(get_file_permissions "$k3_dst")
+        if [[ "$k3_perms" =~ ^0([0-7]{3})$ ]]; then k3_perms="${BASH_REMATCH[1]}"; fi
+        if [[ "$k3_perms" == "644" ]]; then
+            print_test_result "mv cross-filesystem existing destination takes source mode (K3)" "PASS"
+        else
+            print_test_result "mv cross-filesystem existing destination takes source mode (K3)" "FAIL" \
+                "Expected 644, got $k3_perms"
+        fi
+        rm -f "$k3_dst" 2>/dev/null
+    else
+        print_test_result "mv cross-filesystem mode preservation (issue #81 K1)" "SKIP" \
+            "Same filesystem or cannot determine"
+        print_test_result "mv cross-filesystem mode preservation (issue #81 K2)" "SKIP" \
+            "Same filesystem or cannot determine"
+        print_test_result "mv cross-filesystem mode preservation (issue #81 K3)" "SKIP" \
+            "Same filesystem or cannot determine"
+    fi
 }

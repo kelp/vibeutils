@@ -668,4 +668,8 @@ test {
     // (canonicalizeMissing / canonicalizeParentMustExist) never ran. Include it
     // so the issue #51 canonicalizeMissing regression tests actually execute.
     _ = @import("path.zig");
+    // Same dormancy bit file_ops.zig: its embedded tests (setPermissions,
+    // isSameFile, and the issue #81 copyFileWithAttributes leaf tests) never
+    // ran under `zig build test`. Force-import so they execute.
+    _ = @import("file_ops.zig");
 }

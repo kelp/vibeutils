@@ -176,6 +176,9 @@ fn buildTests(
             .root_source_file = b.path("src/common/lib.zig"),
             .target = target,
             .optimize = optimize,
+            // file_ops.zig reaches std.c.fchmod/fchown/umask/geteuid directly,
+            // so the common suite needs libc once its tests are force-imported.
+            .link_libc = true,
         }),
     });
     common_tests.root_module.addImport("build_options", build_options_module);

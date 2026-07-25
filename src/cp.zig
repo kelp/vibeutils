@@ -2260,7 +2260,18 @@ test "cp: preserve attributes" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("source.txt", "Test content", 0o644);
+    // Tightened per issue #81: the original 0o644 source and `& 0o700` mask
+    // were structurally blind to the umask-bypass bug (0o644 has no bits a
+    // default test-runner umask would touch, and this never exercised an
+    // existing destination). Use an umask that overlaps the source's group
+    // bits and compare the full permission mask so this test actually
+    // catches a regression in -p's umask handling.
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("source.txt", "Test content", 0o741);
+
+    _ = std.c.umask(0o037);
 
     const source_path = try test_dir.getPath("source.txt");
     defer testing.allocator.free(source_path);
@@ -2283,13 +2294,14 @@ test "cp: preserve attributes" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
+    // Assert against the literal expected mode rather than the freshly
+    // re-stat'ed source: comparing dest to source alone would let a
+    // regression that mutated both identically slip through undetected.
     const source_stat = try test_dir.getFileStat("source.txt");
-    const dest_stat = try test_dir.getFileStat("dest.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o741), source_stat.permissions.toMode() & 0o777);
 
-    // Check user permissions (works without privileges)
-    const source_user_perms = source_stat.permissions.toMode() & 0o700;
-    const dest_user_perms = dest_stat.permissions.toMode() & 0o700;
-    try testing.expectEqual(source_user_perms, dest_user_perms);
+    const dest_stat = try test_dir.getFileStat("dest.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o741), dest_stat.permissions.toMode() & 0o777);
 }
 
 test "cp: symbolic link handling - follow by default" {
@@ -4527,4 +4539,631 @@ test "issue 77 U7 guard: cp -r merges into an existing destination directory kee
     const dest_info = try common.file.FileInfo.stat(testing.io, existing_sub_path);
     try testing.expectEqual(@as(std.posix.mode_t, 0o700), dest_info.mode & 0o777);
     try test_dir.expectFileContent("dd/sd/f.txt", "content");
+}
+
+// ===========================================================================
+// Intended-RED tests for issue #81: cp -p / -a / --preserve (and mv's EXDEV
+// fallback, which shares the same leaf: common.file_ops.copyFileWithAttributes)
+// only sets the destination mode via createFile's O_CREAT argument. That
+// argument is masked by the process umask, and is ignored outright by the
+// kernel when the destination already exists -- so -p neither bypasses the
+// umask nor updates an existing destination's mode, even though GNU -p must
+// do both. A third, related defect: copyFileWithAttributesPreserveOwnership
+// calls fchown unconditionally LAST with no chmod afterward, so Linux's
+// chown-clears-setuid/setgid semantics silently strip those bits even for a
+// same-owner no-op chown. GNU cp -p: openat(O_CREAT, src_mode & 0o700) ->
+// utimensat -> fchown -> fchmod(full mode incl. special bits). Each non-guard
+// test below must FAIL today on its KEY assertion, not on a compile error or
+// crash, and go GREEN once the fix chowns before an unconditional final
+// chmod with the exact source mode.
+// ===========================================================================
+
+test "issue 81 U1: cp -p bypasses umask for a new destination (0o644)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "content", 0o644);
+    const src_stat = try test_dir.getFileStat("src.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), src_stat.permissions.toMode() & 0o777);
+
+    _ = std.c.umask(0o077);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: today the dest mode is set only as createFile's
+    // O_CREAT argument, which the kernel masks by umask 0o077, yielding
+    // 0o600 instead of the source's exact 0o644.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_stat.permissions.toMode() & 0o777);
+}
+
+test "issue 81 U2: cp -p bypasses umask for a new destination (0o777)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "content", 0o777);
+    const src_stat = try test_dir.getFileStat("src.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), src_stat.permissions.toMode() & 0o777);
+
+    _ = std.c.umask(0o077);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: today the umask 0o077 masks the dest to 0o700
+    // instead of duplicating the source's exact 0o777.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), dest_stat.permissions.toMode() & 0o777);
+}
+
+test "issue 81 U3: cp -p updates an existing destination's mode" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "new content", 0o644);
+    try test_dir.createFile("dst.txt", "old content", 0o600);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dst.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: O_CREAT's mode argument is ignored by the kernel
+    // when the destination already exists, so today the mode stays 0o600
+    // instead of being updated to the source's exact 0o644.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_stat.permissions.toMode() & 0o777);
+    try test_dir.expectFileContent("dst.txt", "new content");
+}
+
+test "issue 81 U3 guard: cp WITHOUT -p over an existing destination keeps its own mode" {
+    // Placed immediately next to U3 so the -p / no-p asymmetry GNU cp
+    // implements is explicit in the source and cannot be accidentally
+    // "unified" by a later refactor: plain cp never touches an existing
+    // destination's mode (issue 77 U4), while -p above must always overwrite
+    // it to match the source exactly.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "new content", 0o644);
+    try test_dir.createFile("dst.txt", "old content", 0o600);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dst.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path }; // no -p
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), dest_stat.permissions.toMode() & 0o777);
+    try test_dir.expectFileContent("dst.txt", "new content");
+}
+
+test "issue 81 U4: cp -p narrows an existing destination's mode" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Pin the umask so the fixtures' modes are guaranteed to stick exactly,
+    // matching U1-U3: an ambient umask could otherwise create dst already at
+    // 0o600 and pass without any fix.
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "new content", 0o600);
+    try test_dir.createFile("dst.txt", "old content", 0o755);
+
+    const src_stat = try test_dir.getFileStat("src.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), src_stat.permissions.toMode() & 0o777);
+    const dst_stat_before = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(
+        @as(std.posix.mode_t, 0o755),
+        dst_stat_before.permissions.toMode() & 0o777,
+    );
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dst.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: O_CREAT's mode argument is ignored for an existing
+    // destination, so today the mode stays 0o755 instead of narrowing to
+    // the source's exact 0o600.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), dest_stat.permissions.toMode() & 0o777);
+}
+
+test "issue 81 U5: cp -p preserves setuid" {
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    // std.c.umask is process-global and shared across every embedded test in
+    // this binary; pin it explicitly rather than depending on whatever umask
+    // the runner inherits, matching the idiom used by U1-U4/U8. Special bits
+    // are unaffected by umask either way, so this is belt-and-suspenders.
+    const saved_umask = std.c.umask(0o022);
+    defer _ = std.c.umask(saved_umask);
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("src.txt", "content", 0o755);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    defer testing.allocator.free(source_path_z);
+    // chmod is not umask-masked; if the platform silently drops or alters
+    // the setuid bit (root/fakeroot oddities), skip rather than assert on an
+    // unverified precondition.
+    if (std.c.chmod(source_path_z, 0o4755) != 0) return error.SkipZigTest;
+    const source_info = try common.file.FileInfo.stat(testing.io, source_path);
+    if (source_info.mode & 0o7777 != 0o4755) return error.SkipZigTest;
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION -- ordering: chown must run BEFORE the final chmod,
+    // else Linux's chown-clears-setuid semantics silently strip the bit even
+    // for this no-op same-owner chown. Today fchown runs LAST, unconditionally,
+    // with no chmod ever issued afterward, so the bit is lost regardless.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o4755), dest_stat.permissions.toMode() & 0o7777);
+}
+
+test "issue 81 U6: cp -p preserves setgid" {
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    // Pinned for the same reason as U5: std.c.umask is process-global.
+    const saved_umask = std.c.umask(0o022);
+    defer _ = std.c.umask(saved_umask);
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("src.txt", "content", 0o755);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    defer testing.allocator.free(source_path_z);
+    if (std.c.chmod(source_path_z, 0o2755) != 0) return error.SkipZigTest;
+    const source_info = try common.file.FileInfo.stat(testing.io, source_path);
+    if (source_info.mode & 0o7777 != 0o2755) return error.SkipZigTest;
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: same chown-clears-setgid ordering bug as U5.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o2755), dest_stat.permissions.toMode() & 0o7777);
+}
+
+test "issue 81 U7: cp -p preserves the sticky bit" {
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    // Pinned for the same reason as U5: std.c.umask is process-global.
+    const saved_umask = std.c.umask(0o022);
+    defer _ = std.c.umask(saved_umask);
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("src.txt", "content", 0o755);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    defer testing.allocator.free(source_path_z);
+    if (std.c.chmod(source_path_z, 0o1755) != 0) return error.SkipZigTest;
+    const source_info = try common.file.FileInfo.stat(testing.io, source_path);
+    if (source_info.mode & 0o7777 != 0o1755) return error.SkipZigTest;
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The sticky bit survives chown (only setuid/setgid are cleared), so
+    // this one is currently green -- but it must stay green once the fix
+    // reorders chown/chmod for U5/U6.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o1755), dest_stat.permissions.toMode() & 0o7777);
+}
+
+test "issue 81 U8: cp -p preserves a source mode with no owner permission bits" {
+    // Reading the source afterward needs root, since a 0-owner-bit file
+    // denies its own owner read access under normal DAC checks. Under Linux
+    // fakeroot, geteuid() is faked to 0 while the kernel still enforces DAC
+    // against the real uid, so the euid check alone would let this run in an
+    // environment where the source open can genuinely EACCES; guard both,
+    // matching the precedent at U9 below.
+    if (std.c.geteuid() != 0) return error.SkipZigTest;
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("src.txt", "hello", 0o644);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    defer testing.allocator.free(source_path_z);
+    if (std.c.chmod(source_path_z, 0o044) != 0) return error.SkipZigTest;
+    const source_info = try common.file.FileInfo.stat(testing.io, source_path);
+    if (source_info.mode & 0o777 != 0o044) return error.SkipZigTest;
+
+    // 0o044 has no bits in common with the default umask (0o022 only clears
+    // write bits), so a restrictive umask 0o077 is required to actually
+    // exercise the creation-time masking this test guards against.
+    const saved_umask = std.c.umask(0o077);
+    defer _ = std.c.umask(saved_umask);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: a creation-mask-then-skip-the-final-chmod fix would
+    // leave this at 0o000; the exact zero-owner-bit mode must survive.
+    const dest_stat = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o044), dest_stat.permissions.toMode() & 0o777);
+    try test_dir.expectFileContent("dst.txt", "hello");
+}
+
+test "issue 81 U9: cp -p -r preserves directory ownership" {
+    if (std.c.geteuid() != 0) return error.SkipZigTest;
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/f.txt", "content", null);
+
+    const src_path = try test_dir.getPath("src");
+    defer testing.allocator.free(src_path);
+    const src_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{src_path}, 0);
+    defer testing.allocator.free(src_path_z);
+
+    // Arbitrary uid/gid, distinct from root and from each other; chown does
+    // not require the target ids to correspond to real system accounts, so
+    // this avoids depending on any specific user existing on the CI image.
+    const owner_uid: std.c.uid_t = 12345;
+    const owner_gid: std.c.gid_t = 12346;
+    if (std.c.fchownat(std.c.AT.FDCWD, src_path_z, owner_uid, owner_gid, 0) != 0) {
+        return error.SkipZigTest;
+    }
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-p", src_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: preserveDirAttributes applies mtime and mode but
+    // never chowns, so the dest directory keeps root's ownership instead of
+    // matching the source's uid/gid.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(owner_uid, dest_info.uid);
+    try testing.expectEqual(owner_gid, dest_info.gid);
+}
+
+test "issue 81 U10 (fence): cp -p preserves mtime under a perturbed umask" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createFile("src.txt", "content", 0o644);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_info_before = try common.file.FileInfo.stat(testing.io, source_path);
+
+    _ = std.c.umask(0o077);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // FENCE: a chown/chmod reorder fix must not break timestamp preservation.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    const src_mtime_s = @divFloor(source_info_before.mtime, std.time.ns_per_s);
+    const dst_mtime_s = @divFloor(dest_info.mtime, std.time.ns_per_s);
+    try testing.expectEqual(src_mtime_s, dst_mtime_s);
+}
+
+test "issue 81 U11 (fence): cp -p over an existing destination truncates in place" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("src.txt", "new content", 0o644);
+    try test_dir.createFile("dst.txt", "old", 0o600);
+
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dst.txt");
+    defer testing.allocator.free(dest_path);
+
+    const dest_stat_before = try test_dir.getFileStat("dst.txt");
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // FENCE: GNU truncates the existing destination in place rather than
+    // unlinking and recreating it; the inode must be unchanged.
+    const dest_stat_after = try test_dir.getFileStat("dst.txt");
+    try testing.expectEqual(dest_stat_before.inode, dest_stat_after.inode);
+    try test_dir.expectFileContent("dst.txt", "new content");
+}
+
+test "issue 81 U12 (fence): cp -p on a directory preserves its mode under a restrictive umask" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.createDir("src");
+    const src_path = try test_dir.getPath("src");
+    defer testing.allocator.free(src_path);
+    const src_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{src_path}, 0);
+    defer testing.allocator.free(src_path_z);
+    if (std.c.chmod(src_path_z, 0o750) != 0) return error.SkipZigTest;
+
+    _ = std.c.umask(0o077);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-p", src_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // FENCE: already correct today via preserveDirAttributes's post-order
+    // chmodPath; must not regress when the file-level leaf is fixed.
+    const dest_dir_stat = try test_dir.getFileStat("dst");
+    try testing.expectEqual(
+        @as(std.posix.mode_t, 0o750),
+        dest_dir_stat.permissions.toMode() & 0o777,
+    );
+}
+
+test "issue 81 U13 (error path): cp -p reports an error when the final chmod fails" {
+    // /dev/null is root-owned and world-writable, so an unprivileged process
+    // can open/truncate/write it -- a genuine "destination is writable but
+    // not chmod-able" case -- without needing to manufacture an ownership
+    // mismatch by hand (which would require CAP_CHOWN this process doesn't
+    // have). This behavior was never pinned on the reference VM (the
+    // briefing's pinned GNU commands only exercise the success path), so
+    // this test targets vibeutils' own documented convention instead: per
+    // src/common/lib.zig's ExitCode, a chmod failure must map to
+    // general_error (1) on Linux specifically -- src/common/file_ops.zig's
+    // setPermissions downgrades the identical failure to a warning +
+    // ExitCode.success on macOS, so this is Linux-only.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    // As root, fchmod on /dev/null succeeds (CAP_FOWNER), so the failure
+    // this test exercises cannot occur; skip rather than assert a behavior
+    // we cannot provoke. Linux fakeroot fakes geteuid() to 0 while faking
+    // (or no-op'ing) the underlying chmod too, so guard both, matching the
+    // precedent at U5/U8 above.
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("src.txt", "content", 0o644);
+    const source_path = try test_dir.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, "/dev/null" };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTION: today copyFileWithAttributes issues no chmod at
+    // all, so this "succeeds" with exit 0 despite the destination's mode
+    // never being touched; after the fix, the final fchmod on /dev/null must
+    // fail with EPERM (root-owned, non-owner caller) and cp must report the
+    // failure and exit nonzero.
+    try testing.expect(exit_code != 0);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "/dev/null") != null);
 }

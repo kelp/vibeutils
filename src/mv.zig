@@ -2745,6 +2745,191 @@ test "privileged: failed copy leaves source tree intact and reports an error" {
 }
 
 // ===========================================================================
+// Intended-RED tests for issue #81: mv's EXDEV fallback shares
+// common.file_ops.copyFileWithAttributes with cp -p, so it inherits the same
+// bug -- the destination mode is set only via createFile's O_CREAT argument,
+// which the kernel masks by the process umask and ignores outright when the
+// destination already exists. These tests call crossFilesystemMove directly,
+// per the stable unit boundary documented above: no real EXDEV is needed
+// since rename never fails cross-device inside one tmpDir. Unlike the
+// mtime/0o741 characterization test above (umask-immune, so structurally
+// blind to this bug), these use modes that intersect the perturbed umask, so
+// they must FAIL today and go GREEN once the shared leaf is fixed.
+//
+// Deliberately NOT "privileged: "/TestArena like the characterization block
+// above: these must actually RUN in the normal (non-root-skipping) suite,
+// since crossFilesystemMove's umask/mode bug reproduces without privilege.
+// Do not "fix" this for consistency with the surrounding block.
+// ===========================================================================
+
+test "crossFilesystemMove bypasses the process umask for a single file" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.inner.createFile("src.txt", "content", 0o644);
+    const src_stat = try test_dir.inner.getFileStat("src.txt");
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), src_stat.permissions.toMode() & 0o777);
+
+    _ = std.c.umask(0o077);
+
+    const base_path = try test_dir.inner.getBasePath();
+    defer testing.allocator.free(base_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/src.txt", .{base_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        testing.allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTION: today the dest mode is masked by umask 0o077,
+    // yielding 0o600 instead of the source's exact 0o644.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_info.mode & 0o777);
+}
+
+test "crossFilesystemMove bypasses the process umask through a directory tree" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/a.txt", "a", 0o640);
+    try test_dir.inner.createFile("src/b.txt", "b", 0o666);
+
+    _ = std.c.umask(0o077);
+
+    const base_path = try test_dir.inner.getBasePath();
+    defer testing.allocator.free(base_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/src", .{base_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        testing.allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTION: unlike the umask-immune 0o741 fixture above, both
+    // a.txt (0o640) and b.txt (0o666) have bits that intersect umask 0o077,
+    // so both must fail today.
+    const dest_a_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst/a.txt", .{base_path});
+    defer testing.allocator.free(dest_a_path);
+    const dest_a_info = try common.file.FileInfo.stat(testing.io, dest_a_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o640), dest_a_info.mode & 0o777);
+
+    const dest_b_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst/b.txt", .{base_path});
+    defer testing.allocator.free(dest_b_path);
+    const dest_b_info = try common.file.FileInfo.stat(testing.io, dest_b_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o666), dest_b_info.mode & 0o777);
+}
+
+test "crossFilesystemMove preserves setuid on a single file" {
+    if (common.file_ops.isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.inner.createFile("src.txt", "content", 0o755);
+    const source_path = try test_dir.inner.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
+    defer testing.allocator.free(source_path_z);
+    // chmod is not umask-masked; if the platform silently drops or alters
+    // the setuid bit (root/fakeroot oddities), skip rather than assert on an
+    // unverified precondition.
+    if (std.c.chmod(source_path_z, 0o4755) != 0) return error.SkipZigTest;
+    const source_info = try common.file.FileInfo.stat(testing.io, source_path);
+    if (source_info.mode & 0o7777 != 0o4755) return error.SkipZigTest;
+
+    const base_path = try test_dir.inner.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        testing.allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTION -- ordering: chown must run BEFORE the final chmod
+    // once a fix adds one, else Linux's chown-clears-setuid semantics strip
+    // the bit even for this no-op same-owner chown. Today no chmod ever runs
+    // after fchown, so the bit is lost regardless.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o4755), dest_info.mode & 0o7777);
+}
+
+test "crossFilesystemMove over an existing destination takes the source mode" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    try test_dir.inner.createFile("src.txt", "new content", 0o644);
+    try test_dir.inner.createFile("dst.txt", "old content", 0o600);
+
+    const source_path = try test_dir.inner.getPath("src.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.inner.getPath("dst.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        testing.allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTION: O_CREAT's mode argument is ignored by the kernel
+    // when the destination already exists, so today the mode stays 0o600
+    // instead of being updated to the source's exact 0o644.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_info.mode & 0o777);
+    try test_dir.inner.expectFileContent("dst.txt", "new content");
+}
+
+// ===========================================================================
 // Intended-RED behavior-fix tests for the cross-filesystem copy fallback.
 //
 // These pin GNU mv semantics that the CURRENT recursive fallback gets WRONG;
