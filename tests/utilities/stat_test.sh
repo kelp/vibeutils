@@ -109,14 +109,75 @@ test_stat() {
 
     echo -e "${CYAN}Testing file system info...${NC}"
 
-    # -f shows file system info
-    output=$("$binary" -f "$tmpfile" 2>/dev/null)
-    exit_code=$?
-    if [[ $exit_code -eq 0 && "$output" =~ "Block" ]]; then
+    # -f shows file system info, and a successful run emits no hint
+    local stat_f_cmd stat_f_out stat_f_err stat_f_exit
+    run_command stat_f_cmd stat_f_out stat_f_err stat_f_exit "$binary" -f "$tmpfile"
+    if [[ $stat_f_exit -eq 0 && "$stat_f_out" =~ "Block" && "$stat_f_err" != *"hint:"* ]]; then
         print_test_result "stat -f shows file system info" "PASS"
     else
         print_test_result "stat -f shows file system info" "FAIL" \
-            "Exit code: $exit_code"
+            "Exit code: $stat_f_exit, stderr: '$stat_f_err'"
+    fi
+
+    # --- F67: BSD 'stat -f FORMAT' misuse hint (issue #79) ---
+    # GNU spells -f as --file-system; BSD spells -f as the format flag, so a
+    # BSD script silently changes meaning here. stat emits a non-fatal hint on
+    # stderr, and must not touch stdout or the exit status doing so.
+    echo -e "${CYAN}Testing BSD -f format misuse hint (F67)...${NC}"
+
+    local bsd_hint_cmd bsd_hint_out bsd_hint_err bsd_hint_exit
+    run_command bsd_hint_cmd bsd_hint_out bsd_hint_err bsd_hint_exit \
+        "$binary" -f '%Sm' "$tmpfile"
+    if [[ "$bsd_hint_err" == *"hint:"* && "$bsd_hint_err" == *"stat -c FORMAT"* ]]; then
+        print_test_result "stat -f '%Sm' hints that -f is --file-system" "PASS"
+    else
+        print_test_result "stat -f '%Sm' hints that -f is --file-system" "FAIL" \
+            "Expected hint in stderr, got: '$bsd_hint_err'"
+    fi
+
+    # Parity regression: the reference run fails the same way but earns no
+    # hint; the exit status must match, and nothing may leak onto stdout.
+    #
+    # This is deliberately NOT a byte-for-byte stdout compare: the free-block
+    # and free-inode counts come from two separate statfs calls and drift on a
+    # busy runner. Equal line counts plus the absence of hint text on stdout
+    # still catch a hint routed to (or appended after) stdout.
+    local bsd_ref_cmd bsd_ref_out bsd_ref_err bsd_ref_exit
+    run_command bsd_ref_cmd bsd_ref_out bsd_ref_err bsd_ref_exit \
+        "$binary" -f /nonexistent-bsd-hint-probe "$tmpfile"
+    local bsd_hint_lines bsd_ref_lines
+    bsd_hint_lines=$(printf '%s' "$bsd_hint_out" | wc -l)
+    bsd_ref_lines=$(printf '%s' "$bsd_ref_out" | wc -l)
+    if [[ "$bsd_hint_lines" -eq "$bsd_ref_lines" && "$bsd_hint_exit" == "$bsd_ref_exit" &&
+        $bsd_hint_exit -eq 1 && "$bsd_hint_out" != *"hint"* &&
+        "$bsd_hint_out" != *"-f means"* && "$bsd_ref_err" != *"hint:"* ]]; then
+        print_test_result "stat -f BSD hint leaves stdout and exit status unchanged" "PASS"
+    else
+        print_test_result "stat -f BSD hint leaves stdout and exit status unchanged" "FAIL" \
+            "exit $bsd_hint_exit/$bsd_ref_exit, lines $bsd_hint_lines/$bsd_ref_lines (hint/ref)"
+    fi
+
+    # An ordinary missing file must not trigger the hint.
+    local bsd_plain_cmd bsd_plain_out bsd_plain_err bsd_plain_exit
+    run_command bsd_plain_cmd bsd_plain_out bsd_plain_err bsd_plain_exit \
+        "$binary" -f /nonexistent/plain
+    if [[ $bsd_plain_exit -eq 1 && "$bsd_plain_err" != *"hint:"* ]]; then
+        print_test_result "stat -f missing file does not hint" "PASS"
+    else
+        print_test_result "stat -f missing file does not hint" "FAIL" \
+            "Exit code: $bsd_plain_exit, stderr: '$bsd_plain_err'"
+    fi
+
+    # The clustered BSD spelling dies in the parser; hint there too, with the
+    # misuse exit code and empty stdout preserved.
+    local bsd_clust_cmd bsd_clust_out bsd_clust_err bsd_clust_exit
+    run_command bsd_clust_cmd bsd_clust_out bsd_clust_err bsd_clust_exit \
+        "$binary" -f%z "$tmpfile"
+    if [[ $bsd_clust_exit -eq 2 && "$bsd_clust_err" == *"hint:"* && -z "$bsd_clust_out" ]]; then
+        print_test_result "stat -f%z hints on the misuse path" "PASS"
+    else
+        print_test_result "stat -f%z hints on the misuse path" "FAIL" \
+            "Exit code: $bsd_clust_exit, stdout: '$bsd_clust_out', stderr: '$bsd_clust_err'"
     fi
 
     echo -e "${CYAN}Testing error conditions...${NC}"
@@ -204,13 +265,16 @@ test_stat() {
     # --- F17: stat -f -c FORMAT should honor format string ---
     echo -e "${CYAN}Testing stat -f -c honors format string (F17)...${NC}"
 
-    local stat_fc_out
-    stat_fc_out=$("$binary" -f -c '%n' "$tmpfile" 2>/dev/null)
-    if [[ "$stat_fc_out" == "$tmpfile" ]]; then
+    local stat_fc_cmd stat_fc_out stat_fc_err stat_fc_exit
+    run_command stat_fc_cmd stat_fc_out stat_fc_err stat_fc_exit \
+        "$binary" -f -c '%n' "$tmpfile"
+    # -c already selects the GNU format flag, so -f cannot have been meant as
+    # BSD's format flag: no hint here (F67).
+    if [[ "$stat_fc_out" == "$tmpfile" && "$stat_fc_err" != *"hint:"* ]]; then
         print_test_result "stat -f -c '%n' outputs file name" "PASS"
     else
         print_test_result "stat -f -c '%n' outputs file name" "FAIL" \
-            "Expected '$tmpfile', got '$stat_fc_out'"
+            "Expected '$tmpfile', got '$stat_fc_out' (stderr: '$stat_fc_err')"
     fi
 
     # --- F18: Terse output should have 16 fields like GNU stat ---

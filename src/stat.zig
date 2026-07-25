@@ -2977,3 +2977,374 @@ test "stat --printf does not add trailing newline" {
     // Must be exactly "5" with no newline
     try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
 }
+
+// F67: GNU spells -f as --file-system, while BSD stat spells -f as the
+// format flag. A BSD script (`stat -f '%Sm' FILE`) therefore changes
+// meaning silently under our stat: the format string is taken as a path.
+// When a -f run has already failed and an operand looks like a BSD format
+// string that names no existing file, stat emits exactly one non-fatal
+// hint on stderr:
+//
+//     stat: hint: -f means --file-system here (GNU); BSD 'stat -f FORMAT'
+//     is 'stat -c FORMAT'
+//
+// The hint is diagnostic only: stdout bytes and the exit status must stay
+// byte-for-byte identical to a run without the hint, and the hint must not
+// fire for ordinary missing files, for -f -c, or for real files whose name
+// happens to contain a percent directive.
+
+test "stat -f hints when an operand looks like a BSD format" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%Sm", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+
+    const err_text = stderr_aw.writer.buffered();
+    // The format string is still reported as a failed operand.
+    try testing.expect(std.mem.find(u8, err_text, "cannot statfs '%Sm'") != null);
+    // And the hint explains why it was treated as a path.
+    try testing.expect(std.mem.find(u8, err_text, "hint:") != null);
+    try testing.expect(std.mem.find(u8, err_text, "-f means --file-system here") != null);
+}
+
+test "stat -f hints for a format with printf modifiers" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // The modifier run "-10" sits between the percent and the directive
+    // letter, so the skip logic must look past it to find the 'N'.
+    const args = [_][]const u8{ "-f", "%-10N", "/nonexistent/plain/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "hint:") != null);
+}
+
+// The GNU-parity regression: adding the hint must not move a single byte
+// on stdout and must not change the exit status. The reference run fails
+// the same way (an operand that does not exist) but earns no hint.
+test "stat -f BSD hint leaves stdout and exit status unchanged" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var hint_stdout: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer hint_stdout.deinit();
+    var hint_stderr: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer hint_stderr.deinit();
+
+    const hint_args = [_][]const u8{ "-f", "%Sm", test_path };
+    const hint_exit = try runStat(
+        testing.allocator,
+        testing.io,
+        &hint_args,
+        &hint_stdout.writer,
+        &hint_stderr.writer,
+    );
+
+    var ref_stdout: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer ref_stdout.deinit();
+    var ref_stderr: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer ref_stderr.deinit();
+
+    const ref_args = [_][]const u8{ "-f", "/nonexistent-stat-parity-probe", test_path };
+    const ref_exit = try runStat(
+        testing.allocator,
+        testing.io,
+        &ref_args,
+        &ref_stdout.writer,
+        &ref_stderr.writer,
+    );
+
+    // The exit status must be identical, and must still be the failure code.
+    try testing.expectEqual(ref_exit, hint_exit);
+    try testing.expectEqual(@as(u8, 1), hint_exit);
+
+    const hint_out = hint_stdout.writer.buffered();
+    const ref_out = ref_stdout.writer.buffered();
+
+    // Deliberately NOT a byte-for-byte stdout compare: the free-block and
+    // free-inode counts come from two separate statfs calls and legitimately
+    // drift on a busy machine, which would flake. Line count plus the stable
+    // prefix plus the absence of hint text still catch any stdout leakage.
+    var hint_lines: u32 = 0;
+    for (hint_out) |ch| {
+        if (ch == '\n') hint_lines += 1;
+    }
+    var ref_lines: u32 = 0;
+    for (ref_out) |ch| {
+        if (ch == '\n') ref_lines += 1;
+    }
+    try testing.expectEqual(ref_lines, hint_lines);
+
+    // Everything up to the first "Blocks:" line is drift-free: the file name,
+    // the filesystem ID/namelen/type, and the block sizes.
+    const hint_blocks = std.mem.find(u8, hint_out, "Blocks:") orelse
+        return error.TestExpectedEqual;
+    const ref_blocks = std.mem.find(u8, ref_out, "Blocks:") orelse
+        return error.TestExpectedEqual;
+    try testing.expectEqualStrings(ref_out[0..ref_blocks], hint_out[0..hint_blocks]);
+
+    // The diagnostic went to stderr only.
+    try testing.expect(std.mem.find(u8, hint_out, "hint") == null);
+    try testing.expect(std.mem.find(u8, hint_out, "-f means") == null);
+
+    try testing.expect(std.mem.find(u8, hint_stderr.writer.buffered(), "hint:") != null);
+    try testing.expect(std.mem.find(u8, ref_stderr.writer.buffered(), "hint:") == null);
+}
+
+test "stat -f does not hint for an ordinary missing file" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "/nonexistent/plain/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    const err_text = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_text, "cannot statfs") != null);
+    try testing.expect(std.mem.find(u8, err_text, "hint:") == null);
+}
+
+test "stat -f -c does not hint" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // With -c the user is already using the GNU format flag, so -f cannot
+    // have been meant as BSD's format flag.
+    const args = [_][]const u8{ "-f", "-c", "%n", "/nonexistent/plain/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    const err_text = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_text, "cannot stat") != null);
+    try testing.expect(std.mem.find(u8, err_text, "hint:") == null);
+}
+
+test "stat -f does not hint for an existing file named like a format" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A real file literally named "%z" is not a misused BSD format string.
+    const test_file = try tmp_dir.dir.createFile(testing.io, "%z", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "%z", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // The second operand makes the run fail, so only the "names an existing
+    // file" check can keep the hint away.
+    const args = [_][]const u8{ "-f", test_path, "/nonexistent/plain/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "hint:") == null);
+}
+
+test "stat -f hints at most once per invocation" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Two operands both look like BSD format strings; the hint is advice,
+    // not a per-operand diagnostic, so it appears exactly once.
+    const args = [_][]const u8{ "-f", "%Sm", "%N" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+
+    const hint_scan_max = 16;
+    var hint_count: u32 = 0;
+    var rest: []const u8 = stderr_aw.writer.buffered();
+    for (0..hint_scan_max) |_| {
+        const pos = std.mem.find(u8, rest, "hint:") orelse break;
+        hint_count += 1;
+        rest = rest[pos + "hint:".len ..];
+    }
+    try testing.expectEqual(@as(u32, 1), hint_count);
+}
+
+test "stat without -f never hints" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"%Sm"};
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    const err_text = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_text, "cannot stat '%Sm'") != null);
+    try testing.expect(std.mem.find(u8, err_text, "hint:") == null);
+}
+
+test "stat -f does not hint for a percent in an ordinary name" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Neither name has a letter following the percent (after any
+    // printf-style modifier bytes), so neither looks like a format string.
+    const args = [_][]const u8{
+        "-f",
+        "/nonexistent/50%/final.txt",
+        "/nonexistent/discount100%",
+    };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "hint:") == null);
+}
+
+test "stat -f does not hint for a percent-encoded name" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // "%20" is a percent-encoded space, not a directive: the letter run
+    // after the modifier bytes is "final", five letters, well past the
+    // 1-2 letters a BSD directive can have.
+    const args = [_][]const u8{ "-f", "/nonexistent/report%20final.txt" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    const err_text = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_text, "cannot statfs") != null);
+    try testing.expect(std.mem.find(u8, err_text, "hint:") == null);
+}
+
+test "stat -f%z hints on the misuse path" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // The clustered BSD spelling dies in the parser; the hint must reach
+    // stderr there too, without changing the misuse exit code or stdout.
+    const args = [_][]const u8{ "-f%z", "/tmp" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err_text = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_text, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, err_text, "hint:") != null);
+}
+
+test "stat -f with an unrelated bad option does not hint" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "--bogus" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 2), result);
+    const err_text = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_text, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, err_text, "hint:") == null);
+}
