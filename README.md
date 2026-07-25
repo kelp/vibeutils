@@ -10,6 +10,12 @@ vibeutils covers the 80% of GNU coreutils you actually use,
 with modern terminal enhancements that activate
 automatically.
 
+Where GNU and BSD give the same flag different meanings,
+vibeutils follows BSD — so on macOS, where our binaries can
+shadow the system tools, a script keeps meaning what it
+meant. `stat` is the one utility this materially changes;
+see `man stat`.
+
 **ls** gains the most:
 - `--icons` — Nerd Font file type icons
 - `--git` — inline git status per file

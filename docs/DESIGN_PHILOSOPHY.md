@@ -79,10 +79,24 @@ const ColorScheme = enum {
 
 ### Spec Reference Hierarchy
 
-GNU coreutils is the primary behavioral reference.
-When a flag exists in GNU, match GNU semantics. For
-flags that exist only in macOS/OpenBSD (not GNU),
-follow that spec's semantics.
+Where GNU and BSD directly conflict, we follow BSD.
+A direct conflict is the same spelling — flag letter,
+format directive, or default behavior — meaning
+different things in the two specs.
+
+Everywhere else the spec that defines the flag governs:
+GNU-only flags follow GNU, macOS/OpenBSD-only flags
+follow that spec, and flags that agree need no decision.
+That last case is 95%+ of the surface, so GNU remains
+the reference for most behavior; the rule only bites on
+true collisions.
+
+The tie breaks toward BSD because that is where the
+damage lands. Our Homebrew formula is designed to put
+`vibebin` on `PATH` ahead of `/usr/bin`, so on macOS we
+shadow the platform's own tool — and under GNU semantics
+a BSD script does not fail, it silently means something
+else. Linux has no equivalent shadowing.
 
 Each utility has a flag matrix in
 `docs/specs/<util>-flags.md` that maps every flag
@@ -97,7 +111,9 @@ The matrices are the authoritative source for which
 flags to implement and which spec governs behavior.
 
 ### Compatibility
-- GNU coreutils behavioral compatibility for scripts
+- GNU coreutils behavioral compatibility for scripts,
+  except where a spelling collides with BSD — see the
+  hierarchy above
 - macOS/OpenBSD-only flags added as SHOULD tier
 - Additional flags don't break POSIX compliance
 - Modern features are opt-in via flags or auto-detected
@@ -106,9 +122,26 @@ flags to implement and which spec governs behavior.
 ### Per-Utility Spec Exceptions
 
 #### stat
-BSD and GNU `stat` have incompatible flag semantics
-(`-f`, `-t`, `-n`, `-q`, `-r`, `-s`, `-x` all differ).
-We follow the GNU interface.
+BSD and GNU `stat` have incompatible flag semantics, so
+the conflict rule applies and `stat` implements the BSD
+interface: `-f FORMAT` is the format flag with BSD's
+directive grammar, `-t timefmt` sets the time format,
+and `-F`, `-l`, `-n`, `-q`, `-r`, `-s`, `-x` all carry
+their BSD meanings. The default output and the
+no-operand behavior (stat stdin's descriptor) are BSD's
+too.
+
+GNU's long spellings survive alongside, because a long
+option is not a collision: `--format=FMT`, `--printf=FMT`,
+`--file-system`, `--terse`, `--dereference`. Two
+consequences are deliberate and easy to misread:
+
+- `-f` is **not** an alias of `--file-system`, and `-t`
+  is **not** an alias of `--terse`. BSD defines the short
+  spellings; GNU defines the long ones.
+- Two format-directive languages coexist, selected by the
+  flag that introduced the string: `-c`/`--format`/
+  `--printf` parse GNU directives, `-f` parses BSD ones.
 
 #### test and [
 The `test` and `[` utilities follow strict POSIX

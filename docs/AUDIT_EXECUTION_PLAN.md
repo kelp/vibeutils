@@ -27,11 +27,17 @@ divergence. Write findings to report files.
 
 ## Rules
 
-1. **GNU coreutils is the primary behavioral reference.**
-   When a flag exists in GNU, match GNU semantics. For
-   flags only in macOS/OpenBSD, follow that spec. For
-   `stat`, we follow GNU. See `docs/specs/<util>-flags.md`
-   for the per-utility flag matrix and tier assignments.
+1. **Where GNU and BSD directly conflict, BSD wins.**
+   A direct conflict is the same spelling meaning
+   different things in the two specs. Otherwise the spec
+   that defines the flag governs: GNU-only flags follow
+   GNU, macOS/OpenBSD-only flags follow that spec. `stat`
+   implements the BSD interface for this reason — do not
+   report its `-f`/`-t`/default-output behavior as a
+   divergence. See `docs/specs/<util>-flags.md` for the
+   per-utility flag matrix and tier assignments, and the
+   vendored `<util>-{posix,gnu,macos,openbsd}.txt` specs
+   beside it.
 2. Do NOT trust the coverage summary
 3. A flag that is parsed but doesn't change output is a
    **STUB** — severity CRITICAL
@@ -118,9 +124,10 @@ fixer. Report problems only.
 
 GROUND RULES:
 - Do NOT trust docs/specs/COVERAGE_SUMMARY.md
-- GNU coreutils is the primary behavioral reference.
-  For flags only in macOS/OpenBSD, follow that spec.
-  Check docs/specs/{UTIL}-flags.md for the matrix.
+- Where GNU and BSD assign different meanings to the
+  same spelling, BSD wins. Otherwise the spec that
+  defines the flag governs. Check
+  docs/specs/{UTIL}-flags.md for the matrix.
 - A parsed flag that doesn't change output is a STUB
   (CRITICAL severity)
 - You MUST build and run the utility

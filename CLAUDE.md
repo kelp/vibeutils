@@ -233,12 +233,24 @@ icons, progress bars).
 
 ### Spec Reference Hierarchy
 
-**GNU coreutils is the primary behavioral reference.**
-When a flag exists in GNU, match GNU semantics. For
-flags that exist only in macOS/OpenBSD (not GNU),
-follow that spec's semantics. For `stat`, we follow
-the GNU interface (BSD and GNU `stat` have incompatible
-flag semantics for `-f`, `-t`, and others).
+**Where GNU and BSD directly conflict, we follow BSD.**
+A direct conflict is the same spelling — flag letter,
+format directive, or default behavior — meaning
+different things in the two specs. In that case
+macOS/OpenBSD wins.
+
+Everywhere else, the spec that defines the flag governs:
+
+- Flag in GNU only → GNU semantics.
+- Flag in macOS/OpenBSD only → that spec's semantics.
+- Flag in both with the same meaning → no decision to
+  make; this is 95%+ of the surface.
+
+So GNU remains the reference for the large majority of
+behavior. The rule only bites on true collisions, of
+which there are few — `stat`'s `-f` and `-t` are the
+canonical examples, and `stat` implements the BSD
+interface because of it.
 
 The per-utility flag matrices in `docs/specs/<util>-flags.md`
 are the authoritative source for which flags are
@@ -256,11 +268,20 @@ Each matrix has columns for POSIX, macOS, OpenBSD,
 GNU, and Ours. Check the matrix before implementing
 or auditing a flag — it resolves which spec to follow.
 
-**Why GNU?** Most users run on Linux (containers, CI,
-WSL). macOS power users install GNU coreutils via
-Homebrew. 95%+ of flags are semantically identical
-across specs; the matrices add macOS/OpenBSD-only
-flags as SHOULD to cover BSD users too.
+**Why BSD on conflicts?** A collision is the one case
+where a script cannot be written portably, so the tie
+has to break somewhere. It breaks toward BSD because
+that is where the damage lands: we ship a Homebrew
+formula whose `vibebin` directory is meant to go on
+`PATH` ahead of `/usr/bin`, so on macOS our binary
+shadows the platform's own tool. Under GNU semantics a
+BSD script does not fail — it silently means something
+else. On Linux there is no such shadowing, and GNU
+users reach for the long spellings anyway.
+
+The specs agree on 95%+ of the surface, so this rule
+decides very little. Where it does decide, prefer being
+the same as the tool we displace.
 
 Do not invent custom behavior, emit warnings for
 unimplemented features, or silently degrade — either
