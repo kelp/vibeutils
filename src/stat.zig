@@ -54,6 +54,13 @@ const StatFs = if (builtin.os.tag == .linux) extern struct {
 
 const prog_name = "stat";
 
+/// One-line advisory shown when a BSD `stat -f FORMAT` invocation lands on
+/// this GNU-interface stat. Held as a constant so the parse-error path and
+/// the failed-operand path stay word-for-word identical, and so the tests
+/// have a single string to pin.
+const bsd_format_hint =
+    "-f means --file-system here (GNU); BSD 'stat -f FORMAT' is 'stat -c FORMAT'";
+
 // ============================================================================
 // Parsed options
 // ============================================================================
@@ -66,6 +73,11 @@ const StatOptions = struct {
     terse: bool = false,
     help: bool = false,
     version: bool = false,
+    /// Set when an unrecognized short option was literally `%` in a cluster
+    /// that had already selected `-f`, i.e. the user wrote BSD's clustered
+    /// `stat -f%z`. Recorded during parsing because that path stops before
+    /// any operand is collected.
+    bsd_format_suspected: bool = false,
     positionals: []const []const u8 = &.{},
 };
 
@@ -231,6 +243,12 @@ fn parseArgs_shortOption(
                 break;
             },
             else => {
+                // BSD spells its format flag `-f%z`; GNU getopt rejects the
+                // `%` as an unknown option. Remember it so the misuse path
+                // can explain why, without altering the exit status.
+                if (arg[j] == '%' and opts.file_system) {
+                    opts.bsd_format_suspected = true;
+                }
                 return .{ .err = "unrecognized option", .stop = true };
             },
         }
@@ -1312,6 +1330,7 @@ pub fn runStat(
             "{s}\nTry 'stat --help' for more information.",
             .{err_msg},
         );
+        if (opts.bsd_format_suspected) printBsdClusterHint(allocator, stderr_writer);
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -1352,6 +1371,13 @@ pub fn runStat(
             has_error = true;
         }
     }
+
+    // A failing bare `-f` run is where a BSD `stat -f FORMAT` script lands.
+    // This runs after the loop and returns void, so stdout and the exit
+    // status are untouched by construction.
+    const bsd_hint_applies = has_error and opts.file_system and
+        opts.format == null and opts.printf_fmt == null;
+    if (bsd_hint_applies) printBsdFormatHint(allocator, &opts, stderr_writer);
 
     return if (has_error)
         @intFromEnum(common.ExitCode.general_error)
@@ -1430,6 +1456,92 @@ fn processOnePath(
     return false;
 }
 
+/// True when `operand` reads as a BSD `stat -f FORMAT` format string rather
+/// than a path. A BSD directive is a '%', optional printf-style flags and
+/// field width, then one or two letters ("%z", "%N", "%Sm", "%-10N"). The
+/// two-letter cap is what keeps percent-encoded file names such as
+/// "report%20final.txt" from being mistaken for a format.
+fn looksLikeBsdStatFormat(operand: []const u8) bool {
+    // "%X" is the shortest directive BSD accepts, so a shorter operand cannot
+    // be a format string; the guard also keeps every index below in range.
+    if (operand.len < 2) return false;
+    std.debug.assert(operand.len >= 2);
+
+    var i: usize = 0; // tiger:allow:usize-arch slice index into operand
+    while (i + 1 < operand.len) : (i += 1) {
+        std.debug.assert(i + 1 < operand.len);
+        if (operand[i] != '%') continue;
+
+        // BSD allows flags and a field width between the '%' and the datum
+        // letters ("%-10N"); skip them, bounded by the operand length.
+        var j: usize = i + 1; // tiger:allow:usize-arch slice index into operand
+        while (j < operand.len) : (j += 1) {
+            const ch = operand[j];
+            const is_modifier = ch == '-' or ch == '+' or ch == '#' or
+                ch == '.' or ch == ' ' or std.ascii.isDigit(ch);
+            if (!is_modifier) break;
+        }
+
+        // Count the datum letters. A longer run is ordinary text rather than
+        // a directive: "%20final" is percent-encoding, "%Sm" is a format.
+        const letters_start = j;
+        while (j < operand.len and std.ascii.isAlphabetic(operand[j])) : (j += 1) {
+            std.debug.assert(j >= letters_start);
+        }
+        const letters_len = j - letters_start;
+        if (letters_len == 1 or letters_len == 2) return true;
+    }
+    return false;
+}
+
+/// Print at most one advisory when a bare `-f` run was handed what looks like
+/// a BSD format string. Purely additive: it writes only to stderr, on a run
+/// that has already failed, so stdout and the exit status keep GNU parity.
+fn printBsdFormatHint(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stderr_writer: *std.Io.Writer,
+) void {
+    // Only the bare `-f` spelling is ambiguous; the caller filters the rest.
+    std.debug.assert(opts.file_system);
+    std.debug.assert(opts.format == null);
+    std.debug.assert(opts.printf_fmt == null);
+
+    for (opts.positionals) |operand| {
+        if (!looksLikeBsdStatFormat(operand)) continue;
+        // A real file whose name happens to contain a directive-looking '%'
+        // must not trigger the hint, so require the operand to name nothing.
+        _ = doStat(operand, false) catch {
+            common.printHintWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                bsd_format_hint,
+                .{},
+            );
+            return; // At most one hint per invocation.
+        };
+    }
+}
+
+/// Explain the collision on the parse-error path, where BSD's clustered
+/// `stat -f%z` dies as an unknown option before any operand is collected.
+/// The misuse exit status and the empty stdout are unchanged.
+fn printBsdClusterHint(allocator: Allocator, stderr_writer: *std.Io.Writer) void {
+    std.debug.assert(bsd_format_hint.len > 0);
+    // Negative space: the advisory is passed straight through as a comptime
+    // format string, so it must never carry format placeholders.
+    std.debug.assert(std.mem.findScalar(u8, bsd_format_hint, '{') == null);
+
+    common.printHintWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        bsd_format_hint,
+        .{},
+    );
+}
+
 // ============================================================================
 // Entry point
 // ============================================================================
@@ -1449,6 +1561,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\
         \\  -L, --dereference     follow links
         \\  -f, --file-system     display file system status instead of file status
+        \\                          (GNU meaning; BSD "stat -f FORMAT" is "stat -c FORMAT")
         \\  -c, --format=FORMAT   use the specified FORMAT instead of the default;
         \\                          output a newline after each use of FORMAT
         \\      --printf=FORMAT   like --format, but interpret backslash escapes,

@@ -72,6 +72,11 @@ conflicts with system utilities. To use without prefix:
 export PATH="$(brew --prefix)/opt/vibeutils/libexec/vibebin:$PATH"
 ```
 
+This shadows the system utilities. On macOS, note that
+vibeutils follows GNU semantics, so `stat -f` means
+`--file-system` rather than BSD's format flag — see
+`man stat` (CAVEATS) for the translation.
+
 ### Gale (Linux/macOS)
 
 [Gale](https://github.com/kelp/gale) is a per-project

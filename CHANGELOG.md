@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+- **stat now hints when a BSD `stat -f FORMAT` script hits the
+  GNU `-f`.** vibeutils `stat` implements the GNU interface,
+  where `-f` is `--file-system` and takes no argument; BSD's
+  `stat -f FORMAT` spells a format string, so a Homebrew
+  install that shadows `/usr/bin/stat` silently changes a
+  script's meaning instead of failing. When `-f` is given
+  without `-c`/`--printf` and a format-looking operand names
+  nothing on disk, `stat` now prints one extra
+  `stat: hint: ...` line on stderr pointing at
+  `stat -c FORMAT`; the clustered BSD spelling `stat -f%z`
+  gets the same hint on its existing misuse path. The hint is
+  purely advisory — stdout and the exit status are
+  byte-for-byte unchanged, so GNU parity is fully preserved.
+  The collision is now also documented in the man page (new
+  CAVEATS section), `stat --help`, the flag matrix, and the
+  design philosophy doc (#79).
+
 ### Fixed
 - **cp -r no longer panics or runs away when the destination
   lives inside the source tree.** `cp -r dir/. dst/` (with `dst`

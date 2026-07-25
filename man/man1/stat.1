@@ -29,6 +29,16 @@ By default
 reports on the link itself, not the file it refers to.
 .It Fl f , Fl Fl file-system
 Display file system status instead of file status.
+This flag takes no argument.
+It is the GNU meaning of
+.Fl f ;
+the BSD
+.Nm
+of macOS and OpenBSD instead reads
+.Fl f Ar FORMAT
+as a format string.
+See
+.Sx CAVEATS .
 .It Fl c Ar FORMAT , Fl Fl format Ns = Ns Ar FORMAT
 Use the specified
 .Ar FORMAT
@@ -136,6 +146,13 @@ Show file type and permissions:
 $ stat -c '%F %A' /etc/passwd
 regular file -rw-r--r--
 .Ed
+.Pp
+Translating a BSD format string:
+.Bd -literal -offset indent
+$ # BSD spelling:  stat -f '%z' /etc/passwd
+$ stat -c '%s' /etc/passwd
+6804
+.Ed
 .Sh SEE ALSO
 .Xr ls 1 ,
 .Xr test 1
@@ -144,5 +161,55 @@ The
 .Nm
 utility is not specified by POSIX.
 The behavior is compatible with GNU coreutils.
+It is deliberately not compatible with the BSD
+.Nm
+of macOS and OpenBSD; see
+.Sx CAVEATS .
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
+.Sh CAVEATS
+.Nm
+implements the GNU interface.
+The BSD
+.Nm
+shipped by macOS and OpenBSD gives two of the same flags
+different meanings:
+.Bl -tag -width "-t timefmt" -compact
+.It Fl f
+GNU: display file system status.
+BSD:
+.Fl f Ar FORMAT
+supplies a format string.
+.It Fl t
+GNU: terse output.
+BSD:
+.Fl t Ar timefmt
+sets the time format.
+.El
+.Pp
+A script written for the BSD
+.Nm
+therefore changes meaning when this
+.Nm
+appears earlier in
+.Ev PATH ,
+as it does after a Homebrew install on macOS.
+Translate
+.Ql stat -f FORMAT
+to
+.Ql stat -c FORMAT .
+.Pp
+As an aid,
+.Nm
+prints an advisory
+.Ql stat: hint:
+line to standard error when
+.Fl f
+is used without
+.Fl c
+or
+.Fl Fl printf
+and an operand that reads as a format string names no
+existing file.
+The hint is informational only: it never changes the exit
+status or standard output.

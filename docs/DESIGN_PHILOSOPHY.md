@@ -110,6 +110,29 @@ BSD and GNU `stat` have incompatible flag semantics
 (`-f`, `-t`, `-n`, `-q`, `-r`, `-s`, `-x` all differ).
 We follow the GNU interface.
 
+The sharpest edge is `-f`: GNU `-f` is `--file-system`,
+while BSD `-f FORMAT` is the format flag. A BSD script does
+not error out under GNU semantics — it silently asks for the
+file-system status of a file named `%Sm`. We resolve this
+with documentation plus a non-fatal diagnostic, never with
+platform-adaptive behavior:
+
+- `-f` means `--file-system` on every platform. A flag whose
+  meaning depends on the host is worse than one that is
+  merely different from BSD's.
+- We do not turn the misuse into an exit-2 error. That would
+  break GNU parity for anyone legitimately running
+  `stat -f` on a path that does not exist.
+- When `-f` is given without `-c`/`--printf` and a
+  format-looking operand names nothing on disk, `stat` adds
+  one `stat: hint:` line on stderr suggesting
+  `stat -c FORMAT`. It is purely additive: stdout and the
+  exit status stay byte-for-byte identical to GNU's.
+
+This is the general shape for spec collisions: keep the
+reference behavior exact, and spend stderr — never stdout,
+never the exit status — on explaining the surprise (#79).
+
 #### test and [
 The `test` and `[` utilities follow strict POSIX
 compliance rather than GNU:

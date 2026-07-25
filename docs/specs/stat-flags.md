@@ -9,6 +9,35 @@ BSD `-f format` is a format string; GNU `-f` means
 file-system mode. BSD `-t timefmt` sets time format; GNU
 `-t` means terse output.
 
+### The `-f` collision (#79)
+
+Because a Homebrew install can put vibeutils `stat` ahead of
+`/usr/bin/stat`, a BSD script's `stat -f FORMAT` silently
+becomes "file-system status of a file named FORMAT" — same
+flag, different meaning, and no error at all unless an
+operand happens to be missing.
+
+vibeutils does **not** make `-f` platform-adaptive. GNU
+semantics are identical on every platform we ship; a flag
+whose meaning depends on the host is worse than one that is
+merely different from BSD's. We also do not turn the misuse
+into an exit-2 error, because that would break GNU parity
+for anyone legitimately running `stat -f` on a path that
+does not exist.
+
+Instead `stat` prints one extra `stat: hint: ...` line on
+stderr when `-f` is given without `-c`/`--printf` and an
+operand that reads as a format string names no existing
+file. Exit status and stdout are byte-for-byte unchanged, so
+GNU parity is fully preserved. Translations:
+
+- BSD `stat -f FORMAT` → `stat -c FORMAT`
+- BSD `stat -t TIMEFMT` → no equivalent; our `-t` is GNU's
+  terse output
+
+The divergence is also documented in the man page (CAVEATS)
+and in `stat --help`.
+
 ## Shared flags (same semantics across BSD and GNU)
 
 | Flag | macOS | OpenBSD | GNU | Ours | Tier |
