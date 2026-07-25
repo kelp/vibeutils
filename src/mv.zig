@@ -814,8 +814,9 @@ fn materializeDestDir(
     };
 }
 
-/// Apply the source directory's mode and timestamps to the destination on its
-/// post-order visit (after children are written). Also prints the verbose line.
+/// Apply the source directory's timestamps, ownership, and mode to the
+/// destination on its post-order visit (after children are written). Also
+/// prints the verbose line.
 fn preserveCopiedDir(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -844,9 +845,7 @@ fn preserveCopiedDir(
         stderr_writer,
         "mv",
         dest_path,
-        source_info.mode,
-        source_info.atime,
-        source_info.mtime,
+        source_info,
     );
 
     if (options.verbose) {

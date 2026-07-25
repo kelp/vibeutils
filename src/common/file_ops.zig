@@ -270,12 +270,23 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
 ///
 /// Shared so cp and mv's EXDEV fallback (which copies+unlinks across
 /// filesystems) preserve attributes identically rather than duplicating this
-/// leaf. The destination is created with the source mode, contents are copied,
-/// then atime/mtime and uid/gid are restored. The program_name parameter routes
-/// diagnostics to the caller's name (cp vs mv), matching setPermissions's
-/// convention. Timestamp and ownership failures only warn, since the data copy
-/// itself succeeded; EPERM on chown is silent because a non-root user cannot
-/// chown to another owner.
+/// leaf. The sequence mirrors GNU cp -p exactly: the destination is created
+/// carrying only the source's OWNER bits, contents are copied, then atime/mtime,
+/// then uid/gid, and finally the full source mode via fchmod. Each step of that
+/// order is load-bearing. Creating with owner bits only keeps the file from
+/// being transiently group/other-accessible while it is still owned by the
+/// copier rather than the source's owner. The trailing chmod — not open(2)'s
+/// mode argument — is what actually establishes the mode, because the kernel
+/// masks that argument by the process umask and ignores it outright when the
+/// destination already exists. And that chmod must follow the chown, since
+/// chown(2) clears setuid/setgid on Linux even for a same-owner no-op.
+///
+/// The program_name parameter routes diagnostics to the caller's name (cp vs
+/// mv), matching setPermissions's convention. Failure policy is per-attribute,
+/// as in GNU: timestamp and ownership failures only warn (the data copy itself
+/// succeeded) and EPERM on chown is silent because a non-root user cannot chown
+/// to another owner, while a failed mode preservation returns
+/// error.ModeNotPreserved so the caller exits nonzero.
 pub fn copyFileWithAttributes(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -304,8 +315,11 @@ pub fn copyFileWithAttributes(
     };
     defer source_file.close(io);
 
+    // Owner bits only, matching GNU: the real mode is applied by the trailing
+    // chmod, and a narrow creation mode keeps the copy from being briefly
+    // group/other-accessible while still owned by the copying user.
     const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
+        .permissions = std.Io.File.Permissions.fromMode(source_info.mode & 0o700),
     }) catch |err| {
         lib.printErrorWithProgram(
             allocator,
@@ -343,34 +357,44 @@ pub fn copyFileWithAttributes(
         );
     };
 
-    copyFileWithAttributesPreserveOwnership(
+    try copyFileWithAttributesPreserveOwnerAndMode(
         allocator,
         stderr_writer,
         program_name,
         dest_path,
-        dest_file.handle,
+        dest_file,
         source_info,
     );
 }
 
-/// Restore the source file's uid/gid onto the copied destination.
+/// Restore the source file's uid/gid and then its exact mode onto the copy.
 ///
 /// Extracted from copyFileWithAttributes so the parent stays within the 70-line
-/// limit. GNU cp -p is --preserve=mode,ownership,timestamps; EPERM is silent
-/// because a non-root user cannot chown to other users. Behavior matches the
-/// inlined block exactly.
-fn copyFileWithAttributesPreserveOwnership(
+/// limit. Both steps live in ONE leaf because their ORDER is the correctness
+/// invariant: chown(2) clears setuid/setgid on Linux even for a same-owner
+/// no-op, so the chmod must come last — splitting them into sibling leaves
+/// would let a later refactor silently reorder them. The chmod is
+/// unconditional because open(2)'s creation mode is umask-masked and is
+/// ignored outright when the destination already existed.
+///
+/// GNU's failure policy is per-attribute and is reproduced here: a chown EPERM
+/// is silent (a non-root user cannot chown to another owner), while a failed
+/// mode preservation is reported and returns error.ModeNotPreserved.
+fn copyFileWithAttributesPreserveOwnerAndMode(
     allocator: std.mem.Allocator,
     stderr_writer: anytype,
     program_name: []const u8,
     dest_path: []const u8,
-    dest_fd: std.posix.fd_t,
+    dest_file: std.Io.File,
     source_info: lib.file.FileInfo,
-) void {
-    // Shares copyFileWithAttributes's precondition: an empty program_name would
-    // mislabel the warning, and this leaf is only reached from that asserted path.
+) !void {
+    // Shares copyFileWithAttributes's preconditions: an empty program_name would
+    // mislabel the diagnostics, and an empty dest_path would name no file in
+    // them; this leaf is only reached from that already-asserted path.
     assert(program_name.len > 0);
-    const fchown_result = std.c.fchown(dest_fd, source_info.uid, source_info.gid);
+    assert(dest_path.len > 0);
+
+    const fchown_result = std.c.fchown(dest_file.handle, source_info.uid, source_info.gid);
     if (fchown_result != 0) {
         const errno = std.c._errno().*;
         switch (errno) {
@@ -385,6 +409,27 @@ fn copyFileWithAttributesPreserveOwnership(
                 );
             },
         }
+    }
+
+    // source_info.mode is the raw stat mode and still carries S_IFREG; the
+    // shared chmod leaf must see only the twelve permission bits.
+    const chmod_status = try setPermissions(
+        allocator,
+        dest_file,
+        source_info.mode & 0o7777,
+        dest_path,
+        program_name,
+        stderr_writer,
+    );
+    if (chmod_status != @intFromEnum(lib.ExitCode.success)) {
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot preserve permissions for '{s}'",
+            .{dest_path},
+        );
+        return error.ModeNotPreserved;
     }
 }
 
@@ -423,6 +468,29 @@ pub fn chmodPath(
     _ = std.c.chmod(path_z, @intCast(mode & 0o7777));
 }
 
+/// Apply an owner and group to a named path with a libc chown(2). Path-based
+/// rather than fchown for the same reason as the sibling chmodPath: the
+/// post-order directory preservation leaf holds a path, not a live handle.
+/// Best-effort like chmodPath, and EPERM in particular is expected rather than
+/// exceptional — a non-root user cannot chown to another owner — which mirrors
+/// the silent-EPERM policy on the regular-file path's fchown.
+pub fn chownPath(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    uid: std.c.uid_t,
+    gid: std.c.gid_t,
+) void {
+    // An empty path would name no file, and an over-long one cannot be a real
+    // path — either is a caller bug rather than a runtime condition.
+    assert(path.len > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    const path_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{path}, 0) catch return;
+    defer allocator.free(path_z);
+    // std.c exposes no bare chown; fchownat with AT.FDCWD and no flags is the
+    // identical operation (relative to cwd, symlinks followed).
+    _ = std.c.fchownat(std.c.AT.FDCWD, path_z, uid, gid, 0);
+}
+
 /// Preserve a copied directory's timestamps and mode onto the destination dir.
 ///
 /// Shared so cp's tree walk and mv's EXDEV directory fallback apply the same
@@ -433,15 +501,16 @@ pub fn chmodPath(
 /// than fchmod, because fchmod on a freshly created directory handle returns
 /// EBADF on Linux. Returns true even when a step only warns, since the copy
 /// itself already succeeded; the program_name routes diagnostics to the caller.
+/// Ownership is restored between the timestamps and the mode for the same
+/// reason the regular-file leaf chmods last: chown(2) clears setgid on Linux
+/// even for a same-owner no-op.
 pub fn preserveDirAttributes(
     allocator: std.mem.Allocator,
     io: std.Io,
     stderr_writer: anytype,
     program_name: []const u8,
     dest_path: []const u8,
-    mode: std.posix.mode_t,
-    atime_ns: i128,
-    mtime_ns: i128,
+    source_info: lib.file.FileInfo,
 ) bool {
     // Self-guard the leaf for both callers: cp reaches it through preserveTreeDir
     // (which already asserts), but mv's EXDEV fallback calls it directly. An empty
@@ -454,8 +523,8 @@ pub fn preserveDirAttributes(
     // subsequent timestamp change here, but matching GNU's order keeps the dir
     // writable until the final chmod.
     std.Io.Dir.cwd().setTimestamps(io, dest_path, .{
-        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(atime_ns) } },
-        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(mtime_ns) } },
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
     }) catch |err| {
         lib.printWarningWithProgram(
             allocator,
@@ -465,9 +534,12 @@ pub fn preserveDirAttributes(
             .{ dest_path, lib.posixErrorString(err) },
         );
     };
+    // Before the chmod, never after: chown clears setgid on Linux even when the
+    // owner does not actually change.
+    chownPath(allocator, dest_path, source_info.uid, source_info.gid);
     // The source mode still carries file-type bits (S_IFDIR); strip them so the
     // shared chmod leaf sees only permission bits.
-    chmodPath(allocator, dest_path, mode & 0o7777);
+    chmodPath(allocator, dest_path, source_info.mode & 0o7777);
     return true;
 }
 

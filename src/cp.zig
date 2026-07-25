@@ -1714,11 +1714,12 @@ fn resolveTreeDirMode(io: std.Io, entry: common.walker.Entry) ?std.posix.mode_t 
     return info.mode & 0o777;
 }
 
-/// Preserve a source directory's mode and mtime onto the destination directory.
-/// Applied POST-order so writing children cannot re-bump the dest mtime and a
-/// read-only source mode does not block populating the dest. Uses path-based
-/// libc chmod (fchmod on a fresh dir handle returns EBADF). Returns true even
-/// when preservation emits a warning, since the copy itself succeeded.
+/// Preserve a source directory's mtime, ownership, and mode onto the
+/// destination directory. Applied POST-order so writing children cannot re-bump
+/// the dest mtime and a read-only source mode does not block populating the
+/// dest. Uses path-based libc chmod (fchmod on a fresh dir handle returns
+/// EBADF). Returns true even when preservation emits a warning, since the copy
+/// itself succeeded.
 fn preserveTreeDir(
     allocator: Allocator,
     io: std.Io,
@@ -1746,9 +1747,7 @@ fn preserveTreeDir(
         stderr_writer,
         "cp",
         dest_path,
-        source_info.mode,
-        source_info.atime,
-        source_info.mtime,
+        source_info,
     );
 }
 
