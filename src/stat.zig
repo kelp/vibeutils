@@ -1573,25 +1573,6 @@ test "stat -V shows version" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "stat") != null);
 }
 
-test "stat missing operand returns misuse" {
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
-
-    const args = [_][]const u8{};
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
-
-    try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
-}
-
 test "stat unknown flag returns misuse" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1630,45 +1611,6 @@ test "stat nonexistent file returns error" {
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot stat") != null);
-}
-
-test "stat default output on regular file" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    try test_file.writeStreamingAll(testing.io, "hello world");
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
-
-    const args = [_][]const u8{test_path};
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
-
-    try testing.expectEqual(@as(u8, 0), result);
-    // Check key fields in default output
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Size:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Blocks:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Device:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Inode:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Access:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Modify:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Change:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "regular file") != null);
 }
 
 test "stat -c format: file name" {
@@ -2027,38 +1969,6 @@ test "stat --format=FMT syntax" {
     try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
 }
 
-test "stat -t terse output" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    try test_file.writeStreamingAll(testing.io, "hello");
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-
-    const args = [_][]const u8{ "-t", test_path };
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
-
-    try testing.expectEqual(@as(u8, 0), result);
-    // Terse output is one line with space-separated fields
-    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
-    try testing.expect(trimmed.len > 0);
-    // Should start with the path
-    try testing.expect(std.mem.startsWith(u8, trimmed, test_path));
-}
-
 test "stat empty file shows regular empty file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -2220,37 +2130,6 @@ test "stat multiple files" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3\n5\n", stdout_aw.writer.buffered());
-}
-
-test "stat -f file system info" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
-
-    const args = [_][]const u8{ "-f", test_path };
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
-
-    try testing.expectEqual(@as(u8, 0), result);
-    // Should contain file system info
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File:") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Block") != null);
 }
 
 test "stat -c format: hard links" {
@@ -2541,229 +2420,6 @@ test "stat permission denied error message is not No such file" {
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Permission denied") != null);
 }
 
-// F15: Default output must not show spurious '+' before numeric fields.
-// The {d: <N} format on signed i64 produces a leading '+' sign, e.g.
-// "Size: +4096" instead of "Size: 4096".
-test "stat default output has no spurious plus on numeric fields" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    try test_file.writeStreamingAll(testing.io, "hello");
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-
-    const args = [_][]const u8{test_path};
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
-    try testing.expectEqual(@as(u8, 0), result);
-
-    const output = stdout_aw.writer.buffered();
-
-    // Find the "Size:" line and verify no '+' before the number
-    const size_pos = std.mem.find(u8, output, "Size:") orelse
-        return error.TestExpectedEqual;
-    // Extract from "Size:" to end of that line
-    const rest = output[size_pos..];
-    const eol = std.mem.find(u8, rest, "\n") orelse rest.len;
-    const size_line = rest[0..eol];
-
-    // GNU stat outputs "  Size: 5         Blocks: 8          IO Block: 4096   regular file"
-    // Our implementation incorrectly outputs
-    // "  Size: +5        Blocks: +8         IO Block: +4096  regular file"
-    // The '+' character should not appear anywhere on this line
-    try testing.expect(std.mem.find(u8, size_line, "+") == null);
-}
-
-// F17: stat -f -c FORMAT should use the format string, not print
-// the default filesystem block output. Currently the -f branch
-// continues before checking opts.format.
-test "stat -f -c format string is honored" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-
-    const args = [_][]const u8{ "-f", "-c", "%n", test_path };
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
-    try testing.expectEqual(@as(u8, 0), result);
-
-    // -f -c '%n' should output just the file name, not the full filesystem block
-    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
-    defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
-}
-
-// F18: Terse output should have 16 space-separated fields matching GNU stat.
-// GNU format: name size blocks mode uid gid dev inode nlinks major minor
-//             atime mtime ctime btime blksize
-// Our implementation outputs only 14 fields (missing major/minor device type,
-// and has duplicate blocks instead of btime).
-test "stat -t terse output has 16 fields like GNU" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    try test_file.writeStreamingAll(testing.io, "hello");
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-
-    const args = [_][]const u8{ "-t", test_path };
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
-    try testing.expectEqual(@as(u8, 0), result);
-
-    // Count space-separated fields
-    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
-    var field_count: usize = 0;
-    var in_field = false;
-    for (trimmed) |ch| {
-        if (ch == ' ') {
-            if (in_field) {
-                field_count += 1;
-                in_field = false;
-            }
-        } else {
-            in_field = true;
-        }
-    }
-    if (in_field) field_count += 1;
-
-    // GNU stat -t outputs exactly 16 fields
-    try testing.expectEqual(@as(usize, 16), field_count);
-}
-
-// F16: On Linux, stat -f uses a macOS StatFs struct with wrong field
-// offsets, producing garbage values. Verify that -f output contains
-// sane values (e.g., block size is a reasonable power of 2).
-test "stat -f produces sane block size on this platform" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
-
-    const args = [_][]const u8{ "-f", test_path };
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
-    try testing.expectEqual(@as(u8, 0), result);
-
-    const output = stdout_aw.writer.buffered();
-
-    // Find "Block size:" line and extract the number
-    const block_pos = std.mem.find(u8, output, "Block size:") orelse
-        return error.TestExpectedEqual;
-    const after_label = output[block_pos + "Block size:".len ..];
-    // Skip leading spaces
-    var start: usize = 0;
-    while (start < after_label.len and after_label[start] == ' ') : (start += 1) {}
-    // Read digits
-    var end: usize = start;
-    while (end < after_label.len and
-        after_label[end] >= '0' and
-        after_label[end] <= '9') : (end += 1)
-    {}
-    const block_size_str = after_label[start..end];
-    const block_size = std.fmt.parseInt(u64, block_size_str, 10) catch
-        return error.TestExpectedEqual;
-
-    // Block size should be a reasonable value: between 512 and 1048576 (1MB)
-    // On Linux with the macOS struct, this produces garbage like 16914836
-    try testing.expect(block_size >= 512);
-    try testing.expect(block_size <= 1048576);
-}
-
-// Audit: Device line uses BSD format "1fh/31d" instead of GNU "major,minor"
-// decimal. GNU stat outputs "Device: 0,31" (decimal major,minor with no
-// letter suffixes). Our implementation outputs "Device: 1fh/31d".
-test "stat default output Device line uses GNU major,minor format" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
-    test_file.close(testing.io);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
-    const test_path = path_buf[0..test_path_len];
-
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-
-    const args = [_][]const u8{test_path};
-    const result = try runStat(
-        testing.allocator,
-        testing.io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
-    try testing.expectEqual(@as(u8, 0), result);
-
-    // Find the Device line
-    const dev_pos = std.mem.find(u8, stdout_aw.writer.buffered(), "Device:") orelse
-        return error.TestExpectedEqual;
-    const rest = stdout_aw.writer.buffered()[dev_pos..];
-    const eol = std.mem.find(u8, rest, "\n") orelse rest.len;
-    const dev_line = rest[0..eol];
-
-    // GNU format: "Device: <dec>,<dec>" — no 'h' or 'd' suffix
-    // BSD format: "Device: <hex>h/<dec>d" — has letter suffixes
-    // Must NOT contain the BSD letter suffixes
-    try testing.expect(std.mem.find(u8, dev_line, "h/") == null);
-    try testing.expect(std.mem.find(u8, dev_line, "d\t") == null);
-}
-
 // Audit: %b (blocks allocated) has no unit test.
 test "stat -c format: blocks allocated %b" {
     var tmp_dir = testing.tmpDir(.{});
@@ -2976,4 +2632,1226 @@ test "stat --printf does not add trailing newline" {
     try testing.expectEqual(@as(u8, 0), result);
     // Must be exactly "5" with no newline
     try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
+}
+
+// ============================================================================
+// F72: stat becomes the BSD utility
+//
+//   stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]
+//
+// Every expectation below is derived from the vendored NetBSD/macOS man page
+// docs/specs/stat-macos.txt (OpenBSD matches, see stat-openbsd.txt):
+//   :7        SYNOPSIS, including the -f/-l/-r/-s/-x mutual exclusion group
+//   :14-15    no file operand means "stat standard input's descriptor"
+//   :34-45    -F (implies -l) and -L (lstat fallback on a broken link)
+//   :47-72    -f format, -l, -n, -q, -r, -s, -t timefmt, -x
+//   :74-211   the FORMAT grammar: %[flags][size][.prec][fmt][sub]datum
+//   :218-222  the default format string and a worked example
+//   :233-243  the -s "shell output" example
+//   :273-274  the %SHp / %SMp / %SLp sub-field example
+//   :284-297  the %m vs %Sm vs "%Sm with -t" trio
+//
+// GNU long options survive because they do not collide with the BSD short
+// options: --format=FMT, --printf=FMT, --file-system, --terse, --dereference,
+// and -c FORMAT keep GNU directive semantics. The two directive languages are
+// selected by the flag that introduced the string.
+// ============================================================================
+
+// F72: -f now takes a FORMAT argument and evaluates it with the BSD grammar.
+// %z is st_size (stat-macos.txt:182).
+test "F72: stat -f '%z' prints the file size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%z", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
+}
+
+// F72: BSD %N is the *unquoted* name of the file (stat-macos.txt:196), unlike
+// the GNU %N which single-quotes it. The default-format example at :222 ends
+// with a bare "/tmp/bar".
+test "F72: stat -f '%N' prints the unquoted file name" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// F72: %Sp is "the mode of file as in ls -lTd" (stat-macos.txt:132). The file
+// is chmod'd explicitly so the expectation does not depend on the umask.
+test "F72: stat -f '%Sp' prints an ls-style mode string" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o644) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%Sp", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-rw-r--r--\n", stdout_aw.writer.buffered());
+}
+
+// F72: sub-field specifiers H/M/L split the string form of p into the user,
+// group, and other bits. Shape taken verbatim from stat-macos.txt:273-274.
+test "F72: stat -f sub-fields %SHp %SMp %SLp split the permission bits" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o644) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const sub_fmt = "%Sp -> owner=%SHp group=%SMp other=%SLp";
+    const args = [_][]const u8{ "-f", sub_fmt, test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(
+        "-rw-r--r-- -> owner=rw- group=r-- other=r--\n",
+        stdout_aw.writer.buffered(),
+    );
+}
+
+// F72: "If the % is immediately followed by one of n, t, %, or @, then a
+// newline character, a tab character, a percent character, or the current file
+// number is printed" (stat-macos.txt:78-80).
+test "F72: stat -f immediate specials %t and %n emit a tab and a newline" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "a%tb%nc", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // The trailing newline is the one -n suppresses (stat-macos.txt:53-54).
+    try testing.expectEqualStrings("a\tb\nc\n", stdout_aw.writer.buffered());
+}
+
+// F72: %% prints a literal percent character (stat-macos.txt:78-80).
+test "F72: stat -f '%%' emits a literal percent" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "x%%y", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("x%y\n", stdout_aw.writer.buffered());
+}
+
+// F72: the "-" flag aligns output to the left of the field and "size" is the
+// minimum field width (stat-macos.txt:93-105).
+test "F72: stat -f '%-10z|' left-aligns within the field width" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%-10z|", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // "5" padded on the right to a width of 10, then the literal '|'.
+    try testing.expectEqualStrings("5         |\n", stdout_aw.writer.buffered());
+}
+
+// F72: the same left-alignment applied to string output, which the flag
+// description at stat-macos.txt:93-94 names explicitly.
+test "F72: stat -f '%-12Sp|' left-aligns string output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o644) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%-12Sp|", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // The 10-character mode string padded on the right to a width of 12.
+    try testing.expectEqualStrings("-rw-r--r--  |\n", stdout_aw.writer.buffered());
+}
+
+// F72: the "0" flag sets the left-padding fill character (stat-macos.txt:96-97).
+test "F72: stat -f '%08z' zero-pads to the field width" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%08z", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("00000005\n", stdout_aw.writer.buffered());
+}
+
+// F72: the "#" flag selects the alternate form, so "non-zero octal output will
+// have a leading zero" (stat-macos.txt:85-87). st_mode of a 0644 regular file
+// is 0100644 octal.
+test "F72: stat -f '%#Op' uses the alternate octal form" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o644) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%#Op", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("0100644\n", stdout_aw.writer.buffered());
+}
+
+// F72: %#Xf is the flags field in the alternate hexadecimal form; the default
+// format uses exactly this directive and the worked example at
+// stat-macos.txt:222 shows it printing "0" for a file with no flags set.
+test "F72: stat -f '%#Xf' uses the alternate hex form for st_flags" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%#Xf", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
+    try testing.expect(trimmed.len > 0);
+    // Zero prints bare ("0"); a non-zero value carries the alternate prefix.
+    const alt_hex_ok = std.mem.eql(u8, trimmed, "0") or
+        std.mem.startsWith(u8, trimmed, "0x") or
+        std.mem.startsWith(u8, trimmed, "0X");
+    try testing.expect(alt_hex_ok);
+}
+
+// F72: "Most field specifiers default to U as an output form, with the
+// exception of p which defaults to O" (stat-macos.txt:209-211). st_mode of a
+// 0644 regular file is 0100644 octal == 33188 decimal.
+test "F72: stat -f '%p' defaults to octal and '%Dp' is decimal" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o644) == 0);
+
+    var octal_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer octal_aw.deinit();
+
+    const octal_args = [_][]const u8{ "-f", "%p", test_path };
+    const octal_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &octal_args,
+        &octal_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), octal_result);
+    try testing.expectEqualStrings("100644\n", octal_aw.writer.buffered());
+
+    var decimal_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer decimal_aw.deinit();
+
+    const decimal_args = [_][]const u8{ "-f", "%Dp", test_path };
+    const decimal_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &decimal_args,
+        &decimal_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), decimal_result);
+    try testing.expectEqualStrings("33188\n", decimal_aw.writer.buffered());
+}
+
+// F72: "a, m, and c ... default to D" (stat-macos.txt:211), so %m is the raw
+// epoch second count, while %Sm is a strftime rendering. The man page shows
+// exactly this pair at :284-292.
+test "F72: stat -f '%m' is a raw epoch number and '%Sm' is formatted" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const stat_info = try tmp_dir.dir.statFile(testing.io, "test.txt", .{});
+    const actual_mtime: i64 = @intCast(@divTrunc(stat_info.mtime.nanoseconds, std.time.ns_per_s));
+
+    var raw_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer raw_aw.deinit();
+
+    const raw_args = [_][]const u8{ "-f", "%m", test_path };
+    const raw_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &raw_args,
+        &raw_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), raw_result);
+    const expected_raw = try std.fmt.allocPrint(testing.allocator, "{d}\n", .{actual_mtime});
+    defer testing.allocator.free(expected_raw);
+    try testing.expectEqualStrings(expected_raw, raw_aw.writer.buffered());
+
+    var human_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer human_aw.deinit();
+
+    const human_args = [_][]const u8{ "-f", "%Sm", test_path };
+    const human_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &human_args,
+        &human_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), human_result);
+    const human = std.mem.trimEnd(u8, human_aw.writer.buffered(), "\n");
+    // The man page example is "Apr 27 11:15:33 2007": a month name plus a
+    // colon-separated clock time, never a bare epoch count.
+    try testing.expect(human.len > 0);
+    try testing.expect(std.mem.find(u8, human, ":") != null);
+    var has_alpha = false;
+    for (human) |ch| {
+        if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z')) has_alpha = true;
+    }
+    try testing.expect(has_alpha);
+}
+
+// F72: -t sets the strftime format used by the S form of a/m/c
+// (stat-macos.txt:67-69, worked example at :294-297 producing 14 digits).
+test "F72: stat -t sets the time format used by '%Sm'" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%Sm", "-t", "%Y%m%d%H%M%S", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
+    // "20070427111533" — exactly 14 digits, no separators.
+    try testing.expectEqual(@as(usize, 14), trimmed.len);
+    for (trimmed) |ch| {
+        try testing.expect(ch >= '0' and ch <= '9');
+    }
+}
+
+// F72: with no flags the output is the single BSD line built from
+//   "%d %i %Sp %l %Su %Sg %r %z \"%Sa\" \"%Sm\" \"%Sc\" \"%SB\" %k %b %#Xf %N"
+// (stat-macos.txt:218-222). The shape is asserted, never the volatile values.
+// This also carries forward the old F15 guard: no spurious '+' signs.
+test "F72: stat default output is the BSD single line" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o644) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{test_path};
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+
+    // Exactly one line, terminated by the newline the -n flag suppresses.
+    var newline_count: usize = 0;
+    var quote_count: usize = 0;
+    for (output) |ch| {
+        if (ch == '\n') newline_count += 1;
+        if (ch == '"') quote_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), newline_count);
+    try testing.expect(std.mem.endsWith(u8, output, "\n"));
+
+    // %d, the device number, opens the line.
+    try testing.expect(output.len > 0);
+    try testing.expect(output[0] >= '0' and output[0] <= '9');
+
+    // The four quoted time fields (%Sa, %Sm, %Sc, %SB) contribute 8 quotes.
+    try testing.expectEqual(@as(usize, 8), quote_count);
+
+    // %Sp renders the ls-style mode string.
+    try testing.expect(std.mem.find(u8, output, "-rw-r--r--") != null);
+
+    // %N closes the line with the bare file name.
+    const trimmed = std.mem.trimEnd(u8, output, "\n");
+    try testing.expect(std.mem.endsWith(u8, trimmed, test_path));
+
+    // Regression guard carried over from F15: no signed-format '+' leaks.
+    try testing.expect(std.mem.find(u8, output, "+") == null);
+}
+
+// F72: "If no argument is given, stat displays information about the file
+// descriptor for standard input" (stat-macos.txt:14-15). The old GNU
+// "missing operand" misuse error is gone. The assertion is about the error
+// being gone, not about what stdin happens to be in the test harness.
+test "F72: stat with no operand is not a missing-operand misuse error" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{};
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") == null);
+    try testing.expect(result != @intFromEnum(common.ExitCode.misuse));
+}
+
+// F72: the SYNOPSIS groups -f/-l/-r/-s/-x as alternatives
+// (stat-macos.txt:7), so combining two of them is a usage error. The
+// "unrecognized option" assertion also pins that -l is a known flag now.
+test "F72: stat -f with -l is a usage error" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%z", "-l", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@intFromEnum(common.ExitCode.misuse), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") == null,
+    );
+}
+
+// F72: the same mutual exclusion for a second pair from the SYNOPSIS group.
+test "F72: stat -r with -x is a usage error" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-x", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@intFromEnum(common.ExitCode.misuse), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") == null,
+    );
+}
+
+// F72: -l displays output "in ls -lT format" (stat-macos.txt:51); the example
+// at :231 is "drwxr-xr-x 16 root wheel 512 Apr 19 10:57:54 2002 /tmp/foo/".
+test "F72: stat -l prints an ls -lT style line" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(testing.io, "subdir", std.Io.File.Permissions.fromMode(0o755));
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "subdir", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o755) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-l", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+    // The ls -lT line opens with the mode string, not with the default
+    // format's numeric device id.
+    try testing.expect(std.mem.startsWith(u8, output, "drwxr-xr-x "));
+    const trimmed = std.mem.trimEnd(u8, output, "\n");
+    try testing.expect(std.mem.endsWith(u8, trimmed, test_path));
+    var newline_count: usize = 0;
+    for (output) |ch| {
+        if (ch == '\n') newline_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), newline_count);
+}
+
+// F72: -F appends the ls(1) type suffix — a slash after a directory — and
+// "The use of -F implies -l" (stat-macos.txt:34-39, example at :227-231).
+test "F72: stat -F implies -l and appends the directory suffix" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(testing.io, "subdir", std.Io.File.Permissions.fromMode(0o755));
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "subdir", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const path_z = try std.posix.toPosixPath(test_path);
+    try testing.expect(std.c.chmod(&path_z, 0o755) == 0);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-F", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+    // -l is implied, so the line is in ls -lT format ...
+    try testing.expect(std.mem.startsWith(u8, output, "drwxr-xr-x "));
+    // ... and the pathname carries the ls-style '/' suffix.
+    const expected_tail = try std.fmt.allocPrint(testing.allocator, "{s}/\n", .{test_path});
+    defer testing.allocator.free(expected_tail);
+    try testing.expect(std.mem.endsWith(u8, output, expected_tail));
+}
+
+// F72: -n does "not force a newline to appear at the end of each piece of
+// output" (stat-macos.txt:53-54).
+test "F72: stat -n suppresses the trailing newline" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var with_nl_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer with_nl_aw.deinit();
+
+    const with_nl_args = [_][]const u8{ "-f", "%z", test_path };
+    const with_nl_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &with_nl_args,
+        &with_nl_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), with_nl_result);
+    try testing.expectEqualStrings("5\n", with_nl_aw.writer.buffered());
+
+    var no_nl_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer no_nl_aw.deinit();
+
+    const no_nl_args = [_][]const u8{ "-n", "-f", "%z", test_path };
+    const no_nl_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &no_nl_args,
+        &no_nl_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), no_nl_result);
+    try testing.expectEqualStrings("5", no_nl_aw.writer.buffered());
+}
+
+// F72: -q suppresses "failure messages if calls to stat(2) or lstat(2) fail"
+// (stat-macos.txt:56-58). The exit status still reports the failure, since
+// stat "exit[s] 0 on success, and >0 if an error occurs" (:213-215).
+test "F72: stat -q suppresses the failure message but not the exit status" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-q", "/nonexistent/file/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expect(result != 0);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+// F72: -r displays "the raw, numerical value (for example, times in seconds
+// since the epoch, etc.)" for all struct stat fields (stat-macos.txt:60-62).
+test "F72: stat -r prints raw numeric fields" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    const stat_info = try tmp_dir.dir.statFile(testing.io, "test.txt", .{});
+    const actual_mtime: i64 = @intCast(@divTrunc(stat_info.mtime.nanoseconds, std.time.ns_per_s));
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-r", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+    // Raw output is a single line ending in the file name.
+    var newline_count: usize = 0;
+    for (output) |ch| {
+        if (ch == '\n') newline_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), newline_count);
+    const trimmed = std.mem.trimEnd(u8, output, "\n");
+    try testing.expect(std.mem.endsWith(u8, trimmed, test_path));
+
+    // The times are epoch seconds, so the mtime appears verbatim ...
+    const mtime_str = try std.fmt.allocPrint(testing.allocator, "{d}", .{actual_mtime});
+    defer testing.allocator.free(mtime_str);
+    try testing.expect(std.mem.find(u8, trimmed, mtime_str) != null);
+
+    // ... and none of the default format's quoted, formatted times survive.
+    try testing.expect(std.mem.find(u8, trimmed, "\"") == null);
+}
+
+// F72: -s displays "information in 'shell output' format, suitable for
+// initializing variables" (stat-macos.txt:64-65); the worked example at
+// :233-243 reads back $st_size.
+test "F72: stat -s prints shell variable assignments" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-s", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+    // A single line of NAME=VALUE pairs, one per struct stat field.
+    var newline_count: usize = 0;
+    var assign_count: usize = 0;
+    for (output) |ch| {
+        if (ch == '\n') newline_count += 1;
+        if (ch == '=') assign_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), newline_count);
+    try testing.expect(assign_count >= 8);
+    // st_size is the field the man page example reads back.
+    try testing.expect(std.mem.find(u8, output, "st_size=5") != null);
+}
+
+// F72: -x displays "information in a more verbose way as known from some
+// Linux distributions" (stat-macos.txt:71-72) — a multi-line block rather
+// than the single default line.
+test "F72: stat -x prints a multi-line verbose block" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-x", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+    var newline_count: usize = 0;
+    for (output) |ch| {
+        if (ch == '\n') newline_count += 1;
+    }
+    try testing.expect(newline_count >= 4);
+    try testing.expect(std.mem.find(u8, output, "File:") != null);
+    try testing.expect(std.mem.find(u8, output, "Size:") != null);
+    try testing.expect(std.mem.find(u8, output, test_path) != null);
+}
+
+// F72: -L still uses stat(2), but "If the link is broken or the target does
+// not exist, fall back on lstat(2) and report information about the link"
+// (stat-macos.txt:41-45).
+test "F72: stat -L falls back to lstat on a broken link" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.symLink(testing.io, "missing-target.txt", "broken.txt", .{});
+
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/broken.txt", .{dir_path});
+    defer testing.allocator.free(link_path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-L", "-f", "%Sp", link_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const output = stdout_aw.writer.buffered();
+    // The reported mode is the link's own, so the type character is 'l'.
+    try testing.expect(output.len > 0);
+    try testing.expectEqual(@as(u8, 'l'), output[0]);
+}
+
+// F72: -f is NOT an alias for --file-system any more. The BSD format string
+// wins, and no filesystem block is printed.
+test "F72: stat -f does not alias --file-system" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%z", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Block size:") == null);
+}
+
+// F72: -t is NOT an alias for --terse any more. It consumes "%Y" as its
+// timefmt argument, so "%Y" never becomes a path operand and no terse line
+// is emitted.
+test "F72: stat -t does not alias --terse" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-t", "%Y", "-f", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// F72: the GNU long option --file-system survives the BSD conversion because
+// it does not collide with any BSD short flag.
+test "F72: stat --file-system still prints file system status" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--file-system", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Block") != null);
+}
+
+// F72: ported from the old F16 guard, now reached through --file-system:
+// the statfs struct must match the platform, so the reported block size
+// stays in a sane range instead of being garbage from wrong field offsets.
+test "F72: stat --file-system produces a sane block size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--file-system", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_aw.writer.buffered();
+    const block_pos = std.mem.find(u8, output, "Block size:") orelse
+        return error.TestExpectedEqual;
+    const after_label = output[block_pos + "Block size:".len ..];
+    var start: usize = 0;
+    while (start < after_label.len and after_label[start] == ' ') : (start += 1) {}
+    var end: usize = start;
+    while (end < after_label.len and
+        after_label[end] >= '0' and
+        after_label[end] <= '9') : (end += 1)
+    {}
+    const block_size_str = after_label[start..end];
+    const block_size = std.fmt.parseInt(u64, block_size_str, 10) catch
+        return error.TestExpectedEqual;
+
+    try testing.expect(block_size >= 512);
+    try testing.expect(block_size <= 1048576);
+}
+
+// F72: ported from the old F17 guard: --file-system combined with a GNU
+// -c FORMAT must honor the format string rather than printing the block.
+test "F72: stat --file-system with -c honors the GNU format string" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "--file-system", "-c", "%n", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// F72: the GNU long option --terse survives too, and keeps GNU's 16-field
+// terse line (ported from the old F18 guard).
+test "F72: stat --terse still prints the GNU 16-field terse line" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "--terse", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
+    try testing.expect(std.mem.startsWith(u8, trimmed, test_path));
+
+    var field_count: usize = 0;
+    var in_field = false;
+    for (trimmed) |ch| {
+        if (ch == ' ') {
+            if (in_field) {
+                field_count += 1;
+                in_field = false;
+            }
+        } else {
+            in_field = true;
+        }
+    }
+    if (in_field) field_count += 1;
+
+    try testing.expectEqual(@as(usize, 16), field_count);
+}
+
+// F72: -c keeps GNU directive semantics; GNU %s is the total size in bytes,
+// which is a different directive language from the BSD %z used by -f.
+test "F72: stat -c '%s' still uses GNU directives" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%s", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
 }
