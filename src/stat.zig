@@ -73,10 +73,10 @@ const StatOptions = struct {
     terse: bool = false,
     help: bool = false,
     version: bool = false,
-    /// Set when an unrecognized short option was literally `%` in a cluster
-    /// that had already selected `-f`, i.e. the user wrote BSD's clustered
-    /// `stat -f%z`. Recorded during parsing because that path stops before
-    /// any operand is collected.
+    /// Set when an unrecognized short option was literally `%` once `-f` had
+    /// been seen, i.e. the user wrote BSD's clustered `stat -f%z`. Recorded
+    /// during parsing because that path stops before any operand is
+    /// collected. `-f` may have come from an earlier argv element.
     bsd_format_suspected: bool = false,
     positionals: []const []const u8 = &.{},
 };
@@ -1463,7 +1463,8 @@ fn processOnePath(
 /// "report%20final.txt" from being mistaken for a format.
 fn looksLikeBsdStatFormat(operand: []const u8) bool {
     // "%X" is the shortest directive BSD accepts, so a shorter operand cannot
-    // be a format string; the guard also keeps every index below in range.
+    // be a format string. Indexing below is kept in range by the loop bounds,
+    // not by this guard.
     if (operand.len < 2) return false;
     std.debug.assert(operand.len >= 2);
 
@@ -1528,10 +1529,11 @@ fn printBsdFormatHint(
 /// `stat -f%z` dies as an unknown option before any operand is collected.
 /// The misuse exit status and the empty stdout are unchanged.
 fn printBsdClusterHint(allocator: Allocator, stderr_writer: *std.Io.Writer) void {
-    std.debug.assert(bsd_format_hint.len > 0);
-    // Negative space: the advisory is passed straight through as a comptime
-    // format string, so it must never carry format placeholders.
-    std.debug.assert(std.mem.findScalar(u8, bsd_format_hint, '{') == null);
+    // The advisory is a compile-time constant, so there is little here a
+    // runtime check could catch: a stray `{` in it would already fail the
+    // build, since it reaches `writer.print` as a format string with no
+    // arguments. Assert only that it is non-empty, at compile time.
+    comptime std.debug.assert(bsd_format_hint.len > 0);
 
     common.printHintWithProgram(
         allocator,
@@ -1561,7 +1563,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\
         \\  -L, --dereference     follow links
         \\  -f, --file-system     display file system status instead of file status
-        \\                          (GNU meaning; BSD "stat -f FORMAT" is "stat -c FORMAT")
+        \\                          (GNU meaning; BSD "stat -f FMT" is "stat -c FMT")
         \\  -c, --format=FORMAT   use the specified FORMAT instead of the default;
         \\                          output a newline after each use of FORMAT
         \\      --printf=FORMAT   like --format, but interpret backslash escapes,

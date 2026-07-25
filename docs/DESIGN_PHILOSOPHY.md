@@ -127,7 +127,7 @@ platform-adaptive behavior:
   format-looking operand names nothing on disk, `stat` adds
   one `stat: hint:` line on stderr suggesting
   `stat -c FORMAT`. It is purely additive: stdout and the
-  exit status stay byte-for-byte identical to GNU's.
+  exit status are byte-for-byte unchanged.
 
 This is the general shape for spec collisions: keep the
 reference behavior exact, and spend stderr — never stdout,

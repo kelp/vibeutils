@@ -9,7 +9,7 @@ BSD `-f format` is a format string; GNU `-f` means
 file-system mode. BSD `-t timefmt` sets time format; GNU
 `-t` means terse output.
 
-### The `-f` collision (#79)
+## The `-f` collision (#79)
 
 Because a Homebrew install can put vibeutils `stat` ahead of
 `/usr/bin/stat`, a BSD script's `stat -f FORMAT` silently
