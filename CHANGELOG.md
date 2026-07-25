@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Fixed
+- **cp -r no longer panics or runs away when the destination
+  lives inside the source tree.** `cp -r dir/. dst/` (with `dst`
+  under `dir`), `cp -r a a`, and `cp -r a a/b` previously aborted
+  a debug build on a tree-walk stack-underflow assert and
+  self-nested unboundedly in release builds. cp now refuses the
+  offending subtree with GNU's `cannot copy a directory, 'X',
+  into itself, 'Y'` (exit 1) while still copying unaffected
+  siblings. A source ending in `.`/`..` copies the resolved
+  directory's contents directly into the destination with no
+  nesting layer and no literal `.`/`..` path component, and
+  creating a directory over an existing non-directory now fails
+  with `cannot overwrite non-directory` instead of silently
+  merging (#82).
 - **grep now supports the GNU regex escape extensions on macOS.**
   `\s`, `\S`, `\w`, `\W` (in both BRE and ERE) and `\|`
   alternation (in BRE) are translated to portable POSIX

@@ -1082,4 +1082,162 @@ test_cp() {
         print_test_result "cp -r read-only source dir finalized to 555 (I5)" "FAIL" \
             "Expected 555, got $i5_dir_perms"
     fi
+
+    echo -e "${CYAN}Testing issue #82: cp -r self-copy guard (dest inside/onto source)...${NC}"
+
+    # Pinned reference: `cp (GNU coreutils) 9.4` on Linux, verified live on the
+    # scouting VM for every scenario below. GNU refuses to copy a directory
+    # into itself with "cp: cannot copy a directory, 'SRC', into itself,
+    # 'DEST'", exit 1, while still copying unrelated sibling entries. The
+    # CURRENT (buggy) vibeutils code either panics (SIGABRT, exit 134 under
+    # run_with_limit's 128+signal mapping) or runs away creating thousands of
+    # nested directories before erroring with the wrong, generic
+    # "cannot access 'X': DepthLimitExceeded" message -- so every invocation
+    # here MUST go through run_with_limit as an isolated subprocess; running
+    # this in-process (as a unit test) would crash the whole test binary.
+
+    # U1: the exact issue #82 repro -- `cp -r dir/.` where the destination
+    # already lives inside the source tree. vibeutils's walker continues past
+    # a failed entry (unlike GNU's readdir-order-dependent abort-on-first-hit),
+    # so the sibling-copy assertions below hold regardless of directory
+    # enumeration order.
+    local i82_u1_dir="$TEMP_DIR/i82_u1"
+    mkdir -p "$i82_u1_dir/dst" "$i82_u1_dir/sub"
+    echo "hi" >"$i82_u1_dir/f"
+    echo "yo" >"$i82_u1_dir/sub/g"
+
+    local i82_u1_out i82_u1_exit
+    set +e
+    i82_u1_out=$(cd "$i82_u1_dir" && run_with_limit 10 "$binary" -r ./. dst/ 2>&1)
+    i82_u1_exit=$?
+    set -e
+
+    if [[ $i82_u1_exit -eq 1 ]]; then
+        print_test_result "cp -r issue#82 exact repro exits with the pinned code, not a panic/timeout (U1)" "PASS"
+    else
+        print_test_result "cp -r issue#82 exact repro exits with the pinned code, not a panic/timeout (U1)" "FAIL" \
+            "Expected exit 1 (GNU general_error); got $i82_u1_exit (134 = SIGABRT/panic, 124 = timed out). Output: $i82_u1_out"
+    fi
+
+    if [[ "$i82_u1_out" == *"cannot copy a directory"* && "$i82_u1_out" == *"into itself"* ]]; then
+        print_test_result "cp -r issue#82 exact repro reports the pinned into-itself diagnostic (U1)" "PASS"
+    else
+        print_test_result "cp -r issue#82 exact repro reports the pinned into-itself diagnostic (U1)" "FAIL" \
+            "stderr missing GNU's 'cannot copy a directory ... into itself' wording. Output: $i82_u1_out"
+    fi
+
+    if [[ -f "$i82_u1_dir/dst/f" && "$(cat "$i82_u1_dir/dst/f")" == "hi" ]]; then
+        print_test_result "cp -r issue#82 exact repro still copies the sibling file into dst (U1)" "PASS"
+    else
+        print_test_result "cp -r issue#82 exact repro still copies the sibling file into dst (U1)" "FAIL" \
+            "Expected dst/f with content 'hi'"
+    fi
+
+    if [[ -f "$i82_u1_dir/dst/sub/g" && "$(cat "$i82_u1_dir/dst/sub/g")" == "yo" ]]; then
+        print_test_result "cp -r issue#82 exact repro still copies the sibling subdir into dst (U1)" "PASS"
+    else
+        print_test_result "cp -r issue#82 exact repro still copies the sibling subdir into dst (U1)" "FAIL" \
+            "Expected dst/sub/g with content 'yo'"
+    fi
+
+    if [[ ! -e "$i82_u1_dir/dst/dst/dst" ]]; then
+        print_test_result "cp -r issue#82 exact repro does not runaway-nest past one level (U1)" "PASS"
+    else
+        print_test_result "cp -r issue#82 exact repro does not runaway-nest past one level (U1)" "FAIL" \
+            "dst/dst/dst exists -- unbounded self-nesting into dst was not stopped"
+    fi
+
+    # U2: `cp -r a a` with a single child file. Fully deterministic (no
+    # directory-enumeration order ambiguity), so the entire pinned GNU tree is
+    # asserted exactly: 'a' -> 'a/a', 'a/f' -> 'a/a/f', then the into-itself
+    # fatal -- bounded at exactly one level of self-nesting (a/a/a never
+    # created).
+    local i82_u2_dir="$TEMP_DIR/i82_u2"
+    mkdir -p "$i82_u2_dir/a"
+    echo "u2 content" >"$i82_u2_dir/a/f"
+
+    local i82_u2_out i82_u2_exit
+    set +e
+    i82_u2_out=$(cd "$i82_u2_dir" && run_with_limit 10 "$binary" -r a a 2>&1)
+    i82_u2_exit=$?
+    set -e
+
+    if [[ $i82_u2_exit -eq 1 ]]; then
+        print_test_result "cp -r a a exits with the pinned code (U2)" "PASS"
+    else
+        print_test_result "cp -r a a exits with the pinned code (U2)" "FAIL" \
+            "Expected exit 1; got $i82_u2_exit. Output: $i82_u2_out"
+    fi
+
+    if [[ "$i82_u2_out" == *"cannot copy a directory"* && "$i82_u2_out" == *"into itself"* \
+        && "$i82_u2_out" == *"'a'"* && "$i82_u2_out" == *"'a/a'"* ]]; then
+        print_test_result "cp -r a a reports the pinned into-itself diagnostic naming 'a' and 'a/a' (U2)" "PASS"
+    else
+        print_test_result "cp -r a a reports the pinned into-itself diagnostic naming 'a' and 'a/a' (U2)" "FAIL" \
+            "Expected GNU wording \"cannot copy a directory, 'a', into itself, 'a/a'\". Output: $i82_u2_out"
+    fi
+
+    if [[ -f "$i82_u2_dir/a/a/f" && "$(cat "$i82_u2_dir/a/a/f")" == "u2 content" ]]; then
+        print_test_result "cp -r a a copies the lone child into a/a/f before refusing (U2)" "PASS"
+    else
+        print_test_result "cp -r a a copies the lone child into a/a/f before refusing (U2)" "FAIL" \
+            "Expected a/a/f with content 'u2 content'"
+    fi
+
+    if [[ ! -e "$i82_u2_dir/a/a/a" ]]; then
+        print_test_result "cp -r a a stops at exactly one level of self-nesting (U2)" "PASS"
+    else
+        print_test_result "cp -r a a stops at exactly one level of self-nesting (U2)" "FAIL" \
+            "a/a/a exists -- unbounded self-nesting was not stopped"
+    fi
+
+    # U3: `cp -r a a/b` -- dest is a pre-existing subdirectory of source, one
+    # level down. Single child ("b", no sibling file), so again fully
+    # deterministic: pinned GNU tree is 'a', 'a/b', 'a/b/a', 'a/b/a/b', with no
+    # further nesting (a/b/a/b/a never created).
+    local i82_u3_dir="$TEMP_DIR/i82_u3"
+    mkdir -p "$i82_u3_dir/a/b"
+
+    local i82_u3_out i82_u3_exit
+    set +e
+    i82_u3_out=$(cd "$i82_u3_dir" && run_with_limit 10 "$binary" -r a a/b 2>&1)
+    i82_u3_exit=$?
+    set -e
+
+    if [[ $i82_u3_exit -eq 1 ]]; then
+        print_test_result "cp -r a a/b exits with the pinned code (U3)" "PASS"
+    else
+        print_test_result "cp -r a a/b exits with the pinned code (U3)" "FAIL" \
+            "Expected exit 1; got $i82_u3_exit. Output: $i82_u3_out"
+    fi
+
+    if [[ "$i82_u3_out" == *"cannot copy a directory"* && "$i82_u3_out" == *"into itself"* \
+        && "$i82_u3_out" == *"'a'"* && "$i82_u3_out" == *"'a/b/a'"* ]]; then
+        print_test_result "cp -r a a/b reports the pinned into-itself diagnostic naming 'a' and 'a/b/a' (U3)" "PASS"
+    else
+        print_test_result "cp -r a a/b reports the pinned into-itself diagnostic naming 'a' and 'a/b/a' (U3)" "FAIL" \
+            "Expected GNU wording \"cannot copy a directory, 'a', into itself, 'a/b/a'\". Output: $i82_u3_out"
+    fi
+
+    # NOTE: unlike U2 (where 'f' is an innocent sibling GNU must copy), a's
+    # only child here ('b') IS the destination operand itself, so whether
+    # a/b/a/b gets created is an artifact of WHERE a correct fix detects the
+    # self-reference (GNU's algorithm creates it before erroring; an equally
+    # correct detect-before-create fix at the top of handleTreeDirPre never
+    # would). Only the dest root a/b/a is unconditionally required: it is the
+    # resolved destination for the top-level source operand 'a' itself, and
+    # must exist under any correct implementation, bounded or not.
+    if [[ -d "$i82_u3_dir/a/b/a" ]]; then
+        print_test_result "cp -r a a/b creates the resolved dest root (a/b/a) before refusing (U3)" "PASS"
+    else
+        print_test_result "cp -r a a/b creates the resolved dest root (a/b/a) before refusing (U3)" "FAIL" \
+            "Expected directory a/b/a to exist"
+    fi
+
+    if [[ ! -e "$i82_u3_dir/a/b/a/b/a" ]]; then
+        print_test_result "cp -r a a/b stops at exactly one level of self-nesting (U3)" "PASS"
+    else
+        print_test_result "cp -r a a/b stops at exactly one level of self-nesting (U3)" "FAIL" \
+            "a/b/a/b/a exists -- unbounded self-nesting was not stopped"
+    fi
 }

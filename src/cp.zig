@@ -1320,6 +1320,12 @@ const TreeWalk = struct {
     /// Process umask, read once per walk. Post-order chmod bypasses the kernel
     /// umask that createDir already applied, so we re-apply it ourselves.
     umask: std.posix.mode_t,
+    /// (dev, inode) of this walk's destination ROOT, recorded once the root's
+    /// dest directory exists (created or pre-existing). Null until then. A
+    /// pre-order source directory whose identity matches it is the destination
+    /// itself surfacing inside the source tree — copying it would nest the tree
+    /// into itself, so it is refused (GNU semantics) and pruned.
+    dest_root_node: ?NodeId,
 };
 
 /// Walk one TreeTask's source tree and materialize it under the task's dest.
@@ -1359,6 +1365,7 @@ fn copyOneTree(
         .dir_modes = .empty,
         .inherited_len = task.ancestors.len,
         .umask = common.file_ops.getUmask(),
+        .dest_root_node = null,
     };
     defer {
         for (state.dest_paths.items) |dp| allocator.free(dp);
@@ -1389,6 +1396,7 @@ fn copyOneTree(
             options,
             &state,
             tasks,
+            &walker,
         )) {
             success = false;
         }
@@ -1408,6 +1416,7 @@ fn handleTreeEntry(
     options: RuntimeOptions,
     state: *TreeWalk,
     tasks: *std.ArrayList(TreeTask),
+    walker: *common.walker.Walker,
 ) bool {
     assert(entry.path.len > 0);
     switch (entry.kind) {
@@ -1420,6 +1429,7 @@ fn handleTreeEntry(
             task,
             options,
             state,
+            walker,
         ),
         .sym_link => return handleTreeSymlink(
             allocator,
@@ -1461,6 +1471,7 @@ fn handleTreeDir(
     task: TreeTask,
     options: RuntimeOptions,
     state: *TreeWalk,
+    walker: *common.walker.Walker,
 ) bool {
     assert(entry.kind == .directory);
     if (entry.visit == .pre) {
@@ -1473,6 +1484,7 @@ fn handleTreeDir(
             task,
             options,
             state,
+            walker,
         );
     }
     // Post-order: preserve mode and mtime AFTER children are written, then pop.
@@ -1509,19 +1521,32 @@ fn handleTreeDirPre(
     task: TreeTask,
     options: RuntimeOptions,
     state: *TreeWalk,
+    walker: *common.walker.Walker,
 ) bool {
     assert(entry.kind == .directory);
     assert(entry.visit == .pre);
-    const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
+    // Refuse the destination surfacing inside its own source tree. Pruning
+    // skips descent AND the matching post-order emit, so the lockstep stacks
+    // stay balanced without a push here.
+    if (treeDirIsIntoItself(io, allocator, stderr_writer, entry, task, state)) {
+        walker.pruneCurrent();
         return false;
+    }
+    const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse {
+        walker.pruneCurrent();
+        return false;
+    };
     // Ownership of `dest` transfers to the dest_paths stack on success.
     const result = createTreeDir(allocator, io, stdout_writer, stderr_writer, entry, dest, options);
     // A created dir without -p gets a pending post-order chmod to the source
     // mode with the umask applied; everything else (existed, -p, unknown mode)
-    // gets none so the pre-existing or preserved mode is left untouched.
+    // gets none so the pre-existing or preserved mode is left untouched. Every
+    // path that does NOT push must prune, or the walker emits an unmatched
+    // post-order that underflows the stacks.
     const pending: ?std.posix.mode_t = switch (result) {
         .failed => {
             allocator.free(dest);
+            walker.pruneCurrent();
             return false;
         },
         .existed => null,
@@ -1532,16 +1557,52 @@ fn handleTreeDirPre(
     };
     state.dest_paths.append(allocator, dest) catch {
         allocator.free(dest);
+        walker.pruneCurrent();
         return false;
     };
     state.dir_modes.append(allocator, pending) catch {
         allocator.free(state.dest_paths.pop().?);
+        walker.pruneCurrent();
         return false;
     };
     // The three stacks advance together; the post-order pop relies on it.
     assert(state.dir_modes.items.len == state.dest_paths.items.len);
+    // Record the destination root's identity once it exists, so descendants
+    // that alias it (dest nested inside source) are caught above.
+    if (entry.depth == 0) state.dest_root_node = nodeIdForPath(io, dest);
     const node = nodeIdForPath(io, entry.path) orelse NodeId{ .dev = 0, .inode = 0 };
     state.ancestors.append(allocator, node) catch {};
+    return true;
+}
+
+/// Detect GNU's "cannot copy a directory into itself": a pre-order source
+/// directory (below the root) whose (dev, inode) equals this walk's destination
+/// root. That is the destination re-emerging as a source entry, which would
+/// nest the tree into itself. Prints the diagnostic and returns true so the
+/// caller refuses and prunes the subtree; returns false to proceed normally.
+fn treeDirIsIntoItself(
+    io: std.Io,
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    task: TreeTask,
+    state: *const TreeWalk,
+) bool {
+    assert(entry.kind == .directory);
+    assert(entry.visit == .pre);
+    // The root establishes dest_root_node; it is never into-itself against
+    // itself, and no child can alias the root before the root records it.
+    if (entry.depth == 0) return false;
+    const root_node = state.dest_root_node orelse return false;
+    const node = nodeIdForPath(io, entry.path) orelse return false;
+    if (node.dev != root_node.dev or node.inode != root_node.inode) return false;
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "cp",
+        "cannot copy a directory, '{s}', into itself, '{s}'",
+        .{ task.source, task.dest },
+    );
     return true;
 }
 
@@ -1607,7 +1668,22 @@ fn createTreeDir(
         dest,
         std.Io.File.Permissions.fromMode(create_mode),
     ) catch |err| switch (err) {
-        error.PathAlreadyExists => return .existed,
+        error.PathAlreadyExists => {
+            // mkdir reports EEXIST whether the blocker is a directory or not.
+            // Only a real directory is a legitimate merge target; overwriting a
+            // non-directory with a directory is refused (GNU semantics). A stat
+            // that cannot classify the blocker falls back to the merge path.
+            const existing = common.file.FileInfo.stat(io, dest) catch return .existed;
+            if (existing.kind == .directory) return .existed;
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cp",
+                "cannot overwrite non-directory '{s}' with directory '{s}'",
+                .{ dest, entry.path },
+            );
+            return .failed;
+        },
         else => {
             common.printErrorWithProgram(
                 allocator,
@@ -1970,8 +2046,16 @@ fn resolveFinalDestination(
     };
 
     if (dest_info.kind == .directory) {
-        // Destination is a directory, append source basename
+        // Destination is a directory, append source basename. GNU's rule: a
+        // source ending in "." or ".." names no basename component, so the
+        // resolved parent's CONTENTS copy directly into dest (no nesting layer,
+        // and no literal ".."/"." path that would escape or self-reference).
         const source_basename = std.fs.path.basename(source);
+        if (std.mem.eql(u8, source_basename, ".") or
+            std.mem.eql(u8, source_basename, ".."))
+        {
+            return try allocator.dupe(u8, dest);
+        }
         return try std.fs.path.join(allocator, &[_][]const u8{ dest, source_basename });
     } else {
         // Destination is a file, use as-is
@@ -3587,6 +3671,203 @@ test "cp -r refuses to copy a directory onto itself (same-file guard)" {
     const err = stderr_aw.written();
     try testing.expect(std.mem.find(u8, err, "are the same file") != null);
     try testing.expect(std.mem.find(u8, err, "src/sub") != null);
+}
+
+// ===========================================================================
+// Issue #82: `cp -r dir/.` panics or misbehaves when the destination lives
+// inside the source tree. These tests pin the GNU-verified reference behavior
+// scouted on a Linux VM with `cp (GNU coreutils) 9.4` (see the issue #82
+// scouting notes). The exact runaway/panic repro (dest strictly nested inside
+// source, discovered mid-walk) is deliberately NOT exercised here as a unit
+// test: it currently aborts the process (SIGABRT from a debug assert), which
+// would crash this entire test binary rather than failing cleanly -- that
+// scenario is covered by an integration test that runs cp as a subprocess
+// under a hard time limit instead. The four unit tests below cover the parts
+// of the fix reachable without ever triggering that abort.
+// ===========================================================================
+
+test "cp -r source/.. copies the resolved parent's contents into dest, not a literal '..' path" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // GNU rule (root cause #3): a source path whose final component is ".."
+    // behaves like "." for destination-naming purposes -- no basename is
+    // appended, so the CONTENTS of the resolved parent land directly under
+    // dest. Today std.fs.path.basename("p/x/..") returns the literal string
+    // "..", which resolveFinalDestination joins onto dest verbatim, producing
+    // "dest/..": the OS resolves that to dest's PARENT, so the copy silently
+    // escapes dest and writes as a sibling instead of inside it.
+    try test_dir.createDir("p");
+    try test_dir.createDir("p/x");
+    try test_dir.createFile("p/x/f", "escaped content", null);
+    try test_dir.createDir("d");
+
+    const p_x_path = try test_dir.getPath("p/x");
+    defer testing.allocator.free(p_x_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/..", .{p_x_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("d");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Pinned GNU tree: d/x/f holds the copied content, with no literal ".."
+    // path component anywhere under d.
+    try test_dir.expectFileContent("d/x/f", "escaped content");
+    // The bug writes "x/f" as a SIBLING of d (in d's parent) instead; guard
+    // against the escape directly so the test fails for the right reason even
+    // if a future regression reintroduces it under a different guise.
+    try testing.expect(!test_dir.fileExists("x"));
+}
+
+test "cp -r dir/. into a dest whose child is a file where source has a dir: no panic" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Root cause #2's root-safe trigger: createTreeDir's `PathAlreadyExists =>
+    // .existed` never checks that the pre-existing entry is actually a
+    // directory. `mkdir` returns EEXIST whether the blocker is a dir or a
+    // regular file, so today this reports .existed (success) and the copy
+    // fails much later and more confusingly (a stat ENOTDIR deep inside
+    // copySingleFile) instead of GNU's clean, immediate
+    // "cannot overwrite non-directory" refusal at the directory entry itself.
+    try test_dir.createDir("s");
+    try test_dir.createDir("s/sub");
+    try test_dir.createFile("s/sub/g", "deep content", null);
+    try test_dir.createDir("d");
+    try test_dir.createFile("d/sub", "blocking file", null);
+
+    const s_path = try test_dir.getPath("s");
+    defer testing.allocator.free(s_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/.", .{s_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("d");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // Pinned GNU: `cp: cannot overwrite non-directory '<dest>' with directory
+    // '<source>'`, exit 1. The source fragment is robust to pin exactly: the
+    // walker enumerates the literal ".../s/." operand, so its child paths
+    // always contain the literal "." component regardless of how
+    // resolveFinalDestination treats a trailing "." on the destination side.
+    // The dest fragment's exact spelling is deliberately NOT pinned to
+    // "/./sub": today's accidental "d/." collapsing happens to produce
+    // "d/./sub", but a clean, equally-correct fix for the GNU ".." rule (root
+    // cause #3) could plausibly normalize dest to plain "d" (yielding
+    // "d/sub") without being wrong. Assert the dest path and the "sub"
+    // component are both named in the message instead of pinning what falls
+    // in between.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    const err = stderr_aw.written();
+    try testing.expect(std.mem.find(u8, err, "cannot overwrite non-directory") != null);
+    const expected_source_frag = try std.fmt.allocPrint(testing.allocator, "{s}/./sub", .{s_path});
+    defer testing.allocator.free(expected_source_frag);
+    try testing.expect(std.mem.find(u8, err, expected_source_frag) != null);
+    try testing.expect(std.mem.find(u8, err, dest_path) != null);
+    try testing.expect(std.mem.find(u8, err, "sub") != null);
+    // The blocking regular file must be left untouched, not silently
+    // overwritten or partially clobbered while failing.
+    try test_dir.expectFileContent("d/sub", "blocking file");
+}
+
+test "cp -r dir/. into an existing disjoint directory copies contents with no nesting layer" {
+    // Characterizes behavior that is ALREADY correct today (accidentally, via
+    // resolveFinalDestination joining dest with the literal "." basename,
+    // which the OS collapses to dest itself): the fix must not regress it.
+    // This locks in the "no basename append for a trailing-dot source" half of
+    // GNU's rule alongside the ".." half tested above.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("s");
+    try test_dir.createFile("s/f", "top content", null);
+    try test_dir.createDir("s/sub");
+    try test_dir.createFile("s/sub/g", "nested content", null);
+    try test_dir.createDir("d");
+
+    const s_path = try test_dir.getPath("s");
+    defer testing.allocator.free(s_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/.", .{s_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("d");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("d/f", "top content");
+    try test_dir.expectFileContent("d/sub/g", "nested content");
+    // No "d/s" nesting layer: the source basename must never be appended.
+    try testing.expect(!test_dir.fileExists("d/s"));
+}
+
+test "cp -r dir/. to a nonexistent dest creates dest holding the contents" {
+    // Same already-correct behavior as above, for the nonexistent-dest case
+    // (GNU behavior #5). Locked in separately since resolveFinalDestination
+    // takes a different branch (FileNotFound -> dest used as-is) than the
+    // existing-directory branch above.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("s");
+    try test_dir.createFile("s/f", "fresh content", null);
+
+    const s_path = try test_dir.getPath("s");
+    defer testing.allocator.free(s_path);
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/.", .{s_path});
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/new", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("new/f", "fresh content");
+    try testing.expect(!test_dir.fileExists("new/s"));
 }
 
 test "cp -rp preserves regular file mode and mtime on copied files" {
