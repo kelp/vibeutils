@@ -1057,13 +1057,13 @@ const bsd_shell_format = "st_dev=%d st_ino=%i st_mode=%#p st_nlink=%l " ++
 
 /// -x: the verbose multi-line block (stat-macos.txt:71-72).
 const bsd_verbose_format = "  File: \"%N\"%n" ++
-    "  Size: %-11z" ++
+    "  Size: %-13z" ++
     "FileType: %HT%n" ++
     "  Mode: (%Mp%03Lp/%.10Sp)" ++
     "         Uid: (%5u/%8Su)" ++
     "  Gid: (%5g/%8Sg)%n" ++
     "Device: %Hd,%Ld" ++
-    "   Inode: %i" ++
+    "   Inode: %-8i" ++
     "   Links: %l%n" ++
     "Access: %Sa%n" ++
     "Modify: %Sm%n" ++
@@ -1072,6 +1072,12 @@ const bsd_verbose_format = "  File: \"%N\"%n" ++
 
 /// The strftime(3) format the S form of a time datum uses without -t.
 const bsd_default_timefmt = "%b %e %H:%M:%S %Y";
+
+/// -x prints a wider time than every other mode, leading with the abbreviated
+/// weekday. Verified against /usr/bin/stat on macOS, which renders
+/// "Sat Jul 25 06:16:49 2026" for -x and "Jul 25 06:16:49 2026" elsewhere.
+/// An explicit -t still overrides this.
+const bsd_verbose_timefmt = "%a %b %e %H:%M:%S %Y";
 
 /// The output form character, if `ch` is one (stat-macos.txt:113-118).
 fn bsdFmtFromChar(ch: u8) ?BsdFmt {
@@ -2274,6 +2280,18 @@ fn statErrorMessage(err: anyerror) []const u8 {
 }
 
 /// The format string the selected output mode uses.
+/// The strftime(3) format a mode uses when -t was not given. Only -x differs:
+/// it leads with the abbreviated weekday, matching /usr/bin/stat on macOS.
+fn defaultTimefmt(mode: StatMode) []const u8 {
+    // Both formats must be real strftime patterns, and they must differ —
+    // if they ever converge this helper has no reason to exist.
+    comptime std.debug.assert(bsd_default_timefmt.len > 0);
+    comptime std.debug.assert(!std.mem.eql(u8, bsd_verbose_timefmt, bsd_default_timefmt));
+
+    if (mode == .verbose) return bsd_verbose_timefmt;
+    return bsd_default_timefmt;
+}
+
 fn selectedFormat(opts: *const StatOptions) []const u8 {
     return switch (opts.mode) {
         .bsd_format => opts.bsd_format orelse bsd_default_format,
@@ -2321,7 +2339,7 @@ fn emitStatOutput(
         .allocator = allocator,
         .stat_buf = stat_buf,
         .path = path,
-        .timefmt = opts.timefmt orelse bsd_default_timefmt,
+        .timefmt = opts.timefmt orelse defaultTimefmt(opts.mode),
     };
     try processBsdFormat(selectedFormat(opts), ctx, file_number, writer);
     try emitTrailingNewline(opts, writer);
