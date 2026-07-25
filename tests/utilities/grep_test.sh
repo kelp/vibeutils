@@ -443,37 +443,31 @@ test_grep() {
     chmod 755 "$walk_dir_root/locked"
     rm -rf "$walk_dir_root"
 
-    echo -e "${CYAN}Testing GNU regex escape extensions (\\s \\S \\w \\W \\|)...${NC}"
+    echo -e "${CYAN}Testing GNU regex escape extensions (\\s \\S \\w \\W \\| \\< \\> \\\\b \\\\B)...${NC}"
 
-    # GNU extension: \s == [[:space:]] in ERE (exact issue #78 repro). Passes
-    # on Linux/glibc (regcomp accepts \s natively); expected red on macOS CI
-    # (BSD libc treats \s as a literal 's') until compilePattern translates
-    # GNU escapes before calling regcomp.
-    test_command_output "grep -E backslash-s whitespace (GNU ext, red on macOS)" "  plan: x" bash -c "printf '  plan: x\n' | '$binary' --color=never -E '^\s+plan\s*:'"
+    # GNU extension: \s == [[:space:]] in ERE (exact issue #78 repro).
+    test_command_output "grep -E backslash-s whitespace (GNU ext)" "  plan: x" bash -c "printf '  plan: x\n' | '$binary' --color=never -E '^\s+plan\s*:'"
 
-    # GNU extension: \s in BRE (default mode). Red on macOS/BSD libc.
-    test_command_output "grep BRE backslash-s whitespace (GNU ext, red on macOS)" "a b" bash -c "printf 'a b\n' | '$binary' --color=never 'a\sb'"
+    # GNU extension: \s in BRE (default mode).
+    test_command_output "grep BRE backslash-s whitespace (GNU ext)" "a b" bash -c "printf 'a b\n' | '$binary' --color=never 'a\sb'"
 
-    # GNU extension: \S == [^[:space:]]. Red on macOS/BSD libc.
-    test_command_output "grep -E backslash-S non-whitespace (GNU ext, red on macOS)" "acb" bash -c "printf 'a b\nacb\n' | '$binary' --color=never -E 'a\Sb'"
+    # GNU extension: \S == [^[:space:]].
+    test_command_output "grep -E backslash-S non-whitespace (GNU ext)" "acb" bash -c "printf 'a b\nacb\n' | '$binary' --color=never -E 'a\Sb'"
 
-    # GNU extension: \w == [[:alnum:]_]. Red on macOS/BSD libc.
-    test_command_exit_code "grep BRE backslash-w word chars (GNU ext, red on macOS)" 0 bash -c "printf 'foo_1\n' | '$binary' --color=never '\w\w\w_\w'"
+    # GNU extension: \w == [[:alnum:]_].
+    test_command_exit_code "grep BRE backslash-w word chars (GNU ext)" 0 bash -c "printf 'foo_1\n' | '$binary' --color=never '\w\w\w_\w'"
 
-    # GNU extension: \W == [^[:alnum:]_]. Red on macOS/BSD libc.
-    test_command_output "grep BRE backslash-W non-word chars (GNU ext, red on macOS)" "a-b" bash -c "printf 'a-b\naxb\n' | '$binary' --color=never 'a\Wb'"
+    # GNU extension: \W == [^[:alnum:]_].
+    test_command_output "grep BRE backslash-W non-word chars (GNU ext)" "a-b" bash -c "printf 'a-b\naxb\n' | '$binary' --color=never 'a\Wb'"
 
-    # GNU extension: \| is alternation in BRE without -x. Red on macOS/BSD libc.
-    test_command_output "grep BRE backslash-pipe alternation without -x (GNU ext, red on macOS)" $'foo\nbar' bash -c "printf 'foo\nbar\nbaz\n' | '$binary' --color=never 'foo\|bar'"
+    # GNU extension: \| is alternation in BRE without -x.
+    test_command_output "grep BRE backslash-pipe alternation without -x (GNU ext)" $'foo\nbar' bash -c "printf 'foo\nbar\nbaz\n' | '$binary' --color=never 'foo\|bar'"
 
-    # -i composes with the \s GNU extension. Red on macOS/BSD libc.
-    test_command_output "grep -i composes with backslash-s (GNU ext, red on macOS)" "A B" bash -c "printf 'A B\n' | '$binary' --color=never -i 'a\sb'"
+    # -i composes with the \s GNU extension.
+    test_command_output "grep -i composes with backslash-s (GNU ext)" "A B" bash -c "printf 'A B\n' | '$binary' --color=never -i 'a\sb'"
 
-    # Pre-existing bug (both platforms): anchorBreAlternatives scans for \|
-    # without tracking bracket-expression state, so grep -x '[a\|]' is
-    # mangled into ERE ^([a|])$ and fails to match a lone backslash. Red on
-    # Linux (this box) AND macOS until anchorBreAlternatives is fixed.
-    test_command_output "grep -x bracket [a\\|] keeps backslash literal (pre-existing bug, red on Linux+macOS)" '\' bash -c "printf '%s\n' '\' | '$binary' --color=never -x '[a\|]'"
+    # \| inside a bracket expression remains a literal member.
+    test_command_output "grep -x bracket [a\\|] keeps backslash literal" '\' bash -c "printf '%s\n' '\' | '$binary' --color=never -x '[a\|]'"
 
     # Negative pin: inside brackets backslash stays literal, never [[:space:]].
     test_command_output "grep bracket [\s] stays literal (stays green everywhere)" $'s\n\\' bash -c "printf '%s\n' 's' '\' ' ' | '$binary' --color=never '[\s]'"
@@ -484,6 +478,33 @@ test_grep() {
 
     # Negative pin: \| in ERE stays an escaped literal pipe, not alternation.
     test_command_output "grep -E foo\\|bar literal pipe not alternation (stays green everywhere)" 'foo|bar' bash -c "printf '%s\n' 'foo|bar' 'foo' | '$binary' --color=never -E 'foo\|bar'"
+
+    # GNU/BSD directional word-boundary escapes. Darwin translates these to
+    # [[:<:]]/[[:>:]]; Linux leaves them for glibc.
+    test_command_output "grep BRE \\<foo\\> whole word" $'foo\nfoo-' bash -c "printf 'foo\nfoobar\nxfoo\nfoo_\nfoo-\n' | '$binary' --color=never '\<foo\>'"
+    test_command_output "grep -E \\< start-of-word" $'foo\nfoobar' bash -c "printf 'foo\nfoobar\nxfoo\n' | '$binary' --color=never -E '\<foo'"
+    test_command_output "grep -E \\> end-of-word" $'foo\nxfoo' bash -c "printf 'foo\nxfoo\nfoobar\n' | '$binary' --color=never -E 'foo\>'"
+    test_command_output "grep -io directional boundaries" "FOO" bash -c "printf 'say FOO! foobar\n' | '$binary' --color=never -io '\<foo\>'"
+    test_command_output "grep boundaries preserve BRE backrefs" "foo foo" bash -c "printf 'foo foo\nfoo food\n' | '$binary' --color=never '\<\(foo\) \1\>'"
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        local expected_boundary_error='grep: invalid regular expression: \b and \B word-boundary escapes are unsupported on this platform'
+        run_command cmd out err exit_code "$binary" --color=never '\bfoo\b' /dev/null
+        if [[ "$exit_code" == "2" && "$err" == "$expected_boundary_error" ]]; then
+            print_test_result "grep Darwin rejects \\\\b clearly" "PASS"
+        else
+            print_test_result "grep Darwin rejects \\\\b clearly" "FAIL" "Exit: $exit_code; stderr: $err"
+        fi
+        run_command cmd out err exit_code "$binary" --color=never 'f\Bo' /dev/null
+        if [[ "$exit_code" == "2" && "$err" == "$expected_boundary_error" ]]; then
+            print_test_result "grep Darwin rejects \\\\B clearly" "PASS"
+        else
+            print_test_result "grep Darwin rejects \\\\B clearly" "FAIL" "Exit: $exit_code; stderr: $err"
+        fi
+    else
+        test_command_output "grep Linux native \\\\b boundaries" "foo" bash -c "printf 'foo\nfoobar\n' | '$binary' --color=never '\bfoo\b'"
+        test_command_output "grep Linux native \\\\B non-boundary" "foo" bash -c "printf 'foo\nf-o\n' | '$binary' --color=never 'f\Bo'"
+    fi
 
     # Cleanup
     cleanup_test_session

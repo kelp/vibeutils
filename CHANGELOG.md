@@ -24,9 +24,12 @@
   exactly as they do with GNU grep instead of silently matching
   nothing. Bracket expressions keep their POSIX literal meaning
   (`[\s]` still matches `\` or `s`), and `grep -x` no longer
-  mangles a `\|` that appears inside brackets. Word boundaries
-  (`\b`, `\<`, `\>`) remain unsupported and are tracked
-  separately (#78).
+  mangles a `\|` that appears inside brackets. The directional
+  word boundaries `\<` and `\>` are also supported on macOS;
+  Linux continues using glibc's native boundary escapes. Because
+  macOS libc has no numbering-safe equivalent for `\b`/`\B`,
+  those two now produce a clear unsupported-pattern error there
+  instead of silently matching nothing (#78, #84).
 - **cp now duplicates the source's permission bits when creating
   a new destination.** A 755 executable no longer silently
   becomes 644 on copy: new files get the source mode (special
