@@ -1,11 +1,17 @@
-//! stat - display file or file system status
+//! stat - display file status
 //!
-//! The stat utility displays detailed information about files or file
-//! systems. By default it shows file status; with -f it shows file
-//! system status. Output format can be customized with -c/--format
-//! or --printf.
+//! The stat utility displays detailed information about files:
 //!
-//! This implementation follows GNU coreutils stat behavior.
+//!     stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]
+//!
+//! This implementation follows the BSD interface described by the
+//! vendored NetBSD/macOS man page in docs/specs/stat-macos.txt, which
+//! docs/specs/stat-openbsd.txt confirms OpenBSD matches. The GNU long
+//! options --format=FMT, --printf=FMT, --file-system, --terse and
+//! --dereference survive alongside it, together with the GNU -c FORMAT,
+//! because none of them collide with a BSD short flag. The two directive
+//! languages are selected by the flag that introduced the string: -f
+//! evaluates the BSD grammar, -c and --printf the GNU one.
 
 const std = @import("std");
 const common = @import("common");
@@ -58,12 +64,27 @@ const prog_name = "stat";
 // Parsed options
 // ============================================================================
 
+/// The output mode selected by the mutually exclusive -f/-l/-r/-s/-x group
+/// of the SYNOPSIS (stat-macos.txt:7). `.default` means none was given.
+const StatMode = enum { default, bsd_format, ls, raw, shell, verbose };
+
 const StatOptions = struct {
     dereference: bool = false,
     file_system: bool = false,
     format: ?[]const u8 = null,
     printf_fmt: ?[]const u8 = null,
     terse: bool = false,
+    /// -f FORMAT: the BSD format string.
+    bsd_format: ?[]const u8 = null,
+    /// -t TIMEFMT: the strftime(3) format used by the S form of a/m/c/B.
+    timefmt: ?[]const u8 = null,
+    mode: StatMode = .default,
+    /// -F: append the ls(1) type suffix. Implies -l.
+    type_suffix: bool = false,
+    /// -n: do not force a newline after each piece of output.
+    no_newline: bool = false,
+    /// -q: suppress stat(2)/lstat(2) failure messages.
+    quiet: bool = false,
     help: bool = false,
     version: bool = false,
     positionals: []const []const u8 = &.{},
@@ -187,9 +208,10 @@ fn parseArgs_longOption(
     return .{ .err = null, .stop = false };
 }
 
-/// Handle one clustered short-option argument (e.g. "-Lf"). May advance `i`
-/// to consume a space-separated value for `-c`. Returns any error message;
-/// `-h`/`-V` set opts without an error (caller continues to next arg).
+/// Handle one clustered short-option argument (e.g. "-Ln"). May advance `i`
+/// to consume a space-separated value for `-c`, `-f` or `-t`. Returns any
+/// error message; `-h`/`-V` set opts without an error (caller continues to
+/// the next arg).
 fn parseArgs_shortOption(
     opts: *StatOptions,
     args: []const []const u8,
@@ -205,37 +227,127 @@ fn parseArgs_shortOption(
         // the guard keeps j addressing a real byte before indexing arg[j].
         std.debug.assert(j >= 1);
         std.debug.assert(j < arg.len);
-        switch (arg[j]) {
-            'L' => opts.dereference = true,
-            'f' => opts.file_system = true,
-            't' => opts.terse = true,
-            'h' => {
-                opts.help = true;
-                break;
-            },
-            'V' => {
-                opts.version = true;
-                break;
-            },
-            'c' => {
-                // -c FORMAT: value is the rest of this arg or next arg
-                if (j + 1 < arg.len) {
-                    opts.format = arg[j + 1 ..];
-                } else if (i.* + 1 < args.len) {
-                    i.* += 1;
-                    opts.format = args[i.*];
-                } else {
-                    return .{ .err = "option '-c' requires an argument", .stop = true };
-                }
-                // Done with this arg either way
-                break;
-            },
-            else => {
-                return .{ .err = "unrecognized option", .stop = true };
-            },
+        const ch = arg[j];
+        if (ch == 'h') {
+            opts.help = true;
+            break;
         }
+        if (ch == 'V') {
+            opts.version = true;
+            break;
+        }
+        if (parseArgs_takesValue(ch)) {
+            // The value is the rest of the cluster, so nothing follows it.
+            return parseArgs_shortValueOption(opts, args, i, arg, j, ch);
+        }
+        const step = parseArgs_shortFlag(opts, ch);
+        if (step.err != null) return step;
     }
     return .{ .err = null, .stop = false };
+}
+
+/// Whether a short option consumes a value, either as the rest of its
+/// cluster or as the following argv element.
+fn parseArgs_takesValue(ch: u8) bool {
+    return switch (ch) {
+        'c', 'f', 't' => true,
+        else => false,
+    };
+}
+
+/// Handle one valueless short option. Unknown letters are reported so the
+/// caller can fail with a usage error.
+fn parseArgs_shortFlag(opts: *StatOptions, ch: u8) ParseStep {
+    // The caller resolves -h, -V and the value-taking letters before
+    // delegating here, so none of them can reach this switch.
+    std.debug.assert(!parseArgs_takesValue(ch));
+    std.debug.assert(ch != 'h');
+    switch (ch) {
+        'L' => opts.dereference = true,
+        'n' => opts.no_newline = true,
+        'q' => opts.quiet = true,
+        'F' => {
+            // stat-macos.txt:39: "The use of -F implies -l".
+            opts.type_suffix = true;
+            if (parseArgs_selectMode(opts, .ls)) |err| return .{ .err = err, .stop = true };
+        },
+        'l' => if (parseArgs_selectMode(opts, .ls)) |err| return .{ .err = err, .stop = true },
+        'r' => if (parseArgs_selectMode(opts, .raw)) |err| return .{ .err = err, .stop = true },
+        's' => if (parseArgs_selectMode(opts, .shell)) |err| return .{ .err = err, .stop = true },
+        'x' => if (parseArgs_selectMode(opts, .verbose)) |err| return .{ .err = err, .stop = true },
+        else => return .{ .err = "unrecognized option", .stop = true },
+    }
+    return .{ .err = null, .stop = false };
+}
+
+/// Handle one short option that consumes a value: -c FORMAT (GNU), -f FORMAT
+/// (BSD) or -t TIMEFMT.
+fn parseArgs_shortValueOption(
+    opts: *StatOptions,
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch slice index into args
+    arg: []const u8,
+    j: usize, // tiger:allow:usize-arch slice index into arg
+    ch: u8,
+) ParseStep {
+    std.debug.assert(parseArgs_takesValue(ch));
+    std.debug.assert(j < arg.len);
+    const value = parseArgs_shortValue(args, i, arg, j) orelse
+        return .{ .err = parseArgs_missingValue(ch), .stop = true };
+
+    switch (ch) {
+        'c' => opts.format = value,
+        't' => opts.timefmt = value,
+        else => {
+            opts.bsd_format = value;
+            if (parseArgs_selectMode(opts, .bsd_format)) |err| {
+                return .{ .err = err, .stop = true };
+            }
+        },
+    }
+    return .{ .err = null, .stop = false };
+}
+
+/// The value for a short option: the rest of its cluster, or the next argv
+/// element. Null when neither is available.
+fn parseArgs_shortValue(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch slice index into args
+    arg: []const u8,
+    j: usize, // tiger:allow:usize-arch slice index into arg
+) ?[]const u8 {
+    std.debug.assert(j < arg.len);
+    std.debug.assert(i.* < args.len);
+    if (j + 1 < arg.len) return arg[j + 1 ..];
+    if (i.* + 1 < args.len) {
+        i.* += 1;
+        return args[i.*];
+    }
+    return null;
+}
+
+/// The usage message for a value-taking short option given without a value.
+fn parseArgs_missingValue(ch: u8) []const u8 {
+    std.debug.assert(parseArgs_takesValue(ch));
+    std.debug.assert(ch != 'V');
+    return switch (ch) {
+        'c' => "option '-c' requires an argument",
+        'f' => "option '-f' requires an argument",
+        else => "option '-t' requires an argument",
+    };
+}
+
+/// Select the single output mode from the -f/-l/-r/-s/-x group. The SYNOPSIS
+/// (stat-macos.txt:7) presents them as alternatives, so a second selection is
+/// a usage error rather than a silent override.
+fn parseArgs_selectMode(opts: *StatOptions, mode: StatMode) ?[]const u8 {
+    std.debug.assert(mode != .default);
+    if (opts.mode != .default) {
+        return "the -f, -l, -r, -s and -x options are mutually exclusive";
+    }
+    opts.mode = mode;
+    std.debug.assert(opts.mode != .default);
+    return null;
 }
 
 // ============================================================================
@@ -259,6 +371,11 @@ const StatResult = struct {
     mtim: struct { sec: i64, nsec: i64 },
     ctim: struct { sec: i64, nsec: i64 },
     btim: struct { sec: i64, nsec: i64 }, // birth time (0 on Linux)
+    /// macOS/BSD st_flags (chflags). Always zero on Linux, which has no
+    /// per-file flags field.
+    flags: u32,
+    /// macOS/BSD st_gen (inode generation). Always zero on Linux.
+    gen: u32,
 };
 
 /// Perform stat or lstat on a path, returning a cross-platform StatResult.
@@ -288,9 +405,21 @@ fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
     std.debug.assert(follow_symlinks == (at_flags == 0));
     std.debug.assert((!follow_symlinks) == (at_flags == linux.AT.SYMLINK_NOFOLLOW));
 
+    return doStat_linuxAt(c.AT.FDCWD, c_path, at_flags);
+}
+
+/// Linux statx-backed stat relative to `dirfd`. The fd and path forms differ
+/// only in the arguments they pass, so both share this body.
+fn doStat_linuxAt(dirfd: i32, c_path: [*:0]const u8, at_flags: u32) !StatResult {
+    const linux = std.os.linux;
+    // Only the three lookup flags this file issues are valid here, and the
+    // only negative descriptor that is meaningful is AT_FDCWD.
+    std.debug.assert(at_flags <= linux.AT.EMPTY_PATH);
+    std.debug.assert(dirfd >= c.AT.FDCWD);
+
     var stx: linux.Statx = undefined;
     const statx_mask: linux.STATX = @bitCast(@as(u32, 0xfff)); // BASIC_STATS | BTIME
-    const rc = linux.statx(c.AT.FDCWD, c_path, at_flags, statx_mask, &stx);
+    const rc = linux.statx(dirfd, c_path, at_flags, statx_mask, &stx);
     switch (linux.errno(rc)) {
         .SUCCESS => {},
         .ACCES => return error.AccessDenied,
@@ -317,6 +446,9 @@ fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
         .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
         .btim = .{ .sec = stx.btime.sec, .nsec = @intCast(stx.btime.nsec) },
+        // Linux has no st_flags or st_gen; the BSD %f and %v datums report 0.
+        .flags = 0,
+        .gen = 0,
     };
 }
 
@@ -330,17 +462,36 @@ fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
     std.debug.assert((!follow_symlinks) == (flags == c.AT.SYMLINK_NOFOLLOW));
 
     const result = c.fstatat(c.AT.FDCWD, c_path, &stat_buf, flags);
-    if (result != 0) {
-        const errno = std.posix.errno(result);
-        return switch (errno) {
-            .ACCES => error.AccessDenied,
-            .NOENT => return error.FileNotFound,
-            .NOTDIR => return error.NotDir,
-            .NAMETOOLONG => return error.NameTooLong,
-            .LOOP => return error.SymLinkLoop,
-            else => return error.SystemResources,
-        };
-    }
+    if (result != 0) return doStat_darwinError(result);
+    return doStat_fromDarwinStat(stat_buf);
+}
+
+/// The errors doStat reports, named after the errno values stat(2) sets.
+const StatError = error{
+    AccessDenied,
+    FileNotFound,
+    NotDir,
+    NameTooLong,
+    SymLinkLoop,
+    SystemResources,
+};
+
+/// Map a failed fstat/fstatat return value to this module's error set.
+fn doStat_darwinError(result: c_int) StatError {
+    std.debug.assert(result != 0);
+    const errno = std.posix.errno(result);
+    return switch (errno) {
+        .ACCES => error.AccessDenied,
+        .NOENT => error.FileNotFound,
+        .NOTDIR => error.NotDir,
+        .NAMETOOLONG => error.NameTooLong,
+        .LOOP => error.SymLinkLoop,
+        else => error.SystemResources,
+    };
+}
+
+/// Build a StatResult from a macOS/BSD struct stat.
+fn doStat_fromDarwinStat(stat_buf: c.Stat) StatResult {
     return StatResult{
         .dev = @intCast(stat_buf.dev),
         .ino = @intCast(stat_buf.ino),
@@ -356,7 +507,25 @@ fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
         .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
         .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
+        .flags = if (@hasField(@TypeOf(stat_buf), "flags")) @intCast(stat_buf.flags) else 0,
+        .gen = if (@hasField(@TypeOf(stat_buf), "gen")) @intCast(stat_buf.gen) else 0,
     };
+}
+
+/// Perform fstat(2) on an already-open descriptor. With no file operand stat
+/// reports on standard input's descriptor (stat-macos.txt:14-15).
+fn doStatFd(fd: i32) !StatResult {
+    std.debug.assert(fd >= 0);
+    std.debug.assert(fd != -1);
+    if (builtin.os.tag == .linux) {
+        // AT_EMPTY_PATH turns statx into fstat for an empty path.
+        return doStat_linuxAt(fd, "", std.os.linux.AT.EMPTY_PATH);
+    } else {
+        var stat_buf: c.Stat = undefined;
+        const result = c.fstat(fd, &stat_buf);
+        if (result != 0) return doStat_darwinError(result);
+        return doStat_fromDarwinStat(stat_buf);
+    }
 }
 
 // ============================================================================
@@ -630,6 +799,27 @@ fn expandFormatDirective_mountPoint(path: []const u8, writer: anytype) !void {
     }
 }
 
+/// Read the target of the symbolic link at `path` into `buf`. Returns null
+/// when the path is too long for the kernel interface or readlink(2) fails,
+/// which callers treat as "no target to show".
+fn readLinkTarget(path: []const u8, buf: []u8) ?[]const u8 {
+    std.debug.assert(buf.len > 0);
+    std.debug.assert(buf.len >= 64);
+    if (path.len > std.fs.max_path_bytes) return null;
+    var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(path_zbuf[0..path.len], path);
+    path_zbuf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
+
+    const n = c.readlink(path_z, buf.ptr, buf.len);
+    if (n <= 0) return null;
+    // readlink(2) never reports more than the buffer size it was given, so
+    // the cast below stays in bounds.
+    std.debug.assert(n <= @as(isize, @intCast(buf.len)));
+    const length: usize = @intCast(n); // tiger:allow:usize-arch slice length
+    return buf[0..length];
+}
+
 /// %N: emit the quoted file name, appending " -> 'TARGET'" for an
 /// unfollowed symbolic link.
 fn expandFormatDirective_quotedName(
@@ -640,30 +830,21 @@ fn expandFormatDirective_quotedName(
 ) !void {
     const mode: u32 = stat_buf.mode;
     std.debug.assert(stat_buf.mode != 0);
-    if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
-        std.debug.assert(path.len > 0);
-        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-        var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        if (path.len <= std.fs.max_path_bytes) {
-            @memcpy(path_zbuf[0..path.len], path);
-            path_zbuf[path.len] = 0;
-            const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
-            const n = c.readlink(path_z, &link_buf, link_buf.len);
-            if (n > 0) {
-                // readlink(2) never returns more than the buffer size, so the
-                // @intCast slice below stays in bounds.
-                std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
-                const target = link_buf[0..@intCast(n)];
-                try writer.print("'{s}' -> '{s}'", .{ path, target });
-            } else {
-                try writer.print("'{s}'", .{path});
-            }
-        } else {
-            try writer.print("'{s}'", .{path});
-        }
-    } else {
+    std.debug.assert((mode & c.S.IFMT) != 0);
+    if ((mode & c.S.IFMT) != c.S.IFLNK) {
         try writer.print("'{s}'", .{path});
+        return;
     }
+    if (follow_symlinks) {
+        try writer.print("'{s}'", .{path});
+        return;
+    }
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = readLinkTarget(path, &link_buf) orelse {
+        try writer.print("'{s}'", .{path});
+        return;
+    };
+    try writer.print("'{s}' -> '{s}'", .{ path, target });
 }
 
 /// %t / %T: emit the major or minor device number of rdev in hex, using
@@ -797,195 +978,825 @@ fn processFormatString(
 }
 
 // ============================================================================
-// Default output format
+// BSD format engine (stat-macos.txt:74-211)
+//
+// A directive is %[flags][size][.prec][fmt][sub]datum. Parsing produces a
+// BsdDirective; rendering turns the selected datum into a number, a string or
+// a timestamp, and a single padding helper applies width and alignment so
+// every datum obeys the same rules.
 // ============================================================================
 
-fn printDefaultFormat(
+/// The output form selected by the optional `fmt` field: signed decimal,
+/// octal, unsigned decimal, hexadecimal, floating point, string.
+const BsdFmt = enum { signed, octal, unsigned, hex, float, string };
+
+/// The optional sub-field specifier (stat-macos.txt:142-160).
+const BsdSub = enum { none, high, middle, low };
+
+/// One parsed directive.
+const BsdDirective = struct {
+    alt: bool = false,
+    plus: bool = false,
+    left: bool = false,
+    zero: bool = false,
+    space: bool = false,
+    width: u32 = 0,
+    precision: ?u32 = null,
+    fmt: ?BsdFmt = null,
+    sub: BsdSub = .none,
+    datum: u8 = 0,
+    /// Bytes consumed from the spec, which starts just after the '%'.
+    len: u32 = 0,
+};
+
+/// A timestamp datum, kept as a named type so it can be passed on.
+const BsdTimestamp = struct { sec: i64, nsec: i64 };
+
+/// What a datum expands to before the output form is applied.
+const BsdValue = union(enum) {
+    number: i64,
+    text: []const u8,
+    timestamp: BsdTimestamp,
+};
+
+/// Everything a directive may need beyond the directive itself.
+const BsdContext = struct {
     allocator: Allocator,
     stat_buf: StatResult,
     path: []const u8,
-    follow_symlinks: bool,
-    writer: anytype,
-) !void {
-    const mode: u32 = stat_buf.mode;
-    try printDefaultFormat_fileLine(stat_buf, path, follow_symlinks, writer);
-    try printDefaultFormat_sizeLine(stat_buf, mode, writer);
-    try printDefaultFormat_deviceLine(stat_buf, writer);
-    try printDefaultFormat_accessLine(allocator, stat_buf, mode, writer);
-    try printDefaultFormat_timeLines(stat_buf, writer);
-}
+    timefmt: []const u8,
+};
 
-/// Line 1: "  File: NAME" with " -> TARGET" for unfollowed symlinks.
-fn printDefaultFormat_fileLine(
-    stat_buf: StatResult,
-    path: []const u8,
-    follow_symlinks: bool,
-    writer: anytype,
-) !void {
-    const mode: u32 = stat_buf.mode;
-    std.debug.assert(mode != 0);
-    try writer.writeAll("  File: ");
-    if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
-        std.debug.assert(path.len > 0);
-        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-        var path_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
-        if (path.len <= std.fs.max_path_bytes) {
-            @memcpy(path_buf2[0..path.len], path);
-            path_buf2[path.len] = 0;
-            const path_z: [*:0]const u8 = @ptrCast(&path_buf2);
-            const n = c.readlink(path_z, &link_buf, link_buf.len);
-            if (n > 0) {
-                // readlink(2) never returns more than the buffer size, so the
-                // @intCast slice below stays in bounds.
-                std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
-                const target = link_buf[0..@intCast(n)];
-                try writer.print("{s} -> {s}\n", .{ path, target });
-            } else {
-                try writer.print("{s}\n", .{path});
-            }
-        } else {
-            try writer.print("{s}\n", .{path});
-        }
-    } else {
-        try writer.print("{s}\n", .{path});
-    }
-}
+/// Field widths and precisions above this are clamped, which bounds the
+/// padding loop without changing any realistic output.
+const bsd_field_max: u32 = 4096;
 
-/// Line 2: "  Size: ... Blocks: ... IO Block: ... <file type>".
-fn printDefaultFormat_sizeLine(stat_buf: StatResult, mode: u32, writer: anytype) !void {
-    const size: i64 = @intCast(stat_buf.size);
-    const file_type = if ((mode & c.S.IFMT) == c.S.IFREG and size == 0)
-        "regular empty file"
-    else
-        fileTypeString(mode);
-    // stat(2) returns non-negative values on success; assert before casting
-    // to u64 since @intCast panics on negative i64 sources.
-    std.debug.assert(stat_buf.size >= 0);
-    std.debug.assert(stat_buf.blocks >= 0);
-    std.debug.assert(stat_buf.blksize >= 0);
-    const size_u: u64 = @intCast(stat_buf.size);
-    const blocks_u: u64 = @intCast(stat_buf.blocks);
-    const blksize_u: u64 = @intCast(stat_buf.blksize);
-    try writer.print("  Size: {d: <10}Blocks: {d: <11}IO Block: {d: <7}{s}\n", .{
-        size_u,
-        blocks_u,
-        blksize_u,
-        file_type,
-    });
-}
+/// Scratch space one directive may use. Large enough for any path, since
+/// %N, %R and %Y all render one.
+const bsd_scratch_len = std.fs.max_path_bytes + 64;
 
-/// Line 3: "Device: MAJ,MIN\tInode: ...\tLinks: ..." (GNU decimal major,minor).
-fn printDefaultFormat_deviceLine(stat_buf: StatResult, writer: anytype) !void {
-    const dev: u64 = @intCast(stat_buf.dev);
-    const dev_major: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-        (dev >> 24) & 0xff
-    else
-        (dev >> 8) & 0xfff;
-    const dev_minor: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-        dev & 0xffffff
-    else
-        dev & 0xff;
-    try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
-        dev_major,
-        dev_minor,
-        stat_buf.ino,
-        stat_buf.nlink,
-    });
-}
+/// The default output format (stat-macos.txt:218-222).
+const bsd_default_format =
+    "%d %i %Sp %l %Su %Sg %r %z \"%Sa\" \"%Sm\" \"%Sc\" \"%SB\" %k %b %#Xf %N";
 
-/// Line 4: "Access: (MODE/PERMS)  Uid: (...)   Gid: (...)".
-fn printDefaultFormat_accessLine(
-    allocator: Allocator,
-    stat_buf: StatResult,
-    mode: u32,
-    writer: anytype,
-) !void {
-    var perm_buf: [10]u8 = undefined;
-    const perms = formatPermissions(mode, &perm_buf);
-    const octal_mode = mode & 0o7777;
-    std.debug.assert(perms.len == 10);
-    std.debug.assert(octal_mode <= 0o7777);
+/// -r: every struct stat field as a raw number (stat-macos.txt:60-62).
+const bsd_raw_format = "%d %i %#p %l %u %g %r %z %a %m %c %B %k %b %#Xf %N";
 
-    // User name
-    const uid: u32 = @intCast(stat_buf.uid);
-    var user_name_buf: [256]u8 = undefined;
-    const user_name = blk: {
-        const user_info = common.user_group.getUserById(uid, allocator) catch {
-            const fallback = std.fmt.bufPrint(&user_name_buf, "{d}", .{uid}) catch break :blk "?";
-            break :blk fallback;
-        };
-        defer allocator.free(user_info.name);
-        @memcpy(user_name_buf[0..user_info.name.len], user_info.name);
-        break :blk user_name_buf[0..user_info.name.len];
+/// -l: ls -lT format (stat-macos.txt:51, example at :231).
+const bsd_ls_format = "%Sp %l %Su %Sg %Z %Sm %N%SY";
+
+/// -F: ls -lT format plus the ls(1) type suffix (example at :228).
+const bsd_ls_suffix_format = "%Sp %l %Su %Sg %Z %Sm %N%T%SY";
+
+/// -s: shell variable assignments (stat-macos.txt:64-65). The field names are
+/// the struct stat member names, as macOS emits them.
+const bsd_shell_format = "st_dev=%d st_ino=%i st_mode=%#p st_nlink=%l " ++
+    "st_uid=%u st_gid=%g st_rdev=%r st_size=%z " ++
+    "st_atime=%a st_mtime=%m st_ctime=%c st_birthtime=%B " ++
+    "st_blksize=%k st_blocks=%b st_flags=%f";
+
+/// -x: the verbose multi-line block (stat-macos.txt:71-72).
+const bsd_verbose_format = "  File: \"%N\"%n" ++
+    "  Size: %-11z" ++
+    "FileType: %HT%n" ++
+    "  Mode: (%Mp%03Lp/%.10Sp)" ++
+    "         Uid: (%5u/%8Su)" ++
+    "  Gid: (%5g/%8Sg)%n" ++
+    "Device: %Hd,%Ld" ++
+    "   Inode: %i" ++
+    "   Links: %l%n" ++
+    "Access: %Sa%n" ++
+    "Modify: %Sm%n" ++
+    "Change: %Sc%n" ++
+    " Birth: %SB";
+
+/// The strftime(3) format the S form of a time datum uses without -t.
+const bsd_default_timefmt = "%b %e %H:%M:%S %Y";
+
+/// The output form character, if `ch` is one (stat-macos.txt:113-118).
+fn bsdFmtFromChar(ch: u8) ?BsdFmt {
+    return switch (ch) {
+        'D' => .signed,
+        'O' => .octal,
+        'U' => .unsigned,
+        'X' => .hex,
+        'F' => .float,
+        'S' => .string,
+        else => null,
     };
-
-    // Group name
-    const gid: u32 = @intCast(stat_buf.gid);
-    var group_name_buf: [256]u8 = undefined;
-    const group_name = blk: {
-        const group_info = common.user_group.getGroupById(gid, allocator) catch {
-            const fallback = std.fmt.bufPrint(&group_name_buf, "{d}", .{gid}) catch break :blk "?";
-            break :blk fallback;
-        };
-        defer allocator.free(group_info.name);
-        @memcpy(group_name_buf[0..group_info.name.len], group_info.name);
-        break :blk group_name_buf[0..group_info.name.len];
-    };
-
-    // Both names are either a short decimal-id fallback or a passwd/group name
-    // copied into a 256-byte buffer, so neither slice exceeds its buffer.
-    std.debug.assert(user_name.len <= user_name_buf.len);
-    std.debug.assert(group_name.len <= group_name_buf.len);
-    try writer.print("Access: ({o:0>4}/{s})  Uid: ({d: >5}/{s: >8})   Gid: ({d: >5}/{s: >8})\n", .{
-        octal_mode,
-        perms,
-        uid,
-        user_name,
-        gid,
-        group_name,
-    });
 }
 
-/// Lines 5-8: Access, Modify, Change, and Birth timestamps.
-fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
-    // Line 5: Access time
-    {
-        var fmt_buf: [64]u8 = undefined;
-        const atime_sec = getTimespecSec(stat_buf, .atime);
-        const atime_nsec = getTimespecNsec(stat_buf, .atime);
-        const formatted = formatTimestamp(atime_sec, atime_nsec, &fmt_buf) catch "-";
-        try writer.print("Access: {s}\n", .{formatted});
-    }
+/// The sub-field specifier, if `ch` is one (stat-macos.txt:142-160).
+fn bsdSubFromChar(ch: u8) ?BsdSub {
+    return switch (ch) {
+        'H' => .high,
+        'M' => .middle,
+        'L' => .low,
+        else => null,
+    };
+}
 
-    // Line 6: Modify time
-    {
-        var fmt_buf: [64]u8 = undefined;
-        const mtime_sec = getTimespecSec(stat_buf, .mtime);
-        const mtime_nsec = getTimespecNsec(stat_buf, .mtime);
-        const formatted = formatTimestamp(mtime_sec, mtime_nsec, &fmt_buf) catch "-";
-        try writer.print("Modify: {s}\n", .{formatted});
+/// Whether `ch` selects a field (stat-macos.txt:162-207). None of these
+/// letters is also an output form or sub-field letter, so the grammar parses
+/// without lookahead.
+fn isBsdDatum(ch: u8) bool {
+    const datums = "dipluagrmcBzbkfvNRTYZ";
+    for (datums) |candidate| {
+        if (candidate == ch) return true;
     }
+    return false;
+}
 
-    // Line 7: Change time
-    {
-        var fmt_buf: [64]u8 = undefined;
-        const ctime_sec = getTimespecSec(stat_buf, .ctime);
-        const ctime_nsec = getTimespecNsec(stat_buf, .ctime);
-        const formatted = formatTimestamp(ctime_sec, ctime_nsec, &fmt_buf) catch "-";
-        try writer.print("Change: {s}\n", .{formatted});
-    }
+/// The output form actually used: the explicit one, or the datum's documented
+/// default (stat-macos.txt:209-211).
+fn effectiveBsdFmt(d: BsdDirective) BsdFmt {
+    if (d.fmt) |explicit| return explicit;
+    return switch (d.datum) {
+        'p' => .octal,
+        'a', 'm', 'c' => .signed,
+        'N', 'R', 'T', 'Y' => .string,
+        else => .unsigned,
+    };
+}
 
-    // Line 8: Birth time
-    {
-        const btime_sec = getTimespecSec(stat_buf, .btime);
-        if (btime_sec == 0) {
-            try writer.print(" Birth: -\n", .{});
-        } else {
-            var fmt_buf: [64]u8 = undefined;
-            const btime_nsec = getTimespecNsec(stat_buf, .btime);
-            const formatted = formatTimestamp(btime_sec, btime_nsec, &fmt_buf) catch "-";
-            try writer.print(" Birth: {s}\n", .{formatted});
+/// Parse one directive from `spec`, which starts just after the '%'. Returns
+/// null when the spec does not end in a known datum; the caller then emits the
+/// '%' literally.
+fn parseBsdDirective(spec: []const u8) ?BsdDirective {
+    std.debug.assert(spec.len > 0);
+    var d: BsdDirective = .{};
+
+    var i = parseBsdDirective_flags(spec, &d);
+    i = parseBsdDirective_width(spec, i, &d);
+    i = parseBsdDirective_precision(spec, i, &d);
+
+    if (i < spec.len) {
+        if (bsdFmtFromChar(spec[i])) |form| {
+            d.fmt = form;
+            i += 1;
         }
+    }
+    if (i < spec.len) {
+        if (bsdSubFromChar(spec[i])) |sub| {
+            d.sub = sub;
+            i += 1;
+        }
+    }
+    if (i >= spec.len) return null;
+    if (!isBsdDatum(spec[i])) return null;
+
+    d.datum = spec[i];
+    d.len = i + 1;
+    std.debug.assert(d.len >= 1);
+    std.debug.assert(d.len <= spec.len);
+    return d;
+}
+
+/// Consume the leading flag characters (stat-macos.txt:83-100), returning the
+/// new cursor.
+fn parseBsdDirective_flags(spec: []const u8, d: *BsdDirective) u32 {
+    std.debug.assert(spec.len > 0);
+    var i: u32 = 0;
+    while (i < spec.len) : (i += 1) {
+        switch (spec[i]) {
+            '#' => d.alt = true,
+            '+' => d.plus = true,
+            '-' => d.left = true,
+            '0' => d.zero = true,
+            ' ' => d.space = true,
+            else => break,
+        }
+    }
+    std.debug.assert(i <= spec.len);
+    return i;
+}
+
+/// Consume the optional minimum field width (stat-macos.txt:104-105).
+fn parseBsdDirective_width(spec: []const u8, start: u32, d: *BsdDirective) u32 {
+    std.debug.assert(start <= spec.len);
+    var i = start;
+    while (i < spec.len) : (i += 1) {
+        if (spec[i] < '0') break;
+        if (spec[i] > '9') break;
+        // The clamp keeps the running value far below the u32 range, so the
+        // accumulation below cannot overflow.
+        const digit: u32 = spec[i] - '0';
+        d.width = @min(d.width * 10 + digit, bsd_field_max);
+    }
+    std.debug.assert(i >= start);
+    std.debug.assert(d.width <= bsd_field_max);
+    return i;
+}
+
+/// Consume the optional precision (stat-macos.txt:107-111).
+fn parseBsdDirective_precision(spec: []const u8, start: u32, d: *BsdDirective) u32 {
+    std.debug.assert(start <= spec.len);
+    if (start >= spec.len) return start;
+    if (spec[start] != '.') return start;
+
+    var i = start + 1;
+    var value: u32 = 0;
+    while (i < spec.len) : (i += 1) {
+        if (spec[i] < '0') break;
+        if (spec[i] > '9') break;
+        // Clamped every step, so the accumulation stays inside u32.
+        const digit: u32 = spec[i] - '0';
+        value = @min(value * 10 + digit, bsd_field_max);
+    }
+    d.precision = value;
+    std.debug.assert(i > start);
+    std.debug.assert(value <= bsd_field_max);
+    return i;
+}
+
+/// Render `format` with the BSD directive grammar.
+fn processBsdFormat(
+    format: []const u8,
+    ctx: BsdContext,
+    file_number: u32,
+    writer: anytype,
+) !void {
+    std.debug.assert(file_number >= 1);
+    std.debug.assert(ctx.path.len <= std.fs.max_path_bytes);
+    var i: u32 = 0;
+    while (i < format.len) {
+        // Every branch advances the cursor by at least one byte, so the scan
+        // is bounded by the length of the format string.
+        std.debug.assert(i < format.len);
+        if (format[i] != '%') {
+            try writer.writeByte(format[i]);
+            i += 1;
+            continue;
+        }
+        if (i + 1 >= format.len) {
+            try writer.writeByte('%');
+            i += 1;
+            continue;
+        }
+        const spec = format[i + 1 ..];
+        const consumed = try processBsdFormat_directive(spec, ctx, file_number, writer);
+        i += 1 + consumed;
+    }
+}
+
+/// Emit one directive from `spec` (the bytes just after the '%'), returning
+/// how many of them were consumed. An unparseable spec consumes nothing and
+/// emits a literal '%'.
+fn processBsdFormat_directive(
+    spec: []const u8,
+    ctx: BsdContext,
+    file_number: u32,
+    writer: anytype,
+) !u32 {
+    std.debug.assert(spec.len > 0);
+    std.debug.assert(file_number >= 1);
+    // stat-macos.txt:78-80: n, t, % and @ are recognised immediately after
+    // the '%', before any flag can appear.
+    switch (spec[0]) {
+        'n' => {
+            try writer.writeByte('\n');
+            return 1;
+        },
+        't' => {
+            try writer.writeByte('\t');
+            return 1;
+        },
+        '%' => {
+            try writer.writeByte('%');
+            return 1;
+        },
+        '@' => {
+            try writer.print("{d}", .{file_number});
+            return 1;
+        },
+        else => {},
+    }
+    const directive = parseBsdDirective(spec) orelse {
+        try writer.writeByte('%');
+        return 0;
+    };
+    try emitBsdDirective(directive, ctx, writer);
+    return directive.len;
+}
+
+/// Expand one parsed directive.
+fn emitBsdDirective(d: BsdDirective, ctx: BsdContext, writer: anytype) !void {
+    std.debug.assert(d.datum != 0);
+    std.debug.assert(d.len >= 1);
+    var scratch: [bsd_scratch_len]u8 = undefined;
+    switch (bsdDatumValue(d, ctx, &scratch)) {
+        .number => |value| try writeBsdNumber(d, value, writer),
+        .text => |text| try writeBsdText(d, text, writer),
+        .timestamp => |ts| try writeBsdTimestamp(d, ts, ctx.timefmt, writer),
+    }
+}
+
+/// Expand the directive's datum to a value (stat-macos.txt:162-207).
+fn bsdDatumValue(d: BsdDirective, ctx: BsdContext, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum != 0);
+    std.debug.assert(scratch.len >= 256);
+    const st = ctx.stat_buf;
+    return switch (d.datum) {
+        'd' => bsdDeviceValue(d, st.dev, scratch),
+        'r' => bsdDeviceValue(d, st.rdev, scratch),
+        'i' => .{ .number = @as(i64, @bitCast(st.ino)) },
+        'p' => bsdModeValue(d, st.mode, scratch),
+        'l' => .{ .number = @as(i64, @bitCast(st.nlink)) },
+        'u' => bsdUserValue(d, ctx, scratch),
+        'g' => bsdGroupValue(d, ctx, scratch),
+        'a' => .{ .timestamp = .{ .sec = st.atim.sec, .nsec = st.atim.nsec } },
+        'm' => .{ .timestamp = .{ .sec = st.mtim.sec, .nsec = st.mtim.nsec } },
+        'c' => .{ .timestamp = .{ .sec = st.ctim.sec, .nsec = st.ctim.nsec } },
+        'B' => .{ .timestamp = .{ .sec = st.btim.sec, .nsec = st.btim.nsec } },
+        'z' => .{ .number = st.size },
+        'b' => .{ .number = st.blocks },
+        'k' => .{ .number = st.blksize },
+        'f' => bsdFlagsValue(d, st.flags, scratch),
+        'v' => .{ .number = st.gen },
+        'N' => .{ .text = ctx.path },
+        'R' => .{ .text = bsdRealPathText(ctx.path, scratch) },
+        'T' => .{ .text = bsdFileTypeText(d.sub, st.mode) },
+        'Y' => bsdSymlinkValue(d, ctx, scratch),
+        'Z' => bsdSizeRdevValue(d, st, scratch),
+        else => .{ .text = "" },
+    };
+}
+
+/// %d and %r. The H and L sub-fields select the major and minor numbers. BSD
+/// renders the string form with devname(3), which Linux has no equivalent
+/// for, so the numeric identity is rendered on both platforms instead.
+fn bsdDeviceValue(d: BsdDirective, dev: u64, scratch: []u8) BsdValue {
+    std.debug.assert(isBsdDatum(d.datum));
+    std.debug.assert(scratch.len >= 32);
+    const piece: u64 = switch (d.sub) {
+        .high => devMajor(dev),
+        .low => devMinor(dev),
+        .none, .middle => dev,
+    };
+    if (effectiveBsdFmt(d) == .string) {
+        const text = std.fmt.bufPrint(scratch, "{d}", .{piece}) catch return .{ .text = "?" };
+        return .{ .text = text };
+    }
+    return .{ .number = @as(i64, @bitCast(piece)) };
+}
+
+/// The major number encoded in a StatResult device id. The layout matches how
+/// doStat composes the id on each platform, not the kernel's own encoding.
+fn devMajor(dev: u64) u64 {
+    if (builtin.os.tag == .linux) return dev >> 32;
+    return (dev >> 24) & 0xff;
+}
+
+/// The minor number encoded in a StatResult device id.
+fn devMinor(dev: u64) u64 {
+    if (builtin.os.tag == .linux) return dev & 0xffffffff;
+    return dev & 0xffffff;
+}
+
+/// %p. The string form is the ls -lTd mode string, sliced by the sub-field
+/// into the user, group or other triplet; the numeric forms report the type,
+/// setuid/setgid/sticky, or permission bits (stat-macos.txt:146-160).
+fn bsdModeValue(d: BsdDirective, mode: u32, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum == 'p');
+    std.debug.assert(scratch.len >= 16);
+    if (effectiveBsdFmt(d) == .string) {
+        var perm_buf: [10]u8 = undefined;
+        const perms = formatPermissions(mode, &perm_buf);
+        const piece: []const u8 = switch (d.sub) {
+            .none => perms[0..10],
+            .high => perms[1..4],
+            .middle => perms[4..7],
+            .low => perms[7..10],
+        };
+        // perms points at a local buffer, so the piece is copied out.
+        @memcpy(scratch[0..piece.len], piece);
+        return .{ .text = scratch[0..piece.len] };
+    }
+    const numeric: u32 = switch (d.sub) {
+        .none => mode,
+        .high => mode >> 12,
+        .middle => (mode >> 9) & 0o7,
+        .low => mode & 0o777,
+    };
+    return .{ .number = numeric };
+}
+
+/// %u: the numeric uid, or the login name for the string form.
+fn bsdUserValue(d: BsdDirective, ctx: BsdContext, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum == 'u');
+    std.debug.assert(scratch.len >= 256);
+    const uid: u32 = ctx.stat_buf.uid;
+    if (effectiveBsdFmt(d) != .string) return .{ .number = uid };
+    const user_info = common.user_group.getUserById(uid, ctx.allocator) catch {
+        const text = std.fmt.bufPrint(scratch, "{d}", .{uid}) catch return .{ .text = "?" };
+        return .{ .text = text };
+    };
+    defer ctx.allocator.free(user_info.name);
+    if (user_info.name.len > scratch.len) return .{ .text = "?" };
+    @memcpy(scratch[0..user_info.name.len], user_info.name);
+    return .{ .text = scratch[0..user_info.name.len] };
+}
+
+/// %g: the numeric gid, or the group name for the string form.
+fn bsdGroupValue(d: BsdDirective, ctx: BsdContext, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum == 'g');
+    std.debug.assert(scratch.len >= 256);
+    const gid: u32 = ctx.stat_buf.gid;
+    if (effectiveBsdFmt(d) != .string) return .{ .number = gid };
+    const group_info = common.user_group.getGroupById(gid, ctx.allocator) catch {
+        const text = std.fmt.bufPrint(scratch, "{d}", .{gid}) catch return .{ .text = "?" };
+        return .{ .text = text };
+    };
+    defer ctx.allocator.free(group_info.name);
+    if (group_info.name.len > scratch.len) return .{ .text = "?" };
+    @memcpy(scratch[0..group_info.name.len], group_info.name);
+    return .{ .text = scratch[0..group_info.name.len] };
+}
+
+/// %f: the user defined flags. Linux has no st_flags, so it always reports 0.
+fn bsdFlagsValue(d: BsdDirective, flags: u32, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum == 'f');
+    std.debug.assert(scratch.len >= 128);
+    if (effectiveBsdFmt(d) != .string) return .{ .number = flags };
+    return .{ .text = bsdFlagsText(flags, scratch) };
+}
+
+/// Render st_flags as the comma-separated names ls -lTdo prints, or "-" when
+/// no flag is set. The table is the inverse of find.zig's name-to-mask one.
+fn bsdFlagsText(flags: u32, scratch: []u8) []const u8 {
+    std.debug.assert(scratch.len >= 128);
+    const table = [_]struct { mask: u32, name: []const u8 }{
+        .{ .mask = 0x00000001, .name = "nodump" },
+        .{ .mask = 0x00000002, .name = "uchg" },
+        .{ .mask = 0x00000004, .name = "uappnd" },
+        .{ .mask = 0x00000008, .name = "opaque" },
+        .{ .mask = 0x00008000, .name = "hidden" },
+        .{ .mask = 0x00010000, .name = "arch" },
+        .{ .mask = 0x00020000, .name = "schg" },
+        .{ .mask = 0x00040000, .name = "sappnd" },
+    };
+    var len: u32 = 0;
+    for (table) |entry| {
+        if (flags & entry.mask == 0) continue;
+        if (len > 0) {
+            if (len >= scratch.len) break;
+            scratch[len] = ',';
+            len += 1;
+        }
+        if (len + entry.name.len > scratch.len) break;
+        @memcpy(scratch[len..][0..entry.name.len], entry.name);
+        len += @intCast(entry.name.len);
+    }
+    std.debug.assert(len <= scratch.len);
+    if (len == 0) return "-";
+    return scratch[0..len];
+}
+
+/// %R: the absolute pathname, falling back to the given path when realpath(3)
+/// cannot resolve it.
+fn bsdRealPathText(path: []const u8, scratch: []u8) []const u8 {
+    std.debug.assert(scratch.len >= std.fs.max_path_bytes);
+    if (path.len > std.fs.max_path_bytes) return path;
+    var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(path_zbuf[0..path.len], path);
+    path_zbuf[path.len] = 0;
+    std.debug.assert(path_zbuf[path.len] == 0);
+    const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
+    const resolved = c.realpath(path_z, scratch.ptr) orelse return path;
+    return std.mem.sliceTo(resolved, 0);
+}
+
+/// %T: the ls -F suffix character, or the long name for the H sub-field
+/// (stat-macos.txt:149-156, 200-201).
+fn bsdFileTypeText(sub: BsdSub, mode: u32) []const u8 {
+    if (sub == .high) return bsdFileTypeLong(mode);
+    return bsdFileTypeSuffix(mode);
+}
+
+/// The descriptive file type name %HT reports.
+fn bsdFileTypeLong(mode: u32) []const u8 {
+    return switch (mode & c.S.IFMT) {
+        c.S.IFIFO => "Fifo File",
+        c.S.IFCHR => "Character Device",
+        c.S.IFDIR => "Directory",
+        c.S.IFBLK => "Block Device",
+        c.S.IFREG => "Regular File",
+        c.S.IFLNK => "Symbolic Link",
+        c.S.IFSOCK => "Socket",
+        else => "???",
+    };
+}
+
+/// The ls -F style suffix character %T reports.
+fn bsdFileTypeSuffix(mode: u32) []const u8 {
+    return switch (mode & c.S.IFMT) {
+        c.S.IFIFO => "|",
+        c.S.IFDIR => "/",
+        c.S.IFLNK => "@",
+        c.S.IFSOCK => "=",
+        c.S.IFREG => if (mode & 0o111 != 0) "*" else "",
+        else => "",
+    };
+}
+
+/// %Y: the target of a symbolic link. Requesting the string form explicitly
+/// prepends " -> " (stat-macos.txt:138-140).
+fn bsdSymlinkValue(d: BsdDirective, ctx: BsdContext, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum == 'Y');
+    std.debug.assert(scratch.len >= 128);
+    if (ctx.stat_buf.mode & c.S.IFMT != c.S.IFLNK) return .{ .text = "" };
+
+    const arrow_len: u32 = 4;
+    scratch[0] = ' ';
+    scratch[1] = '-';
+    scratch[2] = '>';
+    scratch[3] = ' ';
+    const target = readLinkTarget(ctx.path, scratch[arrow_len..]) orelse
+        return .{ .text = "" };
+    const total = arrow_len + target.len;
+    std.debug.assert(total <= scratch.len);
+
+    const explicit_string = if (d.fmt) |form| form == .string else false;
+    if (explicit_string) return .{ .text = scratch[0..total] };
+    return .{ .text = scratch[arrow_len..total] };
+}
+
+/// %Z: "major,minor" for character and block devices, the size otherwise
+/// (stat-macos.txt:205-207).
+fn bsdSizeRdevValue(d: BsdDirective, st: StatResult, scratch: []u8) BsdValue {
+    std.debug.assert(d.datum == 'Z');
+    std.debug.assert(scratch.len >= 64);
+    const kind = st.mode & c.S.IFMT;
+    if (kind == c.S.IFCHR) return bsdRdevPairValue(st.rdev, scratch);
+    if (kind == c.S.IFBLK) return bsdRdevPairValue(st.rdev, scratch);
+    return .{ .number = st.size };
+}
+
+/// The "major,minor" pair %Z reports for a device node.
+fn bsdRdevPairValue(rdev: u64, scratch: []u8) BsdValue {
+    std.debug.assert(scratch.len >= 64);
+    const major = devMajor(rdev);
+    const minor = devMinor(rdev);
+    const args = .{ major, minor };
+    const text = std.fmt.bufPrint(scratch, "{d},{d}", args) catch return .{ .text = "?" };
+    return .{ .text = text };
+}
+
+/// Emit string output: the precision truncates, the width pads
+/// (stat-macos.txt:93-111).
+fn writeBsdText(d: BsdDirective, text: []const u8, writer: anytype) !void {
+    std.debug.assert(d.datum != 0);
+    std.debug.assert(d.width <= bsd_field_max);
+    var body = text;
+    if (d.precision) |limit| {
+        if (body.len > limit) body = body[0..limit];
+    }
+    std.debug.assert(body.len <= text.len);
+    try writePaddedField(writer, "", body, d.width, d.left, ' ');
+}
+
+/// The prefix and digits of a rendered number, kept apart so zero fill can go
+/// between them the way printf(3) places it.
+const BsdNumberText = struct { prefix: []const u8, body: []const u8 };
+
+/// Emit numeric output in the directive's base.
+fn writeBsdNumber(d: BsdDirective, value: i64, writer: anytype) !void {
+    std.debug.assert(d.datum != 0);
+    std.debug.assert(d.width <= bsd_field_max);
+    var body_buf: [160]u8 = undefined;
+    var prefix_buf: [2]u8 = undefined;
+    const rendered = renderBsdNumber(d, value, &body_buf, &prefix_buf);
+    const fill = bsdFillChar(d);
+    try writePaddedField(writer, rendered.prefix, rendered.body, d.width, d.left, fill);
+}
+
+/// The left-padding character: '0' only when the 0 flag is set and the field
+/// is not left aligned, since left alignment pads on the right instead
+/// (stat-macos.txt:93-97).
+fn bsdFillChar(d: BsdDirective) u8 {
+    if (!d.zero) return ' ';
+    if (d.left) return ' ';
+    return '0';
+}
+
+/// Render `value` in the directive's base, applying the minimum-digit
+/// precision, the alternate form and the sign flags.
+fn renderBsdNumber(
+    d: BsdDirective,
+    value: i64,
+    body_buf: *[160]u8,
+    prefix_buf: *[2]u8,
+) BsdNumberText {
+    const form = effectiveBsdFmt(d);
+    std.debug.assert(form != .string);
+    std.debug.assert(form != .float);
+
+    // Signed output carries its own sign; the other forms reinterpret the
+    // 64-bit pattern, exactly as the C conversions %o, %u and %x do.
+    const negative = if (form == .signed) value < 0 else false;
+    const magnitude: u64 = bsdMagnitude(form, value);
+
+    // A u64 needs at most 22 octal digits, so the buffer can never overflow.
+    var digits_buf: [96]u8 = undefined;
+    const digits = switch (form) {
+        .octal => std.fmt.bufPrint(&digits_buf, "{o}", .{magnitude}) catch unreachable,
+        .hex => std.fmt.bufPrint(&digits_buf, "{x}", .{magnitude}) catch unreachable,
+        else => std.fmt.bufPrint(&digits_buf, "{d}", .{magnitude}) catch unreachable,
+    };
+    std.debug.assert(digits.len > 0);
+
+    const min_digits = bsdMinDigits(d, form, digits);
+    const body = bsdPadDigits(digits, min_digits, body_buf);
+    const prefix = bsdNumberPrefix(d, form, negative, magnitude, prefix_buf);
+    return .{ .prefix = prefix, .body = body };
+}
+
+/// The magnitude to render: the absolute value for signed output, the raw bit
+/// pattern for the octal, unsigned and hexadecimal forms.
+fn bsdMagnitude(form: BsdFmt, value: i64) u64 {
+    std.debug.assert(form != .string);
+    std.debug.assert(form != .float);
+    if (form != .signed) return @bitCast(value);
+    if (value >= 0) return @intCast(value);
+    // Negating through -(value + 1) + 1 keeps the most negative i64 in range.
+    return @as(u64, @intCast(-(value + 1))) + 1;
+}
+
+/// The minimum digit count: the precision, raised when the alternate octal
+/// form has to force a leading zero (stat-macos.txt:85-87).
+fn bsdMinDigits(d: BsdDirective, form: BsdFmt, digits: []const u8) u32 {
+    std.debug.assert(digits.len > 0);
+    std.debug.assert(digits.len <= 96);
+    var min_digits: u32 = 1;
+    if (d.precision) |precision| min_digits = @max(precision, 1);
+    if (!d.alt) return min_digits;
+    if (form != .octal) return min_digits;
+    if (digits[0] == '0') return min_digits;
+    const forced: u32 = @intCast(digits.len + 1);
+    return @max(min_digits, forced);
+}
+
+/// Left-pad `digits` with zeroes to `min_digits`, into `body_buf`.
+fn bsdPadDigits(digits: []const u8, min_digits: u32, body_buf: *[160]u8) []const u8 {
+    std.debug.assert(digits.len > 0);
+    std.debug.assert(min_digits <= bsd_field_max);
+    const digits_len: u32 = @intCast(digits.len);
+    const zeros: u32 = if (min_digits > digits_len) min_digits - digits_len else 0;
+
+    var written: u32 = 0;
+    while (written < zeros) : (written += 1) {
+        if (written >= body_buf.len) break;
+        body_buf[written] = '0';
+    }
+    std.debug.assert(written <= body_buf.len);
+
+    const room: u32 = @intCast(body_buf.len - written);
+    const copy_len = @min(digits_len, room);
+    @memcpy(body_buf[written..][0..copy_len], digits[0..copy_len]);
+    const total = written + copy_len;
+    std.debug.assert(total <= body_buf.len);
+    return body_buf[0..total];
+}
+
+/// The sign or alternate-form prefix that precedes the digits.
+fn bsdNumberPrefix(
+    d: BsdDirective,
+    form: BsdFmt,
+    negative: bool,
+    magnitude: u64,
+    prefix_buf: *[2]u8,
+) []const u8 {
+    std.debug.assert(form != .string);
+    std.debug.assert(form != .float);
+    if (negative) {
+        prefix_buf[0] = '-';
+        return prefix_buf[0..1];
+    }
+    if (form == .signed) {
+        // stat-macos.txt:99-100: '+' overrides a reserved space column.
+        if (d.plus) {
+            prefix_buf[0] = '+';
+            return prefix_buf[0..1];
+        }
+        if (d.space) {
+            prefix_buf[0] = ' ';
+            return prefix_buf[0..1];
+        }
+        return prefix_buf[0..0];
+    }
+    if (d.alt and form == .hex and magnitude != 0) {
+        prefix_buf[0] = '0';
+        prefix_buf[1] = 'x';
+        return prefix_buf[0..2];
+    }
+    return prefix_buf[0..0];
+}
+
+/// %a, %m, %c and %B. The string form runs the -t strftime(3) format, the
+/// float form prints seconds with a fraction, and every other form prints the
+/// epoch second count.
+fn writeBsdTimestamp(
+    d: BsdDirective,
+    ts: BsdTimestamp,
+    timefmt: []const u8,
+    writer: anytype,
+) !void {
+    std.debug.assert(d.datum != 0);
+    std.debug.assert(d.width <= bsd_field_max);
+    const form = effectiveBsdFmt(d);
+    if (form == .string) {
+        var text_buf: [512]u8 = undefined;
+        const text = bsdStrftime(ts.sec, timefmt, &text_buf);
+        try writeBsdText(d, text, writer);
+        return;
+    }
+    if (form == .float) {
+        var float_buf: [64]u8 = undefined;
+        const text = bsdFloatSeconds(d, ts, &float_buf);
+        try writePaddedField(writer, "", text, d.width, d.left, bsdFillChar(d));
+        return;
+    }
+    try writeBsdNumber(d, ts.sec, writer);
+}
+
+/// Render `sec` in local time with strftime(3), as -t asks for.
+fn bsdStrftime(sec: i64, fmt: []const u8, buf: *[512]u8) []const u8 {
+    std.debug.assert(buf.len >= 64);
+    if (fmt.len == 0) return "";
+    if (fmt.len >= 256) return "";
+
+    var fmt_zbuf: [256]u8 = undefined;
+    @memcpy(fmt_zbuf[0..fmt.len], fmt);
+    fmt_zbuf[fmt.len] = 0;
+    std.debug.assert(fmt_zbuf[fmt.len] == 0);
+    const fmt_z: [*:0]const u8 = @ptrCast(&fmt_zbuf);
+
+    const time_val: c.time_t = @intCast(sec);
+    var tm: time.c_tm = undefined;
+    if (time.localtime_r(&time_val, &tm) == null) return "";
+    const len = time.strftime(buf, buf.len, fmt_z, &tm);
+    return buf[0..len];
+}
+
+/// The F form of a time datum: seconds with a fractional part whose digit
+/// count comes from the precision (printf(3) defaults to six).
+fn bsdFloatSeconds(d: BsdDirective, ts: BsdTimestamp, buf: *[64]u8) []const u8 {
+    std.debug.assert(buf.len >= 32);
+    const digits: u32 = @min(d.precision orelse 6, 9);
+    const raw_nsec: u64 = if (ts.nsec < 0) 0 else @intCast(ts.nsec);
+    // Clamping keeps the fraction exactly nine digits even if the kernel
+    // reports a nanosecond field outside its documented range.
+    const nsec: u64 = @min(raw_nsec, 999_999_999);
+    // A seconds count plus a nine-digit fraction never exceeds 32 bytes.
+    if (digits == 0) return std.fmt.bufPrint(buf, "{d}", .{ts.sec}) catch unreachable;
+
+    var frac_buf: [16]u8 = undefined;
+    const frac = std.fmt.bufPrint(&frac_buf, "{d:0>9}", .{nsec}) catch unreachable;
+    std.debug.assert(frac.len == 9);
+    const args = .{ ts.sec, frac[0..digits] };
+    return std.fmt.bufPrint(buf, "{d}.{s}", args) catch unreachable;
+}
+
+/// Write `prefix` then `body`, padded to `width` with `fill`. This is the one
+/// place field width and alignment are applied, so every datum obeys them.
+fn writePaddedField(
+    writer: anytype,
+    prefix: []const u8,
+    body: []const u8,
+    width: u32,
+    left: bool,
+    fill: u8,
+) !void {
+    std.debug.assert(prefix.len <= 2);
+    std.debug.assert(width <= bsd_field_max);
+    const used = prefix.len + body.len;
+    const pad: u32 = if (width > used) width - @as(u32, @intCast(used)) else 0;
+    std.debug.assert(pad <= bsd_field_max);
+
+    if (left) {
+        try writer.writeAll(prefix);
+        try writer.writeAll(body);
+        try writeBsdFill(writer, ' ', pad);
+        return;
+    }
+    if (fill == '0') {
+        try writer.writeAll(prefix);
+        try writeBsdFill(writer, '0', pad);
+        try writer.writeAll(body);
+        return;
+    }
+    try writeBsdFill(writer, ' ', pad);
+    try writer.writeAll(prefix);
+    try writer.writeAll(body);
+}
+
+/// Emit `count` copies of the fill character.
+fn writeBsdFill(writer: anytype, ch: u8, count: u32) !void {
+    std.debug.assert(count <= bsd_field_max);
+    std.debug.assert(ch != 0);
+    var written: u32 = 0;
+    while (written < count) : (written += 1) {
+        try writer.writeByte(ch);
     }
 }
 
@@ -1325,26 +2136,33 @@ pub fn runStat(
         return @intFromEnum(common.ExitCode.success);
     }
 
+    // stat-macos.txt:14-15: with no operand, report on standard input's
+    // descriptor rather than failing with a usage error.
     if (opts.positionals.len == 0) {
-        common.printErrorWithProgram(
+        const stdin_failed = try processStandardInput(
             allocator,
+            &opts,
+            stdout_writer,
             stderr_writer,
-            prog_name,
-            "missing operand\nTry 'stat --help' for more information.",
-            .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return if (stdin_failed)
+            @intFromEnum(common.ExitCode.general_error)
+        else
+            @intFromEnum(common.ExitCode.success);
     }
 
     var has_error = false;
+    var file_number: u32 = 0;
 
     // The empty-positionals case returned above, so the loop has work to do.
     std.debug.assert(opts.positionals.len > 0);
     for (opts.positionals) |path| {
+        file_number += 1;
         const failed = try processOnePath(
             allocator,
             &opts,
             path,
+            file_number,
             stdout_writer,
             stderr_writer,
         );
@@ -1352,11 +2170,36 @@ pub fn runStat(
             has_error = true;
         }
     }
+    std.debug.assert(file_number >= 1);
 
     return if (has_error)
         @intFromEnum(common.ExitCode.general_error)
     else
         @intFromEnum(common.ExitCode.success);
+}
+
+/// Report on standard input's descriptor, which is what stat does when no
+/// file operand is given (stat-macos.txt:14-15). Returns true on failure.
+fn processStandardInput(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !bool {
+    const stat_buf = doStatFd(0) catch {
+        if (!opts.quiet) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "cannot stat standard input",
+                .{},
+            );
+        }
+        return true;
+    };
+    try emitStatOutput(allocator, opts, stat_buf, "(stdin)", 1, stdout_writer);
+    return false;
 }
 
 /// Emit stat output for a single path. Returns true when the path could
@@ -1365,10 +2208,13 @@ fn processOnePath(
     allocator: Allocator,
     opts: *const StatOptions,
     path: []const u8,
+    file_number: u32,
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !bool {
-    if (opts.file_system and opts.format == null and opts.printf_fmt == null) {
+    std.debug.assert(file_number >= 1);
+    const gnu_format_given = opts.format != null or opts.printf_fmt != null;
+    if (opts.mode == .default and opts.file_system and !gnu_format_given) {
         printFileSystemInfo(path, stdout_writer) catch {
             common.printErrorWithProgram(
                 allocator,
@@ -1382,52 +2228,111 @@ fn processOnePath(
         return false;
     }
 
-    const stat_buf = doStat(path, opts.dereference) catch |err| {
-        const msg = switch (err) {
-            error.AccessDenied => "Permission denied",
-            error.FileNotFound => "No such file or directory",
-            error.NotDir => "Not a directory",
-            error.NameTooLong => "File name too long",
-            error.SymLinkLoop => "Too many levels of symbolic links",
-            else => "Cannot access",
-        };
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "cannot stat '{s}': {s}",
-            .{ path, msg },
-        );
+    const stat_buf = statPath(opts, path) catch |err| {
+        // stat-macos.txt:56-58: -q silences the message, but the exit status
+        // still reports the failure.
+        if (!opts.quiet) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "cannot stat '{s}': {s}",
+                .{ path, statErrorMessage(err) },
+            );
+        }
         return true;
     };
 
-    if (opts.format) |format| {
-        try processFormatString(
-            allocator,
-            format,
-            stat_buf,
-            path,
-            opts.dereference,
-            false,
-            stdout_writer,
-        );
-        try stdout_writer.writeByte('\n');
-    } else if (opts.printf_fmt) |format| {
-        try processFormatString(
-            allocator,
-            format,
-            stat_buf,
-            path,
-            opts.dereference,
-            true,
-            stdout_writer,
-        );
-    } else if (opts.terse) {
-        try printTerseFormat(stat_buf, path, stdout_writer);
-    } else {
-        try printDefaultFormat(allocator, stat_buf, path, opts.dereference, stdout_writer);
-    }
+    try emitStatOutput(allocator, opts, stat_buf, path, file_number, stdout_writer);
     return false;
+}
+
+/// stat(2) or lstat(2) per -L. When -L is given and the target does not
+/// exist, fall back on lstat(2) and report the link (stat-macos.txt:41-45).
+fn statPath(opts: *const StatOptions, path: []const u8) !StatResult {
+    if (doStat(path, opts.dereference)) |result| {
+        std.debug.assert(result.mode != 0);
+        return result;
+    } else |err| {
+        if (!opts.dereference) return err;
+        const link = doStat(path, false) catch return err;
+        std.debug.assert(link.mode != 0);
+        return link;
+    }
+}
+
+/// The human-readable reason a stat(2) call failed.
+fn statErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AccessDenied => "Permission denied",
+        error.FileNotFound => "No such file or directory",
+        error.NotDir => "Not a directory",
+        error.NameTooLong => "File name too long",
+        error.SymLinkLoop => "Too many levels of symbolic links",
+        else => "Cannot access",
+    };
+}
+
+/// The format string the selected output mode uses.
+fn selectedFormat(opts: *const StatOptions) []const u8 {
+    return switch (opts.mode) {
+        .bsd_format => opts.bsd_format orelse bsd_default_format,
+        .ls => if (opts.type_suffix) bsd_ls_suffix_format else bsd_ls_format,
+        .raw => bsd_raw_format,
+        .shell => bsd_shell_format,
+        .verbose => bsd_verbose_format,
+        .default => bsd_default_format,
+    };
+}
+
+/// Emit one file's output in whichever mode the flags selected. The BSD
+/// mode flags win; otherwise the surviving GNU options are honoured, and
+/// with none of them the BSD default format is used.
+fn emitStatOutput(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stat_buf: StatResult,
+    path: []const u8,
+    file_number: u32,
+    writer: *std.Io.Writer,
+) !void {
+    std.debug.assert(file_number >= 1);
+    std.debug.assert(stat_buf.mode != 0);
+    if (opts.mode == .default) {
+        if (opts.printf_fmt) |format| {
+            // GNU --printf never appends a newline of its own.
+            const follow = opts.dereference;
+            try processFormatString(allocator, format, stat_buf, path, follow, true, writer);
+            return;
+        }
+        if (opts.format) |format| {
+            const follow = opts.dereference;
+            try processFormatString(allocator, format, stat_buf, path, follow, false, writer);
+            try emitTrailingNewline(opts, writer);
+            return;
+        }
+        if (opts.terse) {
+            try printTerseFormat(stat_buf, path, writer);
+            return;
+        }
+    }
+
+    const ctx = BsdContext{
+        .allocator = allocator,
+        .stat_buf = stat_buf,
+        .path = path,
+        .timefmt = opts.timefmt orelse bsd_default_timefmt,
+    };
+    try processBsdFormat(selectedFormat(opts), ctx, file_number, writer);
+    try emitTrailingNewline(opts, writer);
+}
+
+/// Terminate one piece of output, unless -n asked for no newline
+/// (stat-macos.txt:53-54).
+fn emitTrailingNewline(opts: *const StatOptions, writer: *std.Io.Writer) !void {
+    std.debug.assert(@intFromPtr(opts) != 0);
+    if (opts.no_newline) return;
+    try writer.writeByte('\n');
 }
 
 // ============================================================================
@@ -1444,20 +2349,41 @@ pub fn main(init: std.process.Init) noreturn {
 
 fn printHelp(allocator: Allocator, writer: anytype) !void {
     try common.help.printColorized(allocator, writer,
-        \\Usage: stat [OPTION]... FILE...
-        \\Display file or file system status.
+        \\Usage: stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]
+        \\Display file status. With no file operand, report on standard input.
         \\
-        \\  -L, --dereference     follow links
-        \\  -f, --file-system     display file system status instead of file status
-        \\  -c, --format=FORMAT   use the specified FORMAT instead of the default;
-        \\                          output a newline after each use of FORMAT
-        \\      --printf=FORMAT   like --format, but interpret backslash escapes,
-        \\                          and do not output a mandatory trailing newline
-        \\  -t, --terse           print the information in terse form
+        \\  -F                    append an ls-style type suffix; implies -l
+        \\  -L                    use stat(2), falling back to lstat(2) for a
+        \\                          broken link
+        \\  -f FORMAT             display information using the BSD FORMAT
+        \\  -l                    display output in ls -lT format
+        \\  -n                    do not force a newline after each piece of output
+        \\  -q                    suppress stat(2) and lstat(2) failure messages
+        \\  -r                    display raw, numerical information
+        \\  -s                    display information in shell output format
+        \\  -t TIMEFMT            display timestamps using the strftime(3) TIMEFMT
+        \\  -x                    display information in a more verbose way
         \\  -h, --help            display this help and exit
         \\  -V, --version         output version information and exit
         \\
-        \\The valid format sequences for files (without --file-system):
+        \\GNU compatibility options, which use the GNU directive language:
+        \\      --dereference     same as -L
+        \\      --file-system     display file system status instead of file status
+        \\  -c, --format=FORMAT   use the specified GNU FORMAT instead of the
+        \\                          default; output a newline after each use
+        \\      --printf=FORMAT   like --format, but interpret backslash escapes,
+        \\                          and do not output a mandatory trailing newline
+        \\      --terse           print the information in terse form
+        \\
+        \\The BSD -f format is %[flags][size][.prec][fmt][sub]datum, where flags
+        \\are #+-0 and space, fmt is one of DOUXFS, and sub is one of HML:
+        \\  %d %i %p %l %u %g %r  device, inode, mode, links, uid, gid, rdev
+        \\  %a %m %c %B           access, modify, change and birth times
+        \\  %z %b %k %f %v        size, blocks, block size, flags, generation
+        \\  %N %R %T %Y %Z        name, real path, file type, link target, size
+        \\  %n %t %% %@           newline, tab, percent, current file number
+        \\
+        \\The valid GNU format sequences for files (used by -c and --printf):
         \\  %a   access rights in octal
         \\  %A   access rights in human readable form
         \\  %b   number of blocks allocated (see %B)

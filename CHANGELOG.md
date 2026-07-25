@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Changed
+- **stat is now the BSD utility on every platform.** The
+  interface is `stat [-FLnq] [-f format | -l | -r | -s | -x]
+  [-t timefmt] [file ...]`, matching macOS and OpenBSD, with the
+  full BSD format grammar behind `-f`:
+  `%[flags][size][.prec][fmt][sub]datum`, including the `#+-0`
+  and space flags, field width and precision, the `D`/`O`/`U`/
+  `X`/`F`/`S` output forms, the `H`/`M`/`L` sub-fields, and the
+  `%n`/`%t`/`%%`/`%@` immediate specials. With no file operand
+  stat now reports on standard input's descriptor instead of
+  failing with `missing operand`, `-L` falls back to `lstat(2)`
+  for a broken link, and the default output is BSD's single line
+  rather than GNU's block. Two short flags changed meaning: `-f`
+  now takes a BSD format string (it is no longer an alias of
+  `--file-system`) and `-t` now takes a `strftime(3)` format (it
+  is no longer an alias of `--terse`). The GNU long spellings
+  survive unchanged — `--format=FMT`, `--printf=FMT`,
+  `--file-system`, `--terse`, `--dereference` and `-c FORMAT`
+  keep GNU directive semantics — so the two directive languages
+  are selected by the flag that introduced the string. `%f` and
+  `%v` report 0 on Linux, which has no `st_flags` or `st_gen`
+  (#79).
+
 ### Fixed
 - **cp -r no longer panics or runs away when the destination
   lives inside the source tree.** `cp -r dir/. dst/` (with `dst`
