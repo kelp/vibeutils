@@ -472,6 +472,11 @@ fn addCoverageStep(
             .root_source_file = b.path("src/common/lib.zig"),
             .target = target,
             .optimize = .Debug,
+            // Unfiltered, so every force-imported module is analyzed, including
+            // file_ops.zig's reach into std.c.fchmod/fchown/umask/geteuid. The
+            // test-privileged binary escapes this only because its
+            // "privileged:" filter leaves those tests unanalyzed.
+            .link_libc = true,
         }),
         .use_llvm = true,
         .name = "common_test",
