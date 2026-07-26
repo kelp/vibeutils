@@ -2,41 +2,37 @@
 
 ## Unreleased
 
-### Infrastructure
-- **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
-  One idempotent script that installs the Zig version pinned in
-  `build.zig.zon` plus `just`, `mandoc` and `fakeroot`, then proves
-  the result by running `zig build --list-steps`. It reads the pin
-  rather than carrying its own copy of the version, serialises on a
-  lock file so a second run waits for an in-flight install instead
-  of racing it, and finishes in under a second once warm. Zig comes
-  from the PyPI `ziglang` wheel first, falling back to
-  `docker/scripts/install-zig.sh` for the official mirrors — the
-  wheel is the only source reachable from networks that block
-  `ziglang.org`, which includes hosted agent containers. It also
-  installs `bsdextrautils`, without which the `hexdump` the
-  integration suite depends on is missing and `pwd` and `dirname`
-  fail. Also exposed as `just setup`.
-- **`just it` now drops privileges when run as root.** Roughly two
-  dozen integration tests across `cat`, `chmod`, `chown`, `grep`,
-  `ls`, `rm`, `stat` and others assert that an operation is denied.
-  Root bypasses DAC, so those assertions cannot hold and the suite
-  was red for anyone working in a container or a Docker image —
-  13 of 48 utilities failing for a reason unrelated to the code.
-  The new `scripts/run-integration.sh` re-executes the suite as an
-  unprivileged user (`vibedev`, created on demand) when it starts
-  as root, and is a pass-through otherwise, so CI and dev machines
-  are unaffected. `VIBEUTILS_NO_DEMOTE=1` opts out. No test was
-  weakened or skipped to achieve this.
-- **Claude Code remote/web sessions bootstrap themselves.** A
-  `SessionStart` hook (`.claude/hooks/session-start.sh`) runs the
-  bootstrap in the background, gated on `CLAUDE_CODE_REMOTE` so it
-  never touches a local gale/nix toolchain. New `docs/TOOLCHAIN.md`
-  documents how to obtain Zig in every environment, which optional
-  tool gates which `just` recipe, and the container caveats
-  (blocked hosts, no OrbStack, running as root).
+### Added
+- **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
+  `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
+  prints them as `st_name=value` shell assignments (so
+  `eval $(stat -s FILE)` works), `-l` prints an `ls -l` style line,
+  `-x` prints a verbose multi-line record, and `-F` appends an
+  `ls -F` type suffix to the `-l` rendering. The four whole-output
+  modes are mutually exclusive — a second one is an error (exit 1),
+  as is `-F` with anything but `-l` — and combining any of them with
+  the GNU output selectors `-c`, `--printf`, `-t` or `-f` is
+  diagnosed as misuse (exit 2) rather than silently picking one.
+  Because BSD `-f FORMAT` is declined, these are fixed renderings of
+  the FreeBSD preset formats, not a general format engine (#93).
+- **`stat` gained the BSD `-n` and `-q` flags.** `-n` suppresses the
+  newline that terminates each file's output record, in every output
+  mode; newlines interior to a multi-line record are unaffected, and
+  `--printf` (which never appended a mandatory newline) is unchanged.
+  `-q` suppresses the per-file "cannot stat"/"cannot statfs"
+  diagnostics while leaving the exit status non-zero, so a script can
+  probe for a file without capturing stderr. Errors in the command line
+  itself are still always reported. Neither flag has a long form, because
+  BSD defines none (#93).
 
 ### Fixed
+- **`stat` reported the wrong device number on Linux.** `doStat`
+  composed `st_dev` as `(major << 32) | minor`, a synthetic value the
+  kernel never uses, so `stat -c %d` printed 1090921693184 where GNU
+  printed 65024, `%D` printed `fe00000000` instead of `fe00`, and the
+  default `Device:` line printed `0,0` instead of `254,0`. Both
+  `st_dev` and `st_rdev` are now packed with the kernel's real
+  encoding (glibc `makedev`), which repairs all three at once (#93).
 - **The walker's re-entrancy test no longer fails when run as
   root.** It chmods a directory to `000` and expects the walk to
   report an I/O error, but root bypasses DAC, so the premise cannot
@@ -67,17 +63,6 @@
   preservation applied timestamps and mode but never `chown`ed, so
   a `-p` copy of a tree silently reassigned every directory to the
   copying user while its files kept their owner (#81).
-
-### Infrastructure
-- **The `file_ops` unit tests actually run now.** `src/common/file_ops.zig`
-  was missing from the force-import block in `src/common/lib.zig`, so
-  every test in it — covering the copy leaf shared by `cp` and `mv` —
-  had never executed, the same dormancy that previously hid `path.zig`'s
-  coverage. Running them required libc on the common test module and
-  fixed two `close` calls that had rotted past a signature change
-  without anything noticing. `setPermissions`' unused directory branch
-  was removed: `fchmod` on a directory descriptor returns `EBADF` on
-  Linux, which is why the path-based `chmodPath` exists (#81).
 - **cp -r no longer panics or runs away when the destination
   lives inside the source tree.** `cp -r dir/. dst/` (with `dst`
   under `dir`), `cp -r a a`, and `cp -r a a/b` previously aborted
@@ -123,6 +108,62 @@
   (data loss). Both now use ancestor-only cycle detection (GNU
   fts semantics, matching GNU rm/mv), and the now-unused
   `ancestors_and_visited` walker mode is deleted (#69).
+
+### Changed
+- **`stat` is now documented as a GNU-interface utility, and BSD
+  `-f FORMAT` / `-t TIMEFMT` are explicitly declined.** `stat` is the
+  only utility where BSD and GNU give the same flag letter different
+  meanings, and the collision is exactly `-f` and `-t`. Both keep their
+  GNU meanings (`--file-system`, `--terse`); the BSD spellings are
+  retiered from MUST to WONT in `docs/specs/stat-flags.md` rather than
+  left as unimplemented requirements. The divergence, and the mapping
+  from BSD `stat -f FORMAT` to `stat -c FORMAT`, is now reachable from
+  `stat --help` and a CAVEATS section in `stat(1)` — where someone
+  surprised by it will actually look — instead of only from the spec
+  matrix (#79, #93).
+
+### Infrastructure
+- **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
+  One idempotent script that installs the Zig version pinned in
+  `build.zig.zon` plus `just`, `mandoc` and `fakeroot`, then proves
+  the result by running `zig build --list-steps`. It reads the pin
+  rather than carrying its own copy of the version, serialises on a
+  lock file so a second run waits for an in-flight install instead
+  of racing it, and finishes in under a second once warm. Zig comes
+  from the PyPI `ziglang` wheel first, falling back to
+  `docker/scripts/install-zig.sh` for the official mirrors — the
+  wheel is the only source reachable from networks that block
+  `ziglang.org`, which includes hosted agent containers. It also
+  installs `bsdextrautils`, without which the `hexdump` the
+  integration suite depends on is missing and `pwd` and `dirname`
+  fail. Also exposed as `just setup`.
+- **`just it` now drops privileges when run as root.** Roughly two
+  dozen integration tests across `cat`, `chmod`, `chown`, `grep`,
+  `ls`, `rm`, `stat` and others assert that an operation is denied.
+  Root bypasses DAC, so those assertions cannot hold and the suite
+  was red for anyone working in a container or a Docker image —
+  13 of 48 utilities failing for a reason unrelated to the code.
+  The new `scripts/run-integration.sh` re-executes the suite as an
+  unprivileged user (`vibedev`, created on demand) when it starts
+  as root, and is a pass-through otherwise, so CI and dev machines
+  are unaffected. `VIBEUTILS_NO_DEMOTE=1` opts out. No test was
+  weakened or skipped to achieve this.
+- **Claude Code remote/web sessions bootstrap themselves.** A
+  `SessionStart` hook (`.claude/hooks/session-start.sh`) runs the
+  bootstrap in the background, gated on `CLAUDE_CODE_REMOTE` so it
+  never touches a local gale/nix toolchain. New `docs/TOOLCHAIN.md`
+  documents how to obtain Zig in every environment, which optional
+  tool gates which `just` recipe, and the container caveats
+  (blocked hosts, no OrbStack, running as root).
+- **The `file_ops` unit tests actually run now.** `src/common/file_ops.zig`
+  was missing from the force-import block in `src/common/lib.zig`, so
+  every test in it — covering the copy leaf shared by `cp` and `mv` —
+  had never executed, the same dormancy that previously hid `path.zig`'s
+  coverage. Running them required libc on the common test module and
+  fixed two `close` calls that had rotted past a signature change
+  without anything noticing. `setPermissions`' unused directory branch
+  was removed: `fchmod` on a directory descriptor returns `EBADF` on
+  Linux, which is why the path-based `chmodPath` exists (#81).
 
 ## v0.12.0 — 2026-07-03
 
