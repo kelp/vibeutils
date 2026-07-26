@@ -60,7 +60,12 @@ echo "integration: dropping to '$TEST_USER' so permission-denied tests are meani
 # to be writable by the test user. The suite resolves its own paths from
 # BASH_SOURCE, so running it from elsewhere is safe — and it stops those
 # tests from littering the repo root, which is what they do today.
-cd "$test_tmp"
+#
+# Deliberately the home directory and not $TMPDIR: the suite deletes and
+# recreates its temp root as it goes, and a shell whose cwd is pulled out
+# from under it makes every later subshell emit a getcwd warning on stderr,
+# which breaks the tests that compare stderr exactly.
+cd "$test_home"
 
 exec setpriv --reuid="$test_uid" --regid="$test_gid" --init-groups \
     env HOME="$test_home" TMPDIR="$test_tmp" PATH="$PATH" \
