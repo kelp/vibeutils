@@ -64,6 +64,11 @@ const StatOptions = struct {
     format: ?[]const u8 = null,
     printf_fmt: ?[]const u8 = null,
     terse: bool = false,
+    /// BSD -n: suppress the newline that terminates each file's record.
+    no_newline: bool = false,
+    /// BSD -q: suppress per-file access diagnostics without clearing the
+    /// non-zero exit status they would otherwise accompany.
+    quiet: bool = false,
     help: bool = false,
     version: bool = false,
     positionals: []const []const u8 = &.{},
@@ -209,6 +214,8 @@ fn parseArgs_shortOption(
             'L' => opts.dereference = true,
             'f' => opts.file_system = true,
             't' => opts.terse = true,
+            'n' => opts.no_newline = true,
+            'q' => opts.quiet = true,
             'h' => {
                 opts.help = true;
                 break;
@@ -946,7 +953,9 @@ fn printDefaultFormat_accessLine(
     });
 }
 
-/// Lines 5-8: Access, Modify, Change, and Birth timestamps.
+/// Lines 5-8: Access, Modify, Change, and Birth timestamps. The Birth line
+/// closes the record, so it carries no trailing newline: the record
+/// terminator is appended by the caller so that -n can suppress it uniformly.
 fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
     // Line 5: Access time
     {
@@ -979,12 +988,12 @@ fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
     {
         const btime_sec = getTimespecSec(stat_buf, .btime);
         if (btime_sec == 0) {
-            try writer.print(" Birth: -\n", .{});
+            try writer.print(" Birth: -", .{});
         } else {
             var fmt_buf: [64]u8 = undefined;
             const btime_nsec = getTimespecNsec(stat_buf, .btime);
             const formatted = formatTimestamp(btime_sec, btime_nsec, &fmt_buf) catch "-";
-            try writer.print(" Birth: {s}\n", .{formatted});
+            try writer.print(" Birth: {s}", .{formatted});
         }
     }
 }
@@ -993,6 +1002,9 @@ fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
 // Terse output format
 // ============================================================================
 
+/// Emit the single-line terse record without its terminating newline: the
+/// record terminator is appended by the caller so that -n can suppress it
+/// uniformly across every output mode.
 fn printTerseFormat(stat_buf: StatResult, path: []const u8, writer: anytype) !void {
     const mode: u32 = stat_buf.mode;
     const dev: u64 = stat_buf.dev;
@@ -1021,7 +1033,7 @@ fn printTerseFormat(stat_buf: StatResult, path: []const u8, writer: anytype) !vo
 
     // GNU terse: 16 fields
     // name size blocks mode uid gid dev inode nlinks major minor atime mtime ctime btime blksize
-    try writer.print("{s} {d} {d} {x} {d} {d} {x} {d} {d} {x} {x} {d} {d} {d} {d} {d}\n", .{
+    try writer.print("{s} {d} {d} {x} {d} {d} {x} {d} {d} {x} {x} {d} {d} {d} {d} {d}", .{
         path,
         stat_buf.size,
         stat_buf.blocks,
@@ -1215,6 +1227,9 @@ fn lookupMountInfo_copyDevice(line: []const u8, dev_buf: *[1024]u8, prior: []con
     return prior;
 }
 
+/// Emit the multi-line statfs record without its terminating newline: the
+/// record terminator is appended by the caller so that -n can suppress it
+/// uniformly across every output mode. Interior newlines are unaffected.
 fn printFileSystemInfo(
     path: []const u8,
     writer: anytype,
@@ -1279,12 +1294,12 @@ fn printFileSystemInfo(
         var dev_buf: [1024]u8 = undefined;
         const info = lookupMountInfo(path, &mount_buf, &dev_buf);
         try writer.print(" Mount: {s}\n", .{info.mount});
-        try writer.print("  From: {s}\n", .{info.dev});
+        try writer.print("  From: {s}", .{info.dev});
     } else {
         const mntonname = std.mem.sliceTo(&fs_buf.f_mntonname, 0);
         const mntfromname = std.mem.sliceTo(&fs_buf.f_mntfromname, 0);
         try writer.print(" Mount: {s}\n", .{mntonname});
-        try writer.print("  From: {s}\n", .{mntfromname});
+        try writer.print("  From: {s}", .{mntfromname});
     }
 }
 
@@ -1368,38 +1383,83 @@ fn processOnePath(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !bool {
+    // runStat resolves --help and --version before it walks the operands, so
+    // a path only reaches here when there is real output to produce.
+    std.debug.assert(!opts.help);
+    std.debug.assert(!opts.version);
+
     if (opts.file_system and opts.format == null and opts.printf_fmt == null) {
         printFileSystemInfo(path, stdout_writer) catch {
-            common.printErrorWithProgram(
-                allocator,
-                stderr_writer,
-                prog_name,
-                "cannot statfs '{s}': No such file or directory",
-                .{path},
-            );
+            // BSD -q drops the diagnostic but still reports the failure, so
+            // the caller's exit status stays non-zero either way.
+            if (!opts.quiet) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "cannot statfs '{s}': No such file or directory",
+                    .{path},
+                );
+            }
             return true;
         };
+        try writeRecordTerminator(opts, stdout_writer);
         return false;
     }
 
     const stat_buf = doStat(path, opts.dereference) catch |err| {
-        const msg = switch (err) {
-            error.AccessDenied => "Permission denied",
-            error.FileNotFound => "No such file or directory",
-            error.NotDir => "Not a directory",
-            error.NameTooLong => "File name too long",
-            error.SymLinkLoop => "Too many levels of symbolic links",
-            else => "Cannot access",
-        };
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "cannot stat '{s}': {s}",
-            .{ path, msg },
-        );
+        if (!opts.quiet) {
+            reportStatFailure(allocator, path, err, stderr_writer);
+        }
         return true;
     };
+
+    try printOneRecord(allocator, opts, stat_buf, path, stdout_writer);
+    return false;
+}
+
+/// Emit the "cannot stat" diagnostic for a failed doStat, translating the
+/// error into the message the reference implementations print for it.
+fn reportStatFailure(
+    allocator: Allocator,
+    path: []const u8,
+    err: anyerror,
+    stderr_writer: *std.Io.Writer,
+) void {
+    // parseArgs discards empty arguments, so every operand names something.
+    std.debug.assert(path.len > 0);
+    const msg = switch (err) {
+        error.AccessDenied => "Permission denied",
+        error.FileNotFound => "No such file or directory",
+        error.NotDir => "Not a directory",
+        error.NameTooLong => "File name too long",
+        error.SymLinkLoop => "Too many levels of symbolic links",
+        else => "Cannot access",
+    };
+    std.debug.assert(msg.len > 0);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "cannot stat '{s}': {s}",
+        .{ path, msg },
+    );
+}
+
+/// Render one file's record in the selected output mode and terminate it.
+/// The renderers deliberately omit their final newline so the terminator is
+/// appended in exactly one place; --printf is the sole mode that appends no
+/// terminator at all, matching GNU, so -n is a no-op there.
+fn printOneRecord(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stat_buf: StatResult,
+    path: []const u8,
+    stdout_writer: *std.Io.Writer,
+) !void {
+    std.debug.assert(path.len > 0);
+    // A successful stat always reports a file type in the mode bits.
+    std.debug.assert(stat_buf.mode != 0);
 
     if (opts.format) |format| {
         try processFormatString(
@@ -1411,7 +1471,6 @@ fn processOnePath(
             false,
             stdout_writer,
         );
-        try stdout_writer.writeByte('\n');
     } else if (opts.printf_fmt) |format| {
         try processFormatString(
             allocator,
@@ -1422,12 +1481,25 @@ fn processOnePath(
             true,
             stdout_writer,
         );
+        return;
     } else if (opts.terse) {
         try printTerseFormat(stat_buf, path, stdout_writer);
     } else {
         try printDefaultFormat(allocator, stat_buf, path, opts.dereference, stdout_writer);
     }
-    return false;
+    try writeRecordTerminator(opts, stdout_writer);
+}
+
+/// Append the newline that terminates one file's record, unless BSD -n asked
+/// for it to be dropped. Centralizing the terminator here is what lets -n
+/// suppress it in every output mode without touching interior newlines.
+fn writeRecordTerminator(opts: *const StatOptions, writer: *std.Io.Writer) !void {
+    // Only real operands produce records; the modes that short-circuit
+    // runStat before the operand loop can never reach this point.
+    std.debug.assert(!opts.help);
+    std.debug.assert(!opts.version);
+    if (opts.no_newline) return;
+    try writer.writeByte('\n');
 }
 
 // ============================================================================
@@ -1454,6 +1526,10 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\      --printf=FORMAT   like --format, but interpret backslash escapes,
         \\                          and do not output a mandatory trailing newline
         \\  -t, --terse           print the information in terse form
+        \\  -n                    do not output the trailing newline that
+        \\                          terminates each file's information
+        \\  -q                    suppress messages about files that cannot be
+        \\                          accessed; the exit status still reports them
         \\  -h, --help            display this help and exit
         \\  -V, --version         output version information and exit
         \\

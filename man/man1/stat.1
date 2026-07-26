@@ -7,7 +7,7 @@
 .Nd display file or file system status
 .Sh SYNOPSIS
 .Nm stat
-.Op Fl LfthV
+.Op Fl LfnqthV
 .Op Fl c Ar FORMAT
 .Op Fl Fl format Ns = Ns Ar FORMAT
 .Op Fl Fl printf Ns = Ns Ar FORMAT
@@ -52,6 +52,17 @@ but interpret backslash escapes and do not output a
 mandatory trailing newline.
 .It Fl t , Fl Fl terse
 Print the information in terse form.
+.It Fl n
+Do not output the newline that terminates the information
+printed for each file.
+Newlines interior to a multi-line record are unaffected.
+This flag has no effect with
+.Fl Fl printf ,
+which already outputs no mandatory trailing newline.
+.It Fl q
+Suppress messages about files that cannot be accessed.
+The exit status still reports the failure.
+Errors in the command line itself are always reported.
 .It Fl h , Fl Fl help
 Display a help message and exit.
 .It Fl V , Fl Fl version
