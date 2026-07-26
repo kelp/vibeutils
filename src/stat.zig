@@ -2984,3 +2984,358 @@ test "stat --printf does not add trailing newline" {
     // Must be exactly "5" with no newline
     try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
 }
+
+// ============================================================================
+// BSD -n (no trailing newline) and -q (quiet) flags — issue #93
+//
+// FreeBSD usr.bin/stat/stat.c terminates each file's output record with a
+// newline unless -n is given: `if (!nl && !nonl) fputc('\n', stdout)`. The
+// suppression applies to the RECORD terminator only; newlines interior to a
+// multi-line record are untouched. -q suppresses the per-file `warn()`
+// diagnostic on a failed stat but still sets `errs`, so the exit status
+// stays non-zero.
+// ============================================================================
+
+test "stat -n suppresses trailing newline with -c format" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-n", "-c", "%s", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    // -n must be an accepted flag, not a parse error.
+    try testing.expectEqual(@as(u8, 0), result);
+    // Without -n this is "5\n"; -n drops the record terminator.
+    try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
+}
+
+test "stat -n suppresses final newline of default output but keeps interior ones" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello world");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-n", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 0);
+    // The record terminator is gone.
+    try testing.expect(out[out.len - 1] != '\n');
+    // Interior newlines of the multi-line record survive: the default format
+    // is 8 lines, so at least 7 newlines remain after dropping the last.
+    try testing.expect(std.mem.count(u8, out, "\n") >= 7);
+    try testing.expect(std.mem.find(u8, out, "File:") != null);
+    try testing.expect(std.mem.find(u8, out, "Modify:") != null);
+}
+
+test "stat -n suppresses trailing newline with -t terse output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-n", "-t", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.startsWith(u8, out, test_path));
+    // Terse output is a single record, so -n leaves no newline at all.
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, out, "\n"));
+}
+
+test "stat -n suppresses trailing newline with -f file system output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-n", "-f", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 0);
+    try testing.expect(out[out.len - 1] != '\n');
+    // Interior newlines of the multi-line statfs record are preserved.
+    try testing.expect(std.mem.count(u8, out, "\n") >= 4);
+    try testing.expect(std.mem.find(u8, out, "Block size:") != null);
+}
+
+test "stat -n leaves --printf output unchanged" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    // --printf already emits no mandatory record terminator, so -n is a no-op.
+    const args = [_][]const u8{ "-n", "--printf=%s", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
+}
+
+test "stat -n drops the record terminator for every operand" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file1 = try tmp_dir.dir.createFile(testing.io, "a.txt", .{});
+    try file1.writeStreamingAll(testing.io, "aaa");
+    file1.close(testing.io);
+
+    const file2 = try tmp_dir.dir.createFile(testing.io, "b.txt", .{});
+    try file2.writeStreamingAll(testing.io, "bbbbb");
+    file2.close(testing.io);
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    const path1_len = try tmp_dir.dir.realPathFile(testing.io, "a.txt", &path_buf1);
+    const path1 = path_buf1[0..path1_len];
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const path2_len = try tmp_dir.dir.realPathFile(testing.io, "b.txt", &path_buf2);
+    const path2 = path_buf2[0..path2_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-n", "-c", "%s", path1, path2 };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Without -n this is "3\n5\n"; every record loses its terminator, so the
+    // records run together with no separator at all.
+    try testing.expectEqualStrings("35", stdout_aw.writer.buffered());
+}
+
+test "stat -q suppresses cannot-stat diagnostic but keeps exit status 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-q", "/nonexistent/file/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    // FreeBSD suppresses the warn() but still sets errs, so status is 1.
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+}
+
+test "stat -q suppresses cannot-statfs diagnostic but keeps exit status 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-q", "-f", "/nonexistent/file/path" };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+}
+
+test "stat -q does not suppress argument parsing errors" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -c with no value is a usage error; -q must not silence it.
+    const missing_value_args = [_][]const u8{ "-q", "-c" };
+    const missing_value_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &missing_value_args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 2), missing_value_result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "requires an argument") != null,
+    );
+
+    var unknown_stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer unknown_stdout_aw.deinit();
+    var unknown_stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer unknown_stderr_aw.deinit();
+
+    const unknown_args = [_][]const u8{ "-q", "--invalid" };
+    const unknown_result = try runStat(
+        testing.allocator,
+        testing.io,
+        &unknown_args,
+        &unknown_stdout_aw.writer,
+        &unknown_stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 2), unknown_result);
+    try testing.expect(
+        std.mem.find(u8, unknown_stderr_aw.writer.buffered(), "unrecognized option") != null,
+    );
+}
+
+test "stat -q does not change a successful stat" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-q", "-c", "%s", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+// Regression pin for issue #79: `stat -f '%m' FILE` must NOT silently treat
+// the format string as a format. -f takes no format argument, so '%m' is a
+// file operand; statfs on it fails, which must produce a diagnostic naming
+// '%m' and a non-zero exit, while FILE still gets its file-system status.
+test "stat -f with a stray format operand still fails and reports it (issue 79)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-f", "%m", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "%m") != null);
+    // The real operand still gets its file-system status printed.
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Block size:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), test_path) != null);
+}

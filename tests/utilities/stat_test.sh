@@ -326,6 +326,97 @@ test_stat() {
             "Got: '$group_out'"
     fi
 
+    # --- BSD -n flag: suppress the record-terminating newline (issue #93) ---
+    echo -e "${CYAN}Testing -n suppresses trailing newline...${NC}"
+
+    local n_off_file="$TEMP_DIR/stat_n_off_$$"
+    local n_on_file="$TEMP_DIR/stat_n_on_$$"
+    local n_on_exit=0
+
+    "$binary" -c '%s' "$tmpfile" > "$n_off_file" 2>/dev/null || true
+    set +e
+    "$binary" -n -c '%s' "$tmpfile" > "$n_on_file" 2>/dev/null
+    n_on_exit=$?
+    set -e
+
+    local n_off_bytes n_on_bytes
+    n_off_bytes=$(wc -c < "$n_off_file" | tr -d ' ')
+    n_on_bytes=$(wc -c < "$n_on_file" | tr -d ' ')
+
+    if [[ "$n_on_exit" -eq 0 && "$n_on_bytes" -gt 0 &&
+          $((n_off_bytes - n_on_bytes)) -eq 1 ]]; then
+        print_test_result "stat -n -c '%s' drops exactly one trailing byte" "PASS"
+    else
+        print_test_result "stat -n -c '%s' drops exactly one trailing byte" "FAIL" \
+            "exit=$n_on_exit without -n=$n_off_bytes bytes, with -n=$n_on_bytes bytes"
+    fi
+
+    # -n on the default multi-line record: only the final newline goes away.
+    local n_def_off_file="$TEMP_DIR/stat_n_def_off_$$"
+    local n_def_on_file="$TEMP_DIR/stat_n_def_on_$$"
+    "$binary" "$tmpfile" > "$n_def_off_file" 2>/dev/null || true
+    "$binary" -n "$tmpfile" > "$n_def_on_file" 2>/dev/null || true
+
+    local n_def_off_bytes n_def_on_bytes n_def_on_lines
+    n_def_off_bytes=$(wc -c < "$n_def_off_file" | tr -d ' ')
+    n_def_on_bytes=$(wc -c < "$n_def_on_file" | tr -d ' ')
+    # Interior newlines survive, so the record still spans multiple lines.
+    n_def_on_lines=$(tr -cd '\n' < "$n_def_on_file" | wc -c | tr -d ' ')
+
+    if [[ $((n_def_off_bytes - n_def_on_bytes)) -eq 1 && "$n_def_on_lines" -ge 7 ]]; then
+        print_test_result "stat -n default output keeps interior newlines" "PASS"
+    else
+        print_test_result "stat -n default output keeps interior newlines" "FAIL" \
+            "without -n=$n_def_off_bytes bytes, with -n=$n_def_on_bytes bytes, \
+newlines=$n_def_on_lines"
+    fi
+
+    rm -f "$n_off_file" "$n_on_file" "$n_def_off_file" "$n_def_on_file"
+
+    # --- BSD -q flag: suppress per-file diagnostics, keep exit status ---
+    echo -e "${CYAN}Testing -q suppresses per-file diagnostics...${NC}"
+
+    local q_cmd q_out q_err q_exit
+    run_command q_cmd q_out q_err q_exit "$binary" -q /nonexistent/path/file
+    if [[ "$q_exit" -eq 1 && -z "$q_err" ]]; then
+        print_test_result "stat -q nonexistent file: silent stderr, exit 1" "PASS"
+    else
+        print_test_result "stat -q nonexistent file: silent stderr, exit 1" "FAIL" \
+            "exit=$q_exit stderr='$q_err'"
+    fi
+
+    # -q must not silence usage errors, only per-file access failures.
+    local qu_cmd qu_out qu_err qu_exit
+    run_command qu_cmd qu_out qu_err qu_exit "$binary" -q -c
+    if [[ "$qu_exit" -eq 2 && "$qu_err" == *"requires an argument"* ]]; then
+        print_test_result "stat -q does not silence usage errors" "PASS"
+    else
+        print_test_result "stat -q does not silence usage errors" "FAIL" \
+            "exit=$qu_exit stderr='$qu_err'"
+    fi
+
+    # -q on a successful stat changes nothing.
+    local qs_cmd qs_out qs_err qs_exit
+    run_command qs_cmd qs_out qs_err qs_exit "$binary" -q -c '%s' "$tmpfile"
+    if [[ "$qs_exit" -eq 0 && "$qs_out" == "6" && -z "$qs_err" ]]; then
+        print_test_result "stat -q leaves a successful stat unchanged" "PASS"
+    else
+        print_test_result "stat -q leaves a successful stat unchanged" "FAIL" \
+            "exit=$qs_exit stdout='$qs_out' stderr='$qs_err'"
+    fi
+
+    # --- Regression pin (issue #79): -f takes no format argument ---
+    echo -e "${CYAN}Testing stat -f '%m' is a failed operand (issue #79)...${NC}"
+
+    local m_cmd m_out m_err m_exit
+    run_command m_cmd m_out m_err m_exit "$binary" -f '%m' "$tmpfile"
+    if [[ "$m_exit" -ne 0 && "$m_err" == *"%m"* && "$m_out" == *"Block size:"* ]]; then
+        print_test_result "stat -f '%m' fails on '%m' but still stats the file" "PASS"
+    else
+        print_test_result "stat -f '%m' fails on '%m' but still stats the file" "FAIL" \
+            "exit=$m_exit stderr='$m_err'"
+    fi
+
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
 }
