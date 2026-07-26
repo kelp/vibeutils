@@ -89,11 +89,31 @@ this plan's from-memory sketches below.
 | `-x` | Verbose multi-line display (Linux-`stat`-ish block) |
 | `-F` | Type suffixes (`/` `*` `@` `=` `|`) on names, symlinks as `link -> target`; implies `-l` |
 
-Mode selection matches the FreeBSD implementation: each of
-`-l -r -s -x` sets the output mode, **last one wins**. `-F`
-sets a suffix flag AND sets the mode to `-l` (fall-through
-in FreeBSD source), so a later `-r` overrides the mode but
-the suffix flag persists wherever a name is rendered.
+Mode selection is **mutually exclusive and diagnosed**, not
+last-one-wins. From FreeBSD `usr.bin/stat/stat.c`:
+
+```c
+case 'f': statfmt = optarg;  /* FALLTHROUGH */
+case 'l': case 'r': case 's': case 'x':
+    if (fmtchar != 0)
+        errx(1, "can't use format '%c' with '%c'", fmtchar, ch);
+    fmtchar = ch;
+```
+
+So two of `-l -r -s -x` is a hard error, exit 1:
+`stat: can't use format 'l' with 'r'`.
+
+`-F` sets only `lsF`. Afterwards, if no mode flag was given
+it selects `l`; and `if (lsF && fmtchar != 'l')` is an
+error. So `-F` alone and `-F -l` both render LSF_FORMAT,
+while `-F -r` exits 1. The fall-through in the source is
+`-f` falling into the mutual-exclusion check — it is not
+`-F` implying `-l`.
+
+> Corrected 2026-07-26 against the FreeBSD source. The
+> first draft of this plan claimed "last one wins" and that
+> `-F`'s suffix persists across a later mode flag; both were
+> wrong, and were written from memory rather than the spec.
 
 ### Cross-interface combinations
 
@@ -199,10 +219,12 @@ field plumbing everything else reuses.
   `/usr/bin/stat -r` on macOS.
 - Parsing: add
   `bsd_mode: enum { none, ls, raw, shell, verbose }` to
-  `StatOptions`, last-one-wins assignment in
-  `parseArgs_shortOption`, plus the cross-interface
-  conflict diagnostic (checked once after parsing, in
-  `runStat`).
+  `StatOptions`. Setting a mode when one is already set is
+  an error (`can't use format 'X' with 'Y'`), and `-F` with
+  any mode other than `ls` is an error
+  (`can't use format 'X' with -F`). Plus the
+  cross-interface conflict diagnostic (checked once after
+  parsing, in `runStat`).
 
 ### Stage 4 — `-s` (shell mode)
 
