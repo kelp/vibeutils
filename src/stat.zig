@@ -3415,3 +3415,1039 @@ test "stat -f with a stray format operand still fails and reports it (issue 79)"
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Block size:") != null);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), test_path) != null);
 }
+
+// ============================================================================
+// TESTS: BSD display modes (-r, -s, -l, -F, -x)
+// ============================================================================
+//
+// These pin the five FreeBSD fixed-format renderers, their mutual-exclusion
+// rules, and the GNU-parity device number every one of them depends on.
+// Expected values come from the kernel through statx -- which reports the
+// device as a separate major/minor pair, so a test can check our encoding
+// without reusing the encoder under test -- or from std's own stat.
+
+/// Test-only: libc's fifo maker, used to exercise the `-F` "|" type suffix.
+extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;
+
+/// Test-only: run stat over `args`, capturing stdout and discarding stderr.
+fn testStatOut(args: []const []const u8, out: *std.Io.Writer.Allocating) !u8 {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(out.writer.buffered().len == 0);
+    return runStat(testing.allocator, testing.io, args, &out.writer, common.null_writer);
+}
+
+/// Test-only: run stat over `args`, capturing both streams.
+fn testStatBoth(
+    args: []const []const u8,
+    out: *std.Io.Writer.Allocating,
+    err: *std.Io.Writer.Allocating,
+) !u8 {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(err.writer.buffered().len == 0);
+    return runStat(testing.allocator, testing.io, args, &out.writer, &err.writer);
+}
+
+/// Test-only: absolute path of `name` inside `dir`. Caller frees the result.
+fn testAbsPath(dir: std.Io.Dir, name: []const u8) ![]u8 {
+    std.debug.assert(name.len > 0);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try dir.realPathFile(testing.io, ".", &buf);
+    std.debug.assert(len > 0);
+    std.debug.assert(len <= buf.len);
+    return std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ buf[0..len], name });
+}
+
+/// Test-only: split `line` on runs of spaces into `dest`, returning the count.
+fn testSplit(line: []const u8, dest: [][]const u8) u32 {
+    std.debug.assert(dest.len > 0);
+    std.debug.assert(dest.len < 64);
+    var it = std.mem.tokenizeScalar(u8, line, ' ');
+    var n: u32 = 0;
+    while (it.next()) |tok| {
+        if (n >= dest.len) break;
+        std.debug.assert(tok.len > 0);
+        dest[n] = tok;
+        n += 1;
+    }
+    return n;
+}
+
+/// Test-only: the `index`th line of `text`, or an empty slice when absent.
+fn testLine(text: []const u8, index: u32) []const u8 {
+    std.debug.assert(index < 64);
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var n: u32 = 0;
+    while (it.next()) |line| : (n += 1) {
+        std.debug.assert(n < 64);
+        if (n == index) return line;
+    }
+    return "";
+}
+
+/// Test-only: full st_mode (type bits included) as std reports it, so an
+/// expectation never borrows the stat path it is meant to verify.
+fn testMode(dir: std.Io.Dir, name: []const u8, follow: bool) !u32 {
+    std.debug.assert(name.len > 0);
+    const st = try dir.statFile(testing.io, name, .{ .follow_symlinks = follow });
+    const type_bits: u32 = switch (st.kind) {
+        .file => 0o100000,
+        .directory => 0o040000,
+        .sym_link => 0o120000,
+        .named_pipe => 0o010000,
+        else => 0,
+    };
+    std.debug.assert(type_bits != 0);
+    const perm: u32 = @intCast(st.permissions.toMode() & 0o7777);
+    return type_bits | perm;
+}
+
+/// Test-only: do these four tokens spell the default "%b %e %T %Y" stamp?
+fn testIsLsTime(mon: []const u8, day: []const u8, tod: []const u8, year: []const u8) bool {
+    std.debug.assert(mon.len > 0);
+    std.debug.assert(year.len > 0);
+    if (mon.len != 3 or !std.ascii.isUpper(mon[0])) return false;
+    if (day.len < 1 or day.len > 2) return false;
+    for (day) |ch| if (!std.ascii.isDigit(ch)) return false;
+    if (tod.len != 8 or tod[2] != ':' or tod[5] != ':') return false;
+    if (year.len != 4) return false;
+    for (year) |ch| if (!std.ascii.isDigit(ch)) return false;
+    return true;
+}
+
+/// Test-only: kernel ground truth for one path, gathered through an interface
+/// that keeps the device major and minor apart.
+const TestTruth = struct {
+    dev_major: u32,
+    dev_minor: u32,
+    ino: u64,
+    mode: u32,
+    nlink: u64,
+    uid: u32,
+    gid: u32,
+    rdev: u64,
+    size: u64,
+    blksize: u32,
+    blocks: u64,
+    atime: i64,
+    mtime: i64,
+    ctime: i64,
+    btime: i64,
+};
+
+/// Test-only: read `path`'s ground truth. Only Linux exposes an interface that
+/// reports the device major and minor separately, so elsewhere callers skip.
+fn testTruth(path: []const u8, follow: bool) !TestTruth {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(path.len <= std.fs.max_path_bytes);
+    if (builtin.os.tag == .linux) {
+        return testTruth_linux(path, follow);
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+/// Linux half of `testTruth`; statx is the kernel's own report of the file.
+fn testTruth_linux(path: []const u8, follow: bool) !TestTruth {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(path.len <= std.fs.max_path_bytes);
+    const linux = std.os.linux;
+    var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+
+    var stx: linux.Statx = undefined;
+    const mask: linux.STATX = @bitCast(@as(u32, 0xfff));
+    const at_flags: u32 = if (follow) 0 else linux.AT.SYMLINK_NOFOLLOW;
+    const rc = linux.statx(c.AT.FDCWD, buf[0..path.len :0], at_flags, mask, &stx);
+    if (linux.errno(rc) != .SUCCESS) return error.TestTruthUnavailable;
+
+    return .{
+        .dev_major = stx.dev_major,
+        .dev_minor = stx.dev_minor,
+        .ino = stx.ino,
+        .mode = stx.mode,
+        .nlink = stx.nlink,
+        .uid = stx.uid,
+        .gid = stx.gid,
+        .rdev = (@as(u64, stx.rdev_major) << 32) | stx.rdev_minor,
+        .size = stx.size,
+        .blksize = stx.blksize,
+        .blocks = stx.blocks,
+        .atime = stx.atime.sec,
+        .mtime = stx.mtime.sec,
+        .ctime = stx.ctime.sec,
+        .btime = stx.btime.sec,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// st_dev must match GNU. doStat_linux composes a synthetic
+// ((major << 32) | minor) device id, so %d prints 1090921693184 where GNU
+// prints 65024 and the default Device: line prints 0,0 where GNU prints 254,0.
+// Both -r and -s print st_dev, so the modes below inherit the bug.
+// ---------------------------------------------------------------------------
+
+test "stat -c %d device number has GNU's dev_t width" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "d.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "d.txt");
+    defer testing.allocator.free(path);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-c", "%d %D", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    var fields: [4][]const u8 = undefined;
+    const n = testSplit(std.mem.trimEnd(u8, out.writer.buffered(), "\n"), &fields);
+    try testing.expectEqual(@as(u32, 2), n);
+
+    // A real dev_t fits in 32 bits on both platforms we target; the synthetic
+    // composition needs 40, which is exactly how the bug shows up.
+    const dev = try std.fmt.parseInt(u64, fields[0], 10);
+    try testing.expect(dev < @as(u64, 1) << 32);
+
+    // %D must be the same number, just in hex.
+    var hex_buf: [32]u8 = undefined;
+    const hex = try std.fmt.bufPrint(&hex_buf, "{x}", .{dev});
+    try testing.expectEqualStrings(hex, fields[1]);
+}
+
+test "stat default Device line matches the kernel major,minor" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "d.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "d.txt");
+    defer testing.allocator.free(path);
+
+    const truth = try testTruth(path, true);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{path};
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\t",
+        .{ truth.dev_major, truth.dev_minor },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expect(std.mem.find(u8, out.writer.buffered(), expected) != null);
+}
+
+// ---------------------------------------------------------------------------
+// -r RAW_FORMAT: "%d %i %#p %l %u %g %r %z %a %m %c %B %k %b %f %N"
+// ---------------------------------------------------------------------------
+
+test "stat -r renders sixteen raw fields ending in the file name" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "raw.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "raw.txt");
+    defer testing.allocator.free(path);
+    const mode = try testMode(tmp_dir.dir, "raw.txt", false);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-r", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    // The record terminator is the trailing newline, and there is only one.
+    try testing.expect(std.mem.endsWith(u8, out.writer.buffered(), "\n"));
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    try testing.expect(std.mem.find(u8, line, "\n") == null);
+
+    var fields: [20][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 16), testSplit(line, &fields));
+
+    const expected_mode = try std.fmt.allocPrint(testing.allocator, "0{o}", .{mode});
+    defer testing.allocator.free(expected_mode);
+    try testing.expectEqualStrings(expected_mode, fields[2]);
+    try testing.expectEqualStrings("1", fields[3]);
+    try testing.expectEqualStrings("6", fields[7]);
+    try testing.expectEqualStrings("0", fields[14]);
+    try testing.expectEqualStrings(path, fields[15]);
+}
+
+test "stat -r raw fields match the kernel's own numbers" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "raw.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "raw.txt");
+    defer testing.allocator.free(path);
+
+    const truth = try testTruth(path, false);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-r", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    var fields: [20][]const u8 = undefined;
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    try testing.expectEqual(@as(u32, 16), testSplit(line, &fields));
+
+    // %d must be the encoded device, not the major/minor pair spliced together.
+    const dev = try std.fmt.parseInt(u64, fields[0], 10);
+    try testing.expect(dev < @as(u64, 1) << 32);
+    try testing.expectEqual(truth.ino, try std.fmt.parseInt(u64, fields[1], 10));
+    try testing.expectEqual(truth.nlink, try std.fmt.parseInt(u64, fields[3], 10));
+    try testing.expectEqual(truth.uid, try std.fmt.parseInt(u32, fields[4], 10));
+    try testing.expectEqual(truth.gid, try std.fmt.parseInt(u32, fields[5], 10));
+    try testing.expectEqual(@as(u64, 0), try std.fmt.parseInt(u64, fields[6], 10));
+    try testing.expectEqual(truth.size, try std.fmt.parseInt(u64, fields[7], 10));
+    try testing.expectEqual(truth.atime, try std.fmt.parseInt(i64, fields[8], 10));
+    try testing.expectEqual(truth.mtime, try std.fmt.parseInt(i64, fields[9], 10));
+    try testing.expectEqual(truth.ctime, try std.fmt.parseInt(i64, fields[10], 10));
+    try testing.expectEqual(truth.btime, try std.fmt.parseInt(i64, fields[11], 10));
+    try testing.expectEqual(truth.blksize, try std.fmt.parseInt(u32, fields[12], 10));
+    try testing.expectEqual(truth.blocks, try std.fmt.parseInt(u64, fields[13], 10));
+}
+
+test "stat -r on a directory reports the directory mode" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDir(testing.io, "sub", .default_dir);
+    const path = try testAbsPath(tmp_dir.dir, "sub");
+    defer testing.allocator.free(path);
+    const mode = try testMode(tmp_dir.dir, "sub", false);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-r", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    var fields: [20][]const u8 = undefined;
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    try testing.expectEqual(@as(u32, 16), testSplit(line, &fields));
+
+    const expected_mode = try std.fmt.allocPrint(testing.allocator, "0{o}", .{mode});
+    defer testing.allocator.free(expected_mode);
+    try testing.expectEqualStrings(expected_mode, fields[2]);
+    try testing.expectEqualStrings(path, fields[15]);
+}
+
+test "stat -r reports the symlink itself, and -L the target" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+    const path = try testAbsPath(tmp_dir.dir, "link.txt");
+    defer testing.allocator.free(path);
+
+    var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer link_out.deinit();
+    const link_args = [_][]const u8{ "-r", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&link_args, &link_out));
+
+    var link_fields: [20][]const u8 = undefined;
+    const link_line = std.mem.trimEnd(u8, link_out.writer.buffered(), "\n");
+    try testing.expectEqual(@as(u32, 16), testSplit(link_line, &link_fields));
+    // S_IFLNK is 0120000, so the "%#p" octal starts with the link type bits.
+    try testing.expect(std.mem.startsWith(u8, link_fields[2], "0120"));
+    try testing.expectEqualStrings("10", link_fields[7]);
+
+    var deref_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer deref_out.deinit();
+    const deref_args = [_][]const u8{ "-L", "-r", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&deref_args, &deref_out));
+
+    var deref_fields: [20][]const u8 = undefined;
+    const deref_line = std.mem.trimEnd(u8, deref_out.writer.buffered(), "\n");
+    try testing.expectEqual(@as(u32, 16), testSplit(deref_line, &deref_fields));
+    try testing.expect(std.mem.startsWith(u8, deref_fields[2], "0100"));
+    try testing.expectEqualStrings("6", deref_fields[7]);
+    // The name field always echoes the operand, dereferenced or not.
+    try testing.expectEqualStrings(path, deref_fields[15]);
+}
+
+// ---------------------------------------------------------------------------
+// -s SHELL_FORMAT: fifteen "name=value" assignments, no file name field.
+// ---------------------------------------------------------------------------
+
+test "stat -s renders the fifteen shell assignments in order" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "sh.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "sh.txt");
+    defer testing.allocator.free(path);
+    const mode = try testMode(tmp_dir.dir, "sh.txt", false);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-s", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    var fields: [20][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 15), testSplit(line, &fields));
+
+    const names = [_][]const u8{
+        "st_dev",   "st_ino",       "st_mode",    "st_nlink",  "st_uid",
+        "st_gid",   "st_rdev",      "st_size",    "st_atime",  "st_mtime",
+        "st_ctime", "st_birthtime", "st_blksize", "st_blocks", "st_flags",
+    };
+    for (names, 0..) |name, idx| {
+        const prefix = try std.fmt.allocPrint(testing.allocator, "{s}=", .{name});
+        defer testing.allocator.free(prefix);
+        try testing.expect(std.mem.startsWith(u8, fields[idx], prefix));
+    }
+
+    const expected_mode = try std.fmt.allocPrint(testing.allocator, "st_mode=0{o}", .{mode});
+    defer testing.allocator.free(expected_mode);
+    try testing.expectEqualStrings(expected_mode, fields[2]);
+    try testing.expectEqualStrings("st_nlink=1", fields[3]);
+    try testing.expectEqualStrings("st_size=6", fields[7]);
+    try testing.expectEqualStrings("st_flags=0", fields[14]);
+    // SHELL_FORMAT carries no file name field at all.
+    try testing.expect(std.mem.find(u8, line, path) == null);
+}
+
+test "stat -s values match the kernel's own numbers" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "sh.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "sh.txt");
+    defer testing.allocator.free(path);
+
+    const truth = try testTruth(path, false);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-s", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    var fields: [20][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 15), testSplit(line, &fields));
+
+    // st_dev is the encoded device id, so it stays inside 32 bits.
+    const dev_text = fields[0]["st_dev=".len..];
+    try testing.expect(try std.fmt.parseInt(u64, dev_text, 10) < @as(u64, 1) << 32);
+
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "st_ino={d} st_uid={d} st_gid={d} st_rdev=0 st_atime={d} st_mtime={d}",
+        .{ truth.ino, truth.uid, truth.gid, truth.atime, truth.mtime },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expect(std.mem.find(u8, line, expected) != null);
+
+    const tail = try std.fmt.allocPrint(
+        testing.allocator,
+        "st_ctime={d} st_birthtime={d} st_blksize={d} st_blocks={d} st_flags=0",
+        .{ truth.ctime, truth.btime, truth.blksize, truth.blocks },
+    );
+    defer testing.allocator.free(tail);
+    try testing.expect(std.mem.find(u8, line, tail) != null);
+}
+
+test "stat -s -L on a symlink reports the target size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+    const path = try testAbsPath(tmp_dir.dir, "link.txt");
+    defer testing.allocator.free(path);
+
+    var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer link_out.deinit();
+    const link_args = [_][]const u8{ "-s", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&link_args, &link_out));
+    try testing.expect(std.mem.find(u8, link_out.writer.buffered(), "st_size=10 ") != null);
+
+    var deref_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer deref_out.deinit();
+    const deref_args = [_][]const u8{ "-L", "-s", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&deref_args, &deref_out));
+    try testing.expect(std.mem.find(u8, deref_out.writer.buffered(), "st_size=6 ") != null);
+}
+
+// ---------------------------------------------------------------------------
+// -l LS_FORMAT: "%Sp %l %Su %Sg %Z %Sm %N%SY"
+// ---------------------------------------------------------------------------
+
+test "stat -l renders the ls-style line for a regular file" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "ls.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "ls.txt");
+    defer testing.allocator.free(path);
+
+    const mode = try testMode(tmp_dir.dir, "ls.txt", false);
+    var perm_buf: [10]u8 = undefined;
+    const perms = formatPermissions(mode, &perm_buf);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-l", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    var fields: [16][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 10), testSplit(line, &fields));
+
+    try testing.expectEqualStrings(perms, fields[0]);
+    try testing.expectEqualStrings("1", fields[1]);
+    try testing.expect(fields[2].len > 0);
+    try testing.expect(fields[3].len > 0);
+    // %Z renders st_size for anything that is not a device node.
+    try testing.expectEqualStrings("6", fields[4]);
+    try testing.expect(testIsLsTime(fields[5], fields[6], fields[7], fields[8]));
+    try testing.expectEqualStrings(path, fields[9]);
+    // %SY is empty for a non-symlink, so no arrow appears.
+    try testing.expect(std.mem.find(u8, line, " -> ") == null);
+}
+
+test "stat -l on a directory shows the directory permissions" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDir(testing.io, "sub", .default_dir);
+    const path = try testAbsPath(tmp_dir.dir, "sub");
+    defer testing.allocator.free(path);
+
+    const mode = try testMode(tmp_dir.dir, "sub", false);
+    var perm_buf: [10]u8 = undefined;
+    const perms = formatPermissions(mode, &perm_buf);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-l", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const line = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    var fields: [16][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 10), testSplit(line, &fields));
+    try testing.expectEqualStrings(perms, fields[0]);
+    try testing.expectEqual(@as(u8, 'd'), fields[0][0]);
+    try testing.expectEqualStrings(path, fields[9]);
+}
+
+test "stat -l appends the arrow for a symlink and -L drops it" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+    const path = try testAbsPath(tmp_dir.dir, "link.txt");
+    defer testing.allocator.free(path);
+
+    var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer link_out.deinit();
+    const link_args = [_][]const u8{ "-l", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&link_args, &link_out));
+
+    const link_line = std.mem.trimEnd(u8, link_out.writer.buffered(), "\n");
+    var link_fields: [16][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 12), testSplit(link_line, &link_fields));
+    try testing.expectEqual(@as(u8, 'l'), link_fields[0][0]);
+    try testing.expectEqualStrings(path, link_fields[9]);
+    try testing.expectEqualStrings("->", link_fields[10]);
+    try testing.expectEqualStrings("target.txt", link_fields[11]);
+
+    var deref_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer deref_out.deinit();
+    const deref_args = [_][]const u8{ "-L", "-l", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&deref_args, &deref_out));
+
+    const deref_line = std.mem.trimEnd(u8, deref_out.writer.buffered(), "\n");
+    var deref_fields: [16][]const u8 = undefined;
+    try testing.expectEqual(@as(u32, 10), testSplit(deref_line, &deref_fields));
+    try testing.expectEqual(@as(u8, '-'), deref_fields[0][0]);
+    try testing.expectEqualStrings("6", deref_fields[4]);
+    try testing.expect(std.mem.find(u8, deref_line, " -> ") == null);
+}
+
+// ---------------------------------------------------------------------------
+// -F LSF_FORMAT: "%Sp %l %Su %Sg %Z %Sm %N%T%SY"
+// ---------------------------------------------------------------------------
+
+test "stat -F on a plain file renders exactly the -l line" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "plain.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "plain.txt");
+    defer testing.allocator.free(path);
+
+    var ls_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer ls_out.deinit();
+    const ls_args = [_][]const u8{ "-l", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&ls_args, &ls_out));
+
+    var lsf_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer lsf_out.deinit();
+    const lsf_args = [_][]const u8{ "-F", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&lsf_args, &lsf_out));
+
+    // %T is empty for a regular file without an execute bit.
+    try testing.expectEqualStrings(ls_out.writer.buffered(), lsf_out.writer.buffered());
+    try testing.expect(std.mem.endsWith(u8, lsf_out.writer.buffered(), "\n"));
+}
+
+test "stat -F marks an executable file with an asterisk" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(
+        testing.io,
+        "run.sh",
+        .{ .permissions = .executable_file },
+    );
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "run.sh");
+    defer testing.allocator.free(path);
+
+    // Guard the premise: an umask that stripped every execute bit would make
+    // the assertion below vacuous.
+    const mode = try testMode(tmp_dir.dir, "run.sh", false);
+    try testing.expect(mode & 0o111 != 0);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-F", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const expected = try std.fmt.allocPrint(testing.allocator, " {s}*\n", .{path});
+    defer testing.allocator.free(expected);
+    try testing.expect(std.mem.endsWith(u8, out.writer.buffered(), expected));
+}
+
+test "stat -F marks a directory with a slash" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDir(testing.io, "sub", .default_dir);
+    const path = try testAbsPath(tmp_dir.dir, "sub");
+    defer testing.allocator.free(path);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-F", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const expected = try std.fmt.allocPrint(testing.allocator, " {s}/\n", .{path});
+    defer testing.allocator.free(expected);
+    try testing.expect(std.mem.endsWith(u8, out.writer.buffered(), expected));
+}
+
+test "stat -F marks a symlink with an at sign before the arrow" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    file.close(testing.io);
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+    const path = try testAbsPath(tmp_dir.dir, "link.txt");
+    defer testing.allocator.free(path);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-F", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    // LSF_FORMAT is "%N%T%SY", so the suffix sits between name and arrow.
+    const expected = try std.fmt.allocPrint(testing.allocator, " {s}@ -> target.txt\n", .{path});
+    defer testing.allocator.free(expected);
+    try testing.expect(std.mem.endsWith(u8, out.writer.buffered(), expected));
+}
+
+test "stat -F marks a fifo with a pipe" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const dir_path = try testAbsPath(tmp_dir.dir, "pipe");
+    defer testing.allocator.free(dir_path);
+
+    const c_path = try testing.allocator.dupeZ(u8, dir_path);
+    defer testing.allocator.free(c_path);
+    try testing.expectEqual(@as(c_int, 0), mkfifo(c_path.ptr, 0o644));
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-F", dir_path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const expected = try std.fmt.allocPrint(testing.allocator, " {s}|\n", .{dir_path});
+    defer testing.allocator.free(expected);
+    try testing.expect(std.mem.endsWith(u8, out.writer.buffered(), expected));
+    try testing.expectEqual(@as(u8, 'p'), out.writer.buffered()[0]);
+}
+
+test "stat -F -l and -l -F both render the LSF format" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDir(testing.io, "sub", .default_dir);
+    const path = try testAbsPath(tmp_dir.dir, "sub");
+    defer testing.allocator.free(path);
+
+    var plain: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer plain.deinit();
+    const plain_args = [_][]const u8{ "-F", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&plain_args, &plain));
+
+    var fl: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer fl.deinit();
+    const fl_args = [_][]const u8{ "-F", "-l", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&fl_args, &fl));
+
+    var lf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer lf.deinit();
+    const lf_args = [_][]const u8{ "-l", "-F", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&lf_args, &lf));
+
+    try testing.expectEqualStrings(plain.writer.buffered(), fl.writer.buffered());
+    try testing.expectEqualStrings(plain.writer.buffered(), lf.writer.buffered());
+    try testing.expect(std.mem.endsWith(u8, plain.writer.buffered(), "/\n"));
+}
+
+// ---------------------------------------------------------------------------
+// -x LINUX_FORMAT: eight labelled lines with literal BSD spacing.
+// ---------------------------------------------------------------------------
+
+test "stat -x renders the eight labelled verbose lines" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "vx.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "vx.txt");
+    defer testing.allocator.free(path);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-x", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const text = out.writer.buffered();
+    try testing.expect(std.mem.endsWith(u8, text, "\n"));
+    const body = std.mem.trimEnd(u8, text, "\n");
+    var newlines: u32 = 0;
+    for (body) |ch| {
+        if (ch == '\n') newlines += 1;
+    }
+    try testing.expectEqual(@as(u32, 7), newlines);
+
+    const file_line = try std.fmt.allocPrint(testing.allocator, "  File: \"{s}\"", .{path});
+    defer testing.allocator.free(file_line);
+    try testing.expectEqualStrings(file_line, testLine(body, 0));
+
+    const prefixes = [_][]const u8{ "  Size: ", "  Mode: (", "Device: " };
+    for (prefixes, 1..) |prefix, idx| {
+        try testing.expect(std.mem.startsWith(u8, testLine(body, @intCast(idx)), prefix));
+    }
+    const labels = [_][]const u8{ "Access: ", "Modify: ", "Change: ", " Birth: " };
+    for (labels, 4..) |label, idx| {
+        try testing.expect(std.mem.startsWith(u8, testLine(body, @intCast(idx)), label));
+    }
+}
+
+test "stat -x uses the literal BSD spacing on the Size, Mode and Device lines" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "vx.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "vx.txt");
+    defer testing.allocator.free(path);
+
+    const mode = try testMode(tmp_dir.dir, "vx.txt", false);
+    var perm_buf: [10]u8 = undefined;
+    const perms = formatPermissions(mode, &perm_buf);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-x", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+    const body = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+
+    // "  Size: %-11z  FileType: %HT" -- 6 padded to 11 plus two literal spaces.
+    try testing.expectEqualStrings(
+        "  Size: 6            FileType: Regular File",
+        testLine(body, 1),
+    );
+
+    // "  Mode: (%OMp%03OLp/%.10Sp)         Uid: (%5u/%8Su)  Gid: (%5g/%8Sg)"
+    const mode_line = testLine(body, 2);
+    const mode_head = try std.fmt.allocPrint(
+        testing.allocator,
+        "  Mode: ({o}{o:0>3}/{s})         Uid: (",
+        .{ (mode >> 9) & 7, mode & 0o777, perms },
+    );
+    defer testing.allocator.free(mode_head);
+    try testing.expect(std.mem.startsWith(u8, mode_line, mode_head));
+    try testing.expect(std.mem.find(u8, mode_line, ")  Gid: (") != null);
+    try testing.expect(std.mem.endsWith(u8, mode_line, ")"));
+
+    // "Device: %Hd,%Ld   Inode: %i    Links: %l"
+    const dev_line = testLine(body, 3);
+    try testing.expect(std.mem.find(u8, dev_line, "   Inode: ") != null);
+    try testing.expect(std.mem.find(u8, dev_line, "    Links: ") != null);
+    try testing.expect(std.mem.endsWith(u8, dev_line, "Links: 1"));
+}
+
+test "stat -x Device line carries the kernel major and minor" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "vx.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "vx.txt");
+    defer testing.allocator.free(path);
+
+    const truth = try testTruth(path, false);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-x", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+
+    const body = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}   Inode: {d}    Links: {d}",
+        .{ truth.dev_major, truth.dev_minor, truth.ino, truth.nlink },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, testLine(body, 3));
+}
+
+test "stat -x names the file type of a directory and a symlink" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDir(testing.io, "sub", .default_dir);
+    const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    file.close(testing.io);
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+
+    const dir_path = try testAbsPath(tmp_dir.dir, "sub");
+    defer testing.allocator.free(dir_path);
+    const link_path = try testAbsPath(tmp_dir.dir, "link.txt");
+    defer testing.allocator.free(link_path);
+
+    var dir_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer dir_out.deinit();
+    const dir_args = [_][]const u8{ "-x", dir_path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&dir_args, &dir_out));
+    try testing.expect(std.mem.find(u8, dir_out.writer.buffered(), "FileType: Directory") != null);
+
+    var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer link_out.deinit();
+    const link_args = [_][]const u8{ "-x", link_path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&link_args, &link_out));
+    const link_text = link_out.writer.buffered();
+    try testing.expect(std.mem.find(u8, link_text, "FileType: Symbolic Link") != null);
+
+    var deref_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer deref_out.deinit();
+    const deref_args = [_][]const u8{ "-L", "-x", link_path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&deref_args, &deref_out));
+    const deref_text = deref_out.writer.buffered();
+    try testing.expect(std.mem.find(u8, deref_text, "FileType: Regular File") != null);
+}
+
+/// Test-only: does `s` hold a run of four consecutive digits (a year)?
+fn testHasYear(s: []const u8) bool {
+    std.debug.assert(s.len < 4096);
+    var run: u32 = 0;
+    for (s) |ch| {
+        run = if (std.ascii.isDigit(ch)) run + 1 else 0;
+        if (run >= 4) return true;
+    }
+    std.debug.assert(run < 4);
+    return false;
+}
+
+test "stat -x time lines carry a rendered timestamp, not an epoch" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "vx.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "vx.txt");
+    defer testing.allocator.free(path);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    const args = [_][]const u8{ "-x", path };
+    try testing.expectEqual(@as(u8, 0), try testStatOut(&args, &out));
+    const body = std.mem.trimEnd(u8, out.writer.buffered(), "\n");
+
+    const labels = [_][]const u8{ "Access: ", "Modify: ", "Change: ", " Birth: " };
+    for (labels, 4..) |label, idx| {
+        const line = testLine(body, @intCast(idx));
+        try testing.expect(line.len > label.len);
+        const stamp = line[label.len..];
+        // strftime "%c" output, so a wall-clock rendering rather than raw
+        // seconds: it opens with a weekday name and carries a clock and a year.
+        try testing.expect(stamp.len >= 19);
+        try testing.expect(std.ascii.isAlphabetic(stamp[0]));
+        try testing.expect(std.mem.find(u8, stamp, ":") != null);
+        try testing.expect(testHasYear(stamp));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mutual exclusion. FreeBSD errors with exit 1 and
+// "can't use format '<first>' with '<offender>'".
+// ---------------------------------------------------------------------------
+
+test "stat rejects two BSD display modes with exit 1" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "x.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "x.txt");
+    defer testing.allocator.free(path);
+
+    const Case = struct { first: []const u8, second: []const u8, msg: []const u8 };
+    const cases = [_]Case{
+        .{ .first = "-l", .second = "-r", .msg = "can't use format 'l' with 'r'" },
+        .{ .first = "-r", .second = "-s", .msg = "can't use format 'r' with 's'" },
+        .{ .first = "-s", .second = "-x", .msg = "can't use format 's' with 'x'" },
+        .{ .first = "-x", .second = "-l", .msg = "can't use format 'x' with 'l'" },
+        .{ .first = "-r", .second = "-r", .msg = "can't use format 'r' with 'r'" },
+    };
+
+    for (cases) |case| {
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var err: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer err.deinit();
+
+        const args = [_][]const u8{ case.first, case.second, path };
+        const status = try testStatBoth(&args, &out, &err);
+        try testing.expectEqual(@as(u8, 1), status);
+        try testing.expect(std.mem.find(u8, err.writer.buffered(), case.msg) != null);
+        try testing.expectEqual(@as(usize, 0), out.writer.buffered().len);
+    }
+}
+
+test "stat -F conflicts with every display mode except -l" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "x.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "x.txt");
+    defer testing.allocator.free(path);
+
+    const Case = struct { mode: []const u8, msg: []const u8 };
+    const cases = [_]Case{
+        .{ .mode = "-r", .msg = "can't use format 'r' with -F" },
+        .{ .mode = "-s", .msg = "can't use format 's' with -F" },
+        .{ .mode = "-x", .msg = "can't use format 'x' with -F" },
+    };
+
+    for (cases) |case| {
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var err: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer err.deinit();
+
+        const args = [_][]const u8{ "-F", case.mode, path };
+        const status = try testStatBoth(&args, &out, &err);
+        try testing.expectEqual(@as(u8, 1), status);
+        try testing.expect(std.mem.find(u8, err.writer.buffered(), case.msg) != null);
+    }
+}
+
+test "stat display modes accept -n, -q and -L without conflict" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try file.writeStreamingAll(testing.io, "hello\n");
+    file.close(testing.io);
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+    const path = try testAbsPath(tmp_dir.dir, "link.txt");
+    defer testing.allocator.free(path);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer err.deinit();
+
+    const args = [_][]const u8{ "-l", "-n", "-q", "-L", path };
+    try testing.expectEqual(@as(u8, 0), try testStatBoth(&args, &out, &err));
+    try testing.expectEqual(@as(usize, 0), err.writer.buffered().len);
+    // -n drops the record terminator, so the line has no trailing newline.
+    try testing.expect(!std.mem.endsWith(u8, out.writer.buffered(), "\n"));
+    try testing.expect(std.mem.endsWith(u8, out.writer.buffered(), path));
+}
+
+// ---------------------------------------------------------------------------
+// Cross-interface conflicts. Combining a BSD display mode with a GNU output
+// selector is undefined by any spec, so vibeutils diagnoses it as misuse
+// (exit 2) rather than silently picking one of the two.
+// ---------------------------------------------------------------------------
+
+test "stat rejects a BSD display mode combined with -c or --printf" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "x.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "x.txt");
+    defer testing.allocator.free(path);
+
+    var c_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer c_out.deinit();
+    var c_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer c_err.deinit();
+    const c_args = [_][]const u8{ "-r", "-c", "%s", path };
+    try testing.expectEqual(@as(u8, 2), try testStatBoth(&c_args, &c_out, &c_err));
+    try testing.expect(
+        std.mem.find(u8, c_err.writer.buffered(), "can't use format 'r' with -c") != null,
+    );
+
+    var p_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer p_out.deinit();
+    var p_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer p_err.deinit();
+    const p_args = [_][]const u8{ "-l", "--printf=%s", path };
+    try testing.expectEqual(@as(u8, 2), try testStatBoth(&p_args, &p_out, &p_err));
+    try testing.expect(
+        std.mem.find(u8, p_err.writer.buffered(), "can't use format 'l' with --printf") != null,
+    );
+}
+
+test "stat rejects a BSD display mode combined with -t or -f" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "x.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "x.txt");
+    defer testing.allocator.free(path);
+
+    var t_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer t_out.deinit();
+    var t_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer t_err.deinit();
+    const t_args = [_][]const u8{ "-s", "-t", path };
+    try testing.expectEqual(@as(u8, 2), try testStatBoth(&t_args, &t_out, &t_err));
+    try testing.expect(
+        std.mem.find(u8, t_err.writer.buffered(), "can't use format 's' with -t") != null,
+    );
+
+    var f_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer f_out.deinit();
+    var f_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer f_err.deinit();
+    const f_args = [_][]const u8{ "-x", "-f", path };
+    try testing.expectEqual(@as(u8, 2), try testStatBoth(&f_args, &f_out, &f_err));
+    try testing.expect(
+        std.mem.find(u8, f_err.writer.buffered(), "can't use format 'x' with -f") != null,
+    );
+}
