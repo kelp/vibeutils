@@ -1266,14 +1266,15 @@ test "get icon for source files" {
     // Rust files
     try testing.expectEqualStrings("\u{e7a8}", getIcon(&theme, "main.rs", false, false, false));
 
-    // Zig files
-    try testing.expectEqualStrings("\u{26a1}", getIcon(&theme, "build.zig", false, false, false));
+    // Zig files. The theme is a Nerd Font glyph set throughout, so this is the
+    // Nerd Font Zig logo, not the plain-Unicode ⚡ this once expected.
+    try testing.expectEqualStrings("\u{e8ef}", getIcon(&theme, "build.zig", false, false, false));
 
     // Python files
     try testing.expectEqualStrings("\u{e73c}", getIcon(&theme, "script.py", false, false, false));
 
-    // Perl files
-    try testing.expectEqualStrings("\u{e769}", getIcon(&theme, "script.pl", false, false, false));
+    // Perl files. Same drift as the Zig glyph above.
+    try testing.expectEqualStrings("\u{e67e}", getIcon(&theme, "script.pl", false, false, false));
 }
 
 test "get icon for documents" {

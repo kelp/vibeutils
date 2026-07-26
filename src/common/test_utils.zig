@@ -212,7 +212,7 @@ pub const StdoutCapture = struct {
 /// Strip ANSI escape codes from text
 /// Handles multiple escape sequence types: CSI, OSC, and other ANSI sequences
 pub fn stripAnsiCodes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var result = std.ArrayListUnmanaged(u8){};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
@@ -287,10 +287,10 @@ pub fn runCommand(
 ) !struct { stdout: []u8, stderr: []u8, exit_code: u8 } {
     const result = try std.process.run(gpa, io, .{ .argv = argv });
     const exit_code: u8 = switch (result.term) {
-        .Exited => |code| code,
-        .Signal => |signal| @as(u8, @intCast(signal + 128)),
-        .Stopped => |signal| @as(u8, @intCast(signal + 128)),
-        .Unknown => |code| @as(u8, @intCast(code)),
+        .exited => |code| code,
+        .signal => |signal| @as(u8, @intCast(@intFromEnum(signal) + 128)),
+        .stopped => |signal| @as(u8, @intCast(@intFromEnum(signal) + 128)),
+        .unknown => |code| @as(u8, @intCast(code)),
     };
     return .{
         .stdout = result.stdout,

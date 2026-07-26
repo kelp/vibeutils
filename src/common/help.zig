@@ -731,9 +731,10 @@ test "isUppercasePlaceholder" {
     try testing.expect(isUppercasePlaceholder("[OPTION]..."));
     try testing.expect(isUppercasePlaceholder("[STRING]..."));
     try testing.expect(isUppercasePlaceholder("LEVEL"));
-    try testing.expect(isUppercasePlaceholder("N"));
-    // N is only 1 char inner — after strip it's 1 char, need 2+
-    // Actually "N" stripped is "N" which is 1 char — returns false
+    // A single uppercase letter is NOT a placeholder: the `token.len < 2` gate
+    // is what keeps a stray capital mid-sentence from being highlighted, and
+    // it is the same gate that makes `!isUppercasePlaceholder("a")` below hold.
+    // "NR" is the intended two-character positive.
     try testing.expect(!isUppercasePlaceholder("N"));
     try testing.expect(isUppercasePlaceholder("NR"));
 

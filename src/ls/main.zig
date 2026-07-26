@@ -940,27 +940,21 @@ test "runLs function works with separate writers" {
     try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
-// C library functions for environment manipulation in tests
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern fn unsetenv(name: [*:0]const u8) c_int;
-
 test "initStyle with auto color mode disables colors when stdout is not a TTY" {
     // When --color=auto is passed and stdout is not a TTY (as in tests and
     // pipes), the style's color_mode must be .none so ANSI codes don't leak.
-    const saved_term = common.env.getEnv("TERM");
-    const saved_no_color = common.env.getEnv("NO_COLOR");
-    _ = setenv("TERM", "xterm-256color", 1);
-    _ = unsetenv("NO_COLOR");
-    defer {
-        if (saved_term) |v| {
-            _ = setenv("TERM", @ptrCast(v), 1);
-        } else {
-            _ = unsetenv("TERM");
-        }
-        if (saved_no_color) |v| {
-            _ = setenv("NO_COLOR", @ptrCast(v), 1);
-        }
-    }
+    //
+    // The environment is staged through the test-only overlay in
+    // common.env; libc unsetenv would compact `environ` in place and
+    // corrupt the view Zig 0.16 captures at startup, which deadlocks the
+    // test runner's failure path (issue #95).
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = null },
+    };
+    common.env.test_overrides = &staged;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

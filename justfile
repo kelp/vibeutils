@@ -31,6 +31,15 @@ build-util util:
 test:
     {{test_cmd}}
 
+# Run the privilege-framework integration tests
+#
+# `zig build test-integration` existed but nothing invoked it — not this file,
+# not CI — so its three test roots never ran (issue #95). Kept separate from
+# `test` so that recipe stays a pure unit-test step. The privileged tests here
+# skip cleanly without fakeroot; run `just test-privileged` for those.
+test-integration:
+    zig build test-integration
+
 # Test a specific utility (smoke test + binary check)
 test-util util:
     @echo "Testing {{util}} utility..."

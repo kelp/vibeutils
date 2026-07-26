@@ -3623,42 +3623,22 @@ test "runDf - help mentions VIBEUTILS_STYLE" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "VIBEUTILS_STYLE") != null);
 }
 
-// C library functions for environment manipulation in tests
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern fn unsetenv(name: [*:0]const u8) c_int;
-extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-
 test "runDf - non-tty output should not contain ANSI escapes" {
     const io = testing.io;
-    // Save original environment values
-    const orig_term = if (getenv("TERM")) |p| std.mem.span(p) else null;
-    const orig_no_color = if (getenv("NO_COLOR")) |p| std.mem.span(p) else null;
-    const orig_style = if (getenv("VIBEUTILS_STYLE")) |p| std.mem.span(p) else null;
-
-    // Set TERM so ColorMode.detect returns a non-none color mode.
-    // Remove NO_COLOR and VIBEUTILS_STYLE so they don't suppress colors.
-    _ = setenv("TERM", "xterm-256color", 1);
-    _ = unsetenv("NO_COLOR");
-    _ = unsetenv("VIBEUTILS_STYLE");
-
-    defer {
-        // Restore original environment
-        if (orig_term) |t| {
-            _ = setenv("TERM", t.ptr, 1);
-        } else {
-            _ = unsetenv("TERM");
-        }
-        if (orig_no_color) |nc| {
-            _ = setenv("NO_COLOR", nc.ptr, 1);
-        } else {
-            _ = unsetenv("NO_COLOR");
-        }
-        if (orig_style) |vs| {
-            _ = setenv("VIBEUTILS_STYLE", vs.ptr, 1);
-        } else {
-            _ = unsetenv("VIBEUTILS_STYLE");
-        }
-    }
+    // Set TERM so ColorMode.detect returns a non-none color mode, and
+    // stage NO_COLOR and VIBEUTILS_STYLE as unset so they don't suppress
+    // colors. This goes through the test-only overlay in common.env
+    // rather than libc setenv/unsetenv: unsetenv compacts `environ` in
+    // place and corrupts the view Zig 0.16 captures at startup, which
+    // deadlocks the test runner's failure path (issue #95).
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+    };
+    common.env.test_overrides = &staged;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

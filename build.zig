@@ -37,6 +37,31 @@ pub fn build(b: *std.Build) void {
     // Create build_options module once and reuse it
     const build_options_module = build_options.createModule();
 
+    // A SECOND options module, for test roots only.
+    //
+    // The repo lints in src/common/lib.zig need absolute source paths, injected
+    // rather than resolved from cwd: a lint that locates its inputs relative to
+    // the working directory silently passes when run from anywhere else, which
+    // is the vacuous-green failure issue #95 is about. Resolving at configure
+    // time makes "wrong directory" impossible rather than merely unlikely.
+    //
+    // They go here rather than on the module above because every utility
+    // imports that one, and build-machine paths are a test-only concern with no
+    // business in the shipped options. (Measured: they do not actually reach a
+    // ReleaseFast binary either way — Zig's lazy analysis drops the unreferenced
+    // consts, and the `/home/user/...` strings visible in `strings zig-out/bin/*`
+    // are DWARF DW_AT_comp_dir, which `-Dstrip` removes and which are present
+    // with or without this split. This is hygiene, not a leak fix.)
+    const test_options = b.addOptions();
+    test_options.addOption([]const u8, "version", version);
+    test_options.addOption([]const u8, "src_dir", b.pathFromRoot("src"));
+    test_options.addOption(
+        []const u8,
+        "common_source_dir",
+        b.pathFromRoot("src/common"),
+    );
+    const test_options_module = test_options.createModule();
+
     // Common library module
     const common = b.addModule("common", .{
         .root_source_file = b.path("src/common/lib.zig"),
@@ -53,8 +78,16 @@ pub fn build(b: *std.Build) void {
         };
     }
 
-    // Unit tests
-    buildTests(b, target, optimize, common, build_options_module, test_util) catch |err| {
+    // Unit tests. The lib.zig-rooted roots inside take test_options_module.
+    buildTests(
+        b,
+        target,
+        optimize,
+        common,
+        build_options_module,
+        test_options_module,
+        test_util,
+    ) catch |err| {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Abort build configuration
     };
@@ -64,7 +97,7 @@ pub fn build(b: *std.Build) void {
     addCleanStep(b);
     addCIValidateStep(b, ci);
     addDocsStep(b, target, optimize, common, build_options_module);
-    addCoverageStep(b, target, common, build_options_module);
+    addCoverageStep(b, target, common, build_options_module, test_options_module);
     addFuzzer(b, target, optimize);
 }
 
@@ -122,6 +155,10 @@ fn buildTests(
     optimize: std.builtin.OptimizeMode,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
+    // test_options_module carries the lint source paths; only the
+    // lib.zig-rooted test binaries get it, so those paths never reach a
+    // shipped utility.
+    test_options_module: *std.Build.Module,
     test_util: ?[]const u8,
 ) !void {
     const test_step = b.step("test", "Run unit tests");
@@ -181,7 +218,7 @@ fn buildTests(
             .link_libc = true,
         }),
     });
-    common_tests.root_module.addImport("build_options", build_options_module);
+    common_tests.root_module.addImport("build_options", test_options_module);
 
     const run_common_tests = b.addRunArtifact(common_tests);
     // Skip the whole common suite when scoped to a single utility.
@@ -246,11 +283,19 @@ fn buildTests(
             .root_source_file = b.path("src/common/lib.zig"),
             .target = target,
             .optimize = optimize,
+            // Must match the `test` and `coverage` roots (issue #95). The
+            // "privileged:" filter below leaves most tests unanalyzed, which is
+            // the only reason this site survived without libc while
+            // file_ops.zig reached std.c.fchmod/fchown and terminal.zig reached
+            // std.c.isatty/ioctl. link_libc is also behavioral, not just a link
+            // flag: env.getEnv branches on builtin.link_libc, so leaving the
+            // three roots out of step made them take different env-lookup paths.
+            .link_libc = true,
         }),
         .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
         .name = "common_privileged_test", // Unique name to avoid conflicts
     });
-    common_tests_priv.root_module.addImport("build_options", build_options_module);
+    common_tests_priv.root_module.addImport("build_options", test_options_module);
 
     // Same workaround as above for common library tests; same test-bin/
     // destination so it stays out of the utility bin dir.
@@ -436,6 +481,7 @@ fn addCoverageStep(
     target: std.Build.ResolvedTarget,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
+    test_options_module: *std.Build.Module,
 ) void {
     const coverage_step = b.step("coverage", "Build test binaries with LLVM backend for coverage analysis");
 
@@ -481,7 +527,7 @@ fn addCoverageStep(
         .use_llvm = true,
         .name = "common_test",
     });
-    common_tests.root_module.addImport("build_options", build_options_module);
+    common_tests.root_module.addImport("build_options", test_options_module);
 
     const install_common = b.addInstallArtifact(common_tests, .{
         .dest_dir = .{ .override = .{ .custom = "bin/tests" } },

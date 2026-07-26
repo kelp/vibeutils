@@ -35,6 +35,13 @@ pub const TestUtils = struct {
 
     /// Run `argv` and return the result. Caller owns `result.stdout` and
     /// `result.stderr`.
+    ///
+    /// No `environ_map` is passed on purpose: `RunOptions.environ_map` docs it
+    /// as "replaces the child environment when provided", so null is what
+    /// *inherits* the parent's, and argv[0] resolution uses the parent PATH
+    /// either way. Supplying a synthesized map would be the bug — it would drop
+    /// LD_PRELOAD/FAKEROOTKEY and silently disable the fakeroot privilege
+    /// simulation, making the privileged tests pass for the wrong reason.
     pub fn runCommand(
         self: *TestUtils,
         argv: []const []const u8,
@@ -78,7 +85,11 @@ pub const TestUtils = struct {
         temp_dir: std.testing.TmpDir,
         test_name: []const u8,
     ) !std.Io.Dir {
-        const timestamp = std.time.timestamp();
+        // 0.16's std.time keeps only constants and `epoch` — timestamp() is
+        // gone — so the previous call here was dead API. Nothing catches it:
+        // no test calls createTestSubdir, so Zig's lazy analysis never reaches
+        // the body. Fixed on sight during issue #95; deliberately unguarded.
+        const timestamp = std.Io.Timestamp.now(self.io, .real).toSeconds();
         const subdir_name = try std.fmt.allocPrint(
             self.allocator,
             "{s}_{d}",
