@@ -1488,6 +1488,13 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  %z   time of last status change, human-readable
         \\  %Z   time of last status change, seconds since Epoch
         \\
+        \\NOTE: this stat follows the GNU interface, so -f and -t differ from
+        \\BSD/macOS stat, where -f takes a format string and -t a time format:
+        \\  BSD 'stat -f FORMAT'  ->  use 'stat -c FORMAT' here
+        \\  BSD 'stat -t TIMEFMT' ->  no equivalent here
+        \\Here -f is --file-system and -t is --terse. The BSD flags that do not
+        \\collide with GNU (-F -l -n -q -r -s -x) keep their BSD meanings.
+        \\
     );
 }
 

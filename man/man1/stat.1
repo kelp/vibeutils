@@ -20,6 +20,17 @@ By default it shows file status; with
 .Fl f
 it shows file system status.
 .Pp
+This implementation follows the GNU interface, in which
+.Fl f
+and
+.Fl t
+mean something different than they do in the BSD
+.Nm
+found on macOS and
+.Ox .
+See
+.Sx CAVEATS .
+.Pp
 The options are as follows:
 .Bl -tag -width Ds
 .It Fl L , Fl Fl dereference
@@ -146,3 +157,48 @@ utility is not specified by POSIX.
 The behavior is compatible with GNU coreutils.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
+.Sh CAVEATS
+BSD and GNU
+.Nm
+assign different meanings to
+.Fl f
+and
+.Fl t .
+This implementation follows GNU, so a script written for the
+BSD
+.Nm
+found on macOS and
+.Ox
+will behave differently:
+.Bl -tag -width Ds
+.It Fl f
+BSD treats the next argument as a format string.
+Here it selects file system status and takes no argument.
+Use
+.Fl c Ar FORMAT
+for the BSD
+.Fl f Ar FORMAT
+behavior.
+.It Fl t
+BSD treats the next argument as an
+.Xr strftime 3
+time format.
+Here it selects terse output and takes no argument.
+There is no equivalent for the BSD behavior.
+.El
+.Pp
+Because these are ordinary flags rather than errors, a BSD
+invocation such as
+.Ql stat -f '%m' file
+does not do what a BSD user expects: the format string is
+treated as a file operand.
+It is diagnosed and the exit status is non-zero, so the
+mistake is not silent.
+.Pp
+The BSD flags whose letters GNU does not use
+.Pq Fl F , l , n , q , r , s , x
+keep their BSD meanings here, so only
+.Fl f
+and
+.Fl t
+diverge.
