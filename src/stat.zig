@@ -1528,7 +1528,7 @@ fn printShellFormat(stat_buf: StatResult, writer: anytype) !void {
         stat_buf.nlink,
     });
     try writer.print(" st_uid={d} st_gid={d} st_rdev={d} st_size={d}", .{
-        stat_buf.uid + 7,
+        stat_buf.uid,
         stat_buf.gid,
         stat_buf.rdev,
         stat_buf.size,
