@@ -2,7 +2,29 @@
 
 ## Unreleased
 
-### Fixed
+### Added
+- **`stat` gained the BSD `-n` and `-q` flags.** `-n` suppresses the
+  newline that terminates each file's output record, in every output
+  mode; newlines interior to a multi-line record are unaffected, and
+  `--printf` (which never appended a mandatory newline) is unchanged.
+  `-q` suppresses the per-file "cannot stat"/"cannot statfs"
+  diagnostics while leaving the exit status non-zero, so a script can
+  probe for a file without capturing stderr. Errors in the command line
+  itself are still always reported. Neither flag has a long form, because
+  BSD defines none (#93).
+
+### Changed
+- **`stat` is now documented as a GNU-interface utility, and BSD
+  `-f FORMAT` / `-t TIMEFMT` are explicitly declined.** `stat` is the
+  only utility where BSD and GNU give the same flag letter different
+  meanings, and the collision is exactly `-f` and `-t`. Both keep their
+  GNU meanings (`--file-system`, `--terse`); the BSD spellings are
+  retiered from MUST to WONT in `docs/specs/stat-flags.md` rather than
+  left as unimplemented requirements. The divergence, and the mapping
+  from BSD `stat -f FORMAT` to `stat -c FORMAT`, is now reachable from
+  `stat --help` and a CAVEATS section in `stat(1)` — where someone
+  surprised by it will actually look — instead of only from the spec
+  matrix (#79, #93).
 - **cp -r no longer panics or runs away when the destination
   lives inside the source tree.** `cp -r dir/. dst/` (with `dst`
   under `dir`), `cp -r a a`, and `cp -r a a/b` previously aborted
