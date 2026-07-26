@@ -3,14 +3,32 @@
     "allow": [
       "Bash(make:*)",
       "Bash(zig:*)",
+      "Bash(just:*)",
       "Bash(zig-out/bin/*:*)",
       "Bash(./zig-out/bin/*:*)",
       "Bash(timeout:*)",
       "Bash(mandoc:*)",
+      "Bash(fakeroot:*)",
       "Bash(chmod:*)",
       "Bash(bash:*)",
       "Bash(/opt/homebrew/bin/bash:*)",
       "Bash(git branch:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git config --get:*)",
+      "Bash(scripts/bootstrap.sh:*)",
+      "Bash(./scripts/bootstrap.sh:*)",
+      "Bash(scripts/tiger-check.sh:*)",
+      "Bash(./scripts/tiger-check.sh:*)",
+      "Bash(scripts/lint-man-pages.sh:*)",
+      "Bash(./scripts/lint-man-pages.sh:*)",
+      "Bash(scripts/run-privileged-tests.sh:*)",
+      "Bash(./scripts/run-privileged-tests.sh:*)",
+      "Bash(tests/integration.sh:*)",
+      "Bash(./tests/integration.sh:*)",
       "Bash(xxd:*)",
       "Bash(ls:*)",
       "WebSearch",
@@ -22,6 +40,17 @@
     "deny": []
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
