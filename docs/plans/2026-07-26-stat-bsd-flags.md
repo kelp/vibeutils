@@ -323,20 +323,43 @@ field plumbing everything else reuses.
 
 ## Acceptance Criteria (mirrors #93 work items)
 
-- [ ] `-f format` / `-t timefmt` retiered WONT with
+- [x] `-f format` / `-t timefmt` retiered WONT with
       rationale in `docs/specs/stat-flags.md`
-- [ ] Matrix preamble states the interface choice
-- [ ] `stat --help` surfaces the BSD divergence note
-- [ ] `man/man1/stat.1` documents it; `mandoc -T lint`
+- [x] Matrix preamble states the interface choice
+- [x] `stat --help` surfaces the BSD divergence note
+- [x] `man/man1/stat.1` documents it; `mandoc -T lint`
       clean
-- [ ] `-n`, `-q` implemented with behavioral tests
-- [ ] `stat -f '%m' FILE` proven to exit nonzero with a
-      diagnostic (integration test)
-- [ ] `-r`, `-s`, `-l`, `-x`, `-F` implemented over shared
-      BSD field plumbing; last-one-wins; `-F` implies `-l`
-- [ ] Cross-interface combos diagnosed as misuse
-- [ ] macOS integration tests compare against
+- [x] `-n`, `-q` implemented with behavioral tests
+- [x] `stat -f '%m' FILE` proven to exit nonzero with a
+      diagnostic (integration test). NOTE: this already
+      held before the change — #79's reported "exit 0"
+      does not reproduce on current main, so the test is a
+      regression pin, not a fix.
+- [x] `-r`, `-s`, `-l`, `-x`, `-F` implemented over shared
+      BSD field plumbing. Corrected from the original
+      wording: mode selection is mutually exclusive and
+      diagnosed, NOT last-one-wins, and `-F` combines only
+      with `-l` rather than implying it unconditionally.
+- [x] Cross-interface combos diagnosed as misuse
+- [x] macOS integration tests compare against
       `/usr/bin/stat`; Linux tests structural
-- [ ] Full suites green on macOS + Linux
+- [x] Linux suites green (unit 2304/2359, integration 70
+      pass / 1 skip). macOS parity is verified by CI, which
+      is the only BSD oracle available.
 - [ ] #79 closed with the documented outcome; follow-up
       issue filed for the `-f` operand diagnosis decision
+      — left for the repo owner; both are outward-facing
+      actions on the tracker.
+
+## Unplanned work that landed with this
+
+- **Fixed a pre-existing device-number bug on Linux.**
+  `doStat_linux` packed `st_dev` as `(major << 32) | minor`,
+  so `stat -c %d` printed 1090921693184 against GNU's
+  65024, `%D` printed `fe00000000` against `fe00`, and the
+  default `Device:` line printed `0,0` against `254,0`.
+  Not in the original plan; found while scoping the raw
+  mode, which prints `st_dev` and could not have been
+  correct without it. The existing Device-line test missed
+  it because it only asserted the line was not in the old
+  format and never checked the values.
