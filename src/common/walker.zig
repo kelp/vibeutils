@@ -2206,6 +2206,11 @@ test "walker: next() is re-entrant after a per-entry I/O error" {
     // Skip on Windows where chmod semantics differ.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
+    // Root bypasses DAC, so chmod 000 denies it nothing and the premise of
+    // this test cannot hold. Agent containers commonly run as uid 0, where
+    // the walk would otherwise succeed and saw_io_error stay false.
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -147,6 +147,10 @@ fmt:
 fmt-check:
     zig build fmt-check
 
+# Install the pinned Zig toolchain plus just, mandoc and fakeroot
+setup:
+    @./scripts/bootstrap.sh
+
 # Install git hooks (pre-commit fmt gate). Run once after cloning.
 install-hooks:
     git config core.hooksPath .githooks
@@ -258,12 +262,12 @@ docker-clean:
 # Run all integration tests
 it: build
     @echo "Running integration tests for all utilities..."
-    @tests/integration.sh
+    @scripts/run-integration.sh
 
 # Run integration tests for a specific utility
 it-util util: build
     @echo "Running comprehensive tests for {{util}} utility..."
-    @tests/integration.sh {{util}}
+    @scripts/run-integration.sh {{util}}
 
 # List available utilities for integration testing
 it-list: build

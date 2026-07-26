@@ -91,8 +91,8 @@ fi
 
 # Check for zig
 if ! command -v zig &> /dev/null; then
-    echo -e "${RED}Error: zig not found. Please install Zig 0.14.1 or later.${NC}"
-    echo "Visit: https://ziglang.org/download/"
+    echo -e "${RED}Error: zig not found. Install the Zig version pinned in build.zig.zon.${NC}"
+    echo "See docs/TOOLCHAIN.md, or visit https://ziglang.org/download/"
     exit 1
 fi
 
