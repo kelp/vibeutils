@@ -53,11 +53,21 @@ compatibility.**
 
 ## Build and Test Commands
 
-**Prerequisites**: Integration tests require bash 4.0+ (macOS default is 3.2):
-```bash
-brew install bash
-# Ensure /usr/local/bin or /opt/homebrew/bin is in PATH before /bin
-```
+**Prerequisites**: Zig (version pinned by `.minimum_zig_version` in
+`build.zig.zon`) and bash 4.0+ for integration tests (macOS ships 3.2:
+`brew install bash`, then put `/usr/local/bin` or `/opt/homebrew/bin` in
+PATH before `/bin`).
+
+**No toolchain? Run `scripts/bootstrap.sh`** (or `just setup`). It is
+idempotent and installs Zig, `just`, `mandoc` and `fakeroot`.
+
+In Claude Code remote/web sessions it runs automatically in the background
+at session start, so **if you hit `zig: command not found`, just run
+`scripts/bootstrap.sh`** — it blocks until the background install finishes,
+then no-ops. `ziglang.org` is egress-blocked in those containers and Zig
+comes from the PyPI `ziglang` wheel instead; don't burn time on mirrors.
+Full detail, the optional-tool matrix, and container caveats:
+`docs/TOOLCHAIN.md`.
 
 Run `just` for all available commands. Key commands:
 
@@ -110,13 +120,18 @@ verified signatures on all branches. Never bypass this:
 
 - Never use `-c commit.gpgsign=false`
 - Never disable or work around signature verification
-- If signing fails (agent unavailable, key not loaded,
-  "communication with agent failed"), **stop and wait
-  for instructions**. Do not attempt workarounds.
-- The SSH signing key is managed by 1Password and
-  requires an active agent connection from the host.
-  If the agent drops (laptop sleep, SSH reconnect),
-  signing will fail until the session is refreshed.
+- If signing fails, **never work around it**. What to do
+  next depends on where you are:
+  - **Dev machine**: the SSH signing key is managed by
+    1Password and needs an active agent connection from
+    the host. If the agent drops (laptop sleep, SSH
+    reconnect), signing fails until the session is
+    refreshed — **stop and wait for instructions**.
+  - **Agent container** (Claude Code remote/web): signing
+    is pre-configured by the environment (`gpg.ssh.program`
+    plus a provisioned key) and works. There is no
+    1Password agent to wait for, so a failure here is a
+    real problem to surface, not something to sit out.
 
 ## Releases
 
@@ -410,8 +425,10 @@ sabotage** (manual mutation testing):
 - Integration tests must actually RUN in CI — verify the
   runner picks them up (binary-name matching, bash version
   requirements, etc.).
-- Validate on both macOS and Linux before pushing. Use
-  `orb -m ubuntu` for Linux validation.
+- Validate on both macOS and Linux before pushing. On a
+  macOS dev machine use `orb -m ubuntu` for the Linux side.
+  In an agent container you are already on Linux and have
+  no `orb`: run the suites natively and let CI cover macOS.
 
 ### ⚠️ CRITICAL: Filter Utilities Testing
 **Before implementing any utility, read `docs/TESTING_STRATEGY.md` section "Filter Utilities and Stdin-Dependent Testing"**
@@ -579,6 +596,7 @@ Only validate for **correctness**:
 ## Documentation References
 
 **📖 Core Documentation:**
+- **`docs/TOOLCHAIN.md`** - ⚠️ START HERE if `zig`/`just` are missing - how to install the toolchain, optional-tool matrix, agent-container caveats
 - **`docs/ZIG_BREAKING_CHANGES.md`** - ⚠️ READ FIRST - 0.15.x → 0.16 migration catalog
 - `docs/ZIG_PATTERNS.md` - Zig 0.16.x idioms and patterns
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
@@ -660,8 +678,19 @@ exposes only `args` and `environ`.
 
 
 ## Cross-Platform Testing
-- **OrbStack**: `orb -m ubuntu zig build test` (ubuntu, debian, arch available)
-- **Docker**: `just test-linux`, `just docker-shell`
+- **OrbStack** (dev machine, macOS host): `orb -m ubuntu zig build test`
+  (ubuntu, debian, arch available)
+- **Docker**: `just test-linux`, `just docker-shell` — needs a reachable
+  Docker daemon
+- **Agent containers**: neither is available. You are already ON Linux, so
+  run `zig build test` and `just it` natively and let CI cover macOS. Don't
+  try to make `orb` work.
+- **Running as root breaks permission tests.** Root bypasses DAC, so any
+  test asserting "this is denied" cannot pass. `just it` already drops to
+  an unprivileged user via `scripts/run-integration.sh`; unit tests guard
+  with `if (std.c.geteuid() == 0) return error.SkipZigTest;` (see
+  `src/common/walker.zig`, `src/common/file_ops.zig`). Use that guard for
+  any new permission-dependent unit test. Details: `docs/TOOLCHAIN.md`.
 
 ## Tiger Style (TigerBeetle Coding Methodology)
 

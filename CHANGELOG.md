@@ -2,7 +2,48 @@
 
 ## Unreleased
 
+### Infrastructure
+- **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
+  One idempotent script that installs the Zig version pinned in
+  `build.zig.zon` plus `just`, `mandoc` and `fakeroot`, then proves
+  the result by running `zig build --list-steps`. It reads the pin
+  rather than carrying its own copy of the version, serialises on a
+  lock file so a second run waits for an in-flight install instead
+  of racing it, and finishes in under a second once warm. Zig comes
+  from the PyPI `ziglang` wheel first, falling back to
+  `docker/scripts/install-zig.sh` for the official mirrors — the
+  wheel is the only source reachable from networks that block
+  `ziglang.org`, which includes hosted agent containers. It also
+  installs `bsdextrautils`, without which the `hexdump` the
+  integration suite depends on is missing and `pwd` and `dirname`
+  fail. Also exposed as `just setup`.
+- **`just it` now drops privileges when run as root.** Roughly two
+  dozen integration tests across `cat`, `chmod`, `chown`, `grep`,
+  `ls`, `rm`, `stat` and others assert that an operation is denied.
+  Root bypasses DAC, so those assertions cannot hold and the suite
+  was red for anyone working in a container or a Docker image —
+  13 of 48 utilities failing for a reason unrelated to the code.
+  The new `scripts/run-integration.sh` re-executes the suite as an
+  unprivileged user (`vibedev`, created on demand) when it starts
+  as root, and is a pass-through otherwise, so CI and dev machines
+  are unaffected. `VIBEUTILS_NO_DEMOTE=1` opts out. No test was
+  weakened or skipped to achieve this.
+- **Claude Code remote/web sessions bootstrap themselves.** A
+  `SessionStart` hook (`.claude/hooks/session-start.sh`) runs the
+  bootstrap in the background, gated on `CLAUDE_CODE_REMOTE` so it
+  never touches a local gale/nix toolchain. New `docs/TOOLCHAIN.md`
+  documents how to obtain Zig in every environment, which optional
+  tool gates which `just` recipe, and the container caveats
+  (blocked hosts, no OrbStack, running as root).
+
 ### Fixed
+- **The walker's re-entrancy test no longer fails when run as
+  root.** It chmods a directory to `000` and expects the walk to
+  report an I/O error, but root bypasses DAC, so the premise cannot
+  hold and the test failed for anyone working in a container. It
+  now skips on `geteuid() == 0`, matching the guard already used in
+  `src/common/file_ops.zig`. Unprivileged runs, including CI, still
+  execute it.
 - **`cp -p` and `mv` now duplicate the source mode exactly instead
   of letting the umask eat it.** The shared copy leaf set the
   destination mode only through `createFile`'s `O_CREAT` argument,
