@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
+  `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
+  prints them as `st_name=value` shell assignments (so
+  `eval $(stat -s FILE)` works), `-l` prints an `ls -l` style line,
+  `-x` prints a verbose multi-line record, and `-F` appends an
+  `ls -F` type suffix to the `-l` rendering. The four whole-output
+  modes are mutually exclusive — a second one is an error (exit 1),
+  as is `-F` with anything but `-l` — and combining any of them with
+  the GNU output selectors `-c`, `--printf`, `-t` or `-f` is
+  diagnosed as misuse (exit 2) rather than silently picking one.
+  Because BSD `-f FORMAT` is declined, these are fixed renderings of
+  the FreeBSD preset formats, not a general format engine (#93).
 - **`stat` gained the BSD `-n` and `-q` flags.** `-n` suppresses the
   newline that terminates each file's output record, in every output
   mode; newlines interior to a multi-line record are unaffected, and
@@ -12,6 +24,15 @@
   probe for a file without capturing stderr. Errors in the command line
   itself are still always reported. Neither flag has a long form, because
   BSD defines none (#93).
+
+### Fixed
+- **`stat` reported the wrong device number on Linux.** `doStat`
+  composed `st_dev` as `(major << 32) | minor`, a synthetic value the
+  kernel never uses, so `stat -c %d` printed 1090921693184 where GNU
+  printed 65024, `%D` printed `fe00000000` instead of `fe00`, and the
+  default `Device:` line printed `0,0` instead of `254,0`. Both
+  `st_dev` and `st_rdev` are now packed with the kernel's real
+  encoding (glibc `makedev`), which repairs all three at once (#93).
 
 ### Changed
 - **`stat` is now documented as a GNU-interface utility, and BSD

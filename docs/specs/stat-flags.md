@@ -46,13 +46,13 @@ FreeBSD preset format strings, not a general format engine.
 
 | Flag | macOS | OpenBSD | GNU | Ours | Tier |
 |------|-------|---------|-----|------|------|
-| -F | yes | yes | - | - | MUST |
-| -l | yes | yes | - | - | MUST |
-| -n | yes | yes | - | - | MUST |
-| -q | yes | yes | - | - | MUST |
-| -r | yes | yes | - | - | MUST |
-| -s | yes | yes | - | - | MUST |
-| -x | yes | yes | - | - | MUST |
+| -F | yes | yes | - | yes | MUST |
+| -l | yes | yes | - | yes | MUST |
+| -n | yes | yes | - | yes | MUST |
+| -q | yes | yes | - | yes | MUST |
+| -r | yes | yes | - | yes | MUST |
+| -s | yes | yes | - | yes | MUST |
+| -x | yes | yes | - | yes | MUST |
 
 `-l`, `-r`, `-s` and `-x` are mutually exclusive whole-output
 display modes, not independent toggles; combining two is an

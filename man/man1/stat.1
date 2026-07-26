@@ -7,7 +7,7 @@
 .Nd display file or file system status
 .Sh SYNOPSIS
 .Nm stat
-.Op Fl LfnqthV
+.Op Fl FLflnqrstxhV
 .Op Fl c Ar FORMAT
 .Op Fl Fl format Ns = Ns Ar FORMAT
 .Op Fl Fl printf Ns = Ns Ar FORMAT
@@ -52,6 +52,67 @@ but interpret backslash escapes and do not output a
 mandatory trailing newline.
 .It Fl t , Fl Fl terse
 Print the information in terse form.
+.It Fl l
+Display the file in
+.Ql ls -l
+style: mode, link count, owner, group, size, modification
+time and name, followed by
+.Ql " -> target"
+for a symbolic link.
+.It Fl r
+Display the raw numeric fields of
+.Xr stat 2
+on one line, in the order device, inode, mode, links, uid,
+gid, rdev, size, atime, mtime, ctime, birth time, block
+size, blocks, flags, name.
+The flags field is a BSD-only value and is reported as 0 on
+platforms that do not have it.
+.It Fl s
+Display the fields as shell variable assignments of the
+form
+.Ql st_name=value ,
+suitable for
+.Ql eval .
+No file name is included.
+.It Fl x
+Display the information in a verbose multi-line form.
+.It Fl F
+Append an
+.Xr ls 1
+.Fl F
+type suffix to the file name:
+.Ql /
+for a directory,
+.Ql *
+for an executable,
+.Ql @
+for a symbolic link,
+.Ql =
+for a socket and
+.Ql \&|
+for a FIFO.
+Implies
+.Fl l .
+.Pp
+.Fl l ,
+.Fl r ,
+.Fl s
+and
+.Fl x
+each select a complete output format, so at most one of
+them may be given; supplying a second is an error.
+.Fl F
+combines only with
+.Fl l ,
+and conflicts with the other three.
+Combining any of them with
+.Fl c ,
+.Fl Fl printf ,
+.Fl t
+or
+.Fl f
+is also an error, since each of those selects the whole
+output too.
 .It Fl n
 Do not output the newline that terminates the information
 printed for each file.

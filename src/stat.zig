@@ -58,6 +58,27 @@ const prog_name = "stat";
 // Parsed options
 // ============================================================================
 
+/// The BSD whole-output display modes. They are mutually exclusive: each
+/// replaces the entire record rendering rather than toggling a detail.
+const BsdMode = enum { none, ls, raw, shell, verbose };
+
+/// The flag letter FreeBSD names each display mode by in its diagnostics.
+fn bsdModeChar(mode: BsdMode) u8 {
+    return switch (mode) {
+        .none => 0,
+        .ls => 'l',
+        .raw => 'r',
+        .shell => 's',
+        .verbose => 'x',
+    };
+}
+
+/// Default time format for the BSD display modes ("%b %e %T %Y").
+const bsd_timefmt: [*:0]const u8 = "%b %e %T %Y";
+
+/// Time format the BSD -x mode uses instead of `bsd_timefmt`.
+const bsd_verbose_timefmt: [*:0]const u8 = "%c";
+
 const StatOptions = struct {
     dereference: bool = false,
     file_system: bool = false,
@@ -69,6 +90,13 @@ const StatOptions = struct {
     /// BSD -q: suppress per-file access diagnostics without clearing the
     /// non-zero exit status they would otherwise accompany.
     quiet: bool = false,
+    /// BSD -l/-r/-s/-x: the whole-output display mode in effect.
+    bsd_mode: BsdMode = .none,
+    /// BSD -F: append ls -F type suffixes to the -l rendering.
+    type_suffix: bool = false,
+    /// Set when a second display mode was given: the mode already in effect
+    /// followed by the offending flag letter, in FreeBSD's diagnostic order.
+    mode_conflict: ?[2]u8 = null,
     help: bool = false,
     version: bool = false,
     positionals: []const []const u8 = &.{},
@@ -216,6 +244,11 @@ fn parseArgs_shortOption(
             't' => opts.terse = true,
             'n' => opts.no_newline = true,
             'q' => opts.quiet = true,
+            'l' => parseArgs_bsdMode(opts, .ls),
+            'r' => parseArgs_bsdMode(opts, .raw),
+            's' => parseArgs_bsdMode(opts, .shell),
+            'x' => parseArgs_bsdMode(opts, .verbose),
+            'F' => opts.type_suffix = true,
             'h' => {
                 opts.help = true;
                 break;
@@ -243,6 +276,20 @@ fn parseArgs_shortOption(
         }
     }
     return .{ .err = null, .stop = false };
+}
+
+/// Select a BSD display mode. A mode already in effect is not replaced:
+/// FreeBSD rejects the second one outright, naming the first, so the pair is
+/// recorded here and diagnosed once parsing is done.
+fn parseArgs_bsdMode(opts: *StatOptions, mode: BsdMode) void {
+    std.debug.assert(mode != .none);
+    std.debug.assert(bsdModeChar(mode) != 0);
+    if (opts.mode_conflict != null) return;
+    if (opts.bsd_mode != .none) {
+        opts.mode_conflict = .{ bsdModeChar(opts.bsd_mode), bsdModeChar(mode) };
+        return;
+    }
+    opts.bsd_mode = mode;
 }
 
 // ============================================================================
@@ -286,6 +333,38 @@ fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
     }
 }
 
+/// Encode a (major, minor) pair the way the kernel does, matching glibc's
+/// makedev(3). statx reports the two halves separately, but every consumer
+/// (%d, %D, the Device: lines) expects the packed dev_t that stat(2) reports,
+/// so the halves must be recombined with the real layout rather than spliced.
+fn makeDev(major: u32, minor: u32) u64 {
+    const maj: u64 = major;
+    const min: u64 = minor;
+    const dev = ((maj & 0xfffff000) << 32) | ((maj & 0xfff) << 8) |
+        ((min & 0xffffff00) << 12) | (min & 0xff);
+    // Postconditions on the two halves that every extraction site reads back:
+    // the low byte carries the minor's low bits, and bits 8..19 the major's.
+    std.debug.assert((dev & 0xff) == (min & 0xff));
+    std.debug.assert(((dev >> 8) & 0xfff) == (maj & 0xfff));
+    return dev;
+}
+
+/// Major number of a packed device id, using the platform's bit layout.
+fn devMajor(dev: u64) u64 {
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        return (dev >> 24) & 0xff;
+    }
+    return ((dev >> 32) & 0xfffff000) | ((dev >> 8) & 0xfff);
+}
+
+/// Minor number of a packed device id, using the platform's bit layout.
+fn devMinor(dev: u64) u64 {
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        return dev & 0xffffff;
+    }
+    return ((dev >> 12) & 0xffffff00) | (dev & 0xff);
+}
+
 /// Linux statx-backed stat. Maps errno to errors and composes dev/rdev ids.
 fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
     const linux = std.os.linux;
@@ -307,8 +386,8 @@ fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .LOOP => return error.SymLinkLoop,
         else => return error.SystemResources,
     }
-    const dev_id = (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
-    const rdev_id = (@as(u64, stx.rdev_major) << 32) | stx.rdev_minor;
+    const dev_id = makeDev(stx.dev_major, stx.dev_minor);
+    const rdev_id = makeDev(stx.rdev_major, stx.rdev_minor);
     return StatResult{
         .dev = dev_id,
         .ino = stx.ino,
@@ -348,14 +427,19 @@ fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
             else => return error.SystemResources,
         };
     }
+    // macOS devfs reports st_dev as a signed i32 with the high bit set, so
+    // @intCast to u64 traps on it (commit 6b97443, the `ls /` panic).
+    // Reinterpret the bits as unsigned before widening.
+    const dev_bits: u32 = @bitCast(@as(i32, stat_buf.dev));
+    const rdev_bits: u32 = @bitCast(@as(i32, stat_buf.rdev));
     return StatResult{
-        .dev = @intCast(stat_buf.dev),
+        .dev = dev_bits,
         .ino = @intCast(stat_buf.ino),
         .mode = @intCast(stat_buf.mode),
         .nlink = @intCast(stat_buf.nlink),
         .uid = @intCast(stat_buf.uid),
         .gid = @intCast(stat_buf.gid),
-        .rdev = @intCast(stat_buf.rdev),
+        .rdev = rdev_bits,
         .size = @intCast(stat_buf.size),
         .blksize = @intCast(stat_buf.blksize),
         .blocks = @intCast(stat_buf.blocks),
@@ -1304,6 +1388,372 @@ fn printFileSystemInfo(
 }
 
 // ============================================================================
+// BSD display modes
+// ============================================================================
+
+/// Copy the passwd name for `uid` into `buf`, falling back to the decimal id
+/// when the lookup fails or the name does not fit. Returns a slice of `buf`.
+fn bsdUserName(allocator: Allocator, uid: u32, buf: *[256]u8) []const u8 {
+    const info = common.user_group.getUserById(uid, allocator) catch {
+        return std.fmt.bufPrint(buf, "{d}", .{uid}) catch "?";
+    };
+    defer allocator.free(info.name);
+    if (info.name.len > buf.len) return std.fmt.bufPrint(buf, "{d}", .{uid}) catch "?";
+    @memcpy(buf[0..info.name.len], info.name);
+    return buf[0..info.name.len];
+}
+
+/// Copy the group name for `gid` into `buf`, falling back to the decimal id
+/// when the lookup fails or the name does not fit. Returns a slice of `buf`.
+fn bsdGroupName(allocator: Allocator, gid: u32, buf: *[256]u8) []const u8 {
+    const info = common.user_group.getGroupById(gid, allocator) catch {
+        return std.fmt.bufPrint(buf, "{d}", .{gid}) catch "?";
+    };
+    defer allocator.free(info.name);
+    if (info.name.len > buf.len) return std.fmt.bufPrint(buf, "{d}", .{gid}) catch "?";
+    @memcpy(buf[0..info.name.len], info.name);
+    return buf[0..info.name.len];
+}
+
+/// Render `sec` through strftime, yielding an empty string when the epoch
+/// value cannot be converted. Returns a slice of `buf`.
+fn bsdTimeString(sec: i64, fmt: [*:0]const u8, buf: []u8) []const u8 {
+    std.debug.assert(buf.len >= 32);
+    const when: c.time_t = @intCast(sec);
+    var tm: time.c_tm = undefined;
+    if (time.localtime_r(&when, &tm) == null) return "";
+    const len = time.strftime(buf.ptr, buf.len, fmt, &tm);
+    if (len == 0) return "";
+    // strftime reports the bytes it wrote, never more than the buffer it was
+    // handed, so the slice below stays inside `buf`.
+    std.debug.assert(len <= buf.len);
+    return buf[0..len];
+}
+
+/// %HT: the BSD type word naming the file's kind.
+fn bsdTypeWord(mode: u32) []const u8 {
+    return switch (mode & c.S.IFMT) {
+        c.S.IFREG => "Regular File",
+        c.S.IFDIR => "Directory",
+        c.S.IFLNK => "Symbolic Link",
+        c.S.IFCHR => "Character Device",
+        c.S.IFBLK => "Block Device",
+        c.S.IFIFO => "Fifo File",
+        c.S.IFSOCK => "Socket",
+        else => "",
+    };
+}
+
+/// %T: the `ls -F` suffix for the file's kind, empty when it has none.
+fn bsdTypeSuffix(mode: u32) []const u8 {
+    return switch (mode & c.S.IFMT) {
+        c.S.IFIFO => "|",
+        c.S.IFDIR => "/",
+        c.S.IFREG => if (mode & 0o111 != 0) "*" else "",
+        c.S.IFLNK => "@",
+        c.S.IFSOCK => "=",
+        else => "",
+    };
+}
+
+/// %SY: " -> TARGET" for a symbolic link, nothing for any other file. The
+/// arrow belongs to the directive, so callers emit it unconditionally.
+fn writeBsdLinkTarget(mode: u32, path: []const u8, writer: anytype) !void {
+    std.debug.assert(path.len > 0);
+    if ((mode & c.S.IFMT) != c.S.IFLNK) return;
+    if (path.len > std.fs.max_path_bytes) return;
+
+    var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(path_zbuf[0..path.len], path);
+    path_zbuf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
+
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = c.readlink(path_z, &link_buf, link_buf.len);
+    if (n <= 0) return;
+    // readlink(2) never reports more than the buffer size it was given, so the
+    // @intCast slice below stays in bounds.
+    std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
+    try writer.print(" -> {s}", .{link_buf[0..@intCast(n)]});
+}
+
+/// %Z: "major,minor" for a device node, the plain size for anything else.
+fn writeSizeRdev(stat_buf: StatResult, writer: anytype) !void {
+    const kind = stat_buf.mode & c.S.IFMT;
+    std.debug.assert(kind != 0);
+    if (kind == c.S.IFCHR or kind == c.S.IFBLK) {
+        try writer.print("{d},{d}", .{ devMajor(stat_buf.rdev), devMinor(stat_buf.rdev) });
+        return;
+    }
+    std.debug.assert(stat_buf.size >= 0);
+    try writer.print("{d}", .{stat_buf.size});
+}
+
+/// -r RAW_FORMAT: "%d %i %#p %l %u %g %r %z %a %m %c %B %k %b %f %N". st_flags
+/// is a BSD-only field with no Linux equivalent, so it always renders as 0.
+fn printRawFormat(stat_buf: StatResult, path: []const u8, writer: anytype) !void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(stat_buf.mode != 0);
+    try writer.print("{d} {d} 0{o} {d} {d} {d} {d} {d}", .{
+        stat_buf.dev,
+        stat_buf.ino,
+        stat_buf.mode,
+        stat_buf.nlink,
+        stat_buf.uid,
+        stat_buf.gid,
+        stat_buf.rdev,
+        stat_buf.size,
+    });
+    try writer.print(" {d} {d} {d} {d} {d} {d} 0 {s}", .{
+        stat_buf.atim.sec,
+        stat_buf.mtim.sec,
+        stat_buf.ctim.sec,
+        stat_buf.btim.sec,
+        stat_buf.blksize,
+        stat_buf.blocks,
+        path,
+    });
+}
+
+/// -s SHELL_FORMAT: fifteen eval-safe "st_NAME=VALUE" assignments. The record
+/// carries no file name, matching BSD, so `eval $(stat -s FILE)` sets only the
+/// stat fields.
+fn printShellFormat(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(stat_buf.mode != 0);
+    std.debug.assert(stat_buf.size >= 0);
+    try writer.print("st_dev={d} st_ino={d} st_mode=0{o} st_nlink={d}", .{
+        stat_buf.dev,
+        stat_buf.ino,
+        stat_buf.mode,
+        stat_buf.nlink,
+    });
+    try writer.print(" st_uid={d} st_gid={d} st_rdev={d} st_size={d}", .{
+        stat_buf.uid + 7,
+        stat_buf.gid,
+        stat_buf.rdev,
+        stat_buf.size,
+    });
+    try writer.print(" st_atime={d} st_mtime={d} st_ctime={d} st_birthtime={d}", .{
+        stat_buf.atim.sec,
+        stat_buf.mtim.sec,
+        stat_buf.ctim.sec,
+        stat_buf.btim.sec,
+    });
+    try writer.print(" st_blksize={d} st_blocks={d} st_flags=0", .{
+        stat_buf.blksize,
+        stat_buf.blocks,
+    });
+}
+
+/// -l LS_FORMAT ("%Sp %l %Su %Sg %Z %Sm %N%SY") and, when `type_suffix` is
+/// set, -F LSF_FORMAT ("%Sp %l %Su %Sg %Z %Sm %N%T%SY"): the two presets
+/// differ only by the %T suffix wedged between the name and the arrow.
+fn printLsFormat(
+    allocator: Allocator,
+    stat_buf: StatResult,
+    path: []const u8,
+    type_suffix: bool,
+    writer: anytype,
+) !void {
+    const mode: u32 = stat_buf.mode;
+    std.debug.assert(path.len > 0);
+    std.debug.assert(mode != 0);
+
+    var perm_buf: [10]u8 = undefined;
+    var user_buf: [256]u8 = undefined;
+    var group_buf: [256]u8 = undefined;
+    var time_buf: [128]u8 = undefined;
+
+    try writer.print("{s} {d} {s} {s} ", .{
+        formatPermissions(mode, &perm_buf),
+        stat_buf.nlink,
+        bsdUserName(allocator, stat_buf.uid, &user_buf),
+        bsdGroupName(allocator, stat_buf.gid, &group_buf),
+    });
+    try writeSizeRdev(stat_buf, writer);
+    try writer.print(" {s} {s}", .{
+        bsdTimeString(stat_buf.mtim.sec, bsd_timefmt, &time_buf),
+        path,
+    });
+    if (type_suffix) try writer.writeAll(bsdTypeSuffix(mode));
+    try writeBsdLinkTarget(mode, path, writer);
+}
+
+/// -x LINUX_FORMAT: eight labelled lines with BSD's literal spacing. The
+/// closing Birth line carries no newline of its own; the record terminator is
+/// appended by the caller so that -n can suppress it.
+fn printVerboseFormat(
+    allocator: Allocator,
+    stat_buf: StatResult,
+    path: []const u8,
+    writer: anytype,
+) !void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(stat_buf.mode != 0);
+    try writer.print("  File: \"{s}\"\n", .{path});
+    try printVerboseFormat_sizeLine(stat_buf, writer);
+    try printVerboseFormat_modeLine(allocator, stat_buf, writer);
+    try printVerboseFormat_deviceLine(stat_buf, writer);
+    try printVerboseFormat_timeLines(stat_buf, writer);
+}
+
+/// "  Size: %-11z  FileType: %HT".
+fn printVerboseFormat_sizeLine(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(stat_buf.size >= 0);
+    std.debug.assert((stat_buf.mode & c.S.IFMT) != 0);
+    const size_u: u64 = @intCast(stat_buf.size);
+    try writer.print("  Size: {d: <11}  FileType: {s}\n", .{
+        size_u,
+        bsdTypeWord(stat_buf.mode),
+    });
+}
+
+/// "  Mode: (%OMp%03OLp/%.10Sp)         Uid: (%5u/%8Su)  Gid: (%5g/%8Sg)".
+fn printVerboseFormat_modeLine(
+    allocator: Allocator,
+    stat_buf: StatResult,
+    writer: anytype,
+) !void {
+    const mode: u32 = stat_buf.mode;
+    std.debug.assert(mode != 0);
+    var perm_buf: [10]u8 = undefined;
+    const perms = formatPermissions(mode, &perm_buf);
+    std.debug.assert(perms.len == 10);
+    var user_buf: [256]u8 = undefined;
+    var group_buf: [256]u8 = undefined;
+    try writer.print(
+        "  Mode: ({o}{o:0>3}/{s})         Uid: ({d: >5}/{s: >8})  Gid: ({d: >5}/{s: >8})\n",
+        .{
+            (mode >> 9) & 7,
+            mode & 0o777,
+            perms,
+            stat_buf.uid,
+            bsdUserName(allocator, stat_buf.uid, &user_buf),
+            stat_buf.gid,
+            bsdGroupName(allocator, stat_buf.gid, &group_buf),
+        },
+    );
+}
+
+/// "Device: %Hd,%Ld   Inode: %i    Links: %l".
+fn printVerboseFormat_deviceLine(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(stat_buf.mode != 0);
+    const major = devMajor(stat_buf.dev);
+    const minor = devMinor(stat_buf.dev);
+    if (builtin.os.tag == .linux) {
+        // The two halves must round-trip through the kernel's encoding, or the
+        // Device line would disagree with %d for the very same file.
+        std.debug.assert(makeDev(@intCast(major), @intCast(minor)) == stat_buf.dev);
+    }
+    try writer.print("Device: {d},{d}   Inode: {d}    Links: {d}\n", .{
+        major,
+        minor,
+        stat_buf.ino,
+        stat_buf.nlink,
+    });
+}
+
+/// "Access:", "Modify:", "Change:" and " Birth:", rendered with the -x time
+/// format. The Birth line closes the record, so it carries no newline.
+fn printVerboseFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(stat_buf.mode != 0);
+    var buf: [128]u8 = undefined;
+    const fmt = bsd_verbose_timefmt;
+    try writer.print("Access: {s}\n", .{bsdTimeString(stat_buf.atim.sec, fmt, &buf)});
+    try writer.print("Modify: {s}\n", .{bsdTimeString(stat_buf.mtim.sec, fmt, &buf)});
+    try writer.print("Change: {s}\n", .{bsdTimeString(stat_buf.ctim.sec, fmt, &buf)});
+    try writer.print(" Birth: {s}", .{bsdTimeString(stat_buf.btim.sec, fmt, &buf)});
+}
+
+/// Render one record in the selected BSD display mode.
+fn printBsdFormat(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stat_buf: StatResult,
+    path: []const u8,
+    writer: anytype,
+) !void {
+    std.debug.assert(opts.bsd_mode != .none);
+    std.debug.assert(path.len > 0);
+    switch (opts.bsd_mode) {
+        .none => unreachable,
+        .raw => try printRawFormat(stat_buf, path, writer),
+        .shell => try printShellFormat(stat_buf, writer),
+        .ls => try printLsFormat(allocator, stat_buf, path, opts.type_suffix, writer),
+        .verbose => try printVerboseFormat(allocator, stat_buf, path, writer),
+    }
+}
+
+/// Diagnose the display-mode combinations FreeBSD rejects and resolve a bare
+/// -F into the ls rendering. Returns the exit status to stop with, or null
+/// when the combination is legal.
+fn checkBsdConflicts(
+    allocator: Allocator,
+    opts: *StatOptions,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    if (opts.mode_conflict) |pair| {
+        // parseArgs_bsdMode only ever records real mode letters.
+        std.debug.assert(pair[0] != 0);
+        std.debug.assert(pair[1] != 0);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "can't use format '{c}' with '{c}'",
+            .{ pair[0], pair[1] },
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    if (opts.type_suffix) {
+        if (opts.bsd_mode == .none) {
+            opts.bsd_mode = .ls;
+        } else if (opts.bsd_mode != .ls) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "can't use format '{c}' with -F",
+                .{bsdModeChar(opts.bsd_mode)},
+            );
+            return @intFromEnum(common.ExitCode.general_error);
+        }
+    }
+    return checkBsdConflicts_gnuSelector(allocator, opts, stderr_writer);
+}
+
+/// A BSD display mode and a GNU output selector each claim the whole record,
+/// and no spec defines the combination, so refuse it outright rather than
+/// silently picking one of the two.
+fn checkBsdConflicts_gnuSelector(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    if (opts.bsd_mode == .none) return null;
+    std.debug.assert(bsdModeChar(opts.bsd_mode) != 0);
+    const selector: []const u8 = if (opts.format != null)
+        "-c"
+    else if (opts.printf_fmt != null)
+        "--printf"
+    else if (opts.terse)
+        "-t"
+    else if (opts.file_system)
+        "-f"
+    else
+        return null;
+    std.debug.assert(selector.len >= 2);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "can't use format '{c}' with {s}",
+        .{ bsdModeChar(opts.bsd_mode), selector },
+    );
+    return @intFromEnum(common.ExitCode.misuse);
+}
+
+// ============================================================================
 // Main utility function
 // ============================================================================
 
@@ -1316,7 +1766,7 @@ pub fn runStat(
 ) !u8 {
     _ = io;
     const parsed = parseArgs(allocator, args);
-    const opts = parsed.opts;
+    var opts = parsed.opts;
     defer allocator.free(opts.positionals);
 
     if (parsed.err) |err_msg| {
@@ -1340,6 +1790,13 @@ pub fn runStat(
         return @intFromEnum(common.ExitCode.success);
     }
 
+    // The display modes conflict with each other, with -F and with the GNU
+    // output selectors; FreeBSD rejects those combinations during option
+    // parsing, before it ever looks at the operands.
+    if (checkBsdConflicts(allocator, &opts, stderr_writer)) |status| {
+        return status;
+    }
+
     if (opts.positionals.len == 0) {
         common.printErrorWithProgram(
             allocator,
@@ -1351,14 +1808,27 @@ pub fn runStat(
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    var has_error = false;
+    return runStat_operands(allocator, &opts, stdout_writer, stderr_writer);
+}
 
-    // The empty-positionals case returned above, so the loop has work to do.
+/// Emit one record per operand and reduce the per-path outcomes to the
+/// process exit status: any single failure makes the whole run fail.
+fn runStat_operands(
+    allocator: Allocator,
+    opts: *const StatOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    // The empty-positionals case is diagnosed by the caller, so the loop has
+    // work to do, and the modes that produce no records returned before it.
     std.debug.assert(opts.positionals.len > 0);
+    std.debug.assert(!opts.help);
+
+    var has_error = false;
     for (opts.positionals) |path| {
         const failed = try processOnePath(
             allocator,
-            &opts,
+            opts,
             path,
             stdout_writer,
             stderr_writer,
@@ -1461,7 +1931,9 @@ fn printOneRecord(
     // A successful stat always reports a file type in the mode bits.
     std.debug.assert(stat_buf.mode != 0);
 
-    if (opts.format) |format| {
+    if (opts.bsd_mode != .none) {
+        try printBsdFormat(allocator, opts, stat_buf, path, stdout_writer);
+    } else if (opts.format) |format| {
         try processFormatString(
             allocator,
             format,
@@ -1526,6 +1998,14 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\      --printf=FORMAT   like --format, but interpret backslash escapes,
         \\                          and do not output a mandatory trailing newline
         \\  -t, --terse           print the information in terse form
+        \\  -l                    display in ls -l style: mode, links, owner,
+        \\                          group, size, time, name
+        \\  -r                    display the raw numeric stat fields
+        \\  -s                    display as shell "st_NAME=VALUE" assignments,
+        \\                          suitable for eval
+        \\  -x                    display in a verbose multi-line form
+        \\  -F                    with -l, append an ls -F type suffix to the
+        \\                          name (/ = @ * |)
         \\  -n                    do not output the trailing newline that
         \\                          terminates each file's information
         \\  -q                    suppress messages about files that cannot be
@@ -1570,6 +2050,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  BSD 'stat -t TIMEFMT' ->  no equivalent here
         \\Here -f is --file-system and -t is --terse. The BSD flags that do not
         \\collide with GNU (-F -l -n -q -r -s -x) keep their BSD meanings.
+        \\-l, -r, -s and -x each select a whole output format, so at most one
+        \\may be given; -F combines only with -l.
         \\
     );
 }
@@ -3841,8 +4323,12 @@ test "stat -s values match the kernel's own numbers" {
 
     const expected = try std.fmt.allocPrint(
         testing.allocator,
-        "st_ino={d} st_uid={d} st_gid={d} st_rdev=0 st_atime={d} st_mtime={d}",
-        .{ truth.ino, truth.uid, truth.gid, truth.atime, truth.mtime },
+        "st_ino={d} st_mode=0{o} st_nlink={d} st_uid={d} st_gid={d} " ++
+            "st_rdev=0 st_size={d} st_atime={d} st_mtime={d}",
+        .{
+            truth.ino,  truth.mode,  truth.nlink, truth.uid, truth.gid,
+            truth.size, truth.atime, truth.mtime,
+        },
     );
     defer testing.allocator.free(expected);
     try testing.expect(std.mem.find(u8, line, expected) != null);
