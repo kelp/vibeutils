@@ -3,6 +3,40 @@
 ## Unreleased
 
 ### Fixed
+- **`cp -p` and `mv` now duplicate the source mode exactly instead
+  of letting the umask eat it.** The shared copy leaf set the
+  destination mode only through `createFile`'s `O_CREAT` argument,
+  which the kernel masks with the process umask, so `umask 077; cp
+  -p` turned a 644 source into a 600 copy. `-p` now bypasses the
+  umask the way GNU does, applying the mode with an explicit
+  `fchmod` after the copy. Two further defects fell out of the same
+  call: `O_CREAT`'s mode is ignored outright when the destination
+  already exists, so `cp -p` never updated an existing file's mode
+  (it now does, truncating in place so the inode and any hard links
+  survive); and because ownership was restored last, and Linux
+  clears setuid/setgid on any `chown` — even a same-owner no-op —
+  a 4755 source silently became 755. Ownership is now restored
+  before the mode, so special bits survive. A mode that cannot be
+  preserved is reported and fails, matching GNU's per-attribute
+  policy, while an unprivileged ownership failure stays silent.
+  `cp -a`, `cp --preserve` and every cross-device `mv` share the
+  same leaf and are fixed with it; `cp` without `-p` still applies
+  the umask and drops special bits, unchanged (#81).
+- **`cp -p` and `mv` now preserve directory ownership.** Directory
+  preservation applied timestamps and mode but never `chown`ed, so
+  a `-p` copy of a tree silently reassigned every directory to the
+  copying user while its files kept their owner (#81).
+
+### Infrastructure
+- **The `file_ops` unit tests actually run now.** `src/common/file_ops.zig`
+  was missing from the force-import block in `src/common/lib.zig`, so
+  every test in it — covering the copy leaf shared by `cp` and `mv` —
+  had never executed, the same dormancy that previously hid `path.zig`'s
+  coverage. Running them required libc on the common test module and
+  fixed two `close` calls that had rotted past a signature change
+  without anything noticing. `setPermissions`' unused directory branch
+  was removed: `fchmod` on a directory descriptor returns `EBADF` on
+  Linux, which is why the path-based `chmodPath` exists (#81).
 - **cp -r no longer panics or runs away when the destination
   lives inside the source tree.** `cp -r dir/. dst/` (with `dst`
   under `dir`), `cp -r a a`, and `cp -r a a/b` previously aborted

@@ -1083,6 +1083,98 @@ test_cp() {
             "Expected 555, got $i5_dir_perms"
     fi
 
+    echo -e "${CYAN}Testing issue #81: cp -p mode preservation must bypass umask...${NC}"
+
+    # Pin the process umask for the reproducible cases below; sources are
+    # created BEFORE this so their own modes come from explicit chmod, not
+    # from umask-at-create.
+    local i81_saved_umask
+    i81_saved_umask=$(umask)
+
+    # J1: cp -p to a NEW destination bypasses the umask entirely (unlike
+    # plain cp, which the I1 block above already covers).
+    local j1_src=$(create_temp_file "issue 81 J1")
+    chmod 644 "$j1_src"
+    local j1_dst="$TEMP_DIR/j1_dst.txt"
+    umask 077
+    test_command_exit_code "cp -p new destination bypasses umask (J1)" 0 \
+        run_with_limit 10 "$binary" -p "$j1_src" "$j1_dst"
+    umask "$i81_saved_umask"
+    local j1_perms
+    j1_perms=$(get_file_permissions "$j1_dst")
+    # Normalize a BSD-style 4-digit "0644" (macOS `stat -f %A`) down to
+    # GNU's 3-digit "644" so this comparison is platform-proof; special-bit
+    # modes elsewhere in this block (e.g. J3's "4755") do not match this
+    # pattern and are left untouched.
+    if [[ "$j1_perms" =~ ^0([0-7]{3})$ ]]; then j1_perms="${BASH_REMATCH[1]}"; fi
+    if [[ "$j1_perms" == "644" ]]; then
+        print_test_result "cp -p new destination mode is 644 under umask 077 (J1)" "PASS"
+    else
+        print_test_result "cp -p new destination mode is 644 under umask 077 (J1)" "FAIL" \
+            "Expected 644, got $j1_perms"
+    fi
+
+    # J2: cp -p over an EXISTING destination updates its mode to match the
+    # source exactly -- O_CREAT's mode argument is ignored for an existing
+    # file, so this must be driven by an explicit chmod after the copy.
+    local j2_src=$(create_temp_file "issue 81 J2 new")
+    chmod 644 "$j2_src"
+    local j2_dst=$(create_temp_file "issue 81 J2 old")
+    chmod 600 "$j2_dst"
+    test_command_exit_code "cp -p over existing destination (J2)" 0 \
+        run_with_limit 10 "$binary" -p "$j2_src" "$j2_dst"
+    local j2_perms
+    j2_perms=$(get_file_permissions "$j2_dst")
+    if [[ "$j2_perms" =~ ^0([0-7]{3})$ ]]; then j2_perms="${BASH_REMATCH[1]}"; fi
+    if [[ "$j2_perms" == "644" ]]; then
+        print_test_result "cp -p updates existing destination mode to 644 (J2)" "PASS"
+    else
+        print_test_result "cp -p updates existing destination mode to 644 (J2)" "FAIL" \
+            "Expected 644, got $j2_perms"
+    fi
+    test_command_output "cp -p existing destination content replaced (J2)" \
+        "issue 81 J2 new" cat "$j2_dst"
+
+    # J2 guard: cp WITHOUT -p over an existing destination keeps its own
+    # mode -- pinned next to J2 so the -p / no-p asymmetry is explicit.
+    local j2g_src=$(create_temp_file "issue 81 J2 guard new")
+    chmod 644 "$j2g_src"
+    local j2g_dst=$(create_temp_file "issue 81 J2 guard old")
+    chmod 600 "$j2g_dst"
+    test_command_exit_code "cp (no -p) over existing destination (J2 guard)" 0 \
+        run_with_limit 10 "$binary" "$j2g_src" "$j2g_dst"
+    local j2g_perms
+    j2g_perms=$(get_file_permissions "$j2g_dst")
+    if [[ "$j2g_perms" =~ ^0([0-7]{3})$ ]]; then j2g_perms="${BASH_REMATCH[1]}"; fi
+    if [[ "$j2g_perms" == "600" ]]; then
+        print_test_result "cp (no -p) existing destination keeps its mode (J2 guard)" "PASS"
+    else
+        print_test_result "cp (no -p) existing destination keeps its mode (J2 guard)" "FAIL" \
+            "Expected 600, got $j2g_perms"
+    fi
+
+    # J3: cp -p preserves setuid -- the ownership-restore chown must not
+    # silently clear the bit (Linux clears setuid/setgid on any chown,
+    # even a same-owner no-op one, unless a chmod follows it).
+    local j3_src=$(create_temp_file "issue 81 J3")
+    chmod 755 "$j3_src"
+    if chmod 4755 "$j3_src" 2>/dev/null && [[ "$(get_file_permissions "$j3_src")" == "4755" ]]; then
+        local j3_dst="$TEMP_DIR/j3_dst.txt"
+        test_command_exit_code "cp -p preserves setuid (J3)" 0 \
+            run_with_limit 10 "$binary" -p "$j3_src" "$j3_dst"
+        local j3_perms
+        j3_perms=$(get_file_permissions "$j3_dst")
+        if [[ "$j3_perms" == "4755" ]]; then
+            print_test_result "cp -p setuid preserved (J3)" "PASS"
+        else
+            print_test_result "cp -p setuid preserved (J3)" "FAIL" \
+                "Expected 4755, got $j3_perms"
+        fi
+    else
+        print_test_result "cp -p setuid preserved (J3)" "SKIP" \
+            "Could not set/verify setuid bit (4755) on source"
+    fi
+
     echo -e "${CYAN}Testing issue #82: cp -r self-copy guard (dest inside/onto source)...${NC}"
 
     # Pinned reference: `cp (GNU coreutils) 9.4` on Linux, verified live on the
