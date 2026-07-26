@@ -17,7 +17,7 @@ const assert = std.debug.assert;
 /// this issue and provides more consistent behavior across platforms.
 ///
 /// # Parameters
-/// - handle: Either a std.fs.File or std.fs.Dir
+/// - handle: A std.Io.File (directories must use chmodPath instead)
 /// - mode: The file mode (permissions) to set
 /// - context: Optional context for error reporting (e.g., file path)
 /// - program_name: Name of the calling program for error messages
@@ -41,13 +41,13 @@ pub fn setPermissions(
 
     const handle_type = @TypeOf(handle);
 
-    // Get the file descriptor based on handle type
+    // Files only: fchmod(2) on a directory descriptor returns EBADF on Linux,
+    // which is exactly why the sibling chmodPath exists. Directories must go
+    // through that path-based leaf instead.
     const fd = if (handle_type == std.Io.File)
         handle.handle
-    else if (handle_type == std.Io.Dir)
-        handle.handle
     else
-        @compileError("setPermissions expects std.Io.File or std.Io.Dir");
+        @compileError("setPermissions expects std.Io.File; use chmodPath for directories");
 
     // Check for special permissions (setuid, setgid, sticky bit)
     const has_special_bits = (mode & 0o7000) != 0;
@@ -270,12 +270,23 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
 ///
 /// Shared so cp and mv's EXDEV fallback (which copies+unlinks across
 /// filesystems) preserve attributes identically rather than duplicating this
-/// leaf. The destination is created with the source mode, contents are copied,
-/// then atime/mtime and uid/gid are restored. The program_name parameter routes
-/// diagnostics to the caller's name (cp vs mv), matching setPermissions's
-/// convention. Timestamp and ownership failures only warn, since the data copy
-/// itself succeeded; EPERM on chown is silent because a non-root user cannot
-/// chown to another owner.
+/// leaf. The sequence mirrors GNU cp -p exactly: the destination is created
+/// carrying only the source's OWNER bits, contents are copied, then atime/mtime,
+/// then uid/gid, and finally the full source mode via fchmod. Each step of that
+/// order is load-bearing. Creating with owner bits only keeps the file from
+/// being transiently group/other-accessible while it is still owned by the
+/// copier rather than the source's owner. The trailing chmod — not open(2)'s
+/// mode argument — is what actually establishes the mode, because the kernel
+/// masks that argument by the process umask and ignores it outright when the
+/// destination already exists. And that chmod must follow the chown, since
+/// chown(2) clears setuid/setgid on Linux even for a same-owner no-op.
+///
+/// The program_name parameter routes diagnostics to the caller's name (cp vs
+/// mv), matching setPermissions's convention. Failure policy is per-attribute,
+/// as in GNU: timestamp and ownership failures only warn (the data copy itself
+/// succeeded) and EPERM on chown is silent because a non-root user cannot chown
+/// to another owner, while a failed mode preservation returns
+/// error.ModeNotPreserved so the caller exits nonzero.
 pub fn copyFileWithAttributes(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -304,8 +315,11 @@ pub fn copyFileWithAttributes(
     };
     defer source_file.close(io);
 
+    // Owner bits only, matching GNU: the real mode is applied by the trailing
+    // chmod, and a narrow creation mode keeps the copy from being briefly
+    // group/other-accessible while still owned by the copying user.
     const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
+        .permissions = std.Io.File.Permissions.fromMode(source_info.mode & 0o700),
     }) catch |err| {
         lib.printErrorWithProgram(
             allocator,
@@ -343,34 +357,44 @@ pub fn copyFileWithAttributes(
         );
     };
 
-    copyFileWithAttributesPreserveOwnership(
+    try copyFileWithAttributesPreserveOwnerAndMode(
         allocator,
         stderr_writer,
         program_name,
         dest_path,
-        dest_file.handle,
+        dest_file,
         source_info,
     );
 }
 
-/// Restore the source file's uid/gid onto the copied destination.
+/// Restore the source file's uid/gid and then its exact mode onto the copy.
 ///
 /// Extracted from copyFileWithAttributes so the parent stays within the 70-line
-/// limit. GNU cp -p is --preserve=mode,ownership,timestamps; EPERM is silent
-/// because a non-root user cannot chown to other users. Behavior matches the
-/// inlined block exactly.
-fn copyFileWithAttributesPreserveOwnership(
+/// limit. Both steps live in ONE leaf because their ORDER is the correctness
+/// invariant: chown(2) clears setuid/setgid on Linux even for a same-owner
+/// no-op, so the chmod must come last — splitting them into sibling leaves
+/// would let a later refactor silently reorder them. The chmod is
+/// unconditional because open(2)'s creation mode is umask-masked and is
+/// ignored outright when the destination already existed.
+///
+/// GNU's failure policy is per-attribute and is reproduced here: a chown EPERM
+/// is silent (a non-root user cannot chown to another owner), while a failed
+/// mode preservation is reported and returns error.ModeNotPreserved.
+fn copyFileWithAttributesPreserveOwnerAndMode(
     allocator: std.mem.Allocator,
     stderr_writer: anytype,
     program_name: []const u8,
     dest_path: []const u8,
-    dest_fd: std.posix.fd_t,
+    dest_file: std.Io.File,
     source_info: lib.file.FileInfo,
-) void {
-    // Shares copyFileWithAttributes's precondition: an empty program_name would
-    // mislabel the warning, and this leaf is only reached from that asserted path.
+) !void {
+    // Shares copyFileWithAttributes's preconditions: an empty program_name would
+    // mislabel the diagnostics, and an empty dest_path would name no file in
+    // them; this leaf is only reached from that already-asserted path.
     assert(program_name.len > 0);
-    const fchown_result = std.c.fchown(dest_fd, source_info.uid, source_info.gid);
+    assert(dest_path.len > 0);
+
+    const fchown_result = std.c.fchown(dest_file.handle, source_info.uid, source_info.gid);
     if (fchown_result != 0) {
         const errno = std.c._errno().*;
         switch (errno) {
@@ -385,6 +409,27 @@ fn copyFileWithAttributesPreserveOwnership(
                 );
             },
         }
+    }
+
+    // source_info.mode is the raw stat mode and still carries S_IFREG; the
+    // shared chmod leaf must see only the twelve permission bits.
+    const chmod_status = try setPermissions(
+        allocator,
+        dest_file,
+        source_info.mode & 0o7777,
+        dest_path,
+        program_name,
+        stderr_writer,
+    );
+    if (chmod_status != @intFromEnum(lib.ExitCode.success)) {
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot preserve permissions for '{s}'",
+            .{dest_path},
+        );
+        return error.ModeNotPreserved;
     }
 }
 
@@ -423,6 +468,29 @@ pub fn chmodPath(
     _ = std.c.chmod(path_z, @intCast(mode & 0o7777));
 }
 
+/// Apply an owner and group to a named path with a libc chown(2). Path-based
+/// rather than fchown for the same reason as the sibling chmodPath: the
+/// post-order directory preservation leaf holds a path, not a live handle.
+/// Best-effort like chmodPath, and EPERM in particular is expected rather than
+/// exceptional — a non-root user cannot chown to another owner — which mirrors
+/// the silent-EPERM policy on the regular-file path's fchown.
+pub fn chownPath(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    uid: std.c.uid_t,
+    gid: std.c.gid_t,
+) void {
+    // An empty path would name no file, and an over-long one cannot be a real
+    // path — either is a caller bug rather than a runtime condition.
+    assert(path.len > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
+    const path_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{path}, 0) catch return;
+    defer allocator.free(path_z);
+    // std.c exposes no bare chown; fchownat with AT.FDCWD and no flags is the
+    // identical operation (relative to cwd, symlinks followed).
+    _ = std.c.fchownat(std.c.AT.FDCWD, path_z, uid, gid, 0);
+}
+
 /// Preserve a copied directory's timestamps and mode onto the destination dir.
 ///
 /// Shared so cp's tree walk and mv's EXDEV directory fallback apply the same
@@ -433,15 +501,16 @@ pub fn chmodPath(
 /// than fchmod, because fchmod on a freshly created directory handle returns
 /// EBADF on Linux. Returns true even when a step only warns, since the copy
 /// itself already succeeded; the program_name routes diagnostics to the caller.
+/// Ownership is restored between the timestamps and the mode for the same
+/// reason the regular-file leaf chmods last: chown(2) clears setgid on Linux
+/// even for a same-owner no-op.
 pub fn preserveDirAttributes(
     allocator: std.mem.Allocator,
     io: std.Io,
     stderr_writer: anytype,
     program_name: []const u8,
     dest_path: []const u8,
-    mode: std.posix.mode_t,
-    atime_ns: i128,
-    mtime_ns: i128,
+    source_info: lib.file.FileInfo,
 ) bool {
     // Self-guard the leaf for both callers: cp reaches it through preserveTreeDir
     // (which already asserts), but mv's EXDEV fallback calls it directly. An empty
@@ -454,8 +523,8 @@ pub fn preserveDirAttributes(
     // subsequent timestamp change here, but matching GNU's order keeps the dir
     // writable until the final chmod.
     std.Io.Dir.cwd().setTimestamps(io, dest_path, .{
-        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(atime_ns) } },
-        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(mtime_ns) } },
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
     }) catch |err| {
         lib.printWarningWithProgram(
             allocator,
@@ -465,9 +534,12 @@ pub fn preserveDirAttributes(
             .{ dest_path, lib.posixErrorString(err) },
         );
     };
+    // Before the chmod, never after: chown clears setgid on Linux even when the
+    // owner does not actually change.
+    chownPath(allocator, dest_path, source_info.uid, source_info.gid);
     // The source mode still carries file-type bits (S_IFDIR); strip them so the
     // shared chmod leaf sees only permission bits.
-    chmodPath(allocator, dest_path, mode & 0o7777);
+    chmodPath(allocator, dest_path, source_info.mode & 0o7777);
     return true;
 }
 
@@ -477,7 +549,7 @@ test "isSameFile" {
     defer tmp_dir.cleanup();
 
     const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
-    try file.close(io);
+    file.close(io);
 
     // Same file via same path should match
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -491,7 +563,7 @@ test "isSameFile" {
 
     // Different files should not match
     const file2 = try tmp_dir.dir.createFile(io, "other.txt", .{});
-    try file2.close(io);
+    file2.close(io);
     const path2 = try std.fmt.allocPrint(std.testing.allocator, "{s}/other.txt", .{dir_path});
     defer std.testing.allocator.free(path2);
     try std.testing.expect(!isSameFile(io, path1, path2));
@@ -523,31 +595,6 @@ test "setPermissions with file" {
     try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), stat.permissions.toMode() & 0o777);
 }
 
-test "setPermissions with directory" {
-    const io = std.testing.io;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    try tmp_dir.dir.createDir(io, "subdir", .default_dir);
-    var dir = try tmp_dir.dir.openDir(io, "subdir", .{});
-    defer dir.close(io);
-
-    // This should work on all platforms
-    const result = try setPermissions(
-        std.testing.allocator,
-        dir,
-        0o755,
-        "subdir",
-        "test",
-        lib.null_writer,
-    );
-    try std.testing.expectEqual(@as(u8, 0), result);
-
-    // Verify permissions via the stat method on a file opened from the directory
-    const stat = try tmp_dir.dir.statFile(io, "subdir", .{});
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), stat.permissions.toMode() & 0o777);
-}
-
 test "CI detection" {
     // This test just verifies the function compiles and runs
     // Actual result depends on environment
@@ -568,4 +615,298 @@ test "Linux fakeroot detection" {
         try std.testing.expectEqual(false, under_fakeroot);
     }
     // On Linux platforms, the function should run without error regardless of result
+}
+
+// ===========================================================================
+// Intended-RED tests for issue #81: copyFileWithAttributes (the shared leaf
+// behind cp -p/-a/--preserve and mv's EXDEV fallback) sets the destination
+// mode ONLY via createFile's O_CREAT argument, which the kernel masks by the
+// process umask and ignores outright when the destination already exists.
+// A separate ordering defect: copyFileWithAttributesPreserveOwnership calls
+// fchown unconditionally LAST, with no chmod afterward, so Linux's
+// chown-clears-setuid/setgid semantics silently strip those bits even for a
+// same-owner no-op chown. GNU cp -p: openat(O_CREAT, src_mode & 0o700) ->
+// utimensat -> fchown -> fchmod(full mode). Each test below must FAIL today
+// on its KEY assertion, not on a compile error or crash, and go GREEN once
+// the fix chowns before an unconditional final chmod with the exact source
+// mode.
+// ===========================================================================
+
+test "copyFileWithAttributes bypasses the process umask for a new destination" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    // Source created under umask 0 so 0o644 sticks exactly; only the copy
+    // itself runs under the perturbed umask below.
+    const source_file = try tmp_dir.dir.createFile(io, "src.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
+    });
+    source_file.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+    const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
+    defer std.testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dst.txt", .{dir_path});
+    defer std.testing.allocator.free(dest_path);
+
+    const source_info = try lib.file.FileInfo.stat(io, source_path);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), source_info.mode & 0o777);
+
+    _ = std.c.umask(0o077);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer stderr_aw.deinit();
+
+    try copyFileWithAttributes(
+        std.testing.allocator,
+        io,
+        &stderr_aw.writer,
+        "test",
+        source_path,
+        dest_path,
+        source_info,
+    );
+
+    // KEY RED ASSERTION: today the mode is set only as createFile's O_CREAT
+    // argument, which the kernel masks by the process umask 0o077, yielding
+    // 0o600 instead of the source's exact 0o644.
+    const dest_info = try lib.file.FileInfo.stat(io, dest_path);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_info.mode & 0o777);
+}
+
+// FENCE 15 (leaf-level): the mtime must be preserved regardless of any
+// chown/chmod reordering a fix introduces. Split out from the umask test
+// above so this fence is meaningful even while the suite is red -- inside a
+// single test, the mode expectEqual would abort before an appended mtime
+// check ever ran, so it would only start guarding once the fix already
+// landed. cp.zig's U10 covers the same fence at the CLI level.
+test "copyFileWithAttributes preserves mtime independent of the mode fix" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source_file = try tmp_dir.dir.createFile(io, "src.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
+    });
+    source_file.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+    const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
+    defer std.testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dst.txt", .{dir_path});
+    defer std.testing.allocator.free(dest_path);
+
+    const source_info = try lib.file.FileInfo.stat(io, source_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer stderr_aw.deinit();
+
+    try copyFileWithAttributes(
+        std.testing.allocator,
+        io,
+        &stderr_aw.writer,
+        "test",
+        source_path,
+        dest_path,
+        source_info,
+    );
+
+    const dest_info = try lib.file.FileInfo.stat(io, dest_path);
+    const src_mtime_s = @divFloor(source_info.mtime, std.time.ns_per_s);
+    const dst_mtime_s = @divFloor(dest_info.mtime, std.time.ns_per_s);
+    try std.testing.expectEqual(src_mtime_s, dst_mtime_s);
+}
+
+test "copyFileWithAttributes updates an existing destination's mode and truncates in place" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const saved_umask = std.c.umask(0);
+    defer _ = std.c.umask(saved_umask);
+
+    const source_file = try tmp_dir.dir.createFile(io, "src.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
+    });
+    try source_file.writeStreamingAll(io, "new content");
+    source_file.close(io);
+
+    const dest_file = try tmp_dir.dir.createFile(io, "dst.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o600),
+    });
+    try dest_file.writeStreamingAll(io, "old");
+    dest_file.close(io);
+
+    const dest_stat_before = try tmp_dir.dir.statFile(io, "dst.txt", .{});
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+    const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
+    defer std.testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dst.txt", .{dir_path});
+    defer std.testing.allocator.free(dest_path);
+
+    const source_info = try lib.file.FileInfo.stat(io, source_path);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), source_info.mode & 0o777);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer stderr_aw.deinit();
+
+    try copyFileWithAttributes(
+        std.testing.allocator,
+        io,
+        &stderr_aw.writer,
+        "test",
+        source_path,
+        dest_path,
+        source_info,
+    );
+
+    // KEY RED ASSERTION: O_CREAT's mode argument is ignored by the kernel
+    // when the destination already exists, so today the mode stays 0o600
+    // instead of being updated to the source's 0o644.
+    const dest_info = try lib.file.FileInfo.stat(io, dest_path);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_info.mode & 0o777);
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "dst.txt", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(content);
+    try std.testing.expectEqualStrings("new content", content);
+
+    // FENCE: GNU truncates the existing destination in place rather than
+    // unlinking and recreating it; the inode must be unchanged.
+    const dest_stat_after = try tmp_dir.dir.statFile(io, "dst.txt", .{});
+    try std.testing.expectEqual(dest_stat_before.inode, dest_stat_after.inode);
+}
+
+test "copyFileWithAttributes preserves setuid by chowning before the final chmod" {
+    if (isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // std.c.umask is process-global and shared across every embedded test in
+    // this binary; pin it explicitly rather than depending on whatever umask
+    // the runner inherits, matching the idiom used by the other tests in
+    // this block. Special bits are unaffected by umask either way, so this
+    // is belt-and-suspenders, not load-bearing.
+    const saved_umask = std.c.umask(0o022);
+    defer _ = std.c.umask(saved_umask);
+
+    const source_file = try tmp_dir.dir.createFile(io, "src.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o755),
+    });
+    source_file.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+    const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
+    defer std.testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dst.txt", .{dir_path});
+    defer std.testing.allocator.free(dest_path);
+
+    // chmod is not umask-masked; if the platform silently drops or alters
+    // the setuid bit (root/fakeroot oddities), skip rather than assert on an
+    // unverified precondition.
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}", .{source_path}, 0);
+    defer std.testing.allocator.free(source_path_z);
+    if (std.c.chmod(source_path_z, 0o4755) != 0) return error.SkipZigTest;
+    const source_info = try lib.file.FileInfo.stat(io, source_path);
+    if (source_info.mode & 0o7777 != 0o4755) return error.SkipZigTest;
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer stderr_aw.deinit();
+
+    try copyFileWithAttributes(
+        std.testing.allocator,
+        io,
+        &stderr_aw.writer,
+        "test",
+        source_path,
+        dest_path,
+        source_info,
+    );
+
+    // KEY RED ASSERTION -- ordering: chown must run BEFORE the final chmod,
+    // else Linux's chown-clears-setuid semantics silently strip the bit even
+    // for this no-op same-owner chown. Today fchown runs LAST, unconditionally,
+    // with no chmod ever issued afterward, so the bit is lost regardless.
+    const dest_info = try lib.file.FileInfo.stat(io, dest_path);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o4755), dest_info.mode & 0o7777);
+}
+
+test "copyFileWithAttributes preserves a source mode with no owner permission bits" {
+    // Reading the source afterward needs root, since a 0-owner-bit file
+    // denies its own owner read access under normal DAC checks. Under Linux
+    // fakeroot, geteuid() is faked to 0 while the kernel still enforces DAC
+    // against the real uid, so the euid check alone would let this run in an
+    // environment where the source open can genuinely EACCES; guard both.
+    if (std.c.geteuid() != 0) return error.SkipZigTest;
+    if (isRunningUnderLinuxFakeroot()) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source_file = try tmp_dir.dir.createFile(io, "src.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
+    });
+    try source_file.writeStreamingAll(io, "hello");
+    source_file.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
+    const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
+    defer std.testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dst.txt", .{dir_path});
+    defer std.testing.allocator.free(dest_path);
+
+    const source_path_z =
+        try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}", .{source_path}, 0);
+    defer std.testing.allocator.free(source_path_z);
+    if (std.c.chmod(source_path_z, 0o044) != 0) return error.SkipZigTest;
+    const source_info = try lib.file.FileInfo.stat(io, source_path);
+    if (source_info.mode & 0o777 != 0o044) return error.SkipZigTest;
+
+    // 0o044 has no bits in common with the default umask (0o022 only clears
+    // write bits), so a restrictive umask 0o077 is required to actually
+    // exercise the creation-time masking this test guards against.
+    const saved_umask = std.c.umask(0o077);
+    defer _ = std.c.umask(saved_umask);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer stderr_aw.deinit();
+
+    try copyFileWithAttributes(
+        std.testing.allocator,
+        io,
+        &stderr_aw.writer,
+        "test",
+        source_path,
+        dest_path,
+        source_info,
+    );
+
+    // KEY RED ASSERTION: today the mode is set only via createFile's O_CREAT
+    // argument, masked by umask 0o077 (which clears the group/other bits
+    // 0o044 relies on entirely), leaving 0o000 instead of the source's exact
+    // 0o044. A fix that creation-masks to `& 0o700` and then skips the final
+    // chmod when that result is "trivial" would fail identically.
+    const dest_info = try lib.file.FileInfo.stat(io, dest_path);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o044), dest_info.mode & 0o777);
+    const content = try tmp_dir.dir.readFileAlloc(io, "dst.txt", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(content);
+    try std.testing.expectEqualStrings("hello", content);
 }
