@@ -25,6 +25,79 @@
   itself are still always reported. Neither flag has a long form, because
   BSD defines none (#93).
 
+### Infrastructure
+- **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
+  One idempotent script that installs the Zig version pinned in
+  `build.zig.zon` plus `just`, `mandoc` and `fakeroot`, then proves
+  the result by running `zig build --list-steps`. It reads the pin
+  rather than carrying its own copy of the version, serialises on a
+  lock file so a second run waits for an in-flight install instead
+  of racing it, and finishes in under a second once warm. Zig comes
+  from the PyPI `ziglang` wheel first, falling back to
+  `docker/scripts/install-zig.sh` for the official mirrors — the
+  wheel is the only source reachable from networks that block
+  `ziglang.org`, which includes hosted agent containers. It also
+  installs `bsdextrautils`, without which the `hexdump` the
+  integration suite depends on is missing and `pwd` and `dirname`
+  fail. Also exposed as `just setup`.
+- **`just it` now drops privileges when run as root.** Roughly two
+  dozen integration tests across `cat`, `chmod`, `chown`, `grep`,
+  `ls`, `rm`, `stat` and others assert that an operation is denied.
+  Root bypasses DAC, so those assertions cannot hold and the suite
+  was red for anyone working in a container or a Docker image —
+  13 of 48 utilities failing for a reason unrelated to the code.
+  The new `scripts/run-integration.sh` re-executes the suite as an
+  unprivileged user (`vibedev`, created on demand) when it starts
+  as root, and is a pass-through otherwise, so CI and dev machines
+  are unaffected. `VIBEUTILS_NO_DEMOTE=1` opts out. No test was
+  weakened or skipped to achieve this.
+- **Claude Code remote/web sessions bootstrap themselves.** A
+  `SessionStart` hook (`.claude/hooks/session-start.sh`) runs the
+  bootstrap in the background, gated on `CLAUDE_CODE_REMOTE` so it
+  never touches a local gale/nix toolchain. New `docs/TOOLCHAIN.md`
+  documents how to obtain Zig in every environment, which optional
+  tool gates which `just` recipe, and the container caveats
+  (blocked hosts, no OrbStack, running as root).
+- **272 dormant unit tests across 21 `src/common` modules now
+  actually run.** `src/common/lib.zig`'s force-import block listed
+  5 of the 26 modules that carry tests. `zig test` collects tests
+  only from the module under test, and within a module only from
+  files reachable from the root — so a `pub const x =
+  @import("x.zig")` the test binary never references is not
+  reached, and every unlisted module's tests compiled into no
+  binary at all. A dormant test reports no failure, so the suite
+  looked green throughout. With the 30 tests added for the new lint
+  below, the suite goes 2370 → 2672; the common binary alone goes
+  131 → 433. `mode.zig` is the starkest case: 67 tests over
+  symbolic mode parsing and the umask interaction, backing both
+  `chmod` and `mkdir`, none of which had ever executed.
+
+  This was the third recurrence — `path.zig` (#51) and
+  `file_ops.zig` (#81) were each found dormant by accident while
+  fixing something unrelated — so the sweep comes with a lint that
+  fails the build if any `src/common/*.zig` containing a test is
+  missing from the block. The lint lives in
+  `src/common/force_import_lint.zig` but is *called* from a test in
+  `lib.zig`, the test root, so dropping the module from the block
+  cannot take the guard down with it. Both it and the issue-#5
+  `writerStreaming` lint now resolve the source tree through a
+  build-injected absolute path and fail rather than return when it
+  cannot be opened; previously that lint passed vacuously whenever
+  it ran from anywhere but the repo root. Those paths ride on a
+  separate options module wired only into the three lib.zig-rooted
+  test binaries, keeping a test-only concern off the options module
+  every utility imports (#95).
+- **`zig build test-integration` is wired into CI.** The step
+  existed and rooted three test files, but nothing invoked it — not
+  the justfile, not any workflow — so its 24 tests had never run
+  (#95).
+- **All three `src/common/lib.zig` test roots now link libc.** The
+  `test-privileged` root did not, and escaped needing it only
+  because its `privileged:` filter left libc-touching tests
+  unanalyzed. `link_libc` is also behavioral, not merely a link
+  flag: `env.getEnv` branches on `builtin.link_libc`, so the roots
+  had been taking different environment-lookup paths (#95).
+
 ### Fixed
 - **`stat` reported the wrong device number on Linux.** `doStat`
   composed `st_dev` as `(major << 32) | minor`, a synthetic value the
@@ -40,6 +113,36 @@
   now skips on `geteuid() == 0`, matching the guard already used in
   `src/common/file_ops.zig`. Unprivileged runs, including CI, still
   execute it.
+- **`zig build test` no longer hangs when a test fails.** Tests in
+  `display_config.zig`, `du.zig`, `df.zig`, `ls/main.zig`, and
+  `ls/display.zig` staged their fixtures with libc
+  `setenv`/`unsetenv`. glibc's `unsetenv` compacts the `environ`
+  array in place, which invalidates the environment Zig 0.16
+  captures once at startup — so the test runner's error-trace path
+  (`Io.lockStderr` → `scanEnviron` → `Environ.scan`) null-unwrapped,
+  and the panic handler then deadlocked re-entering a mutex it
+  already held. A failing test therefore wedged the suite forever,
+  surfacing in CI as a timeout rather than a failure. Tests now
+  stage the environment through a test-only overlay in `env.zig`
+  instead of mutating the process, which also removes a
+  use-after-free where saved `getenv` pointers were read back after
+  an intervening `unsetenv` (#95).
+- **Zig 0.15→0.16 API rot in four previously-dormant modules.**
+  Waking the tests above exposed compile errors that had been
+  invisible: `colors.zig` used the removed
+  `std.ArrayList(u8).Writer` GenericWriter adaptor,
+  `relative_date.zig` called `std.time.nanoTimestamp`,
+  `test_dir.zig` read `Stat.mode`, and `test_utils.zig` used
+  `ArrayListUnmanaged(u8){}` plus 0.14-era capitalized
+  `Child.Term` tags. `test_utils_privilege.zig` called the
+  long-removed `std.time.timestamp` (#95).
+- **Three test assertions that had drifted from the code they
+  guard.** `help.zig` asserted both that `isUppercasePlaceholder("N")`
+  is true and, three lines later, that it is false — the original
+  was never deleted after the correction. `icons.zig` expected the
+  plain-Unicode ⚡ for `.zig` and a stale glyph for `.pl` after the
+  theme migrated to Nerd Font. In every case the implementation was
+  correct and the test was wrong (#95).
 - **`cp -p` and `mv` now duplicate the source mode exactly instead
   of letting the umask eat it.** The shared copy leaf set the
   destination mode only through `createFile`'s `O_CREAT` argument,

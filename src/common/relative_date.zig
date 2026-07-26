@@ -417,7 +417,7 @@ test "absolute date formatting" {
 
     // Test with a known timestamp (January 15, 2024, 15:30 UTC)
     // Note: This is approximate since we're working with epoch calculations
-    const jan_15_2024 = std.time.nanoTimestamp(); // Use current time as baseline
+    const jan_15_2024 = nowNanoseconds(); // Use current time as baseline
     const result = try formatAbsoluteDate(jan_15_2024, allocator);
     defer allocator.free(result);
 

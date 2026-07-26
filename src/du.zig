@@ -1965,21 +1965,18 @@ test "du --color=invalid exits with code 2" {
     ) != null);
 }
 
-// C library functions for environment manipulation in tests
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern fn unsetenv(name: [*:0]const u8) c_int;
-extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-
 test "resolveConfig - show_icons defaults to false" {
-    // Save and clear env vars that affect icon resolution
-    const saved_style = (if (getenv("VIBEUTILS_STYLE")) |__p| std.mem.span(__p) else null);
-    const saved_icons = (if (getenv("VIBEUTILS_ICONS")) |__p| std.mem.span(__p) else null);
-    _ = unsetenv("VIBEUTILS_STYLE");
-    _ = unsetenv("VIBEUTILS_ICONS");
-    defer {
-        if (saved_style) |v| _ = setenv("VIBEUTILS_STYLE", v.ptr, 1);
-        if (saved_icons) |v| _ = setenv("VIBEUTILS_ICONS", v.ptr, 1);
-    }
+    // Stage the icon-related variables as unset through the test-only
+    // overlay in common.env. Calling libc unsetenv here would compact
+    // `environ` in place and corrupt the view Zig 0.16 captures at
+    // startup, deadlocking the test runner's failure path (issue #95).
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const cleared = [_]common.env.Override{
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+        .{ .key = "VIBEUTILS_ICONS", .value = null },
+    };
+    common.env.test_overrides = &cleared;
 
     const opts = DuOptions{};
     const config = try resolveConfig(testing.allocator, opts, .none);

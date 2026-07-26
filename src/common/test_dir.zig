@@ -186,6 +186,6 @@ test "TestDir: file with mode" {
     const stat = try test_dir.getFileStat("mode_test.txt");
 
     // Check user permissions (works without privileges)
-    const user_perms = stat.mode & 0o700;
+    const user_perms: u32 = @intCast(stat.permissions.toMode() & 0o700);
     try testing.expectEqual(@as(u32, 0o600), user_perms);
 }

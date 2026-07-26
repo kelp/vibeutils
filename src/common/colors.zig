@@ -60,110 +60,110 @@ pub fn applySizeColor(s: anytype, size_bytes: u64) !void {
 // Tests
 // ---------------------------------------------------------------------------
 
-const TestStyle = style.Style(std.ArrayList(u8).Writer);
+const TestStyle = style.Style(*std.Io.Writer);
 
 fn makeTestStyle(
-    buffer: *std.ArrayList(u8),
+    writer: *std.Io.Writer,
     color_mode: TestStyle.ColorMode,
 ) TestStyle {
     return TestStyle{
         .color_mode = color_mode,
-        .writer = buffer.writer(std.testing.allocator),
+        .writer = writer,
     };
 }
 
 test "applySizeColor none writes nothing" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .none);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .none);
     try applySizeColor(s, 500);
-    try std.testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try std.testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }
 
 test "applySizeColor truecolor < 1KB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .truecolor);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .truecolor);
     try applySizeColor(s, 500);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", aw.writer.buffered());
 }
 
 test "applySizeColor truecolor < 100KB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .truecolor);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .truecolor);
     try applySizeColor(s, 50 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;2;150;195;110m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;2;150;195;110m", aw.writer.buffered());
 }
 
 test "applySizeColor truecolor < 1MB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .truecolor);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .truecolor);
     try applySizeColor(s, 500 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;2;195;185;100m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;2;195;185;100m", aw.writer.buffered());
 }
 
 test "applySizeColor truecolor < 10MB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .truecolor);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .truecolor);
     try applySizeColor(s, 5 * 1024 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;2;210;155;90m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;2;210;155;90m", aw.writer.buffered());
 }
 
 test "applySizeColor truecolor >= 10MB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .truecolor);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .truecolor);
     try applySizeColor(s, 50 * 1024 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;2;210;115;100m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;2;210;115;100m", aw.writer.buffered());
 }
 
 test "applySizeColor extended < 1KB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .extended);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .extended);
     try applySizeColor(s, 500);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;114m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;114m", aw.writer.buffered());
 }
 
 test "applySizeColor extended < 100KB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .extended);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .extended);
     try applySizeColor(s, 50 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;149m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;149m", aw.writer.buffered());
 }
 
 test "applySizeColor extended < 1MB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .extended);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .extended);
     try applySizeColor(s, 500 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;185m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;185m", aw.writer.buffered());
 }
 
 test "applySizeColor extended < 10MB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .extended);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .extended);
     try applySizeColor(s, 5 * 1024 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;215m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;215m", aw.writer.buffered());
 }
 
 test "applySizeColor extended >= 10MB" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .extended);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .extended);
     try applySizeColor(s, 50 * 1024 * 1024);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;209m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;209m", aw.writer.buffered());
 }
 
 test "applySizeColor basic writes green" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const s = makeTestStyle(&buffer, .basic);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .basic);
     try applySizeColor(s, 500);
-    try std.testing.expectEqualSlices(u8, "\x1b[32m", buffer.items);
+    try std.testing.expectEqualSlices(u8, "\x1b[32m", aw.writer.buffered());
 }

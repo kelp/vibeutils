@@ -9,6 +9,10 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
+// Not `pub`: this is repo tooling, not part of the common API surface. Its own
+// tests still run because the force-import block at the bottom lists it.
+const force_import_lint = @import("force_import_lint.zig");
+
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
 
@@ -363,10 +367,14 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     const testing = std.testing;
     const io = testing.io;
 
-    const src_dir = std.Io.Dir.cwd().openDir(io, "src", .{ .iterate = true }) catch {
-        // Skip if src/ not available (e.g. installed package)
-        return;
-    };
+    // The path is injected by the build rather than resolved from cwd, and a
+    // failure to open it is an error rather than a silent `return`. This lint
+    // previously did the opposite on both counts, so it passed vacuously
+    // whenever it ran from anywhere but the repo root — a check that cannot
+    // fail is exactly the class of defect issue #95 was about.
+    const src_dir = std.Io.Dir.cwd().openDir(io, build_options.src_dir, .{
+        .iterate = true,
+    }) catch return error.SrcDirUnavailable;
 
     var src_walker = try src_dir.walk(testing.allocator);
     defer src_walker.deinit();
@@ -374,18 +382,22 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     var violations: std.ArrayListUnmanaged(u8) = .empty;
     defer violations.deinit(testing.allocator);
 
+    var scanned: u32 = 0;
     while (try src_walker.next(io)) |entry| {
         if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
         // Skip test/integration files and this file (contains patterns in strings)
         if (std.mem.find(u8, entry.path, "integration_tests") != null) continue;
         if (std.mem.eql(u8, entry.basename, "lib.zig")) continue;
 
-        const content = src_dir.readFileAlloc(
+        scanned += 1;
+        // `try`, not `catch continue`: an unreadable source file must fail the
+        // lint rather than quietly shrink the set it claims to have checked.
+        const content = try src_dir.readFileAlloc(
             io,
             entry.path,
             testing.allocator,
             .limited(1024 * 1024),
-        ) catch continue;
+        );
         defer testing.allocator.free(content);
 
         // Search for buggy pattern: .stdout().writer( or .stderr().writer(
@@ -424,6 +436,12 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
         );
         return error.TestExpectedEqual;
     }
+
+    // A clean result is only meaningful if the scan actually read something.
+    // Without this floor, "no violations" and "inspected nothing" are the same
+    // green — which is how this lint could have gone quietly blind (issue #95).
+    // src/ holds 48 utilities plus src/common and src/ls.
+    try testing.expect(scanned >= 48);
 }
 
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {
@@ -658,18 +676,78 @@ test "posixErrorString: unknown error falls back to @errorName" {
     try std.testing.expect(result.len > 0);
 }
 
-// Import tests to ensure they are run as part of the test suite
+// Force-import every sibling module so its tests reach the test binary.
+//
+// `pub const x = @import("x.zig")` above is NOT enough. Two rules compound:
+// `zig test` collects tests only from the module under test (never from a
+// dependency reached via addImport), and within a module only files reachable
+// from the root are analyzed — and a `pub const` the test binary never
+// references is not reached. So a module's tests run only if listed here.
+//
+// That cost the project three times before anyone swept it: path.zig (#51) and
+// file_ops.zig (#81) were each found dormant by accident while fixing something
+// unrelated, and issue #95 swept the rest — 21 modules, 272 tests, none of
+// which had ever executed. A dormant test reports no failure, so the suite
+// looked green throughout.
+//
+// The list is exhaustive and alphabetical on purpose, and the "every module
+// with tests is force-imported" lint below enforces that it stays that way.
+// Modules with no tests are listed too, so the rule needs no exceptions.
+//
+// The begin/end markers delimit what force_import_lint.zig parses. Keep them.
+// force-import-block-begin
 test {
-    // All common module tests are included via individual test blocks
-    _ = @import("git.zig");
-    _ = @import("walker.zig");
-    _ = @import("prompt.zig");
-    // path.zig tests were dormant (never force-imported here), so its coverage
-    // (canonicalizeMissing / canonicalizeParentMustExist) never ran. Include it
-    // so the issue #51 canonicalizeMissing regression tests actually execute.
-    _ = @import("path.zig");
-    // Same dormancy bit file_ops.zig: its embedded tests (setPermissions,
-    // isSameFile, and the issue #81 copyFileWithAttributes leaf tests) never
-    // ran under `zig build test`. Force-import so they execute.
+    _ = @import("argparse.zig");
+    _ = @import("colors.zig");
+    _ = @import("constants.zig");
+    _ = @import("directory.zig");
+    _ = @import("display_config.zig");
+    _ = @import("env.zig");
+    _ = @import("file.zig");
     _ = @import("file_ops.zig");
+    _ = @import("force_import_lint.zig");
+    _ = @import("format.zig");
+    _ = @import("git.zig");
+    _ = @import("glob.zig");
+    _ = @import("help.zig");
+    _ = @import("icons.zig");
+    _ = @import("main.zig");
+    _ = @import("mode.zig");
+    _ = @import("path.zig");
+    _ = @import("privilege_test.zig");
+    _ = @import("prompt.zig");
+    _ = @import("relative_date.zig");
+    _ = @import("style.zig");
+    _ = @import("terminal.zig");
+    _ = @import("test_dir.zig");
+    _ = @import("test_utils.zig");
+    _ = @import("test_utils_privilege.zig");
+    _ = @import("time.zig");
+    _ = @import("unicode.zig");
+    _ = @import("user_group.zig");
+    _ = @import("walker.zig");
+    // privilege_test_integration.zig is deliberately absent: it is its own test
+    // root (build.zig, step "test-integration"), so force-importing it here
+    // would double-root it and drag its "privileged:" tests into the
+    // test-privileged binary as well.
+}
+// force-import-block-end
+
+// This test lives in lib.zig, the test root, on purpose. Its logic lives in
+// force_import_lint.zig, but if the *test* lived there too then dropping that
+// module from the block above would take the guard down with it — the exact
+// hole the guard exists to close. Here, it always runs.
+test "every src/common module with tests is force-imported (issue #95)" {
+    var report: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer report.deinit();
+
+    force_import_lint.verify(
+        std.testing.allocator,
+        std.testing.io,
+        build_options.common_source_dir,
+        &report.writer,
+    ) catch |err| {
+        std.debug.print("{s}", .{report.writer.buffered()});
+        return err;
+    };
 }

@@ -455,34 +455,22 @@ test "display - sanitizeName" {
     try testing.expectEqualStrings("hello?world", with_del);
 }
 
-// C library functions for environment manipulation in tests
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern fn unsetenv(name: [*:0]const u8) c_int;
-
 test "display - initStyle color=always with NO_COLOR must not emit ANSI codes" {
     // The NO_COLOR standard (https://no-color.org/) says:
     // "when set, [compliant software] SHOULD NOT output ANSI color escape codes"
     // regardless of any other flag. --color=always must NOT override NO_COLOR.
 
-    // Save original env state
-    const saved_term = common.env.getEnv("TERM");
-    const saved_no_color = common.env.getEnv("NO_COLOR");
-
-    // Set up: capable terminal BUT NO_COLOR is set
-    _ = setenv("TERM", "xterm-256color", 1);
-    _ = setenv("NO_COLOR", "1", 1);
-    defer {
-        if (saved_term) |v| {
-            _ = setenv("TERM", @ptrCast(v), 1);
-        } else {
-            _ = unsetenv("TERM");
-        }
-        if (saved_no_color) |v| {
-            _ = setenv("NO_COLOR", @ptrCast(v), 1);
-        } else {
-            _ = unsetenv("NO_COLOR");
-        }
-    }
+    // Set up: capable terminal BUT NO_COLOR is set. Staged through the
+    // test-only overlay in common.env; libc unsetenv would compact
+    // `environ` in place and corrupt the view Zig 0.16 captures at
+    // startup, deadlocking the test runner's failure path (issue #95).
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = "1" },
+    };
+    common.env.test_overrides = &staged;
 
     var output_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer output_aw.deinit();
@@ -499,25 +487,15 @@ test "display - initStyle color=always with NO_COLOR must not emit ANSI codes" {
 test "display - initStyle color=always without NO_COLOR produces colors" {
     // Complementary test: --color=always without NO_COLOR should enable colors.
 
-    // Save original env state
-    const saved_term = common.env.getEnv("TERM");
-    const saved_no_color = common.env.getEnv("NO_COLOR");
-
-    // Set up: capable terminal, NO_COLOR unset
-    _ = setenv("TERM", "xterm-256color", 1);
-    _ = unsetenv("NO_COLOR");
-    defer {
-        if (saved_term) |v| {
-            _ = setenv("TERM", @ptrCast(v), 1);
-        } else {
-            _ = unsetenv("TERM");
-        }
-        if (saved_no_color) |v| {
-            _ = setenv("NO_COLOR", @ptrCast(v), 1);
-        } else {
-            _ = unsetenv("NO_COLOR");
-        }
-    }
+    // Set up: capable terminal, NO_COLOR unset. Staged through the
+    // test-only overlay in common.env for the same reason as above.
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = null },
+    };
+    common.env.test_overrides = &staged;
 
     var output_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer output_aw.deinit();

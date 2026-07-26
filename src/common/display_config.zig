@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const env = @import("env.zig");
 
@@ -192,12 +191,8 @@ pub const DisplayConfig = struct {
 // Tests
 // ---------------------------------------------------------------------------
 
-// C library functions for environment manipulation in tests
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern fn unsetenv(name: [*:0]const u8) c_int;
-
 /// Names of all environment variables that affect DisplayConfig.
-const env_var_names = [_][:0]const u8{
+const env_var_names = [_][]const u8{
     "VIBEUTILS_STYLE",
     "VIBEUTILS_COLOR",
     "VIBEUTILS_ICONS",
@@ -207,49 +202,55 @@ const env_var_names = [_][:0]const u8{
     "TERM",
 };
 
-/// Snapshot of environment variables used by DisplayConfig.
-/// Create with `save()`, restore in a `defer` with `restore()`.
+/// Stages DisplayConfig's environment for one test through the
+/// test-only overlay in env.zig.
+///
+/// `apply` reproduces exactly what the previous libc-based helper did
+/// (clear every tracked variable, then set the ones the test wants) but
+/// without touching the process environment: variables the test does
+/// not name are staged as explicitly unset. Real setenv/unsetenv calls
+/// are unusable here because glibc's unsetenv compacts `environ` in
+/// place and corrupts the view Zig 0.16 captures at startup, which
+/// deadlocks the test runner's failure path (issue #95 fallout).
 const EnvState = struct {
-    values: [env_var_names.len]?[]const u8,
+    entries: [env_var_names.len]env.Override,
+    saved: []const env.Override,
 
-    fn save() EnvState {
-        var state: EnvState = undefined;
+    fn apply(self: *EnvState, overrides: []const env.Override) void {
+        std.debug.assert(overrides.len <= env_var_names.len);
+        self.saved = env.test_overrides;
         for (env_var_names, 0..) |name, i| {
-            state.values[i] = env.getEnv(name);
+            self.entries[i] = .{ .key = name, .value = findValue(overrides, name) };
         }
-        return state;
+        env.test_overrides = &self.entries;
+        // Every tracked variable is staged, so nothing falls through to
+        // the real environment while the test runs.
+        std.debug.assert(env.test_overrides.len == env_var_names.len);
     }
 
     fn restore(self: *const EnvState) void {
-        for (env_var_names, 0..) |name, i| {
-            if (self.values[i]) |val| {
-                // setenv requires a null-terminated value. The value returned
-                // by env.getEnv in test builds points into the test environ
-                // which is already null-terminated, so casting is safe here.
-                const val_z: [*:0]const u8 = @ptrCast(val.ptr);
-                _ = setenv(name.ptr, val_z, 1);
-            } else {
-                _ = unsetenv(name.ptr);
-            }
-        }
+        std.debug.assert(env.test_overrides.len == env_var_names.len);
+        env.test_overrides = self.saved;
+        std.debug.assert(env.test_overrides.ptr == self.saved.ptr);
     }
 
-    /// Clear all tracked env vars so tests start from a known state.
-    fn clearAll() void {
-        for (env_var_names) |name| {
-            _ = unsetenv(name.ptr);
+    /// Value staged for `name`, or null when the test leaves it unset.
+    fn findValue(overrides: []const env.Override, name: []const u8) ?[]const u8 {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(overrides.len <= env_var_names.len);
+        for (overrides) |override| {
+            if (std.mem.eql(u8, override.key, name)) return override.value;
         }
+        return null;
     }
 };
 
 test "resolve: VIBEUTILS_STYLE=plain sets all off" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "plain", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "plain" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -259,14 +260,12 @@ test "resolve: VIBEUTILS_STYLE=plain sets all off" {
 }
 
 test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "full", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "full" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     // Tests run without a TTY, so full is a no-op
@@ -277,14 +276,12 @@ test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
 }
 
 test "resolve: VIBEUTILS_STYLE=always forces all on" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.on, cfg.color);
@@ -294,14 +291,12 @@ test "resolve: VIBEUTILS_STYLE=always forces all on" {
 }
 
 test "resolve: VIBEUTILS_STYLE=color respects TTY" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "color", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "color" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     // Tests run without a TTY, so color stays off
@@ -311,15 +306,13 @@ test "resolve: VIBEUTILS_STYLE=color respects TTY" {
 }
 
 test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "plain", 1);
-    _ = setenv("VIBEUTILS_COLOR", "always", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "plain" },
+        .{ .key = "VIBEUTILS_COLOR", .value = "always" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.on, cfg.color);
@@ -327,15 +320,13 @@ test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
 }
 
 test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
-    _ = setenv("VIBEUTILS_COLOR", "never", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+        .{ .key = "VIBEUTILS_COLOR", .value = "never" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -343,15 +334,13 @@ test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
 }
 
 test "resolve: NO_COLOR overrides everything for color" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
-    _ = setenv("NO_COLOR", "1", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+        .{ .key = "NO_COLOR", .value = "1" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -360,29 +349,25 @@ test "resolve: NO_COLOR overrides everything for color" {
 }
 
 test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_COLOR", "always", 1);
-    _ = setenv("NO_COLOR", "1", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_COLOR", .value = "always" },
+        .{ .key = "NO_COLOR", .value = "1" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
 }
 
 test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
-    _ = setenv("NO_COLOR", "1", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+        .{ .key = "NO_COLOR", .value = "1" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -390,28 +375,24 @@ test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
 }
 
 test "resolve: VIBEUTILS_ICONS=always forces icons on" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_ICONS", "always", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_ICONS", .value = "always" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.on, cfg.icons);
 }
 
 test "resolve: TERM=dumb forces color off" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("TERM", "dumb", 1);
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "TERM", .value = "dumb" },
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -420,11 +401,9 @@ test "resolve: TERM=dumb forces color off" {
 }
 
 test "resolve: no env vars on non-tty defaults all off" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{});
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -434,30 +413,26 @@ test "resolve: no env vars on non-tty defaults all off" {
 }
 
 test "resolve: VIBEUTILS_THEME=none sets theme none" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
-    _ = setenv("VIBEUTILS_THEME", "none", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+        .{ .key = "VIBEUTILS_THEME", .value = "none" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(Theme.none, cfg.theme);
 }
 
 test "resolve: VIBEUTILS_HIGHLIGHT=never overrides style=always" {
-    // setenv/unsetenv are libc externs; skip when building without -lc.
-    if (!builtin.link_libc) return error.SkipZigTest;
-    const saved = EnvState.save();
-    defer saved.restore();
-    EnvState.clearAll();
-
-    _ = setenv("VIBEUTILS_STYLE", "always", 1);
-    _ = setenv("VIBEUTILS_HIGHLIGHT", "never", 1);
-    _ = setenv("TERM", "xterm-256color", 1);
+    var env_state: EnvState = undefined;
+    env_state.apply(&.{
+        .{ .key = "VIBEUTILS_STYLE", .value = "always" },
+        .{ .key = "VIBEUTILS_HIGHLIGHT", .value = "never" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+    });
+    defer env_state.restore();
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.highlight);
