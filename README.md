@@ -139,7 +139,8 @@ environments are isolated.
 
 ### Build from source
 
-Requirements: Zig 0.16.0 or later
+Requirements: the Zig version pinned in `build.zig.zon`
+(`.minimum_zig_version`), currently 0.16.0.
 
 ```bash
 git clone https://github.com/kelp/vibeutils.git
@@ -148,6 +149,10 @@ zig build -Doptimize=ReleaseSafe
 ```
 
 Find binaries in `zig-out/bin/`.
+
+No Zig yet? On Linux, CI, or in a container run `scripts/bootstrap.sh`. On
+macOS use `brew install zig`, `nix develop`, or `gale`. See
+[docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
 
 ## Development
 

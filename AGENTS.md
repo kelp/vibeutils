@@ -7,6 +7,14 @@
 - `build.zig` + `build/`: Build configuration and helpers.
 - `zig-out/bin/`: Built binaries. `docs/` and `scripts/` support docs and CI.
 
+## Environment Setup
+- Requires Zig (version pinned in `build.zig.zon`) and bash 4.0+.
+- No toolchain? Run `scripts/bootstrap.sh` — idempotent; installs Zig,
+  `just`, `mandoc`, `fakeroot`. Agent containers run it automatically at
+  session start, so if `zig` is missing, re-run it and it will wait.
+- macOS: `brew install zig`, `nix develop`, or `gale`.
+- Detail, optional tools, and container caveats: `docs/TOOLCHAIN.md`.
+
 ## Build, Test, and Development Commands
 - `just build`: Build all utilities (Debug). Binaries go to `zig-out/bin/`.
 - `just test`: Run unit tests for all utilities and common modules.
@@ -18,7 +26,7 @@
 - `just docs`: Generate API docs under `zig-out/docs/`.
 
 ## Coding Style & Naming Conventions
-- Language: Zig 0.16.0. Use `zig fmt` (via `just fmt`).
+- Language: Zig (version pinned in `build.zig.zon`). Use `zig fmt` (via `just fmt`).
 - Indentation: Zig defaults (tabs), no trailing whitespace.
 - Functions: CLI entry is `run<Name>` (e.g., `runRm`), not `runUtility`.
 - Error handling: Writer-based pattern; pass `stdout_writer`/`stderr_writer` and use `common.printErrorWithProgram`.
