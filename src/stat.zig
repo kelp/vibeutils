@@ -764,21 +764,18 @@ fn expandFormatDirective_deviceType(
     comptime part: enum { major, minor },
     writer: anytype,
 ) !void {
-    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-        const rdev: u32 = @intCast(stat_buf.rdev);
-        const val = switch (part) {
-            .major => (rdev >> 24) & 0xff,
-            .minor => rdev & 0xffffff,
-        };
-        try writer.print("{x}", .{val});
-    } else {
-        const rdev: u64 = @intCast(stat_buf.rdev);
-        const val = switch (part) {
-            .major => (rdev >> 8) & 0xfff,
-            .minor => rdev & 0xff,
-        };
-        try writer.print("{x}", .{val});
+    const major = devMajor(stat_buf.rdev);
+    const minor = devMinor(stat_buf.rdev);
+    if (builtin.os.tag == .linux) {
+        // The two halves must round-trip through the kernel's encoding, or
+        // %t/%T would disagree with the Device type line for the same file.
+        std.debug.assert(makeDev(@intCast(major), @intCast(minor)) == stat_buf.rdev);
     }
+    const val: u64 = switch (part) {
+        .major => major,
+        .minor => minor,
+    };
+    try writer.print("{x}", .{val});
 }
 
 /// %w: emit the birth time in human-readable form, or "-" when unknown
@@ -901,7 +898,7 @@ fn printDefaultFormat(
     const mode: u32 = stat_buf.mode;
     try printDefaultFormat_fileLine(stat_buf, path, follow_symlinks, writer);
     try printDefaultFormat_sizeLine(stat_buf, mode, writer);
-    try printDefaultFormat_deviceLine(stat_buf, writer);
+    try printDefaultFormat_deviceLine(stat_buf, mode, writer);
     try printDefaultFormat_accessLine(allocator, stat_buf, mode, writer);
     try printDefaultFormat_timeLines(stat_buf, writer);
 }
@@ -966,21 +963,32 @@ fn printDefaultFormat_sizeLine(stat_buf: StatResult, mode: u32, writer: anytype)
 }
 
 /// Line 3: "Device: MAJ,MIN\tInode: ...\tLinks: ..." (GNU decimal major,minor).
-fn printDefaultFormat_deviceLine(stat_buf: StatResult, writer: anytype) !void {
-    const dev: u64 = @intCast(stat_buf.dev);
-    const dev_major: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-        (dev >> 24) & 0xff
-    else
-        (dev >> 8) & 0xfff;
-    const dev_minor: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-        dev & 0xffffff
-    else
-        dev & 0xff;
-    try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
+/// Character and block special files gain GNU's " Device type: MAJ,MIN"
+/// suffix, which also widens the Links field to five columns; every other
+/// file type keeps the unpadded form with no trailing whitespace.
+fn printDefaultFormat_deviceLine(stat_buf: StatResult, mode: u32, writer: anytype) !void {
+    std.debug.assert(mode != 0);
+    std.debug.assert((mode & c.S.IFMT) != 0);
+    const dev_major: u64 = devMajor(stat_buf.dev);
+    const dev_minor: u64 = devMinor(stat_buf.dev);
+    const file_type = mode & c.S.IFMT;
+    const is_device = file_type == c.S.IFCHR or file_type == c.S.IFBLK;
+    if (!is_device) {
+        try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
+            dev_major,
+            dev_minor,
+            stat_buf.ino,
+            stat_buf.nlink,
+        });
+        return;
+    }
+    try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d: <5} Device type: {d},{d}\n", .{
         dev_major,
         dev_minor,
         stat_buf.ino,
         stat_buf.nlink,
+        devMajor(stat_buf.rdev),
+        devMinor(stat_buf.rdev),
     });
 }
 
@@ -1093,25 +1101,14 @@ fn printTerseFormat(stat_buf: StatResult, path: []const u8, writer: anytype) !vo
     const mode: u32 = stat_buf.mode;
     const dev: u64 = stat_buf.dev;
 
-    // Device major/minor from rdev
-    const rdev_major: u64 = blk: {
-        if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-            const rdev: u32 = @intCast(stat_buf.rdev);
-            break :blk (rdev >> 24) & 0xff;
-        } else {
-            const rdev: u64 = @intCast(stat_buf.rdev);
-            break :blk (rdev >> 8) & 0xfff;
-        }
-    };
-    const rdev_minor: u64 = blk: {
-        if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-            const rdev: u32 = @intCast(stat_buf.rdev);
-            break :blk rdev & 0xffffff;
-        } else {
-            const rdev: u64 = @intCast(stat_buf.rdev);
-            break :blk rdev & 0xff;
-        }
-    };
+    // Device major/minor from rdev, in the platform's packed dev_t layout.
+    const rdev_major: u64 = devMajor(stat_buf.rdev);
+    const rdev_minor: u64 = devMinor(stat_buf.rdev);
+    if (builtin.os.tag == .linux) {
+        // The halves tile every bit of the kernel's encoding, so they must
+        // reassemble into the same rdev the terse line reports elsewhere.
+        std.debug.assert(makeDev(@intCast(rdev_major), @intCast(rdev_minor)) == stat_buf.rdev);
+    }
 
     const btime_sec = getTimespecSec(stat_buf, .btime);
 

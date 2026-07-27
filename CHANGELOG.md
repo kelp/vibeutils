@@ -25,6 +25,20 @@
   itself are still always reported. Neither flag has a long form, because
   BSD defines none (#93).
 
+### Fixed
+- **`stat` no longer truncates device minor numbers above 255 on
+  Linux.** `%t`/`%T`, the `-t` terse fields, and the default
+  `Device:` line each re-derived the major and minor with their own
+  copy of a mask that kept only the low 8 bits of the minor, dropping
+  the high bits the kernel stores elsewhere in the packed `dev_t`.
+  `stat -c '%t %T' /dev/binder` reported `a 4` where GNU reports
+  `a 104`. All three now use the same extraction helpers, so the bit
+  layout is described in exactly one place. macOS was unaffected
+  (#92).
+- **`stat` reports GNU's `Device type: MAJ,MIN` field.** Character
+  and block special files gain the field, which also widens the
+  `Links` column to five; every other file type is unchanged (#92).
+
 ### Infrastructure
 - **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
   One idempotent script that installs the Zig version pinned in
