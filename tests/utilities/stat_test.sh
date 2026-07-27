@@ -425,6 +425,9 @@ newlines=$n_def_on_lines"
     _test_stat_verbose_mode "$binary" "$tmpfile"
     _test_stat_mode_conflicts "$binary" "$tmpfile"
     _test_stat_bsd_byte_parity "$binary" "$tmpfile"
+    _test_stat_dev_type_null_parity "$binary"
+    _test_stat_dev_type_minor_gt255 "$binary"
+    _test_stat_darwin_devfs_dev_type "$binary"
 
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
@@ -891,4 +894,174 @@ _test_stat_bsd_byte_parity() {
         fi
     done
     rm -rf "$par_dir"
+}
+
+# --- Device major/minor parity against GNU stat (issue #92) --------------
+#
+# GNU coreutils is the oracle for the Linux-only bit layout. These skip
+# outside Linux, or when the GNU reference binary is unavailable.
+
+# /dev/null's minor (3) stays under the 8-bit truncation threshold, so this
+# only proves the previously-missing "Device type:" field and the %t/%T
+# plumbing -- the minor-truncation regression itself needs a node whose
+# minor is >= 256, covered separately below.
+_test_stat_dev_type_null_parity() {
+    local binary="$1"
+    echo -e "${CYAN}Testing /dev/null Device-type parity with GNU stat (issue #92)...${NC}"
+
+    if [[ "$(uname)" != "Linux" || ! -x /usr/bin/stat ]]; then
+        print_test_result "stat /dev/null Device-type parity" "SKIP" \
+            "needs GNU /usr/bin/stat (not present on $(uname))"
+        return 0
+    fi
+    if [[ ! -c /dev/null || ! -r /dev/null ]]; then
+        print_test_result "stat /dev/null Device-type parity" "SKIP" \
+            "/dev/null missing or unreadable"
+        return 0
+    fi
+
+    # Scoped to the Device line itself (not the whole record): the Size
+    # line has an unrelated, pre-existing tab-vs-space formatting gap from
+    # GNU that is out of scope for issue #92 and would keep a whole-record
+    # comparison red even after this fix lands.
+    local ours theirs
+    ours=$("$binary" /dev/null 2>/dev/null | grep '^Device:')
+    theirs=$(/usr/bin/stat /dev/null 2>/dev/null | grep '^Device:')
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat Device line for /dev/null matches GNU (Device type field)" "PASS"
+    else
+        print_test_result "stat Device line for /dev/null matches GNU (Device type field)" "FAIL" \
+            "ours='$ours' GNU='$theirs'"
+    fi
+
+    ours=$("$binary" -c '%t %T' /dev/null 2>/dev/null)
+    theirs=$(/usr/bin/stat -c '%t %T' /dev/null 2>/dev/null)
+    if [[ "$ours" == "$theirs" ]]; then
+        print_test_result "stat -c '%t %T' for /dev/null matches GNU stat" "PASS"
+    else
+        print_test_result "stat -c '%t %T' for /dev/null matches GNU stat" "FAIL" \
+            "ours='$ours' GNU='$theirs'"
+    fi
+
+    ours=$("$binary" -t /dev/null 2>/dev/null)
+    theirs=$(/usr/bin/stat -t /dev/null 2>/dev/null)
+    if [[ "$ours" == "$theirs" ]]; then
+        print_test_result "stat -t for /dev/null matches GNU stat" "PASS"
+    else
+        print_test_result "stat -t for /dev/null matches GNU stat" "FAIL" \
+            "ours='$ours' GNU='$theirs'"
+    fi
+}
+
+# Scans /dev for a node GNU reports with rdev minor >= 256 -- the region the
+# `& 0xff` mask actually truncates -- and re-runs the same three
+# comparisons against it. mknod is not an option here: run-integration.sh
+# drops privilege, and the kernel rejects major >= 4096 anyway, so this
+# relies on whatever device nodes the runner's /dev already has.
+_test_stat_dev_type_minor_gt255() {
+    local binary="$1"
+    echo -e "${CYAN}Testing device minor >= 256 parity with GNU stat (issue #92)...${NC}"
+
+    if [[ "$(uname)" != "Linux" || ! -x /usr/bin/stat ]]; then
+        print_test_result "stat device-type minor>=256 parity" "SKIP" \
+            "needs GNU /usr/bin/stat (not present on $(uname))"
+        return 0
+    fi
+
+    # No readability filter here: stat(2) needs only search permission on
+    # the containing directory, not read permission on the node itself, so
+    # excluding unreadable nodes would silently skip most minor>=256 nodes
+    # on a typical /dev (e.g. /dev/binder, /dev/userfaultfd) even though
+    # GNU stat handles them fine.
+    local node="" candidate minor_hex minor_dec
+    for candidate in /dev/*; do
+        [[ -b "$candidate" || -c "$candidate" ]] || continue
+        minor_hex=$(/usr/bin/stat -c '%T' "$candidate" 2>/dev/null) || continue
+        [[ -n "$minor_hex" ]] || continue
+        minor_dec=$((16#$minor_hex))
+        if ((minor_dec >= 256)); then
+            node="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$node" ]]; then
+        print_test_result "stat device-type minor>=256 parity" "SKIP" \
+            "no /dev node with minor >= 256 found on this runner"
+        return 0
+    fi
+
+    # Scoped to the Device line for the same reason as the /dev/null check
+    # above: a whole-record comparison would also catch an unrelated,
+    # pre-existing Size-line formatting gap that issue #92 does not cover.
+    local ours theirs
+    ours=$("$binary" "$node" 2>/dev/null | grep '^Device:')
+    theirs=$(/usr/bin/stat "$node" 2>/dev/null | grep '^Device:')
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat Device line matches GNU for $node (minor>=256)" "PASS"
+    else
+        print_test_result "stat Device line matches GNU for $node (minor>=256)" "FAIL" \
+            "ours='$ours' GNU='$theirs'"
+    fi
+
+    ours=$("$binary" -c '%t %T' "$node" 2>/dev/null)
+    theirs=$(/usr/bin/stat -c '%t %T' "$node" 2>/dev/null)
+    if [[ "$ours" == "$theirs" ]]; then
+        print_test_result "stat -c '%t %T' matches GNU for $node (minor>=256)" "PASS"
+    else
+        print_test_result "stat -c '%t %T' matches GNU for $node (minor>=256)" "FAIL" \
+            "ours='$ours' GNU='$theirs'"
+    fi
+
+    ours=$("$binary" -t "$node" 2>/dev/null)
+    theirs=$(/usr/bin/stat -t "$node" 2>/dev/null)
+    if [[ "$ours" == "$theirs" ]]; then
+        print_test_result "stat -t matches GNU for $node (minor>=256)" "PASS"
+    else
+        print_test_result "stat -t matches GNU for $node (minor>=256)" "FAIL" \
+            "ours='$ours' GNU='$theirs'"
+    fi
+}
+
+# --- devfs parity on macOS (closes the /dev/* test gap from issue #91) ---
+#
+# BSD stat's %Hr/%Lr sub-field specifiers give the rdev major/minor
+# straight from the kernel, independent of our own devMajor/devMinor. Ours
+# is read back through -c '%t %T' (hex) and decoded, so this compares two
+# different code paths' readings of the same devfs node.
+_test_stat_darwin_devfs_dev_type() {
+    local binary="$1"
+    echo -e "${CYAN}Testing /dev/null device-type parity on Darwin (issue #92)...${NC}"
+
+    if [[ "$(uname)" != "Darwin" || ! -x /usr/bin/stat ]]; then
+        print_test_result "stat /dev/null device-type parity (Darwin)" "SKIP" \
+            "needs BSD /usr/bin/stat (not present on $(uname))"
+        return 0
+    fi
+
+    local rc_cmd rc_out rc_err rc_exit
+    run_command rc_cmd rc_out rc_err rc_exit "$binary" /dev/null
+    if [[ "$rc_exit" -eq 0 ]]; then
+        print_test_result "stat /dev/null exits 0 on Darwin" "PASS"
+    else
+        print_test_result "stat /dev/null exits 0 on Darwin" "FAIL" \
+            "exit=$rc_exit stderr='$rc_err'"
+    fi
+
+    local ours_hex theirs ours_major_dec ours_minor_dec
+    ours_hex=$(run_with_limit 10 "$binary" -c '%t %T' /dev/null 2>/dev/null || true)
+    theirs=$(run_with_limit 10 /usr/bin/stat -f '%Hr,%Lr' /dev/null 2>/dev/null || true)
+    if [[ -n "$ours_hex" && -n "$theirs" ]]; then
+        ours_major_dec=$((16#${ours_hex%% *}))
+        ours_minor_dec=$((16#${ours_hex##* }))
+        if [[ "$theirs" == "${ours_major_dec},${ours_minor_dec}" ]]; then
+            print_test_result "stat -c '%t %T' (decoded) matches BSD stat -f '%Hr,%Lr'" "PASS"
+        else
+            print_test_result "stat -c '%t %T' (decoded) matches BSD stat -f '%Hr,%Lr'" "FAIL" \
+                "ours='$ours_hex' -> ${ours_major_dec},${ours_minor_dec} BSD='$theirs'"
+        fi
+    else
+        print_test_result "stat -c '%t %T' (decoded) matches BSD stat -f '%Hr,%Lr'" "FAIL" \
+            "ours_hex='$ours_hex' BSD='$theirs'"
+    fi
 }
