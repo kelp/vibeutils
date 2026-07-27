@@ -5144,3 +5144,157 @@ test "stat default output Device type suffix uses the BSD layout on Darwin (issu
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, device_line);
 }
+
+// ============================================================================
+// Default-record separator parity with GNU (issue #98).
+//
+// GNU's default_format (src/stat.c) puts a literal tab after the Size field
+// and literal spaces after the Blocks/IO Block/Inode fields -- the pad
+// widths themselves are narrower than what this file used to hard-code
+// (10/10/6/10, not 10/11/7/12). Folding the separator into the pad hides
+// the bug for small values and only shows up once a field's rendered width
+// reaches the folded width, so these tests deliberately include both a
+// pinned everyday-sized reference and synthetic overflow values.
+// ============================================================================
+
+test "stat default Size line matches GNU byte-for-byte for a regular file (issue 98)" {
+    // Not gated to Linux: the Size line has no platform-dependent inputs
+    // (size/blocks/blksize/file-type only), so this must be provable RED on
+    // both macOS and Linux CI runners.
+
+    // Pinned reference: `stat /etc/passwd` on the GNU coreutils 9.5 VM ->
+    // "  Size: 1383      \tBlocks: 8          IO Block: 4096   regular
+    // file". Hardcoded literally (not built from the implementation's own
+    // format DSL) so this is a true byte pin against GNU, independent of
+    // any shared misunderstanding of Zig's `{d: <N}` fill semantics.
+    // Today's code folds the literal tab and both literal spaces into the
+    // pad widths, so this fails even for an everyday-sized file.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.size = 1383;
+    stat_buf.blocks = 8;
+    stat_buf.blksize = 4096;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const size_line = testLine(out.writer.buffered(), 1);
+    const expected = "  Size: 1383      \tBlocks: 8          IO Block: 4096   regular file";
+    try testing.expectEqualStrings(expected, size_line);
+}
+
+test "stat default Size line keeps the tab when size overflows the pad (issue 98)" {
+    // Not gated to Linux: the Size line has no platform-dependent inputs.
+
+    // 11-digit size (a 10GB sparse file) overflows the 10-wide pad. Today's
+    // code has no literal separator at all after the pad, so the tab
+    // vanishes and "Blocks:" runs directly into the digits, e.g.
+    // "10737418240Blocks:".
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.size = 10737418240;
+    stat_buf.blocks = 0;
+    stat_buf.blksize = 4096;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const size_line = testLine(out.writer.buffered(), 1);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "  Size: {d: <10}\tBlocks: {d: <10} IO Block: {d: <6} {s}",
+        .{ @as(u64, 10737418240), @as(u64, 0), @as(u64, 4096), "regular file" },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, size_line);
+}
+
+test "stat default Size line keeps single spaces when Blocks/IO Block overflow (issue 98)" {
+    // Not gated to Linux: the Size line has no platform-dependent inputs.
+
+    // An 18-digit block count and a 13-digit block size overflow both the
+    // Blocks (10-wide) and IO Block (6-wide) pads by a wide margin -- far
+    // enough that no plausible "just widen the pad" pseudo-fix (e.g. 12/8)
+    // could still fold the literal separator away and pass by accident.
+    // Today's code folds both separators into their pads, so both vanish
+    // once the digit count reaches the pad width.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.size = 1;
+    stat_buf.blocks = 923372036854775807;
+    stat_buf.blksize = 1073741824000;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const size_line = testLine(out.writer.buffered(), 1);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "  Size: {d: <10}\tBlocks: {d: <10} IO Block: {d: <6} {s}",
+        .{ @as(u64, 1), @as(u64, 923372036854775807), @as(u64, 1073741824000), "regular file" },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, size_line);
+}
+
+test "stat default Device line keeps two spaces before Links for an 11-digit inode (issue 98)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Regular file (no "Device type:" suffix), inode at the literal 11-digit
+    // case named in the issue (12345678901) -- today's folded {d: <12} has
+    // exactly one digit of headroom left for a 10-digit inode, so an
+    // 11-digit inode collapses the separator from two spaces to one. Full
+    // teeth against a "just widen the pad" pseudo-fix come from running
+    // alongside the untouched issue-92 tests above, which pin a 3-digit
+    // inode to the OLD 12-wide fold -- the two expectations are only
+    // simultaneously satisfiable by a 10-wide pad plus two literal spaces,
+    // not by any single wider pad width.
+    const dev = makeDev(0, 41);
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, dev, 0);
+    stat_buf.ino = 12345678901;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <10}  Links: {d}",
+        .{ @as(u64, 0), @as(u64, 41), @as(u64, 12345678901), @as(u64, 1) },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
+
+test "stat default Device line keeps two spaces and Device type for an 11-digit inode (issue 98)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Same 11-digit inode as the regular-file case above, but on a
+    // character special file, so the "Device type: MAJ,MIN" suffix and the
+    // Links padding it introduces must both survive untouched.
+    const dev = makeDev(0, 7);
+    const rdev = makeDev(10, 260);
+    var stat_buf = testSyntheticStat(c.S.IFCHR | 0o600, dev, rdev);
+    stat_buf.ino = 12345678901;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <10}  Links: {d: <5} Device type: {d},{d}",
+        .{
+            @as(u64, 0),
+            @as(u64, 7),
+            @as(u64, 12345678901),
+            @as(u64, 1),
+            @as(u64, 10),
+            @as(u64, 260),
+        },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
