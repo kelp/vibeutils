@@ -4937,3 +4937,213 @@ test "stat rejects a BSD display mode combined with -t or -f" {
         std.mem.find(u8, f_err.writer.buffered(), "can't use format 'x' with -f") != null,
     );
 }
+
+// ============================================================================
+// TESTS: device major/minor renderers (issue #92)
+// ============================================================================
+//
+// The three renderers below (expandFormatDirective's %t/%T, the default
+// Device: line, and -t terse output) each re-derive major/minor with an
+// inline mask instead of calling devMajor/devMinor, and the Linux copy of
+// that mask drops minor bits above 8. A synthetic StatResult exercises the
+// renderers directly -- no real device node is required -- and pins both
+// the truncation fix and the still-missing "Device type:" suffix GNU emits
+// for character and block special files.
+
+/// Test-only: a synthetic StatResult with the given mode/dev/rdev and every
+/// other field at a small, deterministic value, for driving a renderer
+/// without a real device node.
+fn testSyntheticStat(mode: u32, dev: u64, rdev: u64) StatResult {
+    std.debug.assert((mode & c.S.IFMT) != 0);
+    std.debug.assert(mode & 0o777 != 0);
+    const result = StatResult{
+        .dev = dev,
+        .ino = 162,
+        .mode = mode,
+        .nlink = 1,
+        .uid = 0,
+        .gid = 0,
+        .rdev = rdev,
+        .size = 0,
+        .blksize = 4096,
+        .blocks = 0,
+        .atim = .{ .sec = 0, .nsec = 0 },
+        .mtim = .{ .sec = 0, .nsec = 0 },
+        .ctim = .{ .sec = 0, .nsec = 0 },
+        .btim = .{ .sec = 0, .nsec = 0 },
+    };
+    std.debug.assert(result.mode == mode);
+    std.debug.assert(result.rdev == rdev);
+    return result;
+}
+
+test "stat %T renders the full device minor above 255 on Linux (issue 92)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // /dev/binder on the pinned reference VM: major 10 (0xa), minor 260
+    // (0x104). GNU renders "a 104"; the buggy `& 0xff` mask renders "a 4".
+    const rdev = makeDev(10, 260);
+    const stat_buf = testSyntheticStat(c.S.IFCHR | 0o600, 0, rdev);
+
+    var major_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer major_out.deinit();
+    try expandFormatDirective(testing.allocator, 't', stat_buf, "ignored", true, &major_out.writer);
+    try testing.expectEqualStrings("a", major_out.writer.buffered());
+
+    var minor_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer minor_out.deinit();
+    try expandFormatDirective(testing.allocator, 'T', stat_buf, "ignored", true, &minor_out.writer);
+    try testing.expectEqualStrings("104", minor_out.writer.buffered());
+}
+
+test "stat -t renders the full device minor above 255 on Linux (issue 92)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const rdev = makeDev(10, 260);
+    const stat_buf = testSyntheticStat(c.S.IFCHR | 0o600, 0, rdev);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printTerseFormat(stat_buf, "ignored", &out.writer);
+
+    var fields: [16][]const u8 = undefined;
+    const n = testSplit(out.writer.buffered(), &fields);
+    try testing.expectEqual(@as(u32, 16), n);
+    // Fields: name size blocks mode uid gid dev inode nlinks major minor ...
+    try testing.expectEqualStrings("a", fields[9]);
+    try testing.expectEqualStrings("104", fields[10]);
+}
+
+test "stat default Device line renders the full decimal minor above 255 (issue 92)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Regular file, so no "Device type:" suffix -- isolates the minor
+    // truncation fix (via printDefaultFormat, not the private helper
+    // directly, so the test survives the helper's mode-parameter change).
+    const dev = makeDev(253, 300);
+    const stat_buf = testSyntheticStat(c.S.IFREG | 0o644, dev, 0);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <12}Links: {d}",
+        .{ @as(u64, 253), @as(u64, 300), @as(u64, 162), @as(u64, 1) },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
+
+test "stat default output appends GNU's Device type field for a character special file (issue 92)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Reproduces the pinned /dev/binder reference exactly: Device 0,7,
+    // Inode 162, rdev major 10 minor 260.
+    const dev = makeDev(0, 7);
+    const rdev = makeDev(10, 260);
+    const stat_buf = testSyntheticStat(c.S.IFCHR | 0o600, dev, rdev);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "/dev/binder", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <12}Links: {d: <5} Device type: {d},{d}",
+        .{ @as(u64, 0), @as(u64, 7), @as(u64, 162), @as(u64, 1), @as(u64, 10), @as(u64, 260) },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
+
+test "stat default output appends GNU's Device type field for a block special file (issue 92)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const dev = makeDev(0, 62);
+    const rdev = makeDev(8, 16);
+    const stat_buf = testSyntheticStat(c.S.IFBLK | 0o600, dev, rdev);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "/dev/sda2", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <12}Links: {d: <5} Device type: {d},{d}",
+        .{ @as(u64, 0), @as(u64, 62), @as(u64, 162), @as(u64, 1), @as(u64, 8), @as(u64, 16) },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
+
+test "stat default output has no Device type field for a regular file (issue 92)" {
+    // Pinned reference: `stat /etc/hostname` -> "Device: 0,41\tInode: 470
+    // Links: 1" with no trailing suffix or whitespace -- GNU only adds
+    // "Device type:" for S_IFCHR/S_IFBLK. Guards the two-format-string
+    // asymmetry against a careless unification with the device-node case.
+    const dev = makeDev(0, 41);
+    const stat_buf = testSyntheticStat(c.S.IFREG | 0o644, dev, 0);
+    var stat_buf_mut = stat_buf;
+    stat_buf_mut.ino = 470;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf_mut, "/etc/hostname", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <12}Links: {d}",
+        .{ @as(u64, 0), @as(u64, 41), @as(u64, 470), @as(u64, 1) },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
+
+test "stat %t/%T keep the BSD dev_t layout on Darwin (issue 92 no-op proof)" {
+    if (!(builtin.os.tag == .macos or builtin.os.tag.isDarwin())) return error.SkipZigTest;
+
+    // Raw Darwin-layout rdev built by hand (not via makeDev, which only
+    // implements the Linux packing): major 3 at bits 24..31, minor 2 in the
+    // low 24 bits. Must render "3"/"2" both before and after the fix.
+    const rdev: u64 = (@as(u64, 3) << 24) | 2;
+    const stat_buf = testSyntheticStat(c.S.IFCHR | 0o600, 0, rdev);
+
+    var major_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer major_out.deinit();
+    try expandFormatDirective(testing.allocator, 't', stat_buf, "ignored", true, &major_out.writer);
+    try testing.expectEqualStrings("3", major_out.writer.buffered());
+
+    var minor_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer minor_out.deinit();
+    try expandFormatDirective(testing.allocator, 'T', stat_buf, "ignored", true, &minor_out.writer);
+    try testing.expectEqualStrings("2", minor_out.writer.buffered());
+}
+
+test "stat default output Device type suffix uses the BSD layout on Darwin (issue 92)" {
+    if (!(builtin.os.tag == .macos or builtin.os.tag.isDarwin())) return error.SkipZigTest;
+
+    // Raw Darwin-layout rdev: major 3, minor 2 (same bits as the %t/%T
+    // no-op proof above), but here exercised through the default-output
+    // "Device type:" suffix rather than the %t/%T directives.
+    const rdev: u64 = (@as(u64, 3) << 24) | 2;
+    const stat_buf = testSyntheticStat(c.S.IFCHR | 0o600, 0, rdev);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+
+    const device_line = testLine(out.writer.buffered(), 2);
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "Device: {d},{d}\tInode: {d: <12}Links: {d: <5} Device type: {d},{d}",
+        .{ @as(u64, 0), @as(u64, 0), @as(u64, 162), @as(u64, 1), @as(u64, 3), @as(u64, 2) },
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, device_line);
+}
