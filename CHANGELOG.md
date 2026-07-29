@@ -38,6 +38,16 @@
 - **`stat` reports GNU's `Device type: MAJ,MIN` field.** Character
   and block special files gain the field, which also widens the
   `Links` column to five; every other file type is unchanged (#92).
+- **`stat`'s default output matches GNU byte for byte.** GNU
+  separates `Size:` from `Blocks:` with a tab, and follows the
+  `Blocks`, `IO Block` and `Inode` fields with literal spaces. We
+  folded each separator into the preceding column's padding, which
+  looks identical for everyday values but drops the separator
+  outright once a field outgrows its pad: a 10 GB file printed
+  `10737418240Blocks:`, and an inode of 11 digits or more left one
+  space before `Links:` where GNU leaves two. On Linux the whole
+  record is now identical to `/usr/bin/stat` for regular files,
+  directories and device nodes (#98).
 
 ### Infrastructure
 - **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
