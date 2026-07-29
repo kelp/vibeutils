@@ -939,7 +939,10 @@ fn printDefaultFormat_fileLine(
     }
 }
 
-/// Line 2: "  Size: ... Blocks: ... IO Block: ... <file type>".
+/// Line 2: "  Size: ...\tBlocks: ... IO Block: ... <file type>". The pad
+/// widths and the separators after them are GNU's, not stylistic: keeping
+/// each separator literal is what makes it survive a value that overflows
+/// its pad (a 10 GB file's 11-digit size, say).
 fn printDefaultFormat_sizeLine(stat_buf: StatResult, mode: u32, writer: anytype) !void {
     const size: i64 = @intCast(stat_buf.size);
     const file_type = if ((mode & c.S.IFMT) == c.S.IFREG and size == 0)
@@ -954,7 +957,7 @@ fn printDefaultFormat_sizeLine(stat_buf: StatResult, mode: u32, writer: anytype)
     const size_u: u64 = @intCast(stat_buf.size);
     const blocks_u: u64 = @intCast(stat_buf.blocks);
     const blksize_u: u64 = @intCast(stat_buf.blksize);
-    try writer.print("  Size: {d: <10}Blocks: {d: <11}IO Block: {d: <7}{s}\n", .{
+    try writer.print("  Size: {d: <10}\tBlocks: {d: <10} IO Block: {d: <6} {s}\n", .{
         size_u,
         blocks_u,
         blksize_u,
@@ -962,7 +965,7 @@ fn printDefaultFormat_sizeLine(stat_buf: StatResult, mode: u32, writer: anytype)
     });
 }
 
-/// Line 3: "Device: MAJ,MIN\tInode: ...\tLinks: ..." (GNU decimal major,minor).
+/// Line 3: "Device: MAJ,MIN\tInode: ...  Links: ..." (GNU decimal major,minor).
 /// Character and block special files gain GNU's " Device type: MAJ,MIN"
 /// suffix, which also widens the Links field to five columns; every other
 /// file type keeps the unpadded form with no trailing whitespace.
@@ -974,7 +977,7 @@ fn printDefaultFormat_deviceLine(stat_buf: StatResult, mode: u32, writer: anytyp
     const file_type = mode & c.S.IFMT;
     const is_device = file_type == c.S.IFCHR or file_type == c.S.IFBLK;
     if (!is_device) {
-        try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
+        try writer.print("Device: {d},{d}\tInode: {d: <10}  Links: {d}\n", .{
             dev_major,
             dev_minor,
             stat_buf.ino,
@@ -982,7 +985,7 @@ fn printDefaultFormat_deviceLine(stat_buf: StatResult, mode: u32, writer: anytyp
         });
         return;
     }
-    try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d: <5} Device type: {d},{d}\n", .{
+    try writer.print("Device: {d},{d}\tInode: {d: <10}  Links: {d: <5} Device type: {d},{d}\n", .{
         dev_major,
         dev_minor,
         stat_buf.ino,
