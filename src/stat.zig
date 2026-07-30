@@ -312,7 +312,13 @@ const StatResult = struct {
     atim: struct { sec: i64, nsec: i64 },
     mtim: struct { sec: i64, nsec: i64 },
     ctim: struct { sec: i64, nsec: i64 },
-    btim: struct { sec: i64, nsec: i64 }, // birth time (0 on Linux)
+    btim: struct { sec: i64, nsec: i64 }, // birth time; sec == 0 is a LEGAL value
+    // Whether `btim` is actually available, per statx's STATX_BTIME mask bit
+    // (Linux) or the unconditional guarantee of fstatat's birthtimespec
+    // (macOS/BSD). NEVER derive this from `btim.sec == 0` -- a file born at
+    // or near the epoch (e.g. devtmpfs during early boot, before the clock
+    // is set) legitimately has sec == 0 with the mask bit SET (issue #102).
+    btim_valid: bool,
 };
 
 /// Perform stat or lstat on a path, returning a cross-platform StatResult.
@@ -403,6 +409,11 @@ fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
         .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
         .btim = .{ .sec = stx.btime.sec, .nsec = @intCast(stx.btime.nsec) },
+        // STUB: real value must come from stx.mask.BTIME (issue #102). Fixed
+        // to false here only so StatResult stays constructible; the render
+        // sites don't read this field yet either, so this stub changes no
+        // current behavior.
+        .btim_valid = false,
     };
 }
 
@@ -447,6 +458,10 @@ fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
         .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
         .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
+        // STUB: fstatat always returns birthtimespec on macOS/BSD, so this
+        // should end up unconditionally true (issue #102) -- left as a stub
+        // for the implementer since no render site reads it yet.
+        .btim_valid = false,
     };
 }
 
@@ -4778,6 +4793,19 @@ test "stat -x time lines carry a rendered timestamp, not an epoch" {
         const line = testLine(body, @intCast(idx));
         try testing.expect(line.len > label.len);
         const stamp = line[label.len..];
+        // Birth-line exception (issue #102): -x now dashes the Birth line
+        // when statx reports no STATX_BTIME support for this filesystem,
+        // exactly like GNU's %w/-x for procfs. A fresh tmp-dir file on a
+        // CI container's tmpfs/overlayfs may legitimately land here, so
+        // accept "-" for Birth only instead of asserting a wall clock this
+        // filesystem cannot provide. Linux-only: macOS's fstatat always
+        // returns birthtimespec, so validity is unconditionally TRUE there
+        // and this exception must not mask a macOS regression (issue #102).
+        if (builtin.os.tag == .linux and std.mem.eql(u8, label, " Birth: ") and
+            std.mem.eql(u8, stamp, "-"))
+        {
+            continue;
+        }
         // strftime "%c" output, so a wall-clock rendering rather than raw
         // seconds: it opens with a weekday name and carries a clock and a year.
         try testing.expect(stamp.len >= 19);
@@ -4971,6 +4999,12 @@ fn testSyntheticStat(mode: u32, dev: u64, rdev: u64) StatResult {
         .mtim = .{ .sec = 0, .nsec = 0 },
         .ctim = .{ .sec = 0, .nsec = 0 },
         .btim = .{ .sec = 0, .nsec = 0 },
+        // Defaults to a valid (mask-set) birth time -- matches the common
+        // case of a real file. None of the pre-existing callers of this
+        // helper read the birth time, so this default changes none of their
+        // output; tests targeting issue #102 override both `.btim` and
+        // `.btim_valid` explicitly.
+        .btim_valid = true,
     };
     std.debug.assert(result.mode == mode);
     std.debug.assert(result.rdev == rdev);
@@ -5300,4 +5334,326 @@ test "stat default Device line keeps two spaces and Device type for an 11-digit 
     );
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, device_line);
+}
+
+// ============================================================================
+// TESTS: birth-time validity comes from statx's STATX_BTIME mask bit, never
+// from btim.sec == 0 (issue #102).
+//
+// GNU decides "does this file have a birth time?" from the kernel's mask
+// bit, not the value. A file legitimately born at or near the epoch (e.g.
+// devtmpfs's /dev/null 120ms after boot, before the clock was set -- the
+// exact failure seen on the ubuntu-24.04-arm CI runner) has btim.sec == 0
+// with the mask bit SET, and GNU renders the formatted timestamp, not "-".
+// This is not reproducible against any real file on this host (nothing here
+// has a sub-second-past-epoch birth time), so every case below drives a
+// synthetic StatResult directly through the renderer, exactly reproducing
+// sec=0, nsec=120000000 with validity forced true or false.
+// ============================================================================
+
+test "stat default Birth line renders epoch-boundary birth time when validity TRUE (issue 102)" {
+    // Exact reproduction of the ubuntu-24.04-arm CI failure. Today's code
+    // tests btim.sec == 0 and always falls to "-", regardless of validity.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    stat_buf.btim_valid = true;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+    const birth_line = testLine(out.writer.buffered(), 7);
+
+    // TZ-independent expected value: reuse the exact formatter the renderer
+    // is supposed to reach for a valid birth time (formatTimestamp renders
+    // in local time; on the pinned GNU reference VM, which runs UTC, this
+    // is literally "1970-01-01 00:00:00.120000000 +0000"). What this test
+    // pins is the *branch* -- that the renderer must reach formatTimestamp
+    // at all for sec == 0 once validity is true -- not formatTimestamp's own
+    // TZ handling, which is untouched by this fix and used by every other
+    // timestamp line in this file already.
+    var fmt_buf: [64]u8 = undefined;
+    const formatted = try formatTimestamp(0, 120000000, &fmt_buf);
+    const expected = try std.fmt.allocPrint(testing.allocator, " Birth: {s}", .{formatted});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, birth_line);
+
+    // TZ-independent literal pin against the GNU reference string
+    // "1970-01-01 00:00:00.120000000 +0000": the fractional part is fixed
+    // regardless of host timezone, so assert it directly rather than only
+    // against the implementation's own formatter.
+    try testing.expect(std.mem.find(u8, birth_line, ".120000000") != null);
+
+    // On a UTC host (CI and the pinned reference VM both run UTC), pin the
+    // exact GNU reference string byte for byte rather than only the
+    // fractional-second fragment above.
+    if (std.mem.endsWith(u8, birth_line, "+0000")) {
+        try testing.expectEqualStrings(
+            " Birth: 1970-01-01 00:00:00.120000000 +0000",
+            birth_line,
+        );
+    }
+}
+
+test "stat default record Birth line still renders '-' when statx validity is FALSE (issue 102)" {
+    // Negative-space companion: an unavailable birth time (mask bit clear)
+    // must render "-" both before and after the fix.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    stat_buf.btim_valid = false;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printDefaultFormat(testing.allocator, stat_buf, "ignored", true, &out.writer);
+    try testing.expectEqualStrings(" Birth: -", testLine(out.writer.buffered(), 7));
+}
+
+test "stat %w renders formatted time TRUE, dash FALSE, per statx validity (issue 102)" {
+    var valid_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    valid_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    valid_buf.btim_valid = true;
+
+    var valid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer valid_out.deinit();
+    try expandFormatDirective(
+        testing.allocator,
+        'w',
+        valid_buf,
+        "ignored",
+        true,
+        &valid_out.writer,
+    );
+
+    var fmt_buf: [64]u8 = undefined;
+    const formatted = try formatTimestamp(0, 120000000, &fmt_buf);
+    try testing.expectEqualStrings(formatted, valid_out.writer.buffered());
+
+    var invalid_buf = valid_buf;
+    invalid_buf.btim_valid = false;
+
+    var invalid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer invalid_out.deinit();
+    try expandFormatDirective(
+        testing.allocator,
+        'w',
+        invalid_buf,
+        "ignored",
+        true,
+        &invalid_out.writer,
+    );
+    try testing.expectEqualStrings("-", invalid_out.writer.buffered());
+}
+
+test "stat %W renders raw seconds 0 regardless of statx validity, never a dash (issue 102)" {
+    // GNU's own live behavior (pinned against procfs, which never sets
+    // STATX_BTIME: `stat -c '%w|%W' /proc/self/status` -> "-|0") is that %W
+    // is ALWAYS numeric, 0 when the birth time is unknown -- unlike %w, it
+    // never renders "-". This guards against an over-eager fix that makes
+    // %W dash out on invalid, which would NOT match GNU.
+    var valid_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    valid_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    valid_buf.btim_valid = true;
+
+    var valid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer valid_out.deinit();
+    try expandFormatDirective(
+        testing.allocator,
+        'W',
+        valid_buf,
+        "ignored",
+        true,
+        &valid_out.writer,
+    );
+    try testing.expectEqualStrings("0", valid_out.writer.buffered());
+
+    var invalid_buf = valid_buf;
+    invalid_buf.btim_valid = false;
+
+    var invalid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer invalid_out.deinit();
+    try expandFormatDirective(
+        testing.allocator,
+        'W',
+        invalid_buf,
+        "ignored",
+        true,
+        &invalid_out.writer,
+    );
+    try testing.expectEqualStrings("0", invalid_out.writer.buffered());
+}
+
+test "stat %W renders raw seconds TRUE, 0 FALSE, for a nonzero btime (issue 102)" {
+    // Non-degenerate companion to the sec==0 test above: with sec==0 for
+    // both halves, "always print 0" (the exact bug) also satisfies that
+    // test. Pin the pinned GNU reference value
+    // (`stat -c '%W' /dev/null` -> "1784777610" on the reference VM) for the
+    // valid half, and confirm the invalid half suppresses that same nonzero
+    // value down to "0" rather than passing it through -- the rule that
+    // actually states issue #102's contract for %W: the value must never
+    // decide the output, only the mask bit does.
+    var valid_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    valid_buf.btim = .{ .sec = 1784777610, .nsec = 0 };
+    valid_buf.btim_valid = true;
+
+    var valid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer valid_out.deinit();
+    try expandFormatDirective(
+        testing.allocator,
+        'W',
+        valid_buf,
+        "ignored",
+        true,
+        &valid_out.writer,
+    );
+    try testing.expectEqualStrings("1784777610", valid_out.writer.buffered());
+
+    var invalid_buf = valid_buf;
+    invalid_buf.btim_valid = false;
+
+    var invalid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer invalid_out.deinit();
+    try expandFormatDirective(
+        testing.allocator,
+        'W',
+        invalid_buf,
+        "ignored",
+        true,
+        &invalid_out.writer,
+    );
+    try testing.expectEqualStrings("0", invalid_out.writer.buffered());
+}
+
+test "stat -t terse btime field is 0 when validity TRUE, never suppressed (issue 102)" {
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    stat_buf.btim_valid = true;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printTerseFormat(stat_buf, "ignored", &out.writer);
+
+    var fields: [16][]const u8 = undefined;
+    const n = testSplit(out.writer.buffered(), &fields);
+    try testing.expectEqual(@as(u32, 16), n);
+    // Fields: name size blocks mode uid gid dev inode nlinks major minor
+    // atime mtime ctime btime blksize -- btime is field index 14.
+    try testing.expectEqualStrings("0", fields[14]);
+}
+
+test "stat -t terse btime field stays 0 when validity FALSE, GNU terse always numeric (issue 102)" {
+    // Mirrors the TRUE case above: GNU's terse record never suppresses or
+    // dashes out btime (pinned live: `/usr/bin/stat -t /dev/null` prints a
+    // numeric 15th field unconditionally, and procfs's %W is "0" even
+    // though it has no STATX_BTIME support at all). This guards against an
+    // over-eager fix that threads validity into -t as a dash/suppress,
+    // which would diverge from GNU -- the same risk the %W test guards for
+    // the format-directive path.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    stat_buf.btim_valid = false;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printTerseFormat(stat_buf, "ignored", &out.writer);
+
+    var fields: [16][]const u8 = undefined;
+    const n = testSplit(out.writer.buffered(), &fields);
+    try testing.expectEqual(@as(u32, 16), n);
+    try testing.expectEqualStrings("0", fields[14]);
+}
+
+test "stat -t terse btime field passes through a nonzero value when validity TRUE (issue 102)" {
+    // Non-degenerate companion to the two sec==0 cases above: both of those
+    // pass with a constant-0 terse btime, so pin the pinned GNU reference
+    // value (`/usr/bin/stat -t /dev/null` -> 15th field "1784777610" on the
+    // reference VM) to confirm the field really carries the seconds
+    // through, not just "0" unconditionally.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 1784777610, .nsec = 0 };
+    stat_buf.btim_valid = true;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printTerseFormat(stat_buf, "ignored", &out.writer);
+
+    var fields: [16][]const u8 = undefined;
+    const n = testSplit(out.writer.buffered(), &fields);
+    try testing.expectEqual(@as(u32, 16), n);
+    try testing.expectEqualStrings("1784777610", fields[14]);
+}
+
+test "stat -r raw btime field stays numeric when validity FALSE, never a dash (issue 102)" {
+    // The issue text names "src/stat.zig:1511/:1540" as the "-x verbose
+    // record", but those lines are actually -r (printRawFormat) and -s
+    // (printShellFormat), neither of which branches on validity today --
+    // both always print btim.sec as %d. GNU/BSD never dash these fields
+    // (pinned live: terse's 15th field and %W are unconditionally numeric,
+    // 0 when unknown). The pre-existing "-r raw fields match the kernel's
+    // own numbers" test only parseInt's the btime field against a real
+    // temp file's truth, so it only catches a dash on a host whose
+    // filesystem happens to report no btime -- add a synthetic guard that
+    // is host-independent, mirroring the %W and -t guards above.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 1784777610, .nsec = 0 };
+    stat_buf.btim_valid = false;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printRawFormat(stat_buf, "ignored", &out.writer);
+
+    var fields: [20][]const u8 = undefined;
+    const n = testSplit(out.writer.buffered(), &fields);
+    try testing.expectEqual(@as(u32, 16), n);
+    // Fields: d i #p l u g r z a m c B k b f N -- B (btime) is index 11.
+    try testing.expectEqualStrings("1784777610", fields[11]);
+}
+
+test "stat -s shell st_birthtime stays numeric when validity FALSE, never a dash (issue 102)" {
+    // Same guard as the -r test above, for printShellFormat's
+    // st_birthtime= assignment.
+    var stat_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    stat_buf.btim = .{ .sec = 1784777610, .nsec = 0 };
+    stat_buf.btim_valid = false;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try printShellFormat(stat_buf, &out.writer);
+
+    const line = out.writer.buffered();
+    try testing.expect(std.mem.find(u8, line, "st_birthtime=1784777610") != null);
+    try testing.expect(std.mem.find(u8, line, "st_birthtime=-") == null);
+}
+
+test "stat -x verbose Birth line follows statx validity, not the raw seconds value (issue 102)" {
+    // NOTE (issue #102): this pins a new -x behavior -- validity FALSE now
+    // dashes the Birth line, where previously -x always rendered a
+    // timestamp regardless of validity. That couples the pre-existing
+    // "stat -x time lines carry a rendered timestamp, not an epoch" test
+    // (above this one) to the host filesystem's STATX_BTIME support for
+    // its real tmp-dir file; that test has been updated to accept "-" for
+    // its Birth line specifically, for the same reason.
+    var valid_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
+    valid_buf.btim = .{ .sec = 0, .nsec = 120000000 };
+    valid_buf.btim_valid = true;
+
+    var valid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer valid_out.deinit();
+    try printVerboseFormat(testing.allocator, valid_buf, "ignored", &valid_out.writer);
+    const valid_birth = testLine(valid_out.writer.buffered(), 7);
+    try testing.expect(std.mem.startsWith(u8, valid_birth, " Birth: "));
+    const valid_stamp = valid_birth[" Birth: ".len..];
+    // Match the strength of "stat -x time lines carry a rendered
+    // timestamp, not an epoch": a degenerate empty render (bsdTimeString
+    // returns "" on strftime failure) must not satisfy this either.
+    try testing.expect(valid_stamp.len >= 19);
+    try testing.expect(std.ascii.isAlphabetic(valid_stamp[0]));
+    try testing.expect(std.mem.find(u8, valid_stamp, ":") != null);
+    try testing.expect(testHasYear(valid_stamp));
+
+    var invalid_buf = valid_buf;
+    invalid_buf.btim_valid = false;
+
+    var invalid_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer invalid_out.deinit();
+    try printVerboseFormat(testing.allocator, invalid_buf, "ignored", &invalid_out.writer);
+    try testing.expectEqualStrings(" Birth: -", testLine(invalid_out.writer.buffered(), 7));
 }
