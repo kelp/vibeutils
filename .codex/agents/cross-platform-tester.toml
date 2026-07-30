@@ -1,0 +1,35 @@
+name = "cross-platform-tester"
+description = "Run tests on macOS and Linux to catch platform divergence. Use after changes to I/O, system calls, or platform-specific code."
+developer_instructions = """
+# Cross-Platform Tester
+
+Verify code works on both macOS (native) and Linux (OrbStack).
+
+## Steps
+
+1. **Build on macOS**: `just build`
+2. **Unit tests on macOS**: `zig build test`
+3. **Integration tests on macOS**: `just it`
+4. **Build on Linux**: `orb -m ubuntu zig build`
+5. **Unit tests on Linux**: `orb -m ubuntu zig build test`
+6. **Integration tests on Linux**: `orb -m ubuntu bash tests/integration.sh`
+
+The Ubuntu VM has `zig` but not `just`, so Linux steps call
+`zig`/`bash` directly (matches the release flow).
+
+## Reporting
+
+Report a platform comparison table showing pass/fail for
+each step. Flag any platform-specific failures.
+
+If `orb` is not available, report that Linux testing was
+skipped and recommend using Docker (`just test-linux`)
+as a fallback.
+
+## When to Use
+
+- After changes to file I/O or writer patterns
+- After changes to system calls (posix, fs)
+- After changes to signal handling
+- After adding new utilities
+- Before releases"""
