@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$TOOL_INPUT_file_path\" | grep -qE '(zig-out|zig-cache|\\.zig-cache|docs/html)/' && echo 'BLOCK: Do not edit build artifacts' && exit 1; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "echo \"$TOOL_INPUT_file_path\" | grep -q 'build.zig.zon' && echo 'BLOCK: Use just release x.y.z to change versions. Do not edit build.zig.zon directly.' && exit 1; exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$TOOL_INPUT_file_path\" in *.zig) zig fmt \"$TOOL_INPUT_file_path\" 2>/dev/null || true ;; esac"
+          },
+          {
+            "type": "command",
+            "command": "case \"$TOOL_INPUT_file_path\" in */man1/*.1) mandoc -T lint \"$TOOL_INPUT_file_path\" 2>&1 || true ;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}
