@@ -276,6 +276,106 @@ test_stat() {
             "Expected '${tmpfile}', got '$n_reg_out'"
     fi
 
+    # --- Issue #105: %N must follow GNU's shell_escape_quoting_style,
+    # not always single-quote. Pinned against GNU coreutils 9.5.
+    echo -e "${CYAN}Testing %N quoting rules (issue #105)...${NC}"
+
+    local apos_dir
+    apos_dir=$(create_temp_dir)
+
+    # Rule 2: a lone apostrophe switches to double quotes.
+    local apos_file="$apos_dir/it's"
+    touch -- "$apos_file"
+    local apos_out
+    apos_out=$("$binary" -c '%N' "$apos_file" 2>/dev/null)
+    if [[ "$apos_out" == "\"$apos_file\"" ]]; then
+        print_test_result "stat -c '%N' rule 2: apostrophe uses double quotes" "PASS"
+    else
+        print_test_result "stat -c '%N' rule 2: apostrophe uses double quotes" "FAIL" \
+            "Expected \"$apos_file\", got '$apos_out'"
+    fi
+
+    # Rule 3: an apostrophe together with a $ forces the splice form,
+    # NOT the naive "always double-quote on apostrophe" the issue
+    # suggested -- this is the case that would trip up that fix.
+    local dollar_file="$apos_dir/it's and \$var"
+    touch -- "$dollar_file"
+    local dollar_out
+    dollar_out=$("$binary" -c '%N' "$dollar_file" 2>/dev/null)
+    # Expected: 'DIR/it'\''s and $var' -- the directory prefix has no
+    # apostrophe, so only the "it's" part splices.
+    local dollar_expected="'$apos_dir/it'\\''s and \$var'"
+    if [[ "$dollar_out" == "$dollar_expected" ]]; then
+        print_test_result "stat -c '%N' rule 3: apostrophe+dollar splices single quotes" "PASS"
+    else
+        print_test_result "stat -c '%N' rule 3: apostrophe+dollar splices single quotes" "FAIL" \
+            "Expected '$dollar_expected', got '$dollar_out'"
+    fi
+
+    # Rule 1 regression guard: a bare double quote alone does not switch
+    # quote style.
+    local dq_file="$apos_dir/dq\"name"
+    touch -- "$dq_file"
+    local dq_out
+    dq_out=$("$binary" -c '%N' "$dq_file" 2>/dev/null)
+    if [[ "$dq_out" == "'$dq_file'" ]]; then
+        print_test_result "stat -c '%N' rule 1: lone double quote stays single-quoted" "PASS"
+    else
+        print_test_result "stat -c '%N' rule 1: lone double quote stays single-quoted" "FAIL" \
+            "Expected '$dq_file', got '$dq_out'"
+    fi
+
+    # Symlink form: link name and target are quoted independently. Here
+    # the link name has no apostrophe (rule 1) but the target does
+    # (rule 2), so the two arrow sides use different quote characters.
+    local apos_target="it's"
+    (cd "$apos_dir" && ln -sf "$apos_target" "lnk_apos")
+    local apos_link_out
+    apos_link_out=$("$binary" -c '%N' "$apos_dir/lnk_apos" 2>/dev/null)
+    if [[ "$apos_link_out" == "'$apos_dir/lnk_apos' -> \"$apos_target\"" ]]; then
+        print_test_result "stat -c '%N' symlink quotes target independently of link name" "PASS"
+    else
+        print_test_result "stat -c '%N' symlink quotes target independently of link name" "FAIL" \
+            "Expected '$apos_dir/lnk_apos' -> \"$apos_target\", got '$apos_link_out'"
+    fi
+
+    # Symlink form, other direction: the LINK NAME itself has an
+    # apostrophe (rule 2) while the target does not (rule 1). This
+    # guards against a partial fix that only quotes the target operand
+    # and leaves the link name hardcoded to single quotes.
+    local apos_link_name="$apos_dir/it's_link"
+    (cd "$apos_dir" && ln -sf "plain" "it's_link")
+    local apos_linkname_out
+    apos_linkname_out=$("$binary" -c '%N' "$apos_link_name" 2>/dev/null)
+    if [[ "$apos_linkname_out" == "\"$apos_link_name\" -> 'plain'" ]]; then
+        print_test_result "stat -c '%N' symlink quotes link name independently of target" "PASS"
+    else
+        print_test_result "stat -c '%N' symlink quotes link name independently of target" "FAIL" \
+            "Expected \"$apos_link_name\" -> 'plain', got '$apos_linkname_out'"
+    fi
+
+    # %N embedded inside a longer -c format string quotes identically
+    # to a bare -c %N.
+    local embedded_out
+    embedded_out=$("$binary" -c "name=%N size=%s" "$apos_file" 2>/dev/null)
+    if [[ "$embedded_out" == "name=\"$apos_file\" size=0" ]]; then
+        print_test_result "stat -c 'name=%N size=%s' quotes identically to bare %N" "PASS"
+    else
+        print_test_result "stat -c 'name=%N size=%s' quotes identically to bare %N" "FAIL" \
+            "Expected name=\"$apos_file\" size=0, got '$embedded_out'"
+    fi
+
+    # Regression guard: the default record's "File:" line stays
+    # UNQUOTED even for a name that %N would quote.
+    local default_line
+    default_line=$("$binary" "$apos_file" 2>/dev/null | head -1)
+    if [[ "$default_line" == "  File: $apos_file" ]]; then
+        print_test_result "stat default 'File:' line stays unquoted for apostrophe name" "PASS"
+    else
+        print_test_result "stat default 'File:' line stays unquoted for apostrophe name" "FAIL" \
+            "Expected '  File: $apos_file', got '$default_line'"
+    fi
+
     # --- Audit: --printf no trailing newline ---
     echo -e "${CYAN}Testing --printf no trailing newline...${NC}"
 
