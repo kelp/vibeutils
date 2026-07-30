@@ -409,11 +409,10 @@ fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
         .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
         .btim = .{ .sec = stx.btime.sec, .nsec = @intCast(stx.btime.nsec) },
-        // STUB: real value must come from stx.mask.BTIME (issue #102). Fixed
-        // to false here only so StatResult stays constructible; the render
-        // sites don't read this field yet either, so this stub changes no
-        // current behavior.
-        .btim_valid = false,
+        // The kernel reports which fields it actually filled in; btime is
+        // optional (procfs and older filesystems never set it), so only the
+        // mask bit can say whether `btim` means anything (issue #102).
+        .btim_valid = stx.mask.BTIME,
     };
 }
 
@@ -458,10 +457,15 @@ fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
         .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
         .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
         .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
-        // STUB: fstatat always returns birthtimespec on macOS/BSD, so this
-        // should end up unconditionally true (issue #102) -- left as a stub
-        // for the implementer since no render site reads it yet.
-        .btim_valid = false,
+        // Linux has an explicit STATX_BTIME mask bit; BSD has none, so GNU
+        // infers unavailability from the value itself. gnulib's
+        // get_stat_birthtime treats a zero tv_sec, or an out-of-range tv_nsec,
+        // as unavailable -- which is how `gstat -c %w /dev/null` prints "-"
+        // for a devfs node. The asymmetry between the platforms is GNU's, not
+        // ours (issue #102).
+        .btim_valid = stat_buf.birthtimespec.sec != 0 and
+            stat_buf.birthtimespec.nsec >= 0 and
+            stat_buf.birthtimespec.nsec < 1_000_000_000,
     };
 }
 
@@ -697,13 +701,16 @@ fn expandFormatDirective_userName(
     try writer.writeAll(user_info.name);
 }
 
-/// %W: the birth time as seconds since the epoch, "0" when unknown.
+/// %W: the birth time as seconds since the epoch, "0" when unknown. Unlike
+/// %w this is always numeric; GNU never renders a dash here (pinned against
+/// procfs, which has no birth time: `stat -c '%w|%W'` prints "-|0").
 fn expandFormatDirective_birthEpoch(stat_buf: StatResult, writer: anytype) !void {
-    const btime_sec = getTimespecSec(stat_buf, .btime);
-    if (btime_sec == 0) {
+    // A value the kernel did not vouch for must not leak through, so the mask
+    // bit decides the output, never the value itself (issue #102).
+    if (!stat_buf.btim_valid) {
         try writer.writeAll("0");
     } else {
-        try writer.print("{d}", .{btime_sec});
+        try writer.print("{d}", .{getTimespecSec(stat_buf, .btime)});
     }
 }
 
@@ -793,14 +800,14 @@ fn expandFormatDirective_deviceType(
     try writer.print("{x}", .{val});
 }
 
-/// %w: emit the birth time in human-readable form, or "-" when unknown
-/// (sec == 0) or formatting fails.
+/// %w: emit the birth time in human-readable form, or "-" when the kernel
+/// reported no birth time or formatting fails.
 fn expandFormatDirective_birthTime(stat_buf: StatResult, writer: anytype) !void {
-    const btime_sec = getTimespecSec(stat_buf, .btime);
-    if (btime_sec == 0) {
+    if (!stat_buf.btim_valid) {
         try writer.writeAll("-");
     } else {
         var fmt_buf: [64]u8 = undefined;
+        const btime_sec = getTimespecSec(stat_buf, .btime);
         const btime_nsec = getTimespecNsec(stat_buf, .btime);
         const formatted = formatTimestamp(btime_sec, btime_nsec, &fmt_buf) catch {
             try writer.writeAll("-");
@@ -1094,13 +1101,14 @@ fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
         try writer.print("Change: {s}\n", .{formatted});
     }
 
-    // Line 8: Birth time
+    // Line 8: Birth time. Availability comes from the kernel's mask bit, not
+    // from the seconds value: a file born at the epoch is still born (#102).
     {
-        const btime_sec = getTimespecSec(stat_buf, .btime);
-        if (btime_sec == 0) {
+        if (!stat_buf.btim_valid) {
             try writer.print(" Birth: -", .{});
         } else {
             var fmt_buf: [64]u8 = undefined;
+            const btime_sec = getTimespecSec(stat_buf, .btime);
             const btime_nsec = getTimespecNsec(stat_buf, .btime);
             const formatted = formatTimestamp(btime_sec, btime_nsec, &fmt_buf) catch "-";
             try writer.print(" Birth: {s}", .{formatted});
@@ -1677,6 +1685,10 @@ fn printVerboseFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
     try writer.print("Access: {s}\n", .{bsdTimeString(stat_buf.atim.sec, fmt, &buf)});
     try writer.print("Modify: {s}\n", .{bsdTimeString(stat_buf.mtim.sec, fmt, &buf)});
     try writer.print("Change: {s}\n", .{bsdTimeString(stat_buf.ctim.sec, fmt, &buf)});
+    // -x is a fixed rendering of the FreeBSD preset, and BSD stat has no
+    // concept of an unavailable birth time, so validity never reaches here:
+    // `/usr/bin/stat -x /dev/null` prints the epoch date where GNU prints "-"
+    // (issue #102).
     try writer.print(" Birth: {s}", .{bsdTimeString(stat_buf.btim.sec, fmt, &buf)});
 }
 
@@ -4793,19 +4805,10 @@ test "stat -x time lines carry a rendered timestamp, not an epoch" {
         const line = testLine(body, @intCast(idx));
         try testing.expect(line.len > label.len);
         const stamp = line[label.len..];
-        // Birth-line exception (issue #102): -x now dashes the Birth line
-        // when statx reports no STATX_BTIME support for this filesystem,
-        // exactly like GNU's %w/-x for procfs. A fresh tmp-dir file on a
-        // CI container's tmpfs/overlayfs may legitimately land here, so
-        // accept "-" for Birth only instead of asserting a wall clock this
-        // filesystem cannot provide. Linux-only: macOS's fstatat always
-        // returns birthtimespec, so validity is unconditionally TRUE there
-        // and this exception must not mask a macOS regression (issue #102).
-        if (builtin.os.tag == .linux and std.mem.eql(u8, label, " Birth: ") and
-            std.mem.eql(u8, stamp, "-"))
-        {
-            continue;
-        }
+        // No Birth-line exception (issue #102): -x follows the BSD spec, which
+        // has no unavailable birth time, so it formats the raw value even when
+        // statx reports no STATX_BTIME for this filesystem -- a zeroed field
+        // still renders as the epoch date, which is a wall clock, not a dash.
         // strftime "%c" output, so a wall-clock rendering rather than raw
         // seconds: it opens with a weekday name and carries a clock and a year.
         try testing.expect(stamp.len >= 19);
@@ -5623,14 +5626,33 @@ test "stat -s shell st_birthtime stays numeric when validity FALSE, never a dash
     try testing.expect(std.mem.find(u8, line, "st_birthtime=-") == null);
 }
 
-test "stat -x verbose Birth line follows statx validity, not the raw seconds value (issue 102)" {
-    // NOTE (issue #102): this pins a new -x behavior -- validity FALSE now
-    // dashes the Birth line, where previously -x always rendered a
-    // timestamp regardless of validity. That couples the pre-existing
-    // "stat -x time lines carry a rendered timestamp, not an epoch" test
-    // (above this one) to the host filesystem's STATX_BTIME support for
-    // its real tmp-dir file; that test has been updated to accept "-" for
-    // its Birth line specifically, for the same reason.
+/// Test-only: the text after " Birth: " on a record's Birth line, or "" when
+/// the record carries no Birth line. Located by label rather than by line
+/// index, so a record whose shape varies with the file type (GNU's character
+/// special files carry an extra "Device type:" field) still resolves.
+fn testBirthStamp(record: []const u8) []const u8 {
+    std.debug.assert(record.len > 0);
+    var it = std.mem.splitScalar(u8, record, '\n');
+    while (it.next()) |line| {
+        if (!std.mem.startsWith(u8, line, " Birth: ")) continue;
+        const stamp = line[" Birth: ".len..];
+        std.debug.assert(stamp.len < line.len);
+        return stamp;
+    }
+    return "";
+}
+
+test "stat -x verbose Birth line formats the raw birth time regardless of validity (issue 102)" {
+    // -x is a fixed rendering of the FreeBSD preset, and BSD stat has no
+    // concept of an unavailable birth time: gnulib's rule (tv_sec != 0 with
+    // tv_nsec in range on BSD, the STATX_BTIME mask bit on Linux) governs the
+    // GNU-facing paths only. Measured on macOS 25.5 against /dev/null, whose
+    // birthtimespec is all zeroes (`/usr/bin/stat -f '%B' /dev/null` -> 0):
+    //   /usr/bin/stat -x /dev/null | tail -1 -> " Birth: Wed Dec 31 16:00:00 1969"
+    //   gstat /dev/null | tail -1            -> " Birth: -"
+    // Same file, two specs, both correct for their own spec. Per CLAUDE.md's
+    // spec hierarchy, -x follows the BSD spec, so it must format the raw
+    // value unconditionally or byte parity with /usr/bin/stat -x breaks.
     var valid_buf = testSyntheticStat(c.S.IFREG | 0o644, 0, 0);
     valid_buf.btim = .{ .sec = 0, .nsec = 120000000 };
     valid_buf.btim_valid = true;
@@ -5638,16 +5660,7 @@ test "stat -x verbose Birth line follows statx validity, not the raw seconds val
     var valid_out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer valid_out.deinit();
     try printVerboseFormat(testing.allocator, valid_buf, "ignored", &valid_out.writer);
-    const valid_birth = testLine(valid_out.writer.buffered(), 7);
-    try testing.expect(std.mem.startsWith(u8, valid_birth, " Birth: "));
-    const valid_stamp = valid_birth[" Birth: ".len..];
-    // Match the strength of "stat -x time lines carry a rendered
-    // timestamp, not an epoch": a degenerate empty render (bsdTimeString
-    // returns "" on strftime failure) must not satisfy this either.
-    try testing.expect(valid_stamp.len >= 19);
-    try testing.expect(std.ascii.isAlphabetic(valid_stamp[0]));
-    try testing.expect(std.mem.find(u8, valid_stamp, ":") != null);
-    try testing.expect(testHasYear(valid_stamp));
+    const valid_stamp = testBirthStamp(valid_out.writer.buffered());
 
     var invalid_buf = valid_buf;
     invalid_buf.btim_valid = false;
@@ -5655,5 +5668,67 @@ test "stat -x verbose Birth line follows statx validity, not the raw seconds val
     var invalid_out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer invalid_out.deinit();
     try printVerboseFormat(testing.allocator, invalid_buf, "ignored", &invalid_out.writer);
-    try testing.expectEqualStrings(" Birth: -", testLine(invalid_out.writer.buffered(), 7));
+    const invalid_stamp = testBirthStamp(invalid_out.writer.buffered());
+
+    // Validity must not reach -x at all: the same raw value renders the same
+    // bytes either way. A dash-out regression trips this equality first.
+    try testing.expectEqualStrings(valid_stamp, invalid_stamp);
+
+    // The shared rendering is BSD stat's strftime "%c" stamp for sec == 0,
+    // at the strength of "stat -x time lines carry a rendered timestamp, not
+    // an epoch": a weekday name, a clock and a year, never "-" and never the
+    // empty string bsdTimeString returns on strftime failure.
+    var fmt_buf: [128]u8 = undefined;
+    const expected = bsdTimeString(0, bsd_verbose_timefmt, &fmt_buf);
+    try testing.expectEqualStrings(expected, invalid_stamp);
+    try testing.expect(invalid_stamp.len >= 19);
+    try testing.expect(std.ascii.isAlphabetic(invalid_stamp[0]));
+    try testing.expect(std.mem.find(u8, invalid_stamp, ":") != null);
+    try testing.expect(testHasYear(invalid_stamp));
+}
+
+test "stat GNU Birth line and %w dash for macOS /dev/null's zero birthtimespec (issue 102)" {
+    if (!builtin.os.tag.isDarwin()) return error.SkipZigTest;
+
+    // Drives the real doStat_darwin against a character device whose
+    // birthtimespec is all zeroes -- the field state gnulib's
+    // get_stat_birthtime reports as unavailable on BSD, where there is no
+    // mask bit to consult. Measured on macOS 25.5:
+    //   /usr/bin/stat -f '%B' /dev/null -> 0
+    //   gstat -c '%w|%W' /dev/null      -> -|0
+    const null_buf = try doStat("/dev/null", true);
+    // Premise, not a skip: if this host reports a nonzero birth time for
+    // /dev/null then the sec == 0 case is not being exercised and a green
+    // result here would mean nothing, so state it as an assertion.
+    try testing.expectEqual(@as(i64, 0), null_buf.btim.sec);
+
+    var record: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer record.deinit();
+    try printDefaultFormat(testing.allocator, null_buf, "/dev/null", true, &record.writer);
+    try testing.expectEqualStrings("-", testBirthStamp(record.writer.buffered()));
+
+    var w_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer w_out.deinit();
+    try expandFormatDirective(testing.allocator, 'w', null_buf, "/dev/null", true, &w_out.writer);
+    try testing.expectEqualStrings("-", w_out.writer.buffered());
+
+    // Negative space, so "dash on Darwin always" cannot satisfy the above: a
+    // freshly created file has a nonzero birthtimespec and must still render
+    // a real timestamp on both GNU-facing paths.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(testing.io, "born.txt", .{});
+    file.close(testing.io);
+    const path = try testAbsPath(tmp_dir.dir, "born.txt");
+    defer testing.allocator.free(path);
+
+    const file_buf = try doStat(path, true);
+    try testing.expect(file_buf.btim.sec > 0);
+
+    var file_record: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer file_record.deinit();
+    try printDefaultFormat(testing.allocator, file_buf, path, true, &file_record.writer);
+    const file_stamp = testBirthStamp(file_record.writer.buffered());
+    try testing.expect(file_stamp.len >= 19);
+    try testing.expect(testHasYear(file_stamp));
 }

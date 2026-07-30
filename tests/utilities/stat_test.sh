@@ -425,6 +425,7 @@ newlines=$n_def_on_lines"
     _test_stat_verbose_mode "$binary" "$tmpfile"
     _test_stat_mode_conflicts "$binary" "$tmpfile"
     _test_stat_bsd_byte_parity "$binary" "$tmpfile"
+    _test_stat_bsd_verbose_zero_birthtime_parity "$binary"
     _test_stat_dev_type_null_parity "$binary"
     _test_stat_dev_type_minor_gt255 "$binary"
     _test_stat_darwin_devfs_dev_type "$binary"
@@ -895,6 +896,55 @@ _test_stat_bsd_byte_parity() {
         fi
     done
     rm -rf "$par_dir"
+}
+
+# --- BSD -x parity on a zero birthtimespec (issue #102) ------------------
+#
+# The parity loop above only ever sees a regular temp file, whose birth time
+# is nonzero, so it cannot catch a Birth-line regression driven by the
+# availability rule. /dev/null on devfs has an all-zero birthtimespec
+# (`/usr/bin/stat -f '%B' /dev/null` -> 0), which gnulib's
+# get_stat_birthtime treats as unavailable on BSD -- so GNU's own `gstat`
+# prints " Birth: -" for it while BSD `stat -x` prints the formatted epoch
+# date. -x follows the BSD spec, so it must match /usr/bin/stat here, not
+# the GNU rendering.
+_test_stat_bsd_verbose_zero_birthtime_parity() {
+    local binary="$1"
+
+    if [[ "$(uname)" != "Darwin" || ! -x /usr/bin/stat ]]; then
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "SKIP" \
+            "no BSD stat on $(uname)"
+        return 0
+    fi
+    if [[ ! -c /dev/null ]]; then
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "SKIP" \
+            "/dev/null is not a character device"
+        return 0
+    fi
+
+    echo -e "${CYAN}Testing -x parity for /dev/null's zero birth time (issue #102)...${NC}"
+
+    local ours theirs
+    ours=$(run_with_limit 10 "$binary" -x /dev/null 2>/dev/null || true)
+    theirs=$(run_with_limit 10 /usr/bin/stat -x /dev/null 2>/dev/null || true)
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "PASS"
+    else
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "FAIL" \
+            "ours='$ours' BSD='$theirs'"
+    fi
+
+    # The Birth line specifically, so a failure names the field at issue
+    # instead of leaving a whole-record diff to be read by eye.
+    local ours_birth theirs_birth
+    ours_birth=$(printf '%s\n' "$ours" | grep '^ Birth:' || true)
+    theirs_birth=$(printf '%s\n' "$theirs" | grep '^ Birth:' || true)
+    if [[ -n "$theirs_birth" && "$ours_birth" == "$theirs_birth" ]]; then
+        print_test_result "stat -x /dev/null Birth line formats the epoch, not '-'" "PASS"
+    else
+        print_test_result "stat -x /dev/null Birth line formats the epoch, not '-'" "FAIL" \
+            "ours='$ours_birth' BSD='$theirs_birth'"
+    fi
 }
 
 # --- Device major/minor parity against GNU stat (issue #92) --------------
