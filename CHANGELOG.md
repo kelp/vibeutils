@@ -48,6 +48,14 @@
   space before `Links:` where GNU leaves two. On Linux the whole
   record is now identical to `/usr/bin/stat` for regular files,
   directories and device nodes (#98).
+- **`stat` no longer reports an epoch birth time as unavailable.**
+  Availability was inferred from `btime.sec == 0`, but 0 is a legal
+  timestamp, so a file born at or near the epoch printed
+  `Birth: -`. It comes from statx's `STATX_BTIME` bit on Linux, which
+  was already requested and discarded, and from gnulib's zero-`tv_sec`
+  rule on macOS, where no such mask exists. `%W` stays numeric and
+  prints 0 when unknown, and `-x` keeps formatting the raw value, both
+  matching their own reference (#102).
 
 ### Infrastructure
 - **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
