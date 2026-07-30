@@ -425,9 +425,11 @@ newlines=$n_def_on_lines"
     _test_stat_verbose_mode "$binary" "$tmpfile"
     _test_stat_mode_conflicts "$binary" "$tmpfile"
     _test_stat_bsd_byte_parity "$binary" "$tmpfile"
+    _test_stat_bsd_verbose_zero_birthtime_parity "$binary"
     _test_stat_dev_type_null_parity "$binary"
     _test_stat_dev_type_minor_gt255 "$binary"
     _test_stat_darwin_devfs_dev_type "$binary"
+    _test_stat_default_record_parity "$binary"
 
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
@@ -896,6 +898,55 @@ _test_stat_bsd_byte_parity() {
     rm -rf "$par_dir"
 }
 
+# --- BSD -x parity on a zero birthtimespec (issue #102) ------------------
+#
+# The parity loop above only ever sees a regular temp file, whose birth time
+# is nonzero, so it cannot catch a Birth-line regression driven by the
+# availability rule. /dev/null on devfs has an all-zero birthtimespec
+# (`/usr/bin/stat -f '%B' /dev/null` -> 0), which gnulib's
+# get_stat_birthtime treats as unavailable on BSD -- so GNU's own `gstat`
+# prints " Birth: -" for it while BSD `stat -x` prints the formatted epoch
+# date. -x follows the BSD spec, so it must match /usr/bin/stat here, not
+# the GNU rendering.
+_test_stat_bsd_verbose_zero_birthtime_parity() {
+    local binary="$1"
+
+    if [[ "$(uname)" != "Darwin" || ! -x /usr/bin/stat ]]; then
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "SKIP" \
+            "no BSD stat on $(uname)"
+        return 0
+    fi
+    if [[ ! -c /dev/null ]]; then
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "SKIP" \
+            "/dev/null is not a character device"
+        return 0
+    fi
+
+    echo -e "${CYAN}Testing -x parity for /dev/null's zero birth time (issue #102)...${NC}"
+
+    local ours theirs
+    ours=$(run_with_limit 10 "$binary" -x /dev/null 2>/dev/null || true)
+    theirs=$(run_with_limit 10 /usr/bin/stat -x /dev/null 2>/dev/null || true)
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "PASS"
+    else
+        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "FAIL" \
+            "ours='$ours' BSD='$theirs'"
+    fi
+
+    # The Birth line specifically, so a failure names the field at issue
+    # instead of leaving a whole-record diff to be read by eye.
+    local ours_birth theirs_birth
+    ours_birth=$(printf '%s\n' "$ours" | grep '^ Birth:' || true)
+    theirs_birth=$(printf '%s\n' "$theirs" | grep '^ Birth:' || true)
+    if [[ -n "$theirs_birth" && "$ours_birth" == "$theirs_birth" ]]; then
+        print_test_result "stat -x /dev/null Birth line formats the epoch, not '-'" "PASS"
+    else
+        print_test_result "stat -x /dev/null Birth line formats the epoch, not '-'" "FAIL" \
+            "ours='$ours_birth' BSD='$theirs_birth'"
+    fi
+}
+
 # --- Device major/minor parity against GNU stat (issue #92) --------------
 #
 # GNU coreutils is the oracle for the Linux-only bit layout. These skip
@@ -920,10 +971,12 @@ _test_stat_dev_type_null_parity() {
         return 0
     fi
 
-    # Scoped to the Device line itself (not the whole record): the Size
-    # line has an unrelated, pre-existing tab-vs-space formatting gap from
-    # GNU that is out of scope for issue #92 and would keep a whole-record
-    # comparison red even after this fix lands.
+    # Scoped to the Device line itself (not the whole record). Prior to
+    # issue #98, the Size line had an unrelated tab-vs-space formatting
+    # gap from GNU that was out of scope for issue #92 and would have kept
+    # a whole-record comparison red; that gap is now fixed and covered by
+    # a whole-record diff in _test_stat_default_record_parity below, but
+    # this check stays scoped to the Device line as defense in depth.
     local ours theirs
     ours=$("$binary" /dev/null 2>/dev/null | grep '^Device:')
     theirs=$(/usr/bin/stat /dev/null 2>/dev/null | grep '^Device:')
@@ -992,8 +1045,10 @@ _test_stat_dev_type_minor_gt255() {
     fi
 
     # Scoped to the Device line for the same reason as the /dev/null check
-    # above: a whole-record comparison would also catch an unrelated,
-    # pre-existing Size-line formatting gap that issue #92 does not cover.
+    # above. The whole-record Size-line gap this used to dodge is fixed by
+    # issue #98 and covered separately by
+    # _test_stat_default_record_parity; this check stays scoped to the
+    # Device line as defense in depth.
     local ours theirs
     ours=$("$binary" "$node" 2>/dev/null | grep '^Device:')
     theirs=$(/usr/bin/stat "$node" 2>/dev/null | grep '^Device:')
@@ -1063,5 +1118,74 @@ _test_stat_darwin_devfs_dev_type() {
     else
         print_test_result "stat -c '%t %T' (decoded) matches BSD stat -f '%Hr,%Lr'" "FAIL" \
             "ours_hex='$ours_hex' BSD='$theirs'"
+    fi
+}
+
+# --- Whole-record default output parity with GNU stat (issue #98) ---
+#
+# Unlike the Device-line-only checks above (issue #92, scoped to
+# `grep '^Device:'` to dodge a then-unrelated Size-line separator gap),
+# this diffs the ENTIRE default record byte for byte. GNU varies the
+# record shape by file type (regular file, directory, character special),
+# so all three are covered separately.
+_test_stat_default_record_parity() {
+    local binary="$1"
+    echo -e "${CYAN}Testing whole-record default output parity with GNU stat (issue #98)...${NC}"
+
+    if [[ "$(uname)" != "Linux" || ! -x /usr/bin/stat ]]; then
+        print_test_result "stat default record parity" "SKIP" \
+            "needs GNU /usr/bin/stat (not present on $(uname))"
+        return 0
+    fi
+
+    # Regular file. stat(2) does not update atime on read, so back-to-back
+    # readings of the same file are stable.
+    local reg_file ours theirs
+    reg_file=$(create_temp_file "issue98 default record parity")
+    ours=$("$binary" "$reg_file" 2>/dev/null)
+    theirs=$(/usr/bin/stat "$reg_file" 2>/dev/null)
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat default record matches GNU for a regular file" "PASS"
+    else
+        # Whitespace made visible: issue #98 is specifically about missing
+        # tabs and vanished/folded pad spaces, which render near-identically
+        # in a raw log otherwise. Substitution (not cat -A) since PATH is
+        # pinned to zig-out/bin here and `cat` resolves to our own cat.
+        local ours_vis=${ours//$'\t'/<TAB>}
+        local theirs_vis=${theirs//$'\t'/<TAB>}
+        print_test_result "stat default record matches GNU for a regular file" "FAIL" \
+            "ours='$ours_vis' GNU='$theirs_vis'"
+    fi
+
+    # Directory. A fresh mktemp -d target, not /tmp itself, since other
+    # concurrently-running tests perturb /tmp's mtime.
+    local reg_dir
+    reg_dir=$(create_temp_dir)
+    ours=$("$binary" "$reg_dir" 2>/dev/null)
+    theirs=$(/usr/bin/stat "$reg_dir" 2>/dev/null)
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat default record matches GNU for a directory" "PASS"
+    else
+        local ours_vis=${ours//$'\t'/<TAB>}
+        local theirs_vis=${theirs//$'\t'/<TAB>}
+        print_test_result "stat default record matches GNU for a directory" "FAIL" \
+            "ours='$ours_vis' GNU='$theirs_vis'"
+    fi
+
+    # Character special file: exercises the "Device type:" suffix line too.
+    if [[ ! -c /dev/null || ! -r /dev/null ]]; then
+        print_test_result "stat default record matches GNU for /dev/null" "SKIP" \
+            "/dev/null missing or unreadable"
+        return 0
+    fi
+    ours=$("$binary" /dev/null 2>/dev/null)
+    theirs=$(/usr/bin/stat /dev/null 2>/dev/null)
+    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
+        print_test_result "stat default record matches GNU for /dev/null" "PASS"
+    else
+        local ours_vis=${ours//$'\t'/<TAB>}
+        local theirs_vis=${theirs//$'\t'/<TAB>}
+        print_test_result "stat default record matches GNU for /dev/null" "FAIL" \
+            "ours='$ours_vis' GNU='$theirs_vis'"
     fi
 }
