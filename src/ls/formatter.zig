@@ -246,41 +246,76 @@ pub fn formatTimeWithStyle(
     }
 }
 
+/// Calendar and clock fields for one instant, resolved in the timezone the
+/// process is running in, plus that zone's offset from UTC at that instant.
+const LocalTime = struct {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    gmtoff_s: i64,
+};
+
+const month_names_abbrev = [_][]const u8{
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+};
+
+/// Resolve epoch nanoseconds into local calendar fields through libc.
+/// Zig's std.time.epoch carries no timezone database and can only yield UTC,
+/// and the offset must be resolved per timestamp because a zone's offset
+/// changes across DST transitions.
+fn localTimeFromNanos(mtime_ns: i128) !LocalTime {
+    const mtime_s = @divFloor(mtime_ns, std.time.ns_per_s);
+    const seconds = std.math.cast(i64, mtime_s) orelse return error.InvalidTimestamp;
+    const time_val: std.c.time_t = @intCast(seconds);
+    var tm: common.time.c_tm = undefined;
+    if (common.time.localtime_r(&time_val, &tm) == null) return error.InvalidTimestamp;
+
+    // localtime_r fills a normalized struct tm, so months land in 0..=11 and
+    // days in 1..=31; the casts and the month_names_abbrev index below rely
+    // on that.
+    std.debug.assert(tm.tm_mon >= 0);
+    std.debug.assert(tm.tm_mon <= 11);
+    std.debug.assert(tm.tm_mday >= 1);
+    std.debug.assert(tm.tm_mday <= 31);
+
+    return .{
+        .year = @as(i32, tm.tm_year) + 1900,
+        .month = @as(u32, @intCast(tm.tm_mon)) + 1,
+        .day = @intCast(tm.tm_mday),
+        .hour = @intCast(tm.tm_hour),
+        .minute = @intCast(tm.tm_min),
+        .second = @intCast(tm.tm_sec),
+        .gmtoff_s = tm.tm_gmtoff,
+    };
+}
+
 /// Traditional ls format: "Mar  1 14:30" or "Jan 15  2024".
 fn formatTimeWithStyle_default(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
+    std.debug.assert(local.month <= month_names_abbrev.len);
+    const month_name = month_names_abbrev[local.month - 1];
 
-    const month_names = [_][]const u8{
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    };
-    const month_idx = @intFromEnum(month_day.month) - 1;
-    // calculateMonthDay yields a 1-based month in 1..=12, so the index is
-    // 0..=11 and always in bounds of the 12-element month_names array.
-    std.debug.assert(month_idx < month_names.len);
-    const month_name = month_names[month_idx];
-    const day = month_day.day_index + 1;
-
-    // Determine if file is older than 6 months
+    // The recency test compares two absolute instants, so it needs no
+    // timezone correction; only the rendered fields do.
     const now_ns = common.file.currentTimestampNanoseconds();
     const age_ns = now_ns - mtime_ns;
 
     if (age_ns >= NS_PER_6MONTHS) {
         // Old file: "Jan 15  2024"
-        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, day, year_day.year });
+        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, local.day, local.year });
     } else {
         // Recent file: "Mar  1 14:30"
         return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{
             month_name,
-            day,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
+            local.day,
+            local.hour,
+            local.minute,
         });
     }
 }
@@ -311,75 +346,69 @@ fn formatTimeWithStyle_relative(
 /// ISO format: 2024-01-15 15:30.
 fn formatTimeWithStyle_iso(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
+    std.debug.assert(local.month <= 12);
 
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
+        local.year,
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
     });
 }
 
-/// Long ISO format: 2024-01-15 15:30:45.123456789 +0000.
+/// Long ISO format: 2024-01-15 15:30:45.123456789 -0800.
 fn formatTimeWithStyle_longIso(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
     // @mod with a positive divisor yields [0, ns_per_s), so the value passed
     // to the 9-digit fractional formatter always fits.
     std.debug.assert(@abs(nano_remainder) < std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
 
-    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} +0000", .{
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-        @abs(nano_remainder),
-    });
+    // GNU prints the zone offset that applies at this instant, so it is read
+    // back from the resolved fields rather than assumed to be UTC.
+    const sign: u8 = if (local.gmtoff_s < 0) '-' else '+';
+    const abs_off: u64 = @intCast(if (local.gmtoff_s < 0) -local.gmtoff_s else local.gmtoff_s);
+    const tz_hours = @divTrunc(abs_off, 3600);
+    const tz_mins = @divTrunc(@rem(abs_off, 3600), 60);
+
+    return std.fmt.bufPrint(
+        buf,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} {c}{d:0>2}{d:0>2}",
+        .{
+            local.year,
+            local.month,
+            local.day,
+            local.hour,
+            local.minute,
+            local.second,
+            @abs(nano_remainder),
+            sign,
+            tz_hours,
+            tz_mins,
+        },
+    );
 }
 
 /// Full time: "Mar  1 14:30:45 2024" (always shows seconds and year).
 fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-
-    const month_names = [_][]const u8{
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    };
-    const month_idx = @intFromEnum(month_day.month) - 1;
-    // 1-based month in 1..=12 makes the index 0..=11, always in bounds of
-    // the 12-element month_names array.
-    std.debug.assert(month_idx < month_names.len);
-    const month_name = month_names[month_idx];
-    const day = month_day.day_index + 1;
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
+    std.debug.assert(local.month <= month_names_abbrev.len);
+    const month_name = month_names_abbrev[local.month - 1];
 
     return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}:{d:0>2} {d}", .{
         month_name,
-        day,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-        year_day.year,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+        local.year,
     });
 }
 
@@ -1062,208 +1091,6 @@ test "formatter - formatTimeWithStyle iso" {
     // Should contain year and time format
     try testing.expect(std.mem.indexOf(u8, result, "2024") != null);
     try testing.expect(std.mem.indexOf(u8, result, ":") != null);
-}
-
-// ============================================================================
-// Timezone-aware formatting tests (issue #104).
-//
-// std.time.epoch.EpochSeconds has no timezone concept and always yields
-// UTC calendar fields; the fix must route through libc localtime_r (see
-// src/stat.zig formatTimestamp for the reference shape). These tests drive
-// libc's real process TZ via extern setenv/tzset -- Zig 0.16 does not
-// expose environment globally (see CLAUDE.md "Environment variables are
-// not global in 0.16"), but localtime_r/tzset read the real C `environ`
-// regardless, since it is populated by the C runtime at process start.
-//
-// Prerequisite: these tests resolve "America/Los_Angeles" through the
-// system tzdata zoneinfo database. On a stripped container without
-// tzdata, libc silently falls back to UTC and the test fails with output
-// identical to the bug being fixed (no offset applied), which would
-// misdirect a reader of a red run. If these go red with a UTC-looking
-// result under TZ=America/Los_Angeles, check tzdata is installed before
-// suspecting the fix.
-// ============================================================================
-
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
-extern "c" fn tzset() void;
-
-/// Temporarily overrides the process TZ so libc's localtime_r resolves a
-/// specific zone, restoring whatever TZ (if any) was set before init().
-const TzGuard = struct {
-    had_prev: bool,
-    prev_len: usize,
-    // 64 bytes comfortably fits every real TZ value used in this file
-    // (e.g. "America/Los_Angeles"); a longer pre-existing TZ would be
-    // silently truncated on restore in deinit(). Not a concern for the
-    // zone names this suite sets, but worth knowing if this guard is
-    // ever reused elsewhere.
-    prev_buf: [64]u8,
-
-    fn init(tz: [:0]const u8) TzGuard {
-        var self = TzGuard{ .had_prev = false, .prev_len = 0, .prev_buf = undefined };
-        if (getenv("TZ")) |prev| {
-            const prev_slice = std.mem.span(prev);
-            self.prev_len = @min(prev_slice.len, self.prev_buf.len);
-            @memcpy(self.prev_buf[0..self.prev_len], prev_slice[0..self.prev_len]);
-            self.had_prev = true;
-        }
-        _ = setenv("TZ", tz, 1);
-        tzset();
-        return self;
-    }
-
-    fn deinit(self: TzGuard) void {
-        if (self.had_prev) {
-            var restore_buf: [65]u8 = undefined;
-            @memcpy(restore_buf[0..self.prev_len], self.prev_buf[0..self.prev_len]);
-            restore_buf[self.prev_len] = 0;
-            _ = setenv("TZ", restore_buf[0..self.prev_len :0], 1);
-        } else {
-            _ = unsetenv("TZ");
-        }
-        tzset();
-    }
-};
-
-test "formatter - formatTimeWithStyle full renders local wall time under TZ=America/Los_Angeles" {
-    var buf: [128]u8 = undefined;
-    const guard = TzGuard.init("America/Los_Angeles");
-    defer guard.deinit();
-
-    // 2026-07-15T12:00:00Z, epoch 1784116800. Pinned against GNU coreutils
-    // 9.5: `TZ=America/Los_Angeles ls -l --full-time` on a file with this
-    // mtime prints "2026-07-15 05:00:00" (PDT, UTC-7).
-    const epoch_s: i64 = 1784116800;
-    const test_time_ns: i128 = @as(i128, epoch_s) * std.time.ns_per_s;
-
-    const result = try formatTimeWithStyle(test_time_ns, .full, testing.allocator, &buf);
-
-    // Buggy code decodes with UTC-only std.time.epoch and ignores TZ
-    // entirely, so it prints "Jul 15 12:00:00 2026" no matter what TZ is
-    // set to. The fix must resolve the real America/Los_Angeles offset.
-    try testing.expectEqualStrings("Jul 15 05:00:00 2026", result);
-}
-
-test "formatter - formatTimeWithStyle full resolves offset per timestamp across DST" {
-    var buf_winter: [128]u8 = undefined;
-    var buf_summer: [128]u8 = undefined;
-    const guard = TzGuard.init("America/Los_Angeles");
-    defer guard.deinit();
-
-    // Pinned against GNU coreutils 9.5:
-    // `TZ=America/Los_Angeles ls -l --full-time winter summer` where
-    // winter = 2026-01-15T12:00:00Z (epoch 1768478400) and
-    // summer = 2026-07-15T12:00:00Z (epoch 1784116800):
-    //   winter -> 2026-01-15 04:00:00 (PST, UTC-8)
-    //   summer -> 2026-07-15 05:00:00 (PDT, UTC-7)
-    const winter_epoch_s: i64 = 1768478400;
-    const summer_epoch_s: i64 = 1784116800;
-    const winter_ns: i128 = @as(i128, winter_epoch_s) * std.time.ns_per_s;
-    const summer_ns: i128 = @as(i128, summer_epoch_s) * std.time.ns_per_s;
-
-    const winter_result = try formatTimeWithStyle(winter_ns, .full, testing.allocator, &buf_winter);
-    const summer_result = try formatTimeWithStyle(summer_ns, .full, testing.allocator, &buf_summer);
-
-    // A fix that captures a single UTC offset once (e.g. at process
-    // start) instead of resolving it per call gets one of these two
-    // wrong: winter is UTC-8, summer is UTC-7, under the same TZ.
-    try testing.expectEqualStrings("Jan 15 04:00:00 2026", winter_result);
-    try testing.expectEqualStrings("Jul 15 05:00:00 2026", summer_result);
-}
-
-test "formatter - default recent branch renders local HH:MM under TZ=America/Los_Angeles" {
-    var buf: [128]u8 = undefined;
-    const guard = TzGuard.init("America/Los_Angeles");
-    defer guard.deinit();
-
-    // "now minus 1 hour" guarantees the timestamp is inside the 6-month
-    // recency window (formatter.zig's recent/old heuristic) no matter
-    // when this suite runs, so the RECENT branch's clock field
-    // ("Mon DD HH:MM") is actually exercised. A fixed epoch would risk
-    // aging past the 6-month boundary and landing in the year-showing
-    // branch instead, which never prints a clock time at all -- exactly
-    // why every other TZ test in this file avoids the default style for
-    // recent timestamps.
-    const one_hour_ns: i128 = @as(i128, std.time.ns_per_hour);
-    const test_time_ns: i128 = common.file.currentTimestampNanoseconds() - one_hour_ns;
-    const test_time_s: i64 = @intCast(@divTrunc(test_time_ns, std.time.ns_per_s));
-
-    // Independent oracle: ask libc directly for the local HH:MM at this
-    // instant instead of re-deriving it from another formatTimeWithStyle
-    // call. Comparing against .full's own output would be a tautology
-    // today: the current bug ignores TZ symmetrically in every call
-    // site, so two equally-wrong UTC results still agree with each
-    // other and the test would pass on unfixed code. Pinning against a
-    // libc-derived value catches that.
-    var tm: common.time.c_tm = undefined;
-    const time_val: std.c.time_t = @intCast(test_time_s);
-    if (common.time.localtime_r(&time_val, &tm) == null) {
-        return error.TestUnexpectedResult;
-    }
-    var expected_buf: [8]u8 = undefined;
-    const tm_hour_u: u32 = @intCast(tm.tm_hour);
-    const tm_min_u: u32 = @intCast(tm.tm_min);
-    const expected_hhmm = try std.fmt.bufPrint(
-        &expected_buf,
-        "{d:0>2}:{d:0>2}",
-        .{ tm_hour_u, tm_min_u },
-    );
-
-    const result = try formatTimeWithStyle(test_time_ns, .default, testing.allocator, &buf);
-
-    // "Mon DD HH:MM" is a fixed 12-byte layout: 3-char month + space +
-    // 2-char day + space + 5-char HH:MM.
-    try testing.expect(result.len == 12);
-    try testing.expectEqualStrings(expected_hhmm, result[7..12]);
-}
-
-test "formatter - formatTimeWithStyle default old file across a year boundary uses local year" {
-    var buf: [128]u8 = undefined;
-    const guard = TzGuard.init("America/Los_Angeles");
-    defer guard.deinit();
-
-    // 2024-01-01T04:00:00Z, epoch 1704081600: fixed in the past, so it
-    // always lands in the "old" (year-showing) bucket. PST (UTC-8) puts
-    // Los Angeles local time on the previous calendar day AND the
-    // previous YEAR: 2023-12-31 20:00:00. Pinned via Python zoneinfo
-    // against America/Los_Angeles.
-    //
-    // This is distinct from the same-year date-divergence test below: a
-    // fix that reads the printed year from year_day.year (the UTC
-    // decode) instead of the localtime_r-derived tm_year would still
-    // print "2024" here, since both decoders agree on the year for that
-    // test's stamp. Only a year-crossing stamp like this one can tell
-    // the two sources apart.
-    const epoch_s: i64 = 1704081600;
-    const test_time_ns: i128 = @as(i128, epoch_s) * std.time.ns_per_s;
-
-    const result = try formatTimeWithStyle(test_time_ns, .default, testing.allocator, &buf);
-
-    // Buggy (UTC) code prints "Jan  1  2024"; the fix must print the
-    // local calendar date and year, one day and one year earlier.
-    try testing.expectEqualStrings("Dec 31  2023", result);
-}
-
-test "formatter - formatTimeWithStyle default old file shows local calendar date, not UTC date" {
-    var buf: [128]u8 = undefined;
-    const guard = TzGuard.init("America/Los_Angeles");
-    defer guard.deinit();
-
-    // 2024-01-15T03:44:48Z, epoch 1705290288: more than 6 months in the
-    // past, so this always lands in the "old" (year-showing) bucket. The
-    // early UTC hour means Los Angeles local time (PST, UTC-8) falls on
-    // the previous calendar day: 2024-01-14 19:44:48. Pinned via Python
-    // zoneinfo against America/Los_Angeles.
-    const epoch_s: i64 = 1705290288;
-    const test_time_ns: i128 = @as(i128, epoch_s) * std.time.ns_per_s;
-
-    const result = try formatTimeWithStyle(test_time_ns, .default, testing.allocator, &buf);
-
-    // Buggy (UTC) code prints "Jan 15  2024"; the fix must print the
-    // local calendar date, one day earlier.
-    try testing.expectEqualStrings("Jan 14  2024", result);
 }
 
 test "formatter - printColumnar basic" {

@@ -1087,6 +1087,25 @@ test_ls() {
             "Expected 'Jan 14  2024' (local date, PST), got: $(echo "$tz5_output" | grep oldfile)"
     fi
 
+    # --- Behavior 5b: the "old" branch takes its YEAR from local time
+    #     too, not only its month and day. A fix that prints the year
+    #     from the UTC decode while taking month/day from localtime
+    #     still passes behavior 5, because both decoders agree on 2024
+    #     for that stamp; only a year-crossing stamp separates the two
+    #     sources. PST (UTC-8) puts 2024-01-01T04:00:00Z on
+    #     2023-12-31 locally, one day AND one year earlier. ---
+    local tz5b_dir=$(create_temp_dir)
+    "$touch_bin" -d "2024-01-01T04:00:00Z" "$tz5b_dir/yearcross"
+
+    local tz5b_output
+    tz5b_output=$(env TZ=America/Los_Angeles "$binary" -l "$tz5b_dir" 2>/dev/null | strip_ansi)
+    if echo "$tz5b_output" | grep "yearcross" | grep -q "Dec 31  2023"; then
+        print_test_result "ls -l old-file across a year boundary uses local year" "PASS"
+    else
+        print_test_result "ls -l old-file across a year boundary uses local year" "FAIL" \
+            "Expected 'Dec 31  2023' (local date and year, PST), got: $(echo "$tz5b_output" | grep yearcross)"
+    fi
+
     # --- Behavior 6 (regression guard): --time-style=long-iso also
     #     resolves the real per-timestamp offset instead of the hardcoded
     #     "+0000" literal, since it goes through the same formatter call
@@ -1098,6 +1117,42 @@ test_ls() {
     else
         print_test_result "ls -l --time-style=long-iso shows real TZ offset, not +0000" "FAIL" \
             "Expected '2026-01-15 04:00:00.000000000 -0800', got: $(echo "$tz6_output" | grep winter)"
+    fi
+
+    # --- Behavior 7: the default style's RECENT branch (a file inside
+    #     the 6-month window) prints a local clock time "Mon DD HH:MM",
+    #     not a UTC one. Behaviors 1 and 2 pin the clock field only for
+    #     --time-style=iso, and behaviors 5/5b exercise the default
+    #     style's OLD branch, which prints a year and no clock at all --
+    #     so this is the only case covering the default recent branch.
+    #
+    #     The mtime must be "now" to stay inside the recency window
+    #     whenever this suite runs, so the expected value is derived
+    #     rather than hardcoded. Both the fixture and the expectation
+    #     come from ONE captured instant ($tz7_now), so a minute
+    #     rolling over mid-test cannot make them disagree. ---
+    local date_bin="$BIN_DIR/date"
+    local tz7_now tz7_expected_la tz7_expected_utc
+    tz7_now=$("$date_bin" -u "+%Y-%m-%dT%H:%M:%SZ")
+    tz7_expected_la=$(env TZ=America/Los_Angeles "$date_bin" -d "$tz7_now" "+%H:%M")
+    tz7_expected_utc=$(env TZ=UTC "$date_bin" -d "$tz7_now" "+%H:%M")
+
+    local tz7_dir=$(create_temp_dir)
+    "$touch_bin" -d "$tz7_now" "$tz7_dir/nowfile"
+
+    local tz7_output
+    tz7_output=$(env TZ=America/Los_Angeles "$binary" -l "$tz7_dir" 2>/dev/null | strip_ansi)
+    if [[ -z "$tz7_expected_la" || "$tz7_expected_la" == "$tz7_expected_utc" ]]; then
+        # Los Angeles is never at UTC+0, so identical values mean the
+        # zone did not resolve (missing tzdata) and this assertion would
+        # pass vacuously against the very bug it guards.
+        print_test_result "ls -l recent file shows local clock time" "FAIL" \
+            "TZ=America/Los_Angeles did not resolve (LA='$tz7_expected_la' UTC='$tz7_expected_utc') -- check tzdata is installed"
+    elif echo "$tz7_output" | grep -q " $tz7_expected_la nowfile"; then
+        print_test_result "ls -l recent file shows local clock time" "PASS"
+    else
+        print_test_result "ls -l recent file shows local clock time" "FAIL" \
+            "Expected local time '$tz7_expected_la' (UTC would be '$tz7_expected_utc') for mtime $tz7_now, got: $(echo "$tz7_output" | grep nowfile)"
     fi
 
     fi
