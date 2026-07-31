@@ -246,41 +246,76 @@ pub fn formatTimeWithStyle(
     }
 }
 
+/// Calendar and clock fields for one instant, resolved in the timezone the
+/// process is running in, plus that zone's offset from UTC at that instant.
+const LocalTime = struct {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    gmtoff_s: i64,
+};
+
+const month_names_abbrev = [_][]const u8{
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+};
+
+/// Resolve epoch nanoseconds into local calendar fields through libc.
+/// Zig's std.time.epoch carries no timezone database and can only yield UTC,
+/// and the offset must be resolved per timestamp because a zone's offset
+/// changes across DST transitions.
+fn localTimeFromNanos(mtime_ns: i128) !LocalTime {
+    const mtime_s = @divFloor(mtime_ns, std.time.ns_per_s);
+    const seconds = std.math.cast(i64, mtime_s) orelse return error.InvalidTimestamp;
+    const time_val: std.c.time_t = @intCast(seconds);
+    var tm: common.time.c_tm = undefined;
+    if (common.time.localtime_r(&time_val, &tm) == null) return error.InvalidTimestamp;
+
+    // localtime_r fills a normalized struct tm, so months land in 0..=11 and
+    // days in 1..=31; the casts and the month_names_abbrev index below rely
+    // on that.
+    std.debug.assert(tm.tm_mon >= 0);
+    std.debug.assert(tm.tm_mon <= 11);
+    std.debug.assert(tm.tm_mday >= 1);
+    std.debug.assert(tm.tm_mday <= 31);
+
+    return .{
+        .year = @as(i32, tm.tm_year) + 1900,
+        .month = @as(u32, @intCast(tm.tm_mon)) + 1,
+        .day = @intCast(tm.tm_mday),
+        .hour = @intCast(tm.tm_hour),
+        .minute = @intCast(tm.tm_min),
+        .second = @intCast(tm.tm_sec),
+        .gmtoff_s = tm.tm_gmtoff,
+    };
+}
+
 /// Traditional ls format: "Mar  1 14:30" or "Jan 15  2024".
 fn formatTimeWithStyle_default(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
+    std.debug.assert(local.month <= month_names_abbrev.len);
+    const month_name = month_names_abbrev[local.month - 1];
 
-    const month_names = [_][]const u8{
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    };
-    const month_idx = @intFromEnum(month_day.month) - 1;
-    // calculateMonthDay yields a 1-based month in 1..=12, so the index is
-    // 0..=11 and always in bounds of the 12-element month_names array.
-    std.debug.assert(month_idx < month_names.len);
-    const month_name = month_names[month_idx];
-    const day = month_day.day_index + 1;
-
-    // Determine if file is older than 6 months
+    // The recency test compares two absolute instants, so it needs no
+    // timezone correction; only the rendered fields do.
     const now_ns = common.file.currentTimestampNanoseconds();
     const age_ns = now_ns - mtime_ns;
 
     if (age_ns >= NS_PER_6MONTHS) {
         // Old file: "Jan 15  2024"
-        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, day, year_day.year });
+        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, local.day, local.year });
     } else {
         // Recent file: "Mar  1 14:30"
         return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{
             month_name,
-            day,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
+            local.day,
+            local.hour,
+            local.minute,
         });
     }
 }
@@ -311,75 +346,69 @@ fn formatTimeWithStyle_relative(
 /// ISO format: 2024-01-15 15:30.
 fn formatTimeWithStyle_iso(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
+    std.debug.assert(local.month <= 12);
 
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
+        local.year,
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
     });
 }
 
-/// Long ISO format: 2024-01-15 15:30:45.123456789 +0000.
+/// Long ISO format: 2024-01-15 15:30:45.123456789 -0800.
 fn formatTimeWithStyle_longIso(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
     // @mod with a positive divisor yields [0, ns_per_s), so the value passed
     // to the 9-digit fractional formatter always fits.
     std.debug.assert(@abs(nano_remainder) < std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
 
-    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} +0000", .{
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-        @abs(nano_remainder),
-    });
+    // GNU prints the zone offset that applies at this instant, so it is read
+    // back from the resolved fields rather than assumed to be UTC.
+    const sign: u8 = if (local.gmtoff_s < 0) '-' else '+';
+    const abs_off: u64 = @intCast(if (local.gmtoff_s < 0) -local.gmtoff_s else local.gmtoff_s);
+    const tz_hours = @divTrunc(abs_off, 3600);
+    const tz_mins = @divTrunc(@rem(abs_off, 3600), 60);
+
+    return std.fmt.bufPrint(
+        buf,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} {c}{d:0>2}{d:0>2}",
+        .{
+            local.year,
+            local.month,
+            local.day,
+            local.hour,
+            local.minute,
+            local.second,
+            @abs(nano_remainder),
+            sign,
+            tz_hours,
+            tz_mins,
+        },
+    );
 }
 
 /// Full time: "Mar  1 14:30:45 2024" (always shows seconds and year).
 fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
     std.debug.assert(buf.len > 0);
-    const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp;
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-
-    const month_names = [_][]const u8{
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    };
-    const month_idx = @intFromEnum(month_day.month) - 1;
-    // 1-based month in 1..=12 makes the index 0..=11, always in bounds of
-    // the 12-element month_names array.
-    std.debug.assert(month_idx < month_names.len);
-    const month_name = month_names[month_idx];
-    const day = month_day.day_index + 1;
+    const local = try localTimeFromNanos(mtime_ns);
+    std.debug.assert(local.month >= 1);
+    std.debug.assert(local.month <= month_names_abbrev.len);
+    const month_name = month_names_abbrev[local.month - 1];
 
     return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}:{d:0>2} {d}", .{
         month_name,
-        day,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-        year_day.year,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+        local.year,
     });
 }
 

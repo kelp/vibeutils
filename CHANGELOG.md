@@ -35,6 +35,17 @@
   grepping test output for failures report one that was not there.
   EPERM and EROFS are now classified as the ordinary errors they are.
   No exit code, message, or observable behavior changed (#99).
+- **`ls -l` renders timestamps in the local timezone.** All four
+  timestamp sites decoded epoch seconds with
+  `std.time.epoch.EpochSeconds`, which carries no timezone database and
+  can only yield UTC, so every stamp was off by the UTC offset and `TZ`
+  was never consulted at all — a file touched in the evening could
+  display tomorrow's date, which also moved the six-month
+  recent-vs-old boundary. They now share one helper built on libc
+  `localtime_r`. The offset is resolved per timestamp rather than
+  captured once, so stamps on either side of a DST transition each get
+  the right one, and `--time-style=long-iso` prints the real offset
+  instead of a hardcoded `+0000` (#104).
 - **`stat` no longer truncates device minor numbers above 255 on
   Linux.** `%t`/`%T`, the `-t` terse fields, and the default
   `Device:` line each re-derived the major and minor with their own
