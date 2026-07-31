@@ -46,6 +46,18 @@
   captured once, so stamps on either side of a DST transition each get
   the right one, and `--time-style=long-iso` prints the real offset
   instead of a hardcoded `+0000` (#104).
+- **`stat -c %N` matches GNU's shell quoting for awkward names.** `%N`
+  always wrapped the name in single quotes, so a name containing one
+  came out as three shell tokens rather than the single token `%N`
+  exists to guarantee. GNU's `quotearg` reaches for double quotes only
+  when nothing inside would itself need escaping within them, so
+  `it's` becomes `"it's"` but `it's and $var` becomes
+  `'it'\''s and $var'` — a name holding both an apostrophe and any of
+  `"`, `\`, `$` or `` ` `` stays single-quoted with the classic splice.
+  All three branches are implemented, and a symlink's name and target
+  now pick their quote style independently. Non-printable bytes remain
+  out of scope: GNU ANSI-C-splices them and we pass them through, which
+  a characterization test now pins (#105).
 - **`stat` no longer truncates device minor numbers above 255 on
   Linux.** `%t`/`%T`, the `-t` terse fields, and the default
   `Device:` line each re-derived the major and minor with their own
