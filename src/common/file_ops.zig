@@ -65,7 +65,14 @@ pub fn setPermissions(
 
     const fchmod_result = std.c.fchmod(fd, effective_mode);
     if (fchmod_result != 0) {
-        const err = std.posix.unexpectedErrno(std.c.errno(fchmod_result));
+        // EPERM (not the owner) and EROFS are ordinary, expected outcomes here;
+        // routing them through unexpectedErrno dumps a stack trace in Debug
+        // builds, polluting the diagnostic channel. Reserve it for the rest.
+        const err = switch (std.c.errno(fchmod_result)) {
+            .PERM => error.AccessDenied,
+            .ROFS => error.ReadOnlyFileSystem,
+            else => |e| std.posix.unexpectedErrno(e),
+        };
         // On macOS, especially in CI environments with fakeroot, permission
         // operations may fail. We report this as a warning but don't fail
         // the operation since the file operation itself succeeded.

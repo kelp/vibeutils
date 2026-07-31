@@ -1332,4 +1332,44 @@ test_cp() {
         print_test_result "cp -r a a/b stops at exactly one level of self-nesting (U3)" "FAIL" \
             "a/b/a/b/a exists -- unbounded self-nesting was not stopped"
     fi
+
+    # issue #99: src/common/file_ops.zig's setPermissions routed every
+    # fchmod failure -- including the ordinary EPERM case below -- through
+    # std.posix.unexpectedErrno, which prints "unexpected errno: <n>" and
+    # dumps a stack trace straight to the real process stderr in Debug
+    # builds (the default `zig build`/`just build` produces). Nothing else
+    # in this suite inspects the compiled binary's own real stderr for this
+    # code path (the unit tests in src/cp.zig only capture cp's own
+    # stderr_writer, not std.debug's direct-to-fd output), so this is the
+    # only place that can catch the diagnostic-noise regression itself.
+    # /dev/null is root-owned and world-writable: an unprivileged process
+    # can open/write it but not fchmod it (EPERM), the same real-syscall
+    # trick "issue 81 U13" uses in src/cp.zig.
+    #
+    # NOTE: this test observes only the compiled cp binary's stderr, not a
+    # `zig build test` run's own diagnostic channel (which src/cp.zig's
+    # "issue 99" unit tests cannot reach either -- see the comment there).
+    # The code path through setPermissions is identical either way, so this
+    # is an accepted proxy, but it means nothing in the suite watches a
+    # `zig build test` invocation's own stderr for this string.
+    if [[ "$(uname -s)" == "Linux" && "$(id -u)" -ne 0 && -z "${FAKEROOTKEY:-}" ]]; then
+        local i99_src=$(create_temp_file "content")
+
+        local i99_out i99_exit
+        set +e
+        i99_out=$(run_with_limit 10 "$binary" -p "$i99_src" /dev/null 2>&1)
+        i99_exit=$?
+        set -e
+
+        if [[ $i99_exit -ne 0 && "$i99_out" != *"unexpected errno"* \
+            && "$i99_out" != *"failed command:"* && "$i99_out" == *"/dev/null"* ]]; then
+            print_test_result "cp -p on /dev/null: EPERM does not leak an 'unexpected errno' trace to stderr (issue 99)" "PASS"
+        else
+            print_test_result "cp -p on /dev/null: EPERM does not leak an 'unexpected errno' trace to stderr (issue 99)" "FAIL" \
+                "exit=$i99_exit output=$i99_out"
+        fi
+    else
+        print_test_result "cp -p on /dev/null: EPERM does not leak an 'unexpected errno' trace to stderr (issue 99)" "SKIP" \
+            "requires Linux, non-root, non-fakeroot (matches issue 81 U13's guard in src/cp.zig)"
+    fi
 }

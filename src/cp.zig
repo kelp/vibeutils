@@ -5166,3 +5166,198 @@ test "issue 81 U13 (error path): cp -p reports an error when the final chmod fai
     try testing.expect(exit_code != 0);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "/dev/null") != null);
 }
+
+// issue #99: src/common/file_ops.zig's setPermissions classifies EVERY
+// fchmod failure via std.posix.unexpectedErrno, which is reserved for
+// errno values the caller did NOT anticipate -- in Debug builds it prints
+// "unexpected errno: <n>" and dumps a stack trace straight to the real
+// process stderr before returning error.Unexpected. EPERM (not the owner)
+// and EROFS (read-only filesystem) are the two ordinary, anticipated
+// fchmod failures cp can hit; they must be classified as error.AccessDenied
+// and error.ReadOnlyFileSystem respectively instead. The two tests below
+// call common.file_ops.setPermissions directly (bypassing cp's full
+// open-write-chmod flow) because cp's own -p flow always opens the
+// destination for WRITING before it ever reaches setPermissions, and a
+// write-open on a truly read-only-mounted filesystem fails there, never
+// reaching the chmod step this bug is about. Calling setPermissions
+// directly on a handle we prepared ourselves reaches the exact code path
+// cp would use once it has already finished writing.
+//
+// These are macOS-gated: only the macOS branch of setPermissions threads
+// the classified error through lib.posixErrorString(err) into the
+// stderr_writer we can capture, so the classification is observable here
+// only via that text ("Permission denied" / "Read-only file system" /
+// "Unexpected error"). On Linux, setPermissions returns the same
+// general_error status regardless of classification (see "issue 81 U13"
+// above, which is Linux's regression guard for that status code); the
+// diagnostic-channel side of this bug is instead covered by an integration
+// test in tests/utilities/cp_test.sh that inspects the compiled binary's
+// real stderr on Linux directly.
+//
+// No test here drives the switch's `else` arm (a genuinely unanticipated
+// errno). Doing so would require provoking a real fchmod failure with a
+// code the fix does not special-case, and std.posix.unexpectedErrno
+// reacts to that by printing "unexpected errno: <n>" and dumping a stack
+// trace straight to the real process stderr in Debug builds -- the exact
+// diagnostic-noise regression this issue exists to remove, and it would
+// reappear on every `zig build test` run on macOS from a PASSING test,
+// forever. That trade-off was judged not worth it: the `else` arm's
+// pass-through to std.posix.unexpectedErrno is a one-line, low-risk
+// fallback (Tiger Style's "assert negative space" is satisfied by keeping
+// it in the source, not by a test that must itself misbehave to exercise
+// it), so it is guarded by code review rather than by a test.
+
+test "issue 99 U1: fchmod EPERM maps to AccessDenied, not Unexpected" {
+    // /dev/null is root-owned and world-writable, so an unprivileged
+    // process can open it for writing but not fchmod it -- the same real
+    // EPERM trick "issue 81 U13" uses.
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const dev_null = try std.Io.Dir.cwd().openFile(
+        testing.io,
+        "/dev/null",
+        .{ .mode = .write_only },
+    );
+    defer dev_null.close(testing.io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try common.file_ops.setPermissions(
+        testing.allocator,
+        dev_null,
+        0o600,
+        "/dev/null",
+        "cp",
+        &stderr_aw.writer,
+    );
+
+    // REGRESSION GUARD: macOS downgrades a chmod failure to a warning and
+    // reports success (file_ops.zig:72-76) -- this must not move.
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: today EPERM is misclassified via
+    // std.posix.unexpectedErrno -> error.Unexpected, so the warning reads
+    // "...: Unexpected error". After the fix it must read "...: Permission
+    // denied" (posixErrorString(error.AccessDenied)).
+    //
+    // NOTE on the exact mapping: this pins .PERM => error.AccessDenied
+    // ("Permission denied") per the issue's prescribed switch, matching
+    // the existing precedent at src/touch.zig:510 (also `.PERM =>
+    // error.AccessDenied`). This deliberately diverges from src/mv.zig,
+    // src/chmod.zig, and src/chown.zig, which map EPERM to
+    // error.PermissionDenied ("Operation not permitted") instead -- both
+    // conventions already coexist in this repo. If a future change
+    // reconciles that inconsistency project-wide, this assertion (and the
+    // fix's switch arm) need to move together.
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "Permission denied") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "Unexpected error") == null);
+}
+
+/// Run a subprocess for its exit status only; failures (missing tool, bad
+/// args, nonzero exit) all collapse to false so callers can treat "cannot
+/// build this fixture on this host" as a reason to skip, not fail.
+fn runOkForFixture(argv: []const []const u8) bool {
+    const result = common.test_utils.runCommand(
+        testing.allocator,
+        testing.io,
+        argv,
+    ) catch return false;
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+    return result.exit_code == 0;
+}
+
+/// Build a small HFS+ image at dmg_path, write one file into it while
+/// writable, then reattach the same image read-only at mnt_path. A fresh
+/// read-only attach (rather than a live remount) sidesteps "resource busy"
+/// errors from an already-open writable handle. Returns false -- meaning
+/// "skip, this fixture is unavailable here" -- on any step's failure;
+/// hdiutil is macOS-only tooling callers must be prepared to do without.
+/// The image is sized well above HFS+'s minimum volume size to avoid
+/// spurious `hdiutil create` failures on hosts with a larger minimum.
+fn attachReadonlyImageWithFile(
+    dmg_path: []const u8,
+    mnt_path: []const u8,
+    marker_path: []const u8,
+) bool {
+    const create_ok = runOkForFixture(&.{
+        "hdiutil", "create", "-size",    "5m",
+        "-fs",     "HFS+",   "-volname", "erofstest",
+        dmg_path,
+    });
+    if (!create_ok) return false;
+    const attach_ok = runOkForFixture(&.{
+        "hdiutil", "attach", dmg_path, "-mountpoint", mnt_path,
+    });
+    if (!attach_ok) return false;
+    const wrote = blk: {
+        const f = std.Io.Dir.cwd().createFile(testing.io, marker_path, .{}) catch break :blk false;
+        defer f.close(testing.io);
+        f.writeStreamingAll(testing.io, "content") catch break :blk false;
+        break :blk true;
+    };
+    _ = runOkForFixture(&.{ "hdiutil", "detach", mnt_path });
+    if (!wrote) return false;
+    return runOkForFixture(&.{
+        "hdiutil", "attach", dmg_path, "-mountpoint", mnt_path, "-readonly",
+    });
+}
+
+test "issue 99 U2: fchmod EROFS maps to ReadOnlyFileSystem, not Unexpected" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+    if (!runOkForFixture(&.{ "which", "hdiutil" })) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.createDir("mnt");
+
+    // getPath resolves via realpath, which requires the target to already
+    // exist -- true for "mnt" (just created) but not for the image file
+    // hdiutil is about to create, so that path is built from the base dir.
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dmg_path = try std.fmt.allocPrint(testing.allocator, "{s}/erofs.dmg", .{base_path});
+    defer testing.allocator.free(dmg_path);
+    const mnt_path = try test_dir.getPath("mnt");
+    defer testing.allocator.free(mnt_path);
+    const marker_path = try std.fmt.allocPrint(testing.allocator, "{s}/f.txt", .{mnt_path});
+    defer testing.allocator.free(marker_path);
+
+    // NOTE: if this fixture cannot be built on the current host (e.g. no
+    // hdiutil, or hdiutil rejects the image size), the test skips and the
+    // .ROFS arm goes unverified on this run. When validating this test's
+    // RED-ability, confirm in the run's own output that this test actually
+    // EXECUTED (and failed on the assertion below), not that it skipped --
+    // a skip here proves nothing about the fix.
+    if (!attachReadonlyImageWithFile(dmg_path, mnt_path, marker_path)) return error.SkipZigTest;
+    defer _ = runOkForFixture(&.{ "hdiutil", "detach", mnt_path });
+
+    const marker_file = try std.Io.Dir.cwd().openFile(testing.io, marker_path, .{});
+    defer marker_file.close(testing.io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try common.file_ops.setPermissions(
+        testing.allocator,
+        marker_file,
+        0o600,
+        marker_path,
+        "cp",
+        &stderr_aw.writer,
+    );
+
+    // REGRESSION GUARD: macOS downgrades a chmod failure to a warning and
+    // reports success (file_ops.zig:72-76) -- this must not move.
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // KEY RED ASSERTION: today EROFS is misclassified via
+    // std.posix.unexpectedErrno -> error.Unexpected, so the warning reads
+    // "...: Unexpected error". After the fix it must read "...: Read-only
+    // file system" (posixErrorString(error.ReadOnlyFileSystem)).
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "Read-only file system") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "Unexpected error") == null);
+}
