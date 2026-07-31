@@ -28,6 +28,9 @@ export const meta = {
 //   behaviors[],    // behaviors the tests must cover
 //   test_cmd, privileged_test_cmd, util_test_cmd, it_cmd, fmt_cmd, full_it_cmd,
 //   linux_prefix,   // e.g. "orb -m ubuntu" — how to run a command on the Linux VM
+//   workdir,        // OPTIONAL absolute path to a git worktree; every agent cds
+//                   // there first so parallel runs never share a checkout.
+//                   // Omit for the ordinary single-checkout case (no-op).
 //   phase: "red" | "green",
 //   briefing: <object returned by the red phase, fed back into green>
 // }
@@ -37,6 +40,40 @@ const a = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs || {};
 log(`args: type=${typeof args} utility=${a.utility || 'MISSING'} issue=${a.issue || '?'} behaviors=${(a.behaviors || []).length}`);
 const phaseArg = a.phase || 'red';
 
+// When the caller pins a worktree, every dispatched agent must operate inside
+// it.
+//
+// CRITICAL, learned the hard way: this harness RESETS the shell working
+// directory back to the session's project root after EVERY Bash call. A bare
+// `cd` on its own line therefore does NOT persist to the next command. An
+// earlier run of this pipeline relied on that and silently wrote all three
+// issues' tests into the main checkout instead of their worktrees. Every shell
+// command must be self-contained: `cd <workdir> && <command>`. Within a single
+// call the cd holds, and `orb -m ubuntu` carries that cwd into the VM.
+//
+// Empty string when unset, so behavior is unchanged for single-checkout callers.
+const cdPrefix = a.workdir ? `cd ${a.workdir} && ` : '';
+const cwdPin = a.workdir
+  ? [
+      `WORKING DIRECTORY: ${a.workdir}`,
+      'That path is a dedicated git worktree for this issue, NOT the main checkout. Other agents are',
+      'working concurrently in sibling worktrees; staying inside yours is what keeps them isolated.',
+      '',
+      'READ THIS TWICE — it is the single easiest way to ruin this run:',
+      'This harness RESETS the shell working directory to the repo root after EVERY Bash call. A bare',
+      '`cd` does NOT carry over to your next command. So EVERY shell command you run must be',
+      `self-contained and start with \`cd ${a.workdir} && \`. For example:`,
+      `  cd ${a.workdir} && zig build test -Dtest-util=${a.utility}`,
+      `  cd ${a.workdir} && orb -m ubuntu zig build test -Dtest-util=${a.utility}`,
+      `  cd ${a.workdir} && bash tests/integration.sh ${a.utility}`,
+      'orb preserves the host cwd inside the VM, so the same prefix covers the Linux commands.',
+      '',
+      'For Read/Edit/Write, always use ABSOLUTE paths beginning with the working directory above.',
+      'Any bare or repo-relative path you hand to a file tool will resolve against the MAIN checkout',
+      'and corrupt another agent\'s work.',
+      'Never read, edit, build, or run anything under /Users/tcole/code/vibeutils itself.',
+    ].join('\n')
+  : '';
 
 const REVIEW_ROUND_MAX = 12;
 const GATE_FIX_MAX = 4;
@@ -263,6 +300,7 @@ function formatBriefing(b) {
 
 function taskHeader() {
   return [
+    ...(cwdPin ? [cwdPin, ''] : []),
     `Utility: ${a.utility}`,
     `Issue: #${a.issue}`,
     `Bug: ${a.bug_summary}`,
@@ -480,9 +518,10 @@ async function runRed() {
       `1. macOS scoped unit: \`${a.util_test_cmd}\` — confirm the ONLY failures are the newly added tests`,
       '   and each failure message is the intended assertion (the bug), not a compile error or crash.',
       `2. macOS scoped integration: \`${a.it_cmd}\` — same standard (new cases fail, old cases pass).`,
-      `3. Linux: \`${a.linux_prefix} zig build\` then the scoped unit and integration equivalents:`,
-      `   \`${a.linux_prefix} zig build test -Dtest-util=${a.utility}\` and`,
-      `   \`${a.linux_prefix} bash tests/integration.sh ${a.utility}\` — confirm the same red.`,
+      '3. Linux — run these EXACTLY as written, including the cd prefix (orb carries the cwd into the VM):',
+      `   \`${cdPrefix}${a.linux_prefix} zig build\` then the scoped unit and integration equivalents:`,
+      `   \`${cdPrefix}${a.linux_prefix} zig build test -Dtest-util=${a.utility}\` and`,
+      `   \`${cdPrefix}${a.linux_prefix} bash tests/integration.sh ${a.utility}\` — confirm the same red.`,
       '   (The VM has zig but not just.)',
       'Pipe verbose output through `tail`. red_macos/red_linux = new tests fail there; right_reason = the',
       'failure is the intended assertion mismatch; rest_green = everything else passes.',
@@ -555,6 +594,7 @@ async function runGreen() {
     verify = await agent(
       [
         '## YOUR TASK (verify gate — SCOPED, run and report only)',
+        ...(cwdPin ? [cwdPin, ''] : []),
         'Run ONLY the fast, scoped checks for the utility under change — the full suites are deferred to',
         'the once-only final gate, so do NOT run them here:',
         `  - scoped unit:        "${a.util_test_cmd}"`,
@@ -598,6 +638,7 @@ async function runGreen() {
     return await agent(
       [
         '## YOUR TASK (Tiger check — scan, triage, and report)',
+        ...(cwdPin ? [cwdPin, ''] : []),
         'Run, EXACTLY as given, the mechanical Tiger Style scanner exactly as the CI gate does (tree-wide):',
         '  bash scripts/tiger-check.sh',
         'CI fails on ANY gating row (long-line, long-fn, self-recursion, compound-assert, unbounded-loop)',
@@ -716,12 +757,14 @@ async function runGreen() {
   const finalCheck = await agent(
     [
       '## YOUR TASK (final verify — FULL suite on BOTH platforms, run and report only)',
-      'Run all suites EXACTLY as given (this is the once-only authoritative gate):',
-      `  - macOS full unit:        "${a.test_cmd}"`,
-      `  - macOS full privileged:  "${a.privileged_test_cmd}"`,
-      `  - macOS full integration: "${fullItCmd}"`,
-      `  - Linux full unit:        "${a.linux_prefix} zig build test"`,
-      `  - Linux scoped integration: "${a.linux_prefix} zig build" then "${a.linux_prefix} bash tests/integration.sh ${a.utility}"`,
+      ...(cwdPin ? [cwdPin, ''] : []),
+      'Run all suites EXACTLY as given, including the cd prefix (this is the once-only authoritative',
+      'gate). orb carries the cwd into the VM, so the same prefix covers the Linux commands:',
+      `  - macOS full unit:        "${cdPrefix}${a.test_cmd}"`,
+      `  - macOS full privileged:  "${cdPrefix}${a.privileged_test_cmd}"`,
+      `  - macOS full integration: "${cdPrefix}${fullItCmd}"`,
+      `  - Linux full unit:        "${cdPrefix}${a.linux_prefix} zig build test"`,
+      `  - Linux scoped integration: "${cdPrefix}${a.linux_prefix} zig build" then "${cdPrefix}${a.linux_prefix} bash tests/integration.sh ${a.utility}"`,
       'Pipe verbose output through `tail`. Report facts only: unit_pass, privileged_pass,',
       'integration_pass, linux_unit_pass, linux_integration_pass. The full runs cover the whole suite so',
       'a shared/common change that broke another utility is caught.',
