@@ -743,8 +743,39 @@ fn expandFormatDirective_mountPoint(path: []const u8, writer: anytype) !void {
     }
 }
 
-/// %N: emit the quoted file name, appending " -> 'TARGET'" for an
-/// unfollowed symbolic link.
+/// Quote `name` the way GNU's shell_escape_quoting_style does, so that the
+/// result is exactly one shell token. Rules pinned against GNU coreutils 9.5:
+///   1. no `'` in the name             -> single quotes, content verbatim.
+///   2. `'` present, none of " \ $ `   -> double quotes, content verbatim.
+///   3. `'` present, any of  " \ $ `   -> single quotes, each `'` spliced
+///      as `'\''` (close the quote, escaped quote, reopen).
+/// Double quotes are only safe when nothing inside would still need escaping
+/// within them, which is why rule 3 exists (issue #105). Non-printable bytes
+/// pass through verbatim; GNU's ANSI-C `$'\n'` splicing is a separate feature
+/// and is deliberately not implemented here.
+fn writeShellQuoted(name: []const u8, writer: anytype) !void {
+    if (std.mem.findScalar(u8, name, '\'') == null) {
+        try writer.print("'{s}'", .{name});
+        return;
+    }
+    if (std.mem.findAny(u8, name, "\"\\$`") == null) {
+        try writer.print("\"{s}\"", .{name});
+        return;
+    }
+    try writer.writeByte('\'');
+    for (name) |byte| {
+        if (byte == '\'') {
+            try writer.writeAll("'\\''");
+        } else {
+            try writer.writeByte(byte);
+        }
+    }
+    try writer.writeByte('\'');
+}
+
+/// %N: emit the quoted file name, appending " -> TARGET" for an
+/// unfollowed symbolic link. The link name and the target pick their quote
+/// style independently, exactly as GNU quotes each operand on its own.
 fn expandFormatDirective_quotedName(
     stat_buf: StatResult,
     path: []const u8,
@@ -767,15 +798,17 @@ fn expandFormatDirective_quotedName(
                 // @intCast slice below stays in bounds.
                 std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
                 const target = link_buf[0..@intCast(n)];
-                try writer.print("'{s}' -> '{s}'", .{ path, target });
+                try writeShellQuoted(path, writer);
+                try writer.writeAll(" -> ");
+                try writeShellQuoted(target, writer);
             } else {
-                try writer.print("'{s}'", .{path});
+                try writeShellQuoted(path, writer);
             }
         } else {
-            try writer.print("'{s}'", .{path});
+            try writeShellQuoted(path, writer);
         }
     } else {
-        try writer.print("'{s}'", .{path});
+        try writeShellQuoted(path, writer);
     }
 }
 
@@ -3497,6 +3530,530 @@ test "stat -c format: %N symlink shows arrow" {
     );
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// GNU quotearg shell_escape_quoting_style rules for %N, pinned against
+// GNU coreutils 9.5:
+//   1. no single quote in name          -> single-quoted, verbatim.
+//   2. single quote, and none of " \ $ ` -> double-quoted, verbatim.
+//   3. single quote, and any of  " \ $ ` -> single-quoted with each `'`
+//      spliced as `'\''` (close, escaped quote, reopen).
+// Issue #105: vibeutils always emits rule 1's single quotes, which is
+// wrong (and unsafe to paste into a shell) whenever the name itself
+// contains a single quote.
+//
+// Rule 4 (out of scope for this fix): GNU additionally ANSI-C-splices
+// non-printable bytes, e.g. a literal newline in the name becomes
+// 'nl'$'\n''name'. vibeutils currently has no non-printable handling
+// at all -- a raw non-printable byte is emitted verbatim inside
+// whichever quote style rules 1-3 select. Matching GNU's splicing is
+// a separate, larger feature (needs a byte-printability table plus
+// $'...' splice-joining) and is not attempted here.
+
+test "stat -c format: %N rule 2 lone apostrophe uses double quotes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c %N "it's"  =>  "it's"  (double quotes, no escaping)
+    // Assumes the tmpDir path prefix itself contains none of ' " \ $ ` --
+    // true for Zig's testing.tmpDir and a normal checkout path; if it
+    // ever did, rule 3 would apply instead and this expectation would
+    // need to flip to the splice form.
+    const expected = try std.fmt.allocPrint(testing.allocator, "\"{s}\"\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 2 apostrophe with space uses double quotes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's space", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's space", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c %N "it's space"  =>  "it's space"
+    // Same tmpDir-prefix assumption as the previous rule 2 test: the
+    // prefix has none of ' " \ $ `, so it never forces rule 3 here.
+    const expected = try std.fmt.allocPrint(testing.allocator, "\"{s}\"\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 3 apostrophe with dollar splices single quotes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's and $var", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's and $var", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c %N "it's and $var"  =>  'it'\''s and $var'
+    // The path's directory prefix has no apostrophe, so only the
+    // basename's "it's" splices; build the expected string by hand from
+    // the known directory prefix instead of assuming where "'" falls.
+    const dir_path = std.fs.path.dirname(test_path).?;
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}/it'\\''s and $var'\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 3 apostrophe with double quote splices single quotes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's\"dq", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's\"dq", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c %N "it's\"dq"  =>  'it'\''s"dq'
+    const dir_path = std.fs.path.dirname(test_path).?;
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}/it'\\''s\"dq'\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 3 apostrophe with backslash splices single quotes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's\\slash", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's\\slash", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c %N "it's\slash"  =>  'it'\''s\slash'
+    const dir_path = std.fs.path.dirname(test_path).?;
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}/it'\\''s\\slash'\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 3 apostrophe with backtick splices single quotes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's `tick`", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's `tick`", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c %N "it's \`tick\`"  =>  'it'\''s `tick`'
+    const dir_path = std.fs.path.dirname(test_path).?;
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}/it'\\''s `tick`'\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 1 lone double quote stays single-quoted" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "dq\"name", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "dq\"name", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: a bare double quote (no apostrophe) does NOT switch quote style.
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N rule 1 embedded space stays single-quoted" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "with space", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "with space", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// Characterization test for rule 4, which we deliberately do NOT implement.
+// GNU 9.5 ANSI-C-splices non-printable bytes, so a name "nl\nname" prints as
+// 'nl'$'\n''name'. vibeutils has no printability handling: rules 1-3 pick the
+// quote style and every byte passes through verbatim. This pins that current
+// behavior so a later, deliberate rule 4 feature has to update it, and so a
+// half-implementation cannot land silently.
+test "stat -c format: %N non-printable byte passes through verbatim (no ANSI-C splicing)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "nl\nname", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "nl\nname", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+    // The fixture is only meaningful if the raw newline survived into the path.
+    try testing.expect(std.mem.findScalar(u8, test_path, '\n') != null);
+    try testing.expect(std.mem.findScalar(u8, test_path, '\'') == null);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Rule 1 selects single quotes (no apostrophe in the name) and the raw LF
+    // is emitted as-is; GNU would print 'nl'$'\n''name' instead.
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N symlink quotes link name and target independently (rule 2 on target)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const target_file = try tmp_dir.dir.createFile(testing.io, "it's", .{});
+    target_file.close(testing.io);
+
+    try tmp_dir.dir.symLink(testing.io, "it's", "lnk2", .{});
+
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
+    const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/lnk2", .{dir_path});
+    defer testing.allocator.free(symlink_path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", symlink_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: 'lnk2' -> "it's" -- link name (no apostrophe) is single-quoted
+    // per rule 1; the target ("it's") is double-quoted per rule 2,
+    // chosen independently of the link name's own quoting.
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}' -> \"it's\"\n",
+        .{symlink_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N symlink quotes target independently (rule 3 splice on target)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const target_file = try tmp_dir.dir.createFile(testing.io, "it's and $var", .{});
+    target_file.close(testing.io);
+
+    try tmp_dir.dir.symLink(testing.io, "it's and $var", "lnk3", .{});
+
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
+    const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/lnk3", .{dir_path});
+    defer testing.allocator.free(symlink_path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", symlink_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: 'lnk3' -> 'it'\''s and $var'
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "'{s}' -> 'it'\\''s and $var'\n",
+        .{symlink_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N symlink quotes link name independently (rule 2 on link name)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const target_file = try tmp_dir.dir.createFile(testing.io, "plain", .{});
+    target_file.close(testing.io);
+
+    try tmp_dir.dir.symLink(testing.io, "plain", "it's_link", .{});
+
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
+    const symlink_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/it's_link",
+        .{dir_path},
+    );
+    defer testing.allocator.free(symlink_path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", symlink_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: "<dir>/it's_link" -> 'plain' -- the link name itself
+    // contains an apostrophe and nothing else from " \ $ `, so rule 2
+    // (double quotes) applies to the link-name side of the arrow,
+    // chosen independently of the target's rule-1 single quotes. This
+    // guards against a partial fix that only routes the target operand
+    // through the new quoting logic and leaves the link name hardcoded
+    // to single quotes.
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "\"{s}\" -> 'plain'\n",
+        .{symlink_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat -c format: %N embedded in a longer format string quotes identically" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "name=%N size=%s", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU: stat -c "name=%N size=%s" "it's"  =>  name="it's" size=0
+    // Same tmpDir-prefix assumption as the rule 2 tests above.
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "name=\"{s}\" size=0\n",
+        .{test_path},
+    );
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+test "stat default record File: line stays unquoted for names needing %N quoting" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "it's", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "it's", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    // No -c: the default multi-line record. GNU never quotes the
+    // "  File: " line, even when %N would need quotes for this name.
+    const args = [_][]const u8{test_path};
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const first_line_end = std.mem.indexOfScalar(u8, stdout_aw.writer.buffered(), '\n').?;
+    const first_line = stdout_aw.writer.buffered()[0..first_line_end];
+    const expected_first_line = try std.fmt.allocPrint(
+        testing.allocator,
+        "  File: {s}",
+        .{test_path},
+    );
+    defer testing.allocator.free(expected_first_line);
+    try testing.expectEqualStrings(expected_first_line, first_line);
 }
 
 // Audit: %x, %y, %z (human-readable timestamps) have no unit tests.
