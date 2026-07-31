@@ -927,11 +927,23 @@ _test_stat_bsd_verbose_zero_birthtime_parity() {
     local ours theirs
     ours=$(run_with_limit 10 "$binary" -x /dev/null 2>/dev/null || true)
     theirs=$(run_with_limit 10 /usr/bin/stat -x /dev/null 2>/dev/null || true)
-    if [[ -n "$theirs" && "$ours" == "$theirs" ]]; then
-        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "PASS"
+
+    # Access/Modify/Change are excluded from the comparison. The two binaries
+    # run as separate processes, and /dev/null's timestamps advance under a
+    # busy machine, so a whole-record byte match races: on a loaded CI runner
+    # the two invocations land on either side of a second boundary and the
+    # Modify/Change lines disagree by exactly 1s. Every stable field -- File,
+    # Size, FileType, Mode, Uid, Gid, Device, Inode, Links and Birth -- is
+    # still compared byte for byte, which is what issue #102 is about; the
+    # three volatile lines carry no information this test wants.
+    local ours_stable theirs_stable
+    ours_stable=$(printf '%s\n' "$ours" | grep -vE '^(Access|Modify|Change):')
+    theirs_stable=$(printf '%s\n' "$theirs" | grep -vE '^(Access|Modify|Change):')
+    if [[ -n "$theirs_stable" && "$ours_stable" == "$theirs_stable" ]]; then
+        print_test_result "stat -x /dev/null matches /usr/bin/stat on all stable fields" "PASS"
     else
-        print_test_result "stat -x /dev/null byte-matches /usr/bin/stat" "FAIL" \
-            "ours='$ours' BSD='$theirs'"
+        print_test_result "stat -x /dev/null matches /usr/bin/stat on all stable fields" "FAIL" \
+            "ours='$ours_stable' BSD='$theirs_stable'"
     fi
 
     # The Birth line specifically, so a failure names the field at issue
