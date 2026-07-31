@@ -26,6 +26,15 @@
   BSD defines none (#93).
 
 ### Fixed
+- **A copy that cannot change the destination's mode no longer dumps a
+  stack trace.** `setPermissions` classified every `fchmod` failure as
+  unexpected, so the ordinary EPERM case ("you do not own this file")
+  printed the errno and a stack trace on every Linux run. The suite
+  still exited 0, so the damage was to the diagnostic channel: the dump
+  carries the literal string `failed command:`, which made anything
+  grepping test output for failures report one that was not there.
+  EPERM and EROFS are now classified as the ordinary errors they are.
+  No exit code, message, or observable behavior changed (#99).
 - **`stat` no longer truncates device minor numbers above 255 on
   Linux.** `%t`/`%T`, the `-t` terse fields, and the default
   `Device:` line each re-derived the major and minor with their own
