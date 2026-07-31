@@ -743,8 +743,39 @@ fn expandFormatDirective_mountPoint(path: []const u8, writer: anytype) !void {
     }
 }
 
-/// %N: emit the quoted file name, appending " -> 'TARGET'" for an
-/// unfollowed symbolic link.
+/// Quote `name` the way GNU's shell_escape_quoting_style does, so that the
+/// result is exactly one shell token. Rules pinned against GNU coreutils 9.5:
+///   1. no `'` in the name             -> single quotes, content verbatim.
+///   2. `'` present, none of " \ $ `   -> double quotes, content verbatim.
+///   3. `'` present, any of  " \ $ `   -> single quotes, each `'` spliced
+///      as `'\''` (close the quote, escaped quote, reopen).
+/// Double quotes are only safe when nothing inside would still need escaping
+/// within them, which is why rule 3 exists (issue #105). Non-printable bytes
+/// pass through verbatim; GNU's ANSI-C `$'\n'` splicing is a separate feature
+/// and is deliberately not implemented here.
+fn writeShellQuoted(name: []const u8, writer: anytype) !void {
+    if (std.mem.findScalar(u8, name, '\'') == null) {
+        try writer.print("'{s}'", .{name});
+        return;
+    }
+    if (std.mem.findAny(u8, name, "\"\\$`") == null) {
+        try writer.print("\"{s}\"", .{name});
+        return;
+    }
+    try writer.writeByte('\'');
+    for (name) |byte| {
+        if (byte == '\'') {
+            try writer.writeAll("'\\''");
+        } else {
+            try writer.writeByte(byte);
+        }
+    }
+    try writer.writeByte('\'');
+}
+
+/// %N: emit the quoted file name, appending " -> TARGET" for an
+/// unfollowed symbolic link. The link name and the target pick their quote
+/// style independently, exactly as GNU quotes each operand on its own.
 fn expandFormatDirective_quotedName(
     stat_buf: StatResult,
     path: []const u8,
@@ -767,15 +798,17 @@ fn expandFormatDirective_quotedName(
                 // @intCast slice below stays in bounds.
                 std.debug.assert(n <= @as(isize, @intCast(link_buf.len)));
                 const target = link_buf[0..@intCast(n)];
-                try writer.print("'{s}' -> '{s}'", .{ path, target });
+                try writeShellQuoted(path, writer);
+                try writer.writeAll(" -> ");
+                try writeShellQuoted(target, writer);
             } else {
-                try writer.print("'{s}'", .{path});
+                try writeShellQuoted(path, writer);
             }
         } else {
-            try writer.print("'{s}'", .{path});
+            try writeShellQuoted(path, writer);
         }
     } else {
-        try writer.print("'{s}'", .{path});
+        try writeShellQuoted(path, writer);
     }
 }
 
@@ -3780,6 +3813,46 @@ test "stat -c format: %N rule 1 embedded space stays single-quoted" {
     );
 
     try testing.expectEqual(@as(u8, 0), result);
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+}
+
+// Characterization test for rule 4, which we deliberately do NOT implement.
+// GNU 9.5 ANSI-C-splices non-printable bytes, so a name "nl\nname" prints as
+// 'nl'$'\n''name'. vibeutils has no printability handling: rules 1-3 pick the
+// quote style and every byte passes through verbatim. This pins that current
+// behavior so a later, deliberate rule 4 feature has to update it, and so a
+// half-implementation cannot land silently.
+test "stat -c format: %N non-printable byte passes through verbatim (no ANSI-C splicing)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile(testing.io, "nl\nname", .{});
+    test_file.close(testing.io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "nl\nname", &path_buf);
+    const test_path = path_buf[0..test_path_len];
+    // The fixture is only meaningful if the raw newline survived into the path.
+    try testing.expect(std.mem.findScalar(u8, test_path, '\n') != null);
+    try testing.expect(std.mem.findScalar(u8, test_path, '\'') == null);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Rule 1 selects single quotes (no apostrophe in the name) and the raw LF
+    // is emitted as-is; GNU would print 'nl'$'\n''name' instead.
     const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
