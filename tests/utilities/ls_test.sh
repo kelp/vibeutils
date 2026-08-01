@@ -1630,4 +1630,142 @@ test_ls() {
         print_test_result "ls #113: -R prints one entry per line in every section when piped" "FAIL" \
             "Expected $(printf '%q' "$i113_R_expected"), got: $(printf '%q' "$i113_R_output")"
     fi
+
+    # ================================================================
+    # Issue #ls-column-tabs: -C padding must use tabs (matching macOS
+    # /bin/ls's tab-stop columnizer), never leave trailing whitespace
+    # on a row, and match colwidth = (maxlen + 8) & ~7 exactly. GNU is
+    # explicitly NOT the reference for this fix -- the fixtures below
+    # are pinned against the real /bin/ls on the maintainer's macOS
+    # host (see the Zig companion tests in integration_test.zig, same
+    # fixtures, prefixed "columnar: -C").
+    # ================================================================
+    echo -e "${CYAN}Testing ls #ls-column-tabs: -C uses BSD tab-stop padding...${NC}"
+
+    local tabs_partial_dir=$(create_temp_dir)
+    create_temp_file "" "$tabs_partial_dir/a"
+    create_temp_file "" "$tabs_partial_dir/bb"
+    create_temp_file "" "$tabs_partial_dir/ccc"
+    create_temp_file "" "$tabs_partial_dir/dddd"
+    create_temp_file "" "$tabs_partial_dir/eeeee"
+    create_temp_file "" "$tabs_partial_dir/ffffff"
+    create_temp_file "" "$tabs_partial_dir/ggggggg"
+
+    # colwidth = (7+8)&~7 = 8, num_cols = 24/8 = 3, num_rows =
+    # ceil(7/3) = 3 -- the third column only has one entry, so rows 2
+    # and 3 are partially filled and must not end in a tab.
+    local tabs_partial_expected
+    tabs_partial_expected=$'a\tdddd\tggggggg\nbb\teeeee\nccc\tffffff'
+    local tabs_partial_output
+    tabs_partial_output=$(NO_COLOR=1 "$binary" -C -w 24 "$tabs_partial_dir" 2>/dev/null | strip_ansi)
+    if [[ "$tabs_partial_output" == "$tabs_partial_expected" ]]; then
+        print_test_result "ls #ls-column-tabs: -C partially filled last row has no trailing tab" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -C partially filled last row has no trailing tab" "FAIL" \
+            "Expected $(printf '%q' "$tabs_partial_expected"), got: $(printf '%q' "$tabs_partial_output")"
+    fi
+
+    local tabs_len8_dir=$(create_temp_dir)
+    local i
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+        create_temp_file "" "$tabs_len8_dir/aaaaaa$i"
+    done
+
+    # colwidth = (8+8)&~7 = 16, num_cols = 80/16 = 5, num_rows =
+    # ceil(12/5) = 3; column-major fill-down only produces 4 visible
+    # columns since the 5th column's first index (12) is out of range.
+    local tabs_len8_expected
+    tabs_len8_expected=$'aaaaaa01\taaaaaa04\taaaaaa07\taaaaaa10\naaaaaa02\taaaaaa05\taaaaaa08\taaaaaa11\naaaaaa03\taaaaaa06\taaaaaa09\taaaaaa12'
+    local tabs_len8_output
+    tabs_len8_output=$(NO_COLOR=1 "$binary" -C -w 80 "$tabs_len8_dir" 2>/dev/null | strip_ansi)
+    if [[ "$tabs_len8_output" == "$tabs_len8_expected" ]]; then
+        print_test_result "ls #ls-column-tabs: -C matches /bin/ls at the maxlen=8 tab-stop boundary" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -C matches /bin/ls at the maxlen=8 tab-stop boundary" "FAIL" \
+            "Expected $(printf '%q' "$tabs_len8_expected"), got: $(printf '%q' "$tabs_len8_output")"
+    fi
+
+    local tabs_len16_dir=$(create_temp_dir)
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+        create_temp_file "" "$tabs_len16_dir/aaaaaaaaaaaaaa$i"
+    done
+
+    # colwidth = (16+8)&~7 = 24, num_cols = 80/24 = 3, num_rows =
+    # ceil(12/3) = 4 -- an exact fill, unlike the maxlen=8 case above.
+    local tabs_len16_expected
+    tabs_len16_expected=$'aaaaaaaaaaaaaa01\taaaaaaaaaaaaaa05\taaaaaaaaaaaaaa09\naaaaaaaaaaaaaa02\taaaaaaaaaaaaaa06\taaaaaaaaaaaaaa10\naaaaaaaaaaaaaa03\taaaaaaaaaaaaaa07\taaaaaaaaaaaaaa11\naaaaaaaaaaaaaa04\taaaaaaaaaaaaaa08\taaaaaaaaaaaaaa12'
+    local tabs_len16_output
+    tabs_len16_output=$(NO_COLOR=1 "$binary" -C -w 80 "$tabs_len16_dir" 2>/dev/null | strip_ansi)
+    if [[ "$tabs_len16_output" == "$tabs_len16_expected" ]]; then
+        print_test_result "ls #ls-column-tabs: -C matches /bin/ls at the maxlen=16 tab-stop boundary" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -C matches /bin/ls at the maxlen=16 tab-stop boundary" "FAIL" \
+            "Expected $(printf '%q' "$tabs_len16_expected"), got: $(printf '%q' "$tabs_len16_output")"
+    fi
+
+    # Mixed widths (1, 9, 5, 8, 2 chars): longest name is 9, so
+    # colwidth = (9+8)&~7 = 16 and all 5 entries fit on one row at
+    # COLUMNS=80. Pinned against real /bin/ls: this is the one fixture
+    # where a single '\t' per entry is NOT enough -- "a" (width 1)
+    # needs two tabs to reach column 16 (1 -> 8 -> 16), and "ccccc"
+    # (width 5, column-relative start 32) needs two tabs to reach 48
+    # (37 -> 40 -> 48). An implementation that always emits exactly one
+    # '\t' per padded entry passes every other fixture above but fails
+    # this one.
+    local tabs_mixed_dir=$(create_temp_dir)
+    create_temp_file "" "$tabs_mixed_dir/a"
+    create_temp_file "" "$tabs_mixed_dir/bbbbbbbbb"
+    create_temp_file "" "$tabs_mixed_dir/ccccc"
+    create_temp_file "" "$tabs_mixed_dir/dddddddd"
+    create_temp_file "" "$tabs_mixed_dir/ee"
+
+    local tabs_mixed_expected
+    tabs_mixed_expected=$'a\t\tbbbbbbbbb\tccccc\t\tdddddddd\tee'
+    local tabs_mixed_output
+    tabs_mixed_output=$(NO_COLOR=1 "$binary" -C -w 80 "$tabs_mixed_dir" 2>/dev/null | strip_ansi)
+    if [[ "$tabs_mixed_output" == "$tabs_mixed_expected" ]]; then
+        print_test_result "ls #ls-column-tabs: -C pads a short entry across multiple tab stops, not a single tab" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -C pads a short entry across multiple tab stops, not a single tab" "FAIL" \
+            "Expected $(printf '%q' "$tabs_mixed_expected"), got: $(printf '%q' "$tabs_mixed_output")"
+    fi
+
+    # No row of any fixture above may end in a space or a tab.
+    local tabs_trailing_ws_found=0
+    local tabs_ws_output
+    for tabs_ws_output in "$tabs_partial_output" "$tabs_len8_output" \
+        "$tabs_len16_output" "$tabs_mixed_output"; do
+        if printf '%s' "$tabs_ws_output" | grep -qE $'[ \t]$'; then
+            tabs_trailing_ws_found=1
+        fi
+    done
+    if [[ "$tabs_trailing_ws_found" -eq 0 ]]; then
+        print_test_result "ls #ls-column-tabs: -C rows never end in space or tab" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -C rows never end in space or tab" "FAIL" \
+            "Found a row ending in space or tab in one of the -C fixture outputs above"
+    fi
+
+    # -x (printColumnarAcross) shares printColumnar_writePadding with -C,
+    # but the pinned target behavior for this issue is explicit that -x
+    # is unaffected: it must keep padding with plain runs of spaces at
+    # (max_width + 2), never tabs. This pins today's byte-exact output
+    # so an accidental edit to the shared padding helper while fixing
+    # -C is caught.
+    local tabs_x_dir=$(create_temp_dir)
+    create_temp_file "" "$tabs_x_dir/aaa"
+    create_temp_file "" "$tabs_x_dir/bbb"
+    create_temp_file "" "$tabs_x_dir/ccc"
+    create_temp_file "" "$tabs_x_dir/ddd"
+
+    local tabs_x_expected
+    tabs_x_expected='aaa  bbb  ccc  ddd'
+    local tabs_x_output
+    tabs_x_output=$(NO_COLOR=1 "$binary" -x -w 20 "$tabs_x_dir" 2>/dev/null | strip_ansi)
+    if [[ "$tabs_x_output" == "$tabs_x_expected" ]]; then
+        print_test_result "ls #ls-column-tabs: -x still pads with spaces, unaffected by the -C tab fix" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -x still pads with spaces, unaffected by the -C tab fix" "FAIL" \
+            "Expected $(printf '%q' "$tabs_x_expected"), got: $(printf '%q' "$tabs_x_output")"
+    fi
 }
