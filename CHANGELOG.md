@@ -57,6 +57,7 @@
   in `ls(1)`. Icons and git status stay as configured under the new
   implicit default, unlike explicit `-1`, which suppresses them as
   before (#113).
+- **`ls` prints file operands as given and sorts the operand list.** A
   non-directory operand was printed as its basename, so `ls subdir/file`
   emitted `file` and the output no longer addressed the file from the
   current directory, breaking `ls dir/*.jsonl | while read` pipelines.
