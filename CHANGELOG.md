@@ -26,6 +26,19 @@
   BSD defines none (#93).
 
 ### Fixed
+- **`ls` prints file operands as given and sorts the operand list.** A
+  non-directory operand was printed as its basename, so `ls subdir/file`
+  emitted `file` and the output no longer addressed the file from the
+  current directory, breaking `ls dir/*.jsonl | while read` pipelines.
+  Operands were also listed in argv order, so `-t`, `-S`, `-r` and the
+  POSIX-required default name sort never applied to them, and
+  `ls b_dir a_dir` emitted its sections in the wrong order. Both are
+  fixed; `-U` and `-f` still preserve argv order. `--git` on an operand
+  inside a subdirectory now reports the right status, having previously
+  looked up the truncated basename. Two adjacent divergences found while
+  rewriting the same function are fixed with it: an operand that cannot
+  be stat'd no longer prints a bogus header on stdout, and `-d` with
+  several operands sorts them together without headers (#103).
 - **A copy that cannot change the destination's mode no longer dumps a
   stack trace.** `setPermissions` classified every `fchmod` failure as
   unexpected, so the ordinary EPERM case ("you do not own this file")

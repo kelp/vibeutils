@@ -1156,4 +1156,324 @@ test_ls() {
     fi
 
     fi
+
+    # ================================================================
+    # AUDIT F09 (issue #103): non-directory operands are mishandled two
+    # ways: (a) printed as their basename instead of the operand exactly
+    # as given, breaking pipelines like `ls dir/*.jsonl`; and (b) the
+    # operand LIST itself is never sorted, so -t/-S/-r and the default
+    # name sort are silently ignored (only -U/-f may preserve argv
+    # order). Directory CONTENTS already sort correctly -- this bug is
+    # specific to the top-level operand list.
+    # ================================================================
+    echo -e "${CYAN}Testing ls non-directory operand handling (issue #103)...${NC}"
+
+    # --- Bug A: operand echoed exactly as given, not basename'd ---
+    local f09_dir=$(create_temp_dir)
+    mkdir -p "$f09_dir/subdir"
+    create_temp_file "f09 content" "$f09_dir/subdir/file.txt"
+
+    local f09a_output
+    f09a_output=$(NO_COLOR=1 "$binary" "$f09_dir/subdir/file.txt" 2>/dev/null | strip_ansi)
+    if [[ "$f09a_output" == "$f09_dir/subdir/file.txt" ]]; then
+        print_test_result "ls operand echoed exactly, not basename (short format)" "PASS"
+    else
+        print_test_result "ls operand echoed exactly, not basename (short format)" "FAIL" \
+            "Expected '$f09_dir/subdir/file.txt', got: '$f09a_output'"
+    fi
+
+    local f09al_output
+    f09al_output=$(NO_COLOR=1 "$binary" -l "$f09_dir/subdir/file.txt" 2>/dev/null | strip_ansi)
+    if [[ "$f09al_output" == *"$f09_dir/subdir/file.txt" ]]; then
+        print_test_result "ls -l operand echoed exactly, not basename (long format)" "PASS"
+    else
+        print_test_result "ls -l operand echoed exactly, not basename (long format)" "FAIL" \
+            "Expected line ending in '$f09_dir/subdir/file.txt', got: '$f09al_output'"
+    fi
+
+    # --- Bug B: the file-operand LIST is sorted like directory contents ---
+    local f09s_dir=$(create_temp_dir)
+    create_temp_file "small" "$f09s_dir/z_file"
+    create_temp_file "small" "$f09s_dir/a_file"
+
+    local f09_default_output
+    f09_default_output=$(NO_COLOR=1 "$binary" -1 "$f09s_dir/z_file" "$f09s_dir/a_file" 2>/dev/null | strip_ansi)
+    local f09_default_first
+    f09_default_first=$(echo "$f09_default_output" | head -1)
+    local f09_default_last
+    f09_default_last=$(echo "$f09_default_output" | tail -1)
+    if [[ "$f09_default_first" == "$f09s_dir/a_file" && "$f09_default_last" == "$f09s_dir/z_file" ]]; then
+        print_test_result "ls file operands: default name sort ignores argv order" "PASS"
+    else
+        print_test_result "ls file operands: default name sort ignores argv order" "FAIL" \
+            "Expected '$f09s_dir/a_file' then '$f09s_dir/z_file', got: '$f09_default_output'"
+    fi
+
+    local f09_u_output
+    f09_u_output=$(NO_COLOR=1 "$binary" -1U "$f09s_dir/z_file" "$f09s_dir/a_file" 2>/dev/null | strip_ansi)
+    local f09_u_first
+    f09_u_first=$(echo "$f09_u_output" | head -1)
+    local f09_u_last
+    f09_u_last=$(echo "$f09_u_output" | tail -1)
+    if [[ "$f09_u_first" == "$f09s_dir/z_file" && "$f09_u_last" == "$f09s_dir/a_file" ]]; then
+        print_test_result "ls -U preserves argv order for file operands" "PASS"
+    else
+        print_test_result "ls -U preserves argv order for file operands" "FAIL" \
+            "Expected '$f09s_dir/z_file' then '$f09s_dir/a_file' (argv order), got: '$f09_u_output'"
+    fi
+
+    # Names are chosen so name order ("a_older" < "z_newer") DISAGREES
+    # with time order (z_newer is the newer file). An f_old/f_new style
+    # fixture would let a fix that always name-sorts -- ignoring -t
+    # entirely -- pass by coincidence (name order matches time order
+    # there); this fixture cannot pass that way.
+    local f09t_dir=$(create_temp_dir)
+    create_temp_file "old" "$f09t_dir/a_older"
+    sleep 1
+    create_temp_file "new" "$f09t_dir/z_newer"
+
+    local f09t_output
+    f09t_output=$(NO_COLOR=1 "$binary" -1t "$f09t_dir/a_older" "$f09t_dir/z_newer" 2>/dev/null | strip_ansi)
+    local f09t_first
+    f09t_first=$(echo "$f09t_output" | head -1)
+    local f09t_last
+    f09t_last=$(echo "$f09t_output" | tail -1)
+    if [[ "$f09t_first" == "$f09t_dir/z_newer" && "$f09t_last" == "$f09t_dir/a_older" ]]; then
+        print_test_result "ls -t sorts file operands newest first" "PASS"
+    else
+        print_test_result "ls -t sorts file operands newest first" "FAIL" \
+            "Expected '$f09t_dir/z_newer' then '$f09t_dir/a_older', got: '$f09t_output'"
+    fi
+
+    # Names are chosen so name order ("a_small" < "z_big") DISAGREES with
+    # size order (z_big is the bigger file), for the same reason as -t
+    # above.
+    local f09sz_dir=$(create_temp_dir)
+    create_temp_file "a" "$f09sz_dir/a_small"
+    printf '%0.sX' {1..1000} >"$f09sz_dir/z_big"
+
+    local f09sz_output
+    f09sz_output=$(NO_COLOR=1 "$binary" -1S "$f09sz_dir/a_small" "$f09sz_dir/z_big" 2>/dev/null | strip_ansi)
+    local f09sz_first
+    f09sz_first=$(echo "$f09sz_output" | head -1)
+    local f09sz_last
+    f09sz_last=$(echo "$f09sz_output" | tail -1)
+    if [[ "$f09sz_first" == "$f09sz_dir/z_big" && "$f09sz_last" == "$f09sz_dir/a_small" ]]; then
+        print_test_result "ls -S sorts file operands largest first" "PASS"
+    else
+        print_test_result "ls -S sorts file operands largest first" "FAIL" \
+            "Expected '$f09sz_dir/z_big' then '$f09sz_dir/a_small', got: '$f09sz_output'"
+    fi
+
+    local f09r_dir=$(create_temp_dir)
+    create_temp_file "b" "$f09r_dir/big"
+    create_temp_file "s" "$f09r_dir/small"
+
+    local f09r_output
+    f09r_output=$(NO_COLOR=1 "$binary" -1r "$f09r_dir/big" "$f09r_dir/small" 2>/dev/null | strip_ansi)
+    local f09r_first
+    f09r_first=$(echo "$f09r_output" | head -1)
+    local f09r_last
+    f09r_last=$(echo "$f09r_output" | tail -1)
+    if [[ "$f09r_first" == "$f09r_dir/small" && "$f09r_last" == "$f09r_dir/big" ]]; then
+        print_test_result "ls -r reverses default name sort for file operands" "PASS"
+    else
+        print_test_result "ls -r reverses default name sort for file operands" "FAIL" \
+            "Expected '$f09r_dir/small' then '$f09r_dir/big', got: '$f09r_output'"
+    fi
+
+    # --- Bug B also affects the directory-operand pass: headers should be
+    # emitted in name order, not argv order ---
+    local f09d_base=$(create_temp_dir)
+    mkdir -p "$f09d_base/b_dir" "$f09d_base/a_dir"
+    create_temp_file "x" "$f09d_base/a_dir/x"
+    create_temp_file "y" "$f09d_base/b_dir/y"
+
+    local f09d_output
+    f09d_output=$(NO_COLOR=1 "$binary" "$f09d_base/b_dir" "$f09d_base/a_dir" 2>/dev/null | strip_ansi)
+    local a_dir_pos b_dir_pos
+    a_dir_pos=$(echo "$f09d_output" | grep -nFx "$f09d_base/a_dir:" | head -1 | cut -d: -f1)
+    b_dir_pos=$(echo "$f09d_output" | grep -nFx "$f09d_base/b_dir:" | head -1 | cut -d: -f1)
+    if [[ -n "$a_dir_pos" && -n "$b_dir_pos" && "$a_dir_pos" -lt "$b_dir_pos" ]]; then
+        print_test_result "ls sorts directory operands (a_dir before b_dir) regardless of argv order" "PASS"
+    else
+        print_test_result "ls sorts directory operands (a_dir before b_dir) regardless of argv order" "FAIL" \
+            "Expected 'a_dir:' header before 'b_dir:' header, got: '$f09d_output'"
+    fi
+
+    # --- Fixing Bug A also fixes git-status lookups on operands inside a
+    # subdirectory: getFileStatus is keyed on entry.name, which was the
+    # truncated basename before the fix, so it missed the real
+    # status_map key ("subdir/newfile.txt") and reported the wrong
+    # status. ---
+    if command -v git >/dev/null 2>&1; then
+        local f09g_dir=$(create_temp_dir)
+        mkdir -p "$f09g_dir/subdir"
+        # These two git calls run in a `set -euo pipefail` context, so a
+        # non-zero status from a bare subshell would kill the whole
+        # test_ls run instead of just this case (e.g. a sandboxed/noexec
+        # temp mount, or a "dubious ownership" refusal on a shared
+        # runner). Guard each with `|| true` and then verify the expected
+        # state directly, degrading to a single SKIP rather than aborting
+        # every later test in this file.
+        (cd "$f09g_dir" && git init -q >/dev/null 2>&1) || true
+        if [[ ! -d "$f09g_dir/.git" ]]; then
+            print_test_result "ls --git status resolves against the full relative operand path" "SKIP" \
+                "git init failed in test environment"
+        else
+        # `git status --porcelain` defaults to -unormal, which collapses a
+        # WHOLLY untracked directory into a single "?? subdir/" entry --
+        # status_map would then never have the key "subdir/newfile.txt",
+        # so the test could never pass regardless of the fix. Add and
+        # stage a second file in the same subdir first (no commit needed,
+        # so no user.name/user.email config required); porcelain then
+        # reports the two files individually.
+        printf 'tracked' >"$f09g_dir/subdir/tracked.txt"
+        (cd "$f09g_dir" && git add subdir/tracked.txt >/dev/null 2>&1) || true
+        printf 'untracked' >"$f09g_dir/subdir/newfile.txt"
+
+        local f09g_staged
+        f09g_staged=$(cd "$f09g_dir" && git diff --cached --name-only 2>/dev/null || true)
+        if [[ "$f09g_staged" != *"subdir/tracked.txt"* ]]; then
+            print_test_result "ls --git status resolves against the full relative operand path" "SKIP" \
+                "git add failed in test environment"
+        else
+            local f09g_output
+            f09g_output=$(cd "$f09g_dir" && NO_COLOR=1 "$binary" --git=always "subdir/newfile.txt" 2>/dev/null | strip_ansi)
+            if [[ "$f09g_output" == "?? subdir/newfile.txt" ]]; then
+                print_test_result "ls --git status resolves against the full relative operand path" "PASS"
+            else
+                print_test_result "ls --git status resolves against the full relative operand path" "FAIL" \
+                    "Expected '?? subdir/newfile.txt', got: '$f09g_output'"
+            fi
+        fi
+        fi
+    else
+        print_test_result "ls --git status resolves against the full relative operand path" "SKIP" \
+            "git not found on PATH"
+    fi
+
+    # --- Mixed operand case: at least one file operand AND at least one
+    # directory operand together. Pins that the Bug B restructure keeps
+    # file operands (a) sorted, (b) preceding directory operands, (c)
+    # still headerless, and that the blank-line separator between the
+    # file section and the directory section is derived correctly from
+    # the new file-group size rather than a stale/miscounted signal --
+    # e.g. a fix that derives the separator from `dir_idx > 0` alone (or
+    # double-counts) would still pass every OTHER test in this file while
+    # dropping or duplicating the blank line here.
+    local f09m_dir=$(create_temp_dir)
+    mkdir -p "$f09m_dir/a_dir"
+    create_temp_file "x" "$f09m_dir/a_dir/x"
+    create_temp_file "z" "$f09m_dir/z_file"
+
+    local f09m_output
+    f09m_output=$(cd "$f09m_dir" && NO_COLOR=1 "$binary" -1 z_file a_dir 2>/dev/null | strip_ansi)
+    local f09m_expected=$'z_file\n\na_dir:\nx'
+    if [[ "$f09m_output" == "$f09m_expected" ]]; then
+        print_test_result "ls mixed file+directory operands: file listed first, one blank line before directory header" "PASS"
+    else
+        print_test_result "ls mixed file+directory operands: file listed first, one blank line before directory header" "FAIL" \
+            "Expected $(printf '%q' "$f09m_expected"), got: $(printf '%q' "$f09m_output")"
+    fi
+
+    # --- Operand that cannot be stat'd: stderr only, never a stdout section.
+    # Such an operand used to be classified into the directory group, which
+    # printed a bogus "missing:" header on stdout before the diagnostic. GNU
+    # 9.5 prints only the diagnostic and exits 2:
+    #     $ ls -1 z_file missing a_dir
+    #     ls: cannot access 'missing': ...      [stderr]
+    #     z_file                                [stdout]
+    #                                           [stdout blank line]
+    #     a_dir:                                [stdout]
+    #     x                                     [stdout]
+    # Our wording is "ls: 'missing': No such file or directory", so the stderr
+    # assertion pins the operand name and the "No such file" substring rather
+    # than GNU's exact "cannot access" phrasing. Both halves are asserted: a
+    # stdout-only check would still pass if the diagnostic vanished entirely.
+    local f10_dir=$(create_temp_dir)
+    mkdir -p "$f10_dir/a_dir"
+    create_temp_file "x" "$f10_dir/a_dir/x"
+    create_temp_file "z" "$f10_dir/z_file"
+
+    local f10_out="$TEMP_DIR/ls_f10_stdout"
+    local f10_err="$TEMP_DIR/ls_f10_stderr"
+    local f10_status=0
+    (cd "$f10_dir" && NO_COLOR=1 "$binary" -1 z_file missing a_dir) \
+        >"$f10_out" 2>"$f10_err" || f10_status=$?
+
+    local f10_stdout
+    f10_stdout=$(strip_ansi <"$f10_out")
+    local f10_stderr
+    f10_stderr=$(strip_ansi <"$f10_err")
+
+    if echo "$f10_stdout" | grep -qFx "missing:"; then
+        print_test_result "ls unstattable operand produces no stdout header" "FAIL" \
+            "Expected no 'missing:' header on stdout, got: $(printf '%q' "$f10_stdout")"
+    else
+        print_test_result "ls unstattable operand produces no stdout header" "PASS"
+    fi
+
+    local f10_expected=$'z_file\n\na_dir:\nx'
+    if [[ "$f10_stdout" == "$f10_expected" ]]; then
+        print_test_result "ls unstattable operand is dropped from every stdout section" "PASS"
+    else
+        print_test_result "ls unstattable operand is dropped from every stdout section" "FAIL" \
+            "Expected $(printf '%q' "$f10_expected"), got: $(printf '%q' "$f10_stdout")"
+    fi
+
+    if [[ "$f10_stderr" == *"missing"* && "$f10_stderr" == *"No such file"* ]]; then
+        print_test_result "ls unstattable operand still names the operand on stderr" "PASS"
+    else
+        print_test_result "ls unstattable operand still names the operand on stderr" "FAIL" \
+            "Expected stderr naming 'missing' and 'No such file', got: $(printf '%q' "$f10_stderr")"
+    fi
+
+    if [[ "$f10_status" -eq 2 ]]; then
+        print_test_result "ls exits 2 when an operand cannot be stat'd" "PASS"
+    else
+        print_test_result "ls exits 2 when an operand cannot be stat'd" "FAIL" \
+            "Expected exit 2, got $f10_status"
+    fi
+
+    # --- -d with multiple operands: a directory operand is an ordinary entry.
+    # It sorts together with the file operands and never gets a "dir:" header.
+    # GNU 9.5:
+    #     $ ls -1d z_file a_dir
+    #     a_dir
+    #     z_file
+    # Argv order is z_file first, so this also proves the sort is applied.
+    local f11_dir=$(create_temp_dir)
+    mkdir -p "$f11_dir/a_dir"
+    create_temp_file "x" "$f11_dir/a_dir/x"
+    create_temp_file "z" "$f11_dir/z_file"
+
+    local f11_output
+    f11_output=$(cd "$f11_dir" && NO_COLOR=1 "$binary" -1d z_file a_dir 2>/dev/null | strip_ansi)
+    local f11_expected=$'a_dir\nz_file'
+    if [[ "$f11_output" == "$f11_expected" ]]; then
+        print_test_result "ls -d sorts a directory operand together with file operands" "PASS"
+    else
+        print_test_result "ls -d sorts a directory operand together with file operands" "FAIL" \
+            "Expected $(printf '%q' "$f11_expected"), got: $(printf '%q' "$f11_output")"
+    fi
+
+    if echo "$f11_output" | grep -qFx "a_dir:"; then
+        print_test_result "ls -d gives a directory operand no header and no contents" "FAIL" \
+            "Expected no 'a_dir:' header, got: $(printf '%q' "$f11_output")"
+    elif echo "$f11_output" | grep -qFx "x"; then
+        print_test_result "ls -d gives a directory operand no header and no contents" "FAIL" \
+            "Expected no directory contents, got: $(printf '%q' "$f11_output")"
+    else
+        print_test_result "ls -d gives a directory operand no header and no contents" "PASS"
+    fi
+
+    local f11_status=0
+    (cd "$f11_dir" && NO_COLOR=1 "$binary" -1d z_file a_dir >/dev/null 2>&1) || f11_status=$?
+    if [[ "$f11_status" -eq 0 ]]; then
+        print_test_result "ls -d with multiple operands exits 0" "PASS"
+    else
+        print_test_result "ls -d with multiple operands exits 0" "FAIL" \
+            "Expected exit 0, got $f11_status"
+    fi
 }
