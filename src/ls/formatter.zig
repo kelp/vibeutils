@@ -897,8 +897,15 @@ pub fn printEntries(
         try writer.print("total {d}\n", .{total_blocks});
     }
 
+    // Totals are only accumulated for the two formats that display them.
+    std.debug.assert(total_blocks == 0 or options.show_blocks or options.long_format);
+
     if (options.one_per_line) {
-        try printEntries_onePerLine(entries, writer, options, style);
+        // Explicit -1 also suppresses icons and git status.
+        var explicit_opts = options;
+        explicit_opts.icon_mode = .never;
+        explicit_opts.show_git_status = false;
+        try printEntries_onePerLine(entries, writer, explicit_opts, style);
     } else if (options.long_format) {
         try printEntries_longFormat(allocator, entries, writer, options, style, total_blocks);
     } else if (options.comma_format) {
@@ -911,15 +918,26 @@ pub fn printEntries(
     } else if (options.columns_across) {
         // -x: multi-column sorted across rows
         try printColumnarAcross(allocator, entries, writer, options, style);
-    } else {
-        // Default format: multi-column layout (sorted down columns)
+    } else if (options.multi_column or options.is_terminal) {
+        // Multi-column layout (sorted down columns): the default on a
+        // terminal, and forced anywhere by an explicit -C.
         try printColumnar(allocator, entries, writer, options, style);
+    } else {
+        // POSIX: "If the standard output is not a terminal, the default
+        // format shall be the same as the -1 option." Icons and git status
+        // keep whatever the user configured, because this is an implicit
+        // default rather than an explicit -1.
+        var default_opts = options;
+        default_opts.one_per_line = true;
+        try printEntries_onePerLine(entries, writer, default_opts, style);
     }
 
+    std.debug.assert(entries.len > 0 or total_blocks == 0);
     return total_blocks;
 }
 
-/// Print entries one per line (-1), disabling icons and git status.
+/// Print entries one per line, one entry per call to printEntryName. Callers
+/// pass options already resolved for one-per-line output.
 fn printEntries_onePerLine(
     entries: []Entry,
     writer: anytype,
@@ -940,11 +958,7 @@ fn printEntries_onePerLine(
                 try writer.print("? ", .{});
             }
         }
-        // In one-per-line mode, disable icons and git status
-        var one_opts = options;
-        one_opts.icon_mode = .never;
-        one_opts.show_git_status = false;
-        try display.printEntryName(entry, writer, style, one_opts);
+        try display.printEntryName(entry, writer, style, options);
         try writer.writeByte('\n');
     }
 }

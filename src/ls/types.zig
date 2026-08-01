@@ -49,6 +49,7 @@ pub const LsOptions = struct {
     show_blocks: bool = false, // -s: show filesystem blocks
     use_atime: bool = false, // -u: use access time instead of mtime
     use_ctime: bool = false, // -c: use status change time instead of mtime
+    multi_column: bool = false, // -C: force multi-column output sorted down columns
     columns_across: bool = false, // -x: sort across rows instead of down columns
     full_time: bool = false, // -T: show full time with seconds and year
     follow_all_symlinks: bool = false, // -L: follow all symlinks

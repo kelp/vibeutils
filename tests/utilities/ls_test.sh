@@ -1476,4 +1476,158 @@ test_ls() {
         print_test_result "ls -d with multiple operands exits 0" "FAIL" \
             "Expected exit 0, got $f11_status"
     fi
+
+    # ================================================================
+    # Issue #113: default format must be one-per-line when stdout is
+    # not a terminal (POSIX/GNU/BSD parity). File names and pinned
+    # bytes below are taken verbatim from the GNU coreutils 9.5
+    # reference capture in the issue.
+    # ================================================================
+    echo -e "${CYAN}Testing ls #113: default format is not-a-terminal aware...${NC}"
+
+    local i113_dir=$(create_temp_dir)
+    create_temp_file "" "$i113_dir/aaa"
+    create_temp_file "" "$i113_dir/bbbbbbbbbbbb"
+    create_temp_file "" "$i113_dir/ccc"
+
+    local i113_expected=$'aaa\nbbbbbbbbbbbb\nccc'
+
+    # Default output through a pipe (command substitution is inherently
+    # non-tty stdout) must be exactly one entry per line, no padding.
+    local i113_piped
+    i113_piped=$(NO_COLOR=1 "$binary" "$i113_dir" 2>/dev/null | strip_ansi)
+    if [[ "$i113_piped" == "$i113_expected" ]]; then
+        print_test_result "ls #113: default output piped is one entry per line" "PASS"
+    else
+        print_test_result "ls #113: default output piped is one entry per line" "FAIL" \
+            "Expected $(printf '%q' "$i113_expected"), got: $(printf '%q' "$i113_piped")"
+    fi
+
+    # Default output redirected to a regular file must behave identically
+    # to the piped case (both are simply "not a terminal").
+    local i113_outfile
+    i113_outfile=$(mktemp "$TEMP_DIR/ls113_redirect_XXXXXX")
+    NO_COLOR=1 "$binary" "$i113_dir" >"$i113_outfile" 2>/dev/null
+    local i113_redirected
+    i113_redirected=$(strip_ansi <"$i113_outfile")
+    if [[ "$i113_redirected" == "$i113_expected" ]]; then
+        print_test_result "ls #113: default output redirected to a file is one entry per line" "PASS"
+    else
+        print_test_result "ls #113: default output redirected to a file is one entry per line" "FAIL" \
+            "Expected $(printf '%q' "$i113_expected"), got: $(printf '%q' "$i113_redirected")"
+    fi
+
+    # No line of the non-terminal default output may carry trailing or
+    # internal column-padding whitespace: padded entries silently break
+    # anchored patterns like `grep -v '\.lock$'` in downstream pipelines
+    # (the original symptom). A single trailing-space check ($) is not
+    # enough here: with these 3 names at the default 80-column fallback
+    # the buggy multi-column grid happens to fit on one row ending
+    # exactly at "ccc" with no trailing pad, so also reject any run of
+    # two or more spaces (the column separator the buggy grid inserts
+    # between "aaa" and "bbbbbbbbbbbb"), mirroring the Zig companion
+    # check at integration_test.zig ("...has no trailing whitespace on
+    # any line").
+    if printf '%s' "$i113_piped" | grep -qE ' $|  '; then
+        print_test_result "ls #113: default piped output has no trailing whitespace" "FAIL" \
+            "Found a line with trailing or internal padding whitespace: $(printf '%q' "$i113_piped")"
+    else
+        print_test_result "ls #113: default piped output has no trailing whitespace" "PASS"
+    fi
+
+    # An explicit format flag must always win over the non-tty default.
+    # -C: multi-column sorted down columns stays multi-column even piped.
+    local i113_C_output
+    i113_C_output=$(NO_COLOR=1 "$binary" -C -w 80 "$i113_dir" 2>/dev/null | strip_ansi)
+    local i113_C_lines
+    i113_C_lines=$(printf '%s\n' "$i113_C_output" | wc -l | tr -d ' ')
+    if [[ "$i113_C_lines" -eq 1 && "$i113_C_output" == *"aaa"* && \
+          "$i113_C_output" == *"bbbbbbbbbbbb"* && "$i113_C_output" == *"ccc"* ]]; then
+        print_test_result "ls #113: explicit -C keeps multi-column layout when piped" "PASS"
+    else
+        print_test_result "ls #113: explicit -C keeps multi-column layout when piped" "FAIL" \
+            "Expected all 3 names on a single multi-column line, got: $(printf '%q' "$i113_C_output")"
+    fi
+
+    # -x: multi-column sorted across rows stays multi-column even piped.
+    # With only 3 short names and -w 80 the grid fits in a single row,
+    # which is byte-identical to -C's output and cannot distinguish
+    # across-row from down-column ordering. Use a separate, dedicated
+    # directory and a narrow width to force >=2 rows, then assert the
+    # first row holds the first entries in reading order ("aaa", "bbb")
+    # rather than the down-column order ("aaa", "ccc") -- same intent as
+    # the Zig companion test "columns_across: -x first row contains
+    # first entries" (same 4 names; -w 12 empirically forces the same
+    # 2x2 grid here that width 20 forces against the Zig harness's
+    # column-width math).
+    local i113_x_dir=$(create_temp_dir)
+    create_temp_file "" "$i113_x_dir/aaa"
+    create_temp_file "" "$i113_x_dir/bbb"
+    create_temp_file "" "$i113_x_dir/ccc"
+    create_temp_file "" "$i113_x_dir/ddd"
+
+    local i113_x_output
+    i113_x_output=$(NO_COLOR=1 "$binary" -x -w 12 "$i113_x_dir" 2>/dev/null | strip_ansi)
+    local i113_x_lines
+    i113_x_lines=$(printf '%s\n' "$i113_x_output" | wc -l | tr -d ' ')
+    local i113_x_first_line
+    i113_x_first_line=$(printf '%s\n' "$i113_x_output" | head -n 1)
+    if [[ "$i113_x_lines" -ge 2 && "$i113_x_first_line" == *"aaa"* && \
+          "$i113_x_first_line" == *"bbb"* ]]; then
+        print_test_result "ls #113: explicit -x keeps across-row multi-column layout when piped" "PASS"
+    else
+        print_test_result "ls #113: explicit -x keeps across-row multi-column layout when piped" "FAIL" \
+            "Expected first row to contain 'aaa' and 'bbb' across >=2 lines, got: $(printf '%q' "$i113_x_output")"
+    fi
+
+    # -m: comma-separated format is unaffected by the non-tty default.
+    local i113_m_expected='aaa, bbbbbbbbbbbb, ccc'
+    local i113_m_output
+    i113_m_output=$(NO_COLOR=1 "$binary" -m "$i113_dir" 2>/dev/null | strip_ansi)
+    if [[ "$i113_m_output" == "$i113_m_expected" ]]; then
+        print_test_result "ls #113: explicit -m keeps comma-separated format when piped" "PASS"
+    else
+        print_test_result "ls #113: explicit -m keeps comma-separated format when piped" "FAIL" \
+            "Expected $(printf '%q' "$i113_m_expected"), got: $(printf '%q' "$i113_m_output")"
+    fi
+
+    # -1 is already the not-a-terminal default and must stay unchanged.
+    local i113_1_output
+    i113_1_output=$(NO_COLOR=1 "$binary" -1 "$i113_dir" 2>/dev/null | strip_ansi)
+    if [[ "$i113_1_output" == "$i113_expected" ]]; then
+        print_test_result "ls #113: explicit -1 is unchanged when piped" "PASS"
+    else
+        print_test_result "ls #113: explicit -1 is unchanged when piped" "FAIL" \
+            "Expected $(printf '%q' "$i113_expected"), got: $(printf '%q' "$i113_1_output")"
+    fi
+
+    # -l is already one entry per line and must not gain or lose lines.
+    local i113_l_output
+    i113_l_output=$(NO_COLOR=1 "$binary" -l "$i113_dir" 2>/dev/null | strip_ansi)
+    local i113_l_lines
+    i113_l_lines=$(printf '%s\n' "$i113_l_output" | wc -l | tr -d ' ')
+    # 3 file lines plus one "total N" line.
+    if [[ "$i113_l_lines" -eq 4 ]]; then
+        print_test_result "ls #113: -l is unaffected when piped" "PASS"
+    else
+        print_test_result "ls #113: -l is unaffected when piped" "FAIL" \
+            "Expected 4 lines (total + 3 files), got $i113_l_lines: $(printf '%q' "$i113_l_output")"
+    fi
+
+    # -R: every directory section (including the top-level one) must be
+    # one entry per line when piped, with headers/blank-line separation
+    # unchanged.
+    mkdir -p "$i113_dir/sub"
+    create_temp_file "" "$i113_dir/sub/zzz"
+    local i113_R_expected
+    i113_R_expected=$(printf '%s:\naaa\nbbbbbbbbbbbb\nccc\nsub\n\n%s/sub:\nzzz' \
+        "$i113_dir" "$i113_dir")
+    local i113_R_output
+    i113_R_output=$(NO_COLOR=1 "$binary" -R "$i113_dir" 2>/dev/null | strip_ansi)
+    if [[ "$i113_R_output" == "$i113_R_expected" ]]; then
+        print_test_result "ls #113: -R prints one entry per line in every section when piped" "PASS"
+    else
+        print_test_result "ls #113: -R prints one entry per line in every section when piped" "FAIL" \
+            "Expected $(printf '%q' "$i113_R_expected"), got: $(printf '%q' "$i113_R_output")"
+    fi
 }
