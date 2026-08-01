@@ -135,9 +135,76 @@ test "format: multi-column output by default" {
         try env.createFile(name, "");
     }
 
-    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH });
+    // Multi-column is only the default on a terminal (issue #113: piped/
+    // redirected stdout defaults to one-per-line instead).
+    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH, .is_terminal = true });
 
     try LsAssertions.expectMultiColumnFormat(env.getStdout(), files.len);
+}
+
+// Regression test for issue #113: POSIX/GNU/BSD ls all print one entry per
+// line (equivalent to -1) when stdout is not a terminal and no explicit
+// format flag is given. LsOptions.is_terminal defaults to false, so runLs
+// with no explicit .is_terminal setting already exercises the "piped"
+// path -- no extra plumbing needed to simulate a non-tty stdout.
+test "format: default output is one entry per line when stdout is not a terminal" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("aaa", "");
+    try env.createFile("bbbbbbbbbbbb", "");
+    try env.createFile("ccc", "");
+
+    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH });
+
+    try LsAssertions.expectExactOutput(env.getStdout(), "aaa\nbbbbbbbbbbbb\nccc\n");
+}
+
+// Companion to the exact-output test above: guards against a fix that gets
+// the line count right but leaves column-padding spaces on non-final
+// entries (the original symptom in issue #113 -- padded entries broke
+// anchored `grep -v '\.lock$'` patterns downstream).
+test "format: default non-terminal output has no trailing whitespace on any line" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    const files = [_][]const u8{
+        "a",     "bb",     "ccc",     "dddd",
+        "eeeee", "ffffff", "ggggggg", "hhhhhhhh",
+    };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH });
+
+    const output = env.getStdout();
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (line[line.len - 1] == ' ') {
+            std.debug.print("Line has trailing whitespace: '{s}'\n", .{line});
+            return error.TrailingWhitespaceFound;
+        }
+        if (std.mem.find(u8, line, "  ") != null) {
+            std.debug.print("Line has internal column padding: '{s}'\n", .{line});
+            return error.ColumnPaddingFound;
+        }
+    }
+}
+
+// -1 must always win, on a tty or not: it is an explicit format flag, so it
+// is never subject to the terminal-detection default.
+test "format: -1 stays one entry per line even when stdout is a terminal" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("aaa.txt", "");
+    try env.createFile("bbb.txt", "");
+
+    try env.runLs(.{ .one_per_line = true, .is_terminal = true });
+
+    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "aaa.txt", "bbb.txt" });
 }
 
 // ============================================================================
@@ -195,6 +262,31 @@ test "long_format: shows numeric user and group IDs with -n flag" {
     const output = env.getStdout();
     try LsAssertions.expectContainsFile(output, "test.txt");
     try LsAssertions.expectContainsPermissions(output, "-rw-");
+}
+
+// -l is already one entry per line regardless of is_terminal (the
+// long_format branch is checked ahead of the default branch), so it must
+// not gain or lose lines when stdout is not a terminal (issue #113).
+test "long_format: line count matches file count when stdout is not a terminal" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    const files = [_][]const u8{ "aaa", "bbbbbbbbbbbb", "ccc" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .long_format = true });
+
+    const output = env.getStdout();
+    var non_empty_lines: usize = 0;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (line.len > 0) non_empty_lines += 1;
+    }
+
+    // files.len entries plus one "total N" line.
+    try testing.expectEqual(files.len + 1, non_empty_lines);
 }
 
 // ============================================================================
@@ -389,6 +481,34 @@ test "recursive: handles symlink cycles safely" {
 
     // Should contain the symlink but not recurse infinitely
     try LsAssertions.expectContainsFile(env.getStdout(), "parent_link");
+}
+
+// Regression test for issue #113 covering -R specifically: every directory
+// section printed during a recursive listing must independently honor the
+// non-terminal default, not just the top-level section.
+test "recursive: default output is one entry per line in every section when not a terminal" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("aaa", "");
+    try env.createFile("bbbbbbbbbbbb", "");
+    try env.createFile("ccc", "");
+
+    var sub = try env.createDirAndOpen("sub");
+    defer sub.close(std.testing.io);
+    const zzz = try sub.createFile(std.testing.io, "zzz", .{});
+    zzz.close(std.testing.io);
+
+    try env.runLs(.{ .recursive = true, .terminal_width = TEST_TERMINAL_WIDTH });
+
+    const expected = "aaa\n" ++
+        "bbbbbbbbbbbb\n" ++
+        "ccc\n" ++
+        "sub\n" ++
+        "\n" ++
+        "./sub:\n" ++
+        "zzz\n";
+    try LsAssertions.expectExactOutput(env.getStdout(), expected);
 }
 
 // ============================================================================
@@ -641,7 +761,19 @@ test "use_atime: -u with -t sorts by access time" {
 // -C flag: multi-column sorted down columns
 // ============================================================================
 
-test "multi_column: -C forces multi-column output" {
+// Regression test for issue #113: an explicit -C must keep multi-column
+// output even when stdout is not a terminal (explicit flag beats the
+// non-tty default). LsOptions has no multi_column field yet -- the
+// implementer adds it in src/ls/types.zig/main.zig -- so this test is
+// gated with @hasField: the comptime-false branch is never analyzed
+// today, which lets this file compile in the RED phase without a
+// multi_column field, and the guard activates automatically once the
+// field lands. Until then, the end-to-end guard for this behavior lives
+// in tests/utilities/ls_test.sh ("explicit -C keeps multi-column layout
+// when piped").
+test "multi_column: -C forces multi-column output even when stdout is not a terminal" {
+    if (!@hasField(LsOptions, "multi_column")) return error.SkipZigTest;
+
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
 
@@ -650,8 +782,11 @@ test "multi_column: -C forces multi-column output" {
         try env.createFile(name, "");
     }
 
-    // -C should produce multi-column output (fewer lines than files)
-    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH });
+    try env.runLs(.{
+        .multi_column = true,
+        .is_terminal = false,
+        .terminal_width = TEST_TERMINAL_WIDTH,
+    });
 
     try LsAssertions.expectMultiColumnFormat(env.getStdout(), files.len);
 }
