@@ -26,7 +26,24 @@
   BSD defines none (#93).
 
 ### Fixed
-- **`ls` prints file operands as given and sorts the operand list.** A
+- **`ls` prints one entry per line when stdout is not a terminal.**
+  POSIX requires the default format to be `-1` off a terminal, as GNU
+  and BSD both do; we kept the column layout everywhere. Because
+  columns are space-padded, every entry but the last on a line carried
+  trailing whitespace, so a name was no longer at end-of-line and
+  anchored patterns downstream stopped matching: `ls | grep -v
+  '\.lock$'` let a padded `0.11.3.lock` through, which silently
+  corrupted a gale bootstrap script. `printEntries` picked its format
+  from the option flags alone and never consulted the `is_terminal` it
+  already computed for icons and colors. Fixing the one branch fixes
+  `-R` too, since every directory section prints through it. Explicit
+  format flags still win off a terminal, which exposed a second
+  defect: `-C` was parsed but never copied into the options struct, so
+  it had always been a no-op that only looked correct while the
+  default was multi-column. It is now plumbed through and documented
+  in `ls(1)`. Icons and git status stay as configured under the new
+  implicit default, unlike explicit `-1`, which suppresses them as
+  before (#113).
   non-directory operand was printed as its basename, so `ls subdir/file`
   emitted `file` and the output no longer addressed the file from the
   current directory, breaking `ls dir/*.jsonl | while read` pipelines.

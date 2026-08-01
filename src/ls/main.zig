@@ -444,6 +444,7 @@ fn lsMain_buildOptions(
         .show_blocks = args.show_blocks,
         .use_atime = args.use_atime,
         .use_ctime = args.use_ctime,
+        .multi_column = args.multi_column,
         .columns_across = args.columns_across,
         .full_time = args.full_time,
         .follow_all_symlinks = args.follow_all_symlinks,

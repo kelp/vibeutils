@@ -7,7 +7,7 @@
 .Nd list directory contents
 .Sh SYNOPSIS
 .Nm ls
-.Op Fl 1AadhklRV
+.Op Fl 1ACadhklRV
 .Op Fl Fl help
 .Op Fl Fl version
 .Op Fl Fl color Ns = Ns Ar when
@@ -34,6 +34,14 @@ information.
 If no operands are given, the contents of the current
 directory are displayed.
 .Pp
+When standard output is a terminal, entries are listed in
+multiple columns sorted down the columns.
+When standard output is not a terminal, such as in a pipeline
+or a redirect to a file, the default format is one entry per
+line, as with
+.Fl 1 .
+An explicit format option overrides this in either case.
+.Pp
 The options are as follows:
 .Bl -tag -width Ds
 .It Fl 1
@@ -51,6 +59,9 @@ and
 Include directory entries whose names begin with a
 dot
 .Pq Sq \&. .
+.It Fl C
+Force multi-column output sorted down the columns, even when
+standard output is not a terminal.
 .It Fl d
 Directories are listed as plain files (not searched recursively).
 .It Fl h
