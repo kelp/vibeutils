@@ -1376,4 +1376,104 @@ test_ls() {
         print_test_result "ls mixed file+directory operands: file listed first, one blank line before directory header" "FAIL" \
             "Expected $(printf '%q' "$f09m_expected"), got: $(printf '%q' "$f09m_output")"
     fi
+
+    # --- Operand that cannot be stat'd: stderr only, never a stdout section.
+    # Such an operand used to be classified into the directory group, which
+    # printed a bogus "missing:" header on stdout before the diagnostic. GNU
+    # 9.5 prints only the diagnostic and exits 2:
+    #     $ ls -1 z_file missing a_dir
+    #     ls: cannot access 'missing': ...      [stderr]
+    #     z_file                                [stdout]
+    #                                           [stdout blank line]
+    #     a_dir:                                [stdout]
+    #     x                                     [stdout]
+    # Our wording is "ls: 'missing': No such file or directory", so the stderr
+    # assertion pins the operand name and the "No such file" substring rather
+    # than GNU's exact "cannot access" phrasing. Both halves are asserted: a
+    # stdout-only check would still pass if the diagnostic vanished entirely.
+    local f10_dir=$(create_temp_dir)
+    mkdir -p "$f10_dir/a_dir"
+    create_temp_file "x" "$f10_dir/a_dir/x"
+    create_temp_file "z" "$f10_dir/z_file"
+
+    local f10_out="$TEMP_DIR/ls_f10_stdout"
+    local f10_err="$TEMP_DIR/ls_f10_stderr"
+    local f10_status=0
+    (cd "$f10_dir" && NO_COLOR=1 "$binary" -1 z_file missing a_dir) \
+        >"$f10_out" 2>"$f10_err" || f10_status=$?
+
+    local f10_stdout
+    f10_stdout=$(strip_ansi <"$f10_out")
+    local f10_stderr
+    f10_stderr=$(strip_ansi <"$f10_err")
+
+    if echo "$f10_stdout" | grep -qFx "missing:"; then
+        print_test_result "ls unstattable operand produces no stdout header" "FAIL" \
+            "Expected no 'missing:' header on stdout, got: $(printf '%q' "$f10_stdout")"
+    else
+        print_test_result "ls unstattable operand produces no stdout header" "PASS"
+    fi
+
+    local f10_expected=$'z_file\n\na_dir:\nx'
+    if [[ "$f10_stdout" == "$f10_expected" ]]; then
+        print_test_result "ls unstattable operand is dropped from every stdout section" "PASS"
+    else
+        print_test_result "ls unstattable operand is dropped from every stdout section" "FAIL" \
+            "Expected $(printf '%q' "$f10_expected"), got: $(printf '%q' "$f10_stdout")"
+    fi
+
+    if [[ "$f10_stderr" == *"missing"* && "$f10_stderr" == *"No such file"* ]]; then
+        print_test_result "ls unstattable operand still names the operand on stderr" "PASS"
+    else
+        print_test_result "ls unstattable operand still names the operand on stderr" "FAIL" \
+            "Expected stderr naming 'missing' and 'No such file', got: $(printf '%q' "$f10_stderr")"
+    fi
+
+    if [[ "$f10_status" -eq 2 ]]; then
+        print_test_result "ls exits 2 when an operand cannot be stat'd" "PASS"
+    else
+        print_test_result "ls exits 2 when an operand cannot be stat'd" "FAIL" \
+            "Expected exit 2, got $f10_status"
+    fi
+
+    # --- -d with multiple operands: a directory operand is an ordinary entry.
+    # It sorts together with the file operands and never gets a "dir:" header.
+    # GNU 9.5:
+    #     $ ls -1d z_file a_dir
+    #     a_dir
+    #     z_file
+    # Argv order is z_file first, so this also proves the sort is applied.
+    local f11_dir=$(create_temp_dir)
+    mkdir -p "$f11_dir/a_dir"
+    create_temp_file "x" "$f11_dir/a_dir/x"
+    create_temp_file "z" "$f11_dir/z_file"
+
+    local f11_output
+    f11_output=$(cd "$f11_dir" && NO_COLOR=1 "$binary" -1d z_file a_dir 2>/dev/null | strip_ansi)
+    local f11_expected=$'a_dir\nz_file'
+    if [[ "$f11_output" == "$f11_expected" ]]; then
+        print_test_result "ls -d sorts a directory operand together with file operands" "PASS"
+    else
+        print_test_result "ls -d sorts a directory operand together with file operands" "FAIL" \
+            "Expected $(printf '%q' "$f11_expected"), got: $(printf '%q' "$f11_output")"
+    fi
+
+    if echo "$f11_output" | grep -qFx "a_dir:"; then
+        print_test_result "ls -d gives a directory operand no header and no contents" "FAIL" \
+            "Expected no 'a_dir:' header, got: $(printf '%q' "$f11_output")"
+    elif echo "$f11_output" | grep -qFx "x"; then
+        print_test_result "ls -d gives a directory operand no header and no contents" "FAIL" \
+            "Expected no directory contents, got: $(printf '%q' "$f11_output")"
+    else
+        print_test_result "ls -d gives a directory operand no header and no contents" "PASS"
+    fi
+
+    local f11_status=0
+    (cd "$f11_dir" && NO_COLOR=1 "$binary" -1d z_file a_dir >/dev/null 2>&1) || f11_status=$?
+    if [[ "$f11_status" -eq 0 ]]; then
+        print_test_result "ls -d with multiple operands exits 0" "PASS"
+    else
+        print_test_result "ls -d with multiple operands exits 0" "FAIL" \
+            "Expected exit 0, got $f11_status"
+    fi
 }

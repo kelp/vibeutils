@@ -486,50 +486,194 @@ fn lsMain_listOperands(
         return had_error;
     }
 
-    // Multiple operands: GNU-style separation.
-    // 1. List file operands first (no headers).
-    // 2. List directory operands with "dir:" headers.
-    var file_count: u64 = 0;
+    std.debug.assert(paths.len > 1);
+    std.debug.assert(!had_error);
+    return lsMain_listOperandGroups(
+        io,
+        paths,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        git_context,
+    );
+}
 
-    for (paths) |path| {
-        const stat = common.file.FileInfo.stat(io, path) catch continue;
-        if (stat.kind != .directory) {
-            file_count += 1;
-        }
-    }
-    // file_count is incremented at most once per path element, so it can
-    // never exceed the number of operands.
-    std.debug.assert(file_count <= paths.len);
+/// List two or more operands with GNU's grouping:
+/// 1. Operands that cannot be stat'd get a diagnostic and nothing else.
+/// 2. Non-directory operands print without headers.
+/// 3. Directory operands print with "dir:" headers.
+/// Each listing group sorts on its own with the same criteria the directory
+/// listing uses, so -t/-S/-r/-U apply to the operands themselves.
+fn lsMain_listOperandGroups(
+    io: std.Io,
+    paths: []const []const u8,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) !bool {
+    std.debug.assert(paths.len > 1);
 
-    // First pass: list file operands (no headers)
-    for (paths) |path| {
-        const stat = common.file.FileInfo.stat(io, path) catch continue;
-        if (stat.kind != .directory) {
-            listDirectory(io, path, writer, stderr_writer, options, allocator, git_context) catch {
-                had_error = true;
-            };
-        }
-    }
+    var files: std.ArrayList(Entry) = .empty;
+    defer files.deinit(allocator);
+    var dirs: std.ArrayList(Entry) = .empty;
+    defer dirs.deinit(allocator);
+    var failed: std.ArrayList([]const u8) = .empty;
+    defer failed.deinit(allocator);
 
-    // Second pass: list directory operands with headers
-    var dir_idx: u64 = 0;
-    for (paths) |path| {
-        const is_dir = blk: {
-            const stat = common.file.FileInfo.stat(io, path) catch break :blk true;
-            break :blk stat.kind == .directory;
-        };
-        if (!is_dir) continue;
+    try lsMain_partitionOperands(io, paths, options, allocator, &files, &dirs, &failed);
+    std.debug.assert(files.items.len + dirs.items.len + failed.items.len == paths.len);
+    lsMain_sortOperands(files.items, options);
+    lsMain_sortOperands(dirs.items, options);
 
-        // Blank line separator between sections
-        if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
-        try writer.print("{s}:\n", .{path});
+    var had_error = false;
+
+    // GNU reports an operand it cannot stat and then drops it from every
+    // listing section, so nothing about it reaches stdout. listDirectory
+    // re-stats the path, which keeps the diagnostic in one place and only
+    // costs a syscall on this error path.
+    for (failed.items) |path| {
         listDirectory(io, path, writer, stderr_writer, options, allocator, git_context) catch {
             had_error = true;
         };
-        dir_idx += 1;
+    }
+
+    // File operands: no headers.
+    for (files.items) |entry| {
+        listDirectory(
+            io,
+            entry.name,
+            writer,
+            stderr_writer,
+            options,
+            allocator,
+            git_context,
+        ) catch {
+            had_error = true;
+        };
+    }
+
+    if (try lsMain_emitDirectoryOperands(
+        io,
+        dirs.items,
+        files.items.len > 0,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        git_context,
+    )) {
+        had_error = true;
     }
 
     return had_error;
+}
+
+/// Sort one operand group the way directory contents are sorted, except that
+/// -r reverses the sorted slice instead of negating the comparator.
+///
+/// sorter.compareEntries implements -r as `!result`, so two entries with
+/// equal sort keys compare less-than in BOTH directions. A directory cannot
+/// hold two entries with the same name, but an operand list can repeat one
+/// (`ls -r f f`), and std.sort asserts on that inconsistency in debug builds.
+/// Reversing the stably-sorted slice keeps every ordering the comparator
+/// defines and is well-defined for duplicates.
+fn lsMain_sortOperands(entries: []Entry, options: LsOptions) void {
+    // -f/-U keep argv order, which means -r has nothing to reverse either.
+    if (options.no_sort) return;
+    std.debug.assert(!options.no_sort);
+
+    var ascending = options;
+    ascending.reverse_sort = false;
+    core.sortEntriesFromOptions(entries, ascending);
+    if (options.reverse_sort) std.mem.reverse(Entry, entries);
+}
+
+/// Emit each directory operand with its "dir:" header, blank-line separated.
+/// `files_printed` says whether a file-operand section already went out, which
+/// decides if the first directory section needs a leading blank line.
+/// Returns whether any directory failed to list.
+fn lsMain_emitDirectoryOperands(
+    io: std.Io,
+    dirs: []const Entry,
+    files_printed: bool,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) !bool {
+    var had_error = false;
+
+    for (dirs, 0..) |entry, dir_idx| {
+        // Only operands that stat'd as directories reach this group: an
+        // operand that failed to stat is diagnosed by the caller, and with -d
+        // a directory operand is listed as an ordinary entry instead.
+        std.debug.assert(entry.kind == .directory);
+        std.debug.assert(entry.stat != null);
+        if (files_printed or dir_idx > 0) try writer.writeAll("\n");
+        try writer.print("{s}:\n", .{entry.name});
+        listDirectory(
+            io,
+            entry.name,
+            writer,
+            stderr_writer,
+            options,
+            allocator,
+            git_context,
+        ) catch {
+            had_error = true;
+        };
+    }
+
+    return had_error;
+}
+
+/// Split operands into a non-directory group, a directory group, and the
+/// operands that cannot be stat'd at all, keeping argv order within each so
+/// the caller can sort the two listing groups.
+fn lsMain_partitionOperands(
+    io: std.Io,
+    paths: []const []const u8,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    files: *std.ArrayList(Entry),
+    dirs: *std.ArrayList(Entry),
+    failed: *std.ArrayList([]const u8),
+) !void {
+    std.debug.assert(paths.len > 1);
+    std.debug.assert(files.items.len == 0);
+    std.debug.assert(dirs.items.len == 0);
+    std.debug.assert(failed.items.len == 0);
+
+    for (paths) |path| {
+        // A missing or inaccessible operand belongs in neither listing group:
+        // GNU prints only the diagnostic for it, so treating it as a directory
+        // here would emit a bogus "path:" header on stdout first.
+        const stat = common.file.FileInfo.stat(io, path) catch {
+            try failed.append(allocator, path);
+            continue;
+        };
+        const entry = Entry{
+            .name = path,
+            .kind = stat.kind,
+            .stat = stat,
+            .symlink_target = null,
+        };
+        // -d lists a directory operand as an ordinary entry, so it sorts and
+        // prints with the files and never gets a "dir:" header.
+        if (stat.kind == .directory and !options.directory) {
+            try dirs.append(allocator, entry);
+        } else {
+            try files.append(allocator, entry);
+        }
+    }
+
+    // Every operand lands in exactly one group.
+    std.debug.assert(files.items.len + dirs.items.len + failed.items.len == paths.len);
+    std.debug.assert(failed.items.len <= paths.len);
 }
 
 /// Print help message with usage examples
@@ -751,8 +895,11 @@ fn listSingleFileEntry(
     style: anytype,
     stat: common.file.FileInfo,
 ) anyerror!void {
+    // GNU echoes a non-directory operand exactly as written, so the operand
+    // keeps its directory component here instead of being reduced to a
+    // basename.
     var entry = Entry{
-        .name = std.fs.path.basename(path),
+        .name = path,
         .kind = stat.kind,
         .stat = stat,
         .symlink_target = null,
