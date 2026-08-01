@@ -968,3 +968,423 @@ test "initStyle with auto color mode disables colors when stdout is not a TTY" {
         style.color_mode,
     );
 }
+
+// ============================================================
+// Issue #103: non-directory operands are mishandled two ways:
+// (a) printed as basename instead of the operand exactly as given
+//     (listSingleFileEntry), and (b) never sorted -- -t/-S/-r and the
+// default name sort are ignored for the operand LIST itself
+// (lsMain_listOperands), even though directory CONTENTS sort fine.
+//
+// The exact-stdout assertions below rely on the test process's REAL
+// stdout not being a TTY: display_config.resolve keys color off
+// env.isTty(std.Io.File.stdout().handle), and icons off
+// options.is_terminal -- neither looks at the Allocating writer passed
+// to runLs here. This holds under `zig build test` (the build runner
+// pipes the test binary's stdout) and matches the existing test above;
+// it will only surface as color/icon noise if this binary is ever run
+// directly from an interactive terminal.
+// ============================================================
+
+/// Change the process cwd to `tmp_dir` for the duration of a test and
+/// return a handle to the original cwd. lsMain resolves relative operands
+/// against the process cwd (std.Io.Dir.cwd()), not an injectable directory,
+/// so these operand-echo/operand-sort tests must actually chdir -- there is
+/// no way to drive that code path with a relative operand otherwise.
+fn testChdirToTmp(io: std.Io, tmp_dir: *std.testing.TmpDir) !std.Io.Dir {
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    errdefer saved_cwd_dir.close(io);
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+    std.debug.assert(tmp_abs.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(tmp_abs));
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    return saved_cwd_dir;
+}
+
+/// Restore the process cwd saved by `testChdirToTmp` and close the handle.
+/// Uses fchdir (via setCurrentDir on an open handle) rather than getcwd, so
+/// it keeps working in sandboxes where getcwd is unavailable.
+fn testRestoreCwd(io: std.Io, saved_cwd_dir: *std.Io.Dir) void {
+    std.debug.assert(saved_cwd_dir.handle >= 0);
+    std.debug.assert(saved_cwd_dir.handle != std.posix.AT.FDCWD);
+    // A silent failure here leaves every later test in this binary running
+    // with cwd inside a temp dir that TmpDir.cleanup then deletes out from
+    // under it, producing cascading failures misattributed to unrelated
+    // tests. setCurrentDir on a still-open fd should not fail in practice,
+    // so make a failure loud instead of absorbing it.
+    std.process.setCurrentDir(io, saved_cwd_dir.*) catch @panic("failed to restore test cwd");
+    saved_cwd_dir.close(io);
+}
+
+/// Overlay pinning every env var that DisplayConfig.resolve or
+/// getIconModeFromEnv consult, unset for the duration of a test.
+///
+/// The header comment above only documented the non-TTY-stdout assumption,
+/// but display_config.zig also honors VIBEUTILS_STYLE/VIBEUTILS_COLOR/
+/// VIBEUTILS_ICONS, and icons.zig separately honors LS_ICONS -- and
+/// common.env.getEnv falls through to the REAL process environment outside
+/// this overlay. A developer running with e.g. VIBEUTILS_STYLE=always (or
+/// LS_ICONS=always) exported would flip icons on, which makes
+/// resolveGitMode fall through to isInGitRepo -- true, because
+/// testing.tmpDir nests under .zig-cache/tmp INSIDE this git worktree --
+/// and every exact-stdout assertion below would then fail on icon/git
+/// noise, misread as "the bug doesn't reproduce." NO_COLOR and TERM are
+/// pinned too so color detection is deterministic regardless of the
+/// ambient shell.
+const test_env_overrides = [_]common.env.Override{
+    .{ .key = "VIBEUTILS_STYLE", .value = null },
+    .{ .key = "VIBEUTILS_COLOR", .value = null },
+    .{ .key = "VIBEUTILS_ICONS", .value = null },
+    .{ .key = "LS_ICONS", .value = null },
+    .{ .key = "NO_COLOR", .value = null },
+    .{ .key = "TERM", .value = null },
+};
+
+/// Stage `test_env_overrides` and return the previous overlay so the
+/// caller can `defer common.env.test_overrides = saved` to restore it.
+fn testStageDisplayEnvOverrides() []const common.env.Override {
+    const saved = common.env.test_overrides;
+    common.env.test_overrides = &test_env_overrides;
+    return saved;
+}
+
+test "ls prints a subdirectory operand exactly as given, not its basename (short format)" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "subdir");
+    {
+        const file = try tmp_dir.dir.createFile(io, "subdir/file.txt", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"subdir/file.txt"};
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // GNU echoes the operand verbatim ("subdir/file.txt"), not the
+    // basename ("file.txt"). basename() throwing away the directory
+    // component is exactly the bug this guards.
+    try testing.expectEqualStrings("subdir/file.txt\n", stdout_aw.writer.buffered());
+}
+
+test "ls -l ends a subdirectory operand's line with the full operand path" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "subdir");
+    {
+        const file = try tmp_dir.dir.createFile(io, "subdir/file.txt", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-l", "subdir/file.txt" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const output = stdout_aw.writer.buffered();
+    // The name field of a long-format line is the LAST field GNU emits, so
+    // the whole line must end with the full operand, not just "file.txt".
+    try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, output, "\n"), "subdir/file.txt"));
+    try testing.expect(!std.mem.endsWith(u8, std.mem.trimEnd(u8, output, "\n"), " file.txt"));
+}
+
+test "ls -1t sorts distinct-mtime file operands newest first, ignoring argv order" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const old_ns: i128 = 1_000_000_000 * 1_000_000_000; // 2001-09-09T01:46:40Z
+    const new_ns: i128 = old_ns + 100 * std.time.ns_per_s;
+
+    // Names are chosen so name order ("a_older" < "z_newer") DISAGREES with
+    // time order (z_newer is the newer file). A fix that collects operands
+    // but always falls back to the name comparator -- ignoring
+    // options.sort_by_time entirely -- would still pass an f_old/f_new
+    // style fixture (name order there happens to match time order); it
+    // must fail this one.
+    {
+        const file = try tmp_dir.dir.createFile(io, "a_older", .{});
+        defer file.close(io);
+        try file.setTimestamps(io, .{
+            .access_timestamp = .{ .new = .{ .nanoseconds = old_ns } },
+            .modify_timestamp = .{ .new = .{ .nanoseconds = old_ns } },
+        });
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "z_newer", .{});
+        defer file.close(io);
+        try file.setTimestamps(io, .{
+            .access_timestamp = .{ .new = .{ .nanoseconds = new_ns } },
+            .modify_timestamp = .{ .new = .{ .nanoseconds = new_ns } },
+        });
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // argv order is older, newer -- GNU still puts the newer file first
+    // with -t, even though that disagrees with both argv AND name order.
+    const args = [_][]const u8{ "-1", "-t", "a_older", "z_newer" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("z_newer\na_older\n", stdout_aw.writer.buffered());
+}
+
+test "ls -1S sorts distinct-size file operands largest first, ignoring argv order" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Names are chosen so name order ("a_small" < "z_big") DISAGREES with
+    // size order (z_big is the bigger file). A fix that collects operands
+    // but always falls back to the name comparator -- ignoring
+    // options.sort_by_size entirely -- would still pass an f_small/f_big
+    // style fixture (name order there happens to match size order); it
+    // must fail this one.
+    {
+        const file = try tmp_dir.dir.createFile(io, "a_small", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "a");
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "z_big", .{});
+        defer file.close(io);
+        const data = [_]u8{'X'} ** 1000;
+        try file.writeStreamingAll(io, &data);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // argv order is small, big -- GNU still puts the bigger file first
+    // with -S, even though that disagrees with both argv AND name order.
+    const args = [_][]const u8{ "-1", "-S", "a_small", "z_big" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("z_big\na_small\n", stdout_aw.writer.buffered());
+}
+
+test "ls -1 sorts file operands by name by default, ignoring argv order" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "z_file", .{});
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "a_file", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // argv order is z_file, a_file -- POSIX default is name order.
+    const args = [_][]const u8{ "-1", "z_file", "a_file" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("a_file\nz_file\n", stdout_aw.writer.buffered());
+}
+
+// NOTE for the RED-gate check: unlike the other tests in this block, this
+// one is EXPECTED TO PASS on today's (buggy) code -- the current bug is
+// "operands are never sorted at all," which happens to already match -U's
+// correct behavior (preserve argv order). It stays green through the fix
+// too; it exists to catch a fix that over-sorts and sweeps -U in with -t/
+// -S/default, not to pin the bug itself.
+test "ls -1U preserves argv order for file operands (guards against over-sorting)" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "z_file", .{});
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "a_file", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -U disables sorting entirely, so argv order (z_file, a_file) must
+    // survive even though it disagrees with the default name sort.
+    const args = [_][]const u8{ "-1", "-U", "z_file", "a_file" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("z_file\na_file\n", stdout_aw.writer.buffered());
+}
+
+test "ls -1r reverses the default name sort for file operands" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "big", .{});
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "small", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Default name order is big, small ('b' < 's'); -r must reverse THAT
+    // sorted order, not just the (coincidentally identical) argv order.
+    const args = [_][]const u8{ "-1", "-r", "big", "small" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("small\nbig\n", stdout_aw.writer.buffered());
+}
+
+test "ls sorts directory operands by name too, so a_dir's header comes before b_dir's" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "b_dir");
+    try tmp_dir.dir.createDirPath(io, "a_dir");
+    {
+        const file = try tmp_dir.dir.createFile(io, "a_dir/x", .{});
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "b_dir/y", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // argv order is b_dir, a_dir -- GNU still headers a_dir first.
+    const args = [_][]const u8{ "b_dir", "a_dir" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("a_dir:\nx\n\nb_dir:\ny\n", stdout_aw.writer.buffered());
+}
+
+// Mixed operand case: at least one file operand AND at least one directory
+// operand together. The Bug B fix restructures lsMain_listOperands, and
+// file_count (which drives the blank-line separator between the file
+// section and the directory section) has to be re-derived from the new
+// file group. None of the tests above exercise that: the directory-only
+// test above has zero file operands, so the `file_count > 0` branch of
+// the separator condition is never taken. This pins the full exact output
+// of a mixed invocation so a separator regression (dropped or duplicated
+// blank line) or an operand-ordering regression (directory section ahead
+// of the file section) fails here even if every single-group test passes.
+//
+// NOTE for the RED-gate check: like the -1U test above, this one is
+// EXPECTED TO PASS on today's (buggy) code -- with exactly one file
+// operand and one directory operand, Bug A/B have nothing to reorder
+// (a single-element "sort" is a no-op either way), so the existing
+// two-pass file_count/dir_idx separator logic already happens to match
+// GNU here. It exists purely to catch the Bug B restructure regressing
+// that separator, not to pin the bug itself.
+test "ls mixed operands: files first, one blank line before the dir section" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "a_dir");
+    {
+        const file = try tmp_dir.dir.createFile(io, "a_dir/x", .{});
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "z_file", .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // argv order is z_file, a_dir -- GNU lists file operands first (no
+    // header), then a single blank line, then the directory section.
+    const args = [_][]const u8{ "-1", "z_file", "a_dir" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("z_file\n\na_dir:\nx\n", stdout_aw.writer.buffered());
+}
