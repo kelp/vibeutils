@@ -1368,6 +1368,10 @@ test_ls() {
                 "git init failed in test environment"
             print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "SKIP" \
                 "git init failed in test environment"
+            print_test_result "ls #119: clean tracked file operand lists flush left" "SKIP" \
+                "git init failed in test environment"
+            print_test_result "ls #119: modified file operand keeps the git indicator" "SKIP" \
+                "git init failed in test environment"
         else
             (cd "$g09_dir" && git config commit.gpgsign false) || true
             (cd "$g09_dir" && git config user.email "test@example.com") || true
@@ -1389,6 +1393,10 @@ test_ls() {
                 print_test_result "ls #ls-git-column: all-clean repo matches --git=never (implicit one-per-line)" "SKIP" \
                     "git commit failed in test environment"
                 print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "SKIP" \
+                    "git commit failed in test environment"
+                print_test_result "ls #119: clean tracked file operand lists flush left" "SKIP" \
+                    "git commit failed in test environment"
+                print_test_result "ls #119: modified file operand keeps the git indicator" "SKIP" \
                     "git commit failed in test environment"
             else
                 # -C: explicit multi-column, fixed width so the arithmetic
@@ -1453,6 +1461,26 @@ test_ls() {
                         "Expected byte-identical -l output with exactly one space before the name, got --git=always: $(printf '%q' "$g09_l_always")"
                 fi
 
+                # --- Issue #119: a non-directory OPERAND must make the
+                # same per-section git-column decision a directory
+                # section makes. Operands were printed one at a time by
+                # listSingleFileEntry, which never reaches the
+                # printEntries seam that owns the decision, so a clean
+                # tracked file reserved the column and came out indented
+                # by three spaces while the very same file listed flush
+                # left as a section entry. Compare against the section
+                # rendering AND pin the literal, so a host where git
+                # status silently comes back empty cannot pass this
+                # vacuously.
+                local g119_operand
+                g119_operand=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=always clean1.txt 2>/dev/null | strip_ansi)
+                if [[ "$g119_operand" == "clean1.txt" ]]; then
+                    print_test_result "ls #119: clean tracked file operand lists flush left" "PASS"
+                else
+                    print_test_result "ls #119: clean tracked file operand lists flush left" "FAIL" \
+                        "Expected 'clean1.txt', got: $(printf '%q' "$g119_operand")"
+                fi
+
                 # Positive control: prove git status is actually live in
                 # this environment, so the two PASSes above cannot be
                 # explained by git status silently coming back empty
@@ -1474,6 +1502,20 @@ test_ls() {
                 else
                     print_test_result "ls #ls-git-column: git status positive control (modified file shows M  prefix)" "FAIL" \
                         "Expected output to start with 'M  clean1.txt', got: $(printf '%q' "$g09_dirty_output")"
+                fi
+
+                # Negative space for the #119 test above: dropping the
+                # column is owed to the section being clean, not to the
+                # operand path skipping git status altogether. clean1.txt
+                # is modified by the positive control just above, so the
+                # same operand must now carry its indicator.
+                local g119_dirty_operand
+                g119_dirty_operand=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=always clean1.txt 2>/dev/null | strip_ansi)
+                if [[ "$g119_dirty_operand" == "M  clean1.txt" ]]; then
+                    print_test_result "ls #119: modified file operand keeps the git indicator" "PASS"
+                else
+                    print_test_result "ls #119: modified file operand keeps the git indicator" "FAIL" \
+                        "Expected 'M  clean1.txt', got: $(printf '%q' "$g119_dirty_operand")"
                 fi
             fi
         fi
@@ -1553,6 +1595,10 @@ test_ls() {
         print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "SKIP" \
             "git not found on PATH"
         print_test_result "ls #ls-git-column: -R decides each directory section independently" "SKIP" \
+            "git not found on PATH"
+        print_test_result "ls #119: clean tracked file operand lists flush left" "SKIP" \
+            "git not found on PATH"
+        print_test_result "ls #119: modified file operand keeps the git indicator" "SKIP" \
             "git not found on PATH"
     fi
 

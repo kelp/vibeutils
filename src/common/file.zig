@@ -51,6 +51,7 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
         .ctime = ctime_ns,
         .kind = kind,
         .inode = stat_buf.ino,
+        .blocks = @intCast(stat_buf.blocks),
         // `st_dev` is a signed i32 on macOS; devfs and friends report ids
         // with the high bit set. Reinterpret the bits rather than range
         // checking, since a negative i32 would not fit in the u64 field.
@@ -106,6 +107,7 @@ fn fstatatToFileInfo(dirfd: std.posix.fd_t, path_z: [*:0]const u8, follow: StatF
             .ctime = ctime_ns,
             .kind = kind,
             .inode = sx.ino,
+            .blocks = sx.blocks,
             .dev = (@as(u64, sx.dev_major) << 8) | @as(u64, sx.dev_minor),
             .uid = sx.uid,
             .gid = sx.gid,
@@ -144,6 +146,11 @@ pub const FileInfo = struct {
     uid: u32,
     gid: u32,
     nlink: u32,
+    // Allocated 512-byte blocks (st_blocks). This is what the file
+    // occupies, which a size-derived count gets wrong in both directions:
+    // a file smaller than the allocation unit under-reports, and a sparse
+    // file over-reports.
+    blocks: u64 = 0,
 
     pub fn stat(io: std.Io, path: []const u8) !FileInfo {
         const file = try std.Io.Dir.cwd().openFile(io, path, .{});
@@ -196,6 +203,7 @@ pub const FileInfo = struct {
                 .ctime = ctime_ns,
                 .kind = kind,
                 .inode = sx.ino,
+                .blocks = sx.blocks,
                 .dev = (@as(u64, sx.dev_major) << 8) | @as(u64, sx.dev_minor),
                 .uid = sx.uid,
                 .gid = sx.gid,
