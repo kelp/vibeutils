@@ -41,8 +41,9 @@ pub const LINE_BUFFER_SIZE: usize = 8192;
 // =============================================================================
 
 /// Minimum spacing between columns in tabular output formats.
-/// Used by ls and other utilities that display columnar data.
 /// 2 spaces provides clear visual separation without excessive whitespace.
+/// Note that ls -C no longer uses this: it pads with tabs to a tab-stop
+/// aligned column width, matching BSD ls. Only ls -x still pads additively.
 pub const COLUMN_PADDING: usize = 2;
 
 /// Standard block size for file system operations and size calculations.

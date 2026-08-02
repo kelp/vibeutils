@@ -1,14 +1,18 @@
 const std = @import("std");
 const testing = std.testing;
 const test_utils = @import("test_utils.zig");
+const types = @import("types.zig");
+const formatter = @import("formatter.zig");
+const display = @import("display.zig");
 
-const LsOptions = @import("types.zig").LsOptions;
+const LsOptions = types.LsOptions;
 const LsTestEnv = test_utils.LsTestEnv;
 const LsAssertions = test_utils.LsAssertions;
 const PlatformHelpers = test_utils.PlatformHelpers;
 
 // Import constants for readability
 const TEST_SIZE_2K = test_utils.TEST_SIZE_2K;
+const TEST_SIZE_4K = test_utils.TEST_SIZE_4K;
 const TEST_SIZE_1_5K = test_utils.TEST_SIZE_1_5K;
 const TEST_TERMINAL_WIDTH = test_utils.TEST_TERMINAL_WIDTH;
 
@@ -791,6 +795,262 @@ test "multi_column: -C forces multi-column output even when stdout is not a term
     try LsAssertions.expectMultiColumnFormat(env.getStdout(), files.len);
 }
 
+// Regression tests for issue #ls-column-tabs: printColumnar (explicit -C and
+// the terminal default) must match macOS/BSD /bin/ls's tab-stop columnizer
+// byte for byte -- pad with '\t' to a uniform (max_width + 8) & ~7 column
+// width, never pad after the last cell of a row, and drive the arithmetic
+// off Entry.getDisplayWidth (which folds in icon/git-status prefixes), not
+// the raw name length. GNU is explicitly NOT the reference for this fix.
+
+test "columnar: -C row never ends in space or tab, partial last row" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // 7 entries of increasing width (max 7 chars: "ggggggg"). At a
+    // 24-column terminal this yields colwidth = (7+8)&~7 = 8,
+    // num_cols = 24/8 = 3, num_rows = ceil(7/3) = 3 -- the third column
+    // only has one entry (row 0), so rows 1 and 2 are partially filled:
+    // the current (buggy) pad guard only checks for the single
+    // globally-last entry, so it still emits a pad after the last
+    // printed cell in rows 1 and 2.
+    const files = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .multi_column = true, .terminal_width = 24 });
+
+    try std.testing.expectEqualStrings(
+        "a\tdddd\tggggggg\nbb\teeeee\nccc\tffffff\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: terminal default row never ends in space or tab, partial last row" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    const files = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    // Same fixture as above but reached through the terminal default
+    // (is_terminal = true, no explicit -C) instead of the explicit flag.
+    // icon_mode is pinned to .never: shouldShowIcons(.auto, is_terminal)
+    // would otherwise turn icons on for is_terminal = true, adding an
+    // icon+space prefix to every name and pushing max_width (and every
+    // tab-stop boundary below) up -- the briefing pins the reference
+    // with icons disabled, so this test must too.
+    try env.runLs(.{ .is_terminal = true, .terminal_width = 24, .icon_mode = .never });
+
+    try std.testing.expectEqualStrings(
+        "a\tdddd\tggggggg\nbb\teeeee\nccc\tffffff\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C pads with tabs to (max_width + 8) & ~7 at the maxlen=8 tab-stop boundary" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // 12 files, each exactly 8 chars long, pinned against real macOS
+    // /bin/ls (COLUMNS=80, longest name 8 chars): colwidth = (8+8)&~7 =
+    // 16, num_cols = 80/16 = 5, num_rows = ceil(12/5) = 3. Column-major
+    // fill-down only produces 4 visible columns -- the 5th column's
+    // first index (12) is out of range, so it never appears.
+    const files = [_][]const u8{
+        "aaaaaa01", "aaaaaa02", "aaaaaa03", "aaaaaa04",
+        "aaaaaa05", "aaaaaa06", "aaaaaa07", "aaaaaa08",
+        "aaaaaa09", "aaaaaa10", "aaaaaa11", "aaaaaa12",
+    };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .multi_column = true, .terminal_width = 80 });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaa01\taaaaaa04\taaaaaa07\taaaaaa10\n" ++
+            "aaaaaa02\taaaaaa05\taaaaaa08\taaaaaa11\n" ++
+            "aaaaaa03\taaaaaa06\taaaaaa09\taaaaaa12\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C pads with tabs to (max_width + 8) & ~7 at the maxlen=16 tab-stop boundary" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // 12 files, each exactly 16 chars long, pinned against real macOS
+    // /bin/ls (COLUMNS=80, longest name 16 chars): colwidth =
+    // (16+8)&~7 = 24, num_cols = 80/24 = 3, num_rows = ceil(12/3) = 4 --
+    // an exact fill, unlike the maxlen=8 case above.
+    const files = [_][]const u8{
+        "aaaaaaaaaaaaaa01", "aaaaaaaaaaaaaa02", "aaaaaaaaaaaaaa03",
+        "aaaaaaaaaaaaaa04", "aaaaaaaaaaaaaa05", "aaaaaaaaaaaaaa06",
+        "aaaaaaaaaaaaaa07", "aaaaaaaaaaaaaa08", "aaaaaaaaaaaaaa09",
+        "aaaaaaaaaaaaaa10", "aaaaaaaaaaaaaa11", "aaaaaaaaaaaaaa12",
+    };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .multi_column = true, .terminal_width = 80 });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaaaaaaaaa01\taaaaaaaaaaaaaa05\taaaaaaaaaaaaaa09\n" ++
+            "aaaaaaaaaaaaaa02\taaaaaaaaaaaaaa06\taaaaaaaaaaaaaa10\n" ++
+            "aaaaaaaaaaaaaa03\taaaaaaaaaaaaaa07\taaaaaaaaaaaaaa11\n" ++
+            "aaaaaaaaaaaaaa04\taaaaaaaaaaaaaa08\taaaaaaaaaaaaaa12\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C pads across intervening tab stops, not a single tab" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Pinned against real macOS /bin/ls (COLUMNS=80): names of widths
+    // 1, 9, 5, 8, 2. Longest name is 9 chars, so colwidth = (9+8)&~7 =
+    // 16, num_cols = 80/16 = 5, num_rows = ceil(5/5) = 1 -- a single
+    // row with all 5 entries. This is the one fixture where a single
+    // '\t' per entry is NOT enough to reach the next column boundary:
+    // BSD ls pads with a *loop* of 8-column tab stops until the
+    // absolute cursor column reaches the next multiple of colwidth,
+    // exactly like a real terminal tab key. Two entries need two hops:
+    //   - "a" (width 1) needs 2 tabs to reach column 16 (1 -> 8 -> 16)
+    //   - "ccccc" (width 5, column-relative start 32) needs 2 tabs to
+    //     reach 48 (37 -> 40 -> 48)
+    // while "bbbbbbbbb" (width 9, exactly at the boundary) and
+    // "dddddddd" (width 8) each need exactly one tab. An implementation
+    // that always emits a single '\t' per padded entry (e.g. reusing
+    // the old space-padding loop's single-append shape) passes every
+    // other fixture in this file but fails this one.
+    const files = [_][]const u8{ "a", "bbbbbbbbb", "ccccc", "dddddddd", "ee" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .multi_column = true, .terminal_width = 80 });
+
+    try std.testing.expectEqualStrings(
+        "a\t\tbbbbbbbbb\tccccc\t\tdddddddd\tee\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C folds the -s block prefix into the column width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // The one fixture where dropping the block prefix from the column
+    // width changes the layout instead of merely shifting it. Names are
+    // 6 chars and the widest block count is one digit, so the prefix is
+    // 2 chars: base = 2 + 6 = 8 and colwidth = (8+8)&~7 = 16, a base on
+    // a tab stop still gaining a full stop. Without the prefix the base
+    // would be 6 and colwidth (6+8)&~7 = 8, giving a different grid.
+    // num_cols = 80/16 = 5, num_rows = ceil(6/5) = 2, so column-major
+    // fill-down shows 3 columns. Each cell is 8 chars wide and reaches
+    // the next stop at 16 with a single tab.
+    //
+    // aa0006 is exactly 4096 bytes so its block count is 8 whether it
+    // is derived from the size or read from st_blocks; the two disagree
+    // for sizes that are not a multiple of the allocation unit.
+    const empty = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005" };
+    for (empty) |name| {
+        try env.createFile(name, "");
+    }
+    try env.createFileWithSize("aa0006", TEST_SIZE_4K, 'z');
+
+    try env.runLs(.{
+        .multi_column = true,
+        .show_blocks = true,
+        .terminal_width = 80,
+    });
+
+    // Verified byte-identical to macOS /bin/ls -C -s on this fixture.
+    try std.testing.expectEqualStrings(
+        "total 8\n" ++
+            "0 aa0001\t0 aa0003\t0 aa0005\n" ++
+            "0 aa0002\t0 aa0004\t8 aa0006\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C width arithmetic uses getDisplayWidth (git prefix)" {
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+
+    // Each name is 5 raw characters, but the "M  " git-status prefix
+    // (2-char indicator + trailing space, see GitStatus.getIndicator)
+    // adds 3 more, for a real display width of 8, so colwidth =
+    // (8+8)&~7 = 16. At a 40-column terminal that gives num_cols =
+    // 40/16 = 2 -- wide enough to actually assert alignment (a
+    // narrower terminal collapsing to 1 column would never call the
+    // padding helper at all). Using the raw name length instead would
+    // compute colwidth = (5+8)&~7 = 8 and num_cols = 5, producing a
+    // completely different (and wrong) row shape and tab count. If the
+    // fix uses entry.name.len instead of getDisplayWidth anywhere in
+    // the tab arithmetic, the exact byte comparison below fails.
+    var entries = [_]types.Entry{
+        .{ .name = "bbbbb", .kind = .file, .git_status = .modified },
+        .{ .name = "ccccc", .kind = .file, .git_status = .modified },
+        .{ .name = "ddddd", .kind = .file, .git_status = .modified },
+    };
+
+    const options = types.LsOptions{ .terminal_width = 40, .show_git_status = true };
+    const style = try display.initStyle(testing.allocator, &buf_aw.writer, .never);
+
+    try formatter.printColumnar(testing.allocator, &entries, &buf_aw.writer, options, style);
+
+    // num_rows = ceil(3/2) = 2; column-major fill-down gives:
+    // col0 = [bbbbb, ccccc], col1 = [ddddd] (idx 3 is out of range).
+    // "M  bbbbb" (display width 8) needs exactly one tab to reach the
+    // column-16 boundary; the row's last cell ("M  ddddd") gets no
+    // pad; row 2's only cell ("M  ccccc") is the last (and only) cell
+    // in its row, so it also gets no trailing pad even though it is
+    // not the last entry overall -- this is the exact bug-1 shape.
+    try std.testing.expectEqualStrings(
+        "M  bbbbb\tM  ddddd\nM  ccccc\n",
+        buf_aw.writer.buffered(),
+    );
+}
+
+test "columnar: -C width arithmetic uses getDisplayWidth (icon prefix)" {
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+
+    // Mirrors the git-status test above but through the icon path
+    // instead: icon glyph + trailing space contributes displayWidth +
+    // 1 = 3 (the default file icon, U+F15B, is a Nerd Font Private Use
+    // Area glyph that renders 2 columns wide -- see
+    // common.unicode.isNerdFontWide), the same width contribution as
+    // the git indicator, so the row shape and tab counts are identical
+    // to the git-status fixture. icon_mode = .always forces icons on
+    // regardless of is_terminal, keeping this a plain unit test of the
+    // formatter rather than a terminal-detection test.
+    var entries = [_]types.Entry{
+        .{ .name = "bbbbb", .kind = .file },
+        .{ .name = "ccccc", .kind = .file },
+        .{ .name = "ddddd", .kind = .file },
+    };
+
+    const options = types.LsOptions{ .terminal_width = 40, .icon_mode = .always };
+    const style = try display.initStyle(testing.allocator, &buf_aw.writer, .never);
+
+    try formatter.printColumnar(testing.allocator, &entries, &buf_aw.writer, options, style);
+
+    // "\xef\x85\x9b" is the 3-byte UTF-8 encoding of U+F15B (the
+    // default file icon); the icon renderer writes "{s} " (glyph plus
+    // a literal trailing space) before every name. Row shape mirrors
+    // the git-status fixture exactly.
+    try std.testing.expectEqualStrings(
+        "\u{f15b} bbbbb\t\u{f15b} ddddd\n\u{f15b} ccccc\n",
+        buf_aw.writer.buffered(),
+    );
+}
+
 // ============================================================================
 // -x flag: multi-column sorted across rows
 // ============================================================================
@@ -836,6 +1096,30 @@ test "columns_across: -x first row contains first entries" {
     const first_line = lines.next() orelse "";
     try testing.expect(std.mem.indexOf(u8, first_line, "aaa") != null);
     try testing.expect(std.mem.indexOf(u8, first_line, "bbb") != null);
+}
+
+// Regression pin for issue #ls-column-tabs: -x (printColumnarAcross)
+// shares printColumnar_writePadding and the COLUMN_PADDING/col_width
+// arithmetic with -C (printColumnar), but the pinned target behavior
+// for this issue is explicit that -x is unaffected -- it must keep
+// padding with plain runs of spaces at (max_width + 2), never tabs.
+// An accidental edit to the shared padding helper (or to COLUMN_PADDING
+// itself) while fixing -C would silently flip -x's separator to tabs
+// or change its column count; this exact byte comparison catches that.
+test "columns_across: -x still pads with spaces at (max_width + 2), not tabs" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    const files = [_][]const u8{ "aaa", "bbb", "ccc", "ddd" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    // max_width = 3, col_width = 3 + 2 = 5, num_cols = 20 / 5 = 4 --
+    // all four entries fit on a single row.
+    try env.runLs(.{ .columns_across = true, .terminal_width = 20 });
+
+    try std.testing.expectEqualStrings("aaa  bbb  ccc  ddd\n", env.getStdout());
 }
 
 // ============================================================================
