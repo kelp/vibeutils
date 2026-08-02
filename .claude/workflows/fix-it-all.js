@@ -9,6 +9,7 @@ export const meta = {
     { title: 'Audit code', detail: '5 opus + 5 codex lenses over the implementation, seeded with the test gaps' },
     { title: 'Differential', detail: 'mechanical ours-vs-GNU comparison on the Linux VM' },
     { title: 'Consensus', detail: 'merge, cross-check, three adversarial refuters, Fable judge on deadlock' },
+    { title: 'Reproduce', detail: 'independently demonstrate every survivor; duplication gets a judgement gate instead' },
     { title: 'Red', detail: 'test-writer fixes tests, writes failing tests, persists fuzz corpora' },
     { title: 'Green', detail: 'implementer fixes the code; scoped loop gate, tiger, review, codex diff review, full final gate' },
   ],
@@ -253,11 +254,18 @@ const REPORTING_RULES = [
   '  speculative refactors, no "consider adding".',
   '- Every finding needs a `location` as file:line that you actually read, and `evidence` quoting or',
   '  describing the specific code or behavior. A finding without a line you can point at is noise.',
-  '- Classify `kind` honestly:',
-  '    bug          = the implementation behaves incorrectly.',
-  '    test_defect  = an existing test is wrong, toothless, dead, or duplicated.',
-  '    missing_test = behavior that is implemented but untested.',
-  '    refactor     = duplication or a missed reuse opportunity; behavior-preserving by definition.',
+  '- Classify `kind` honestly. The kind decides what you will be asked to PROVE, so it matters:',
+  '    bug          = the implementation behaves incorrectly. Must be reproducible: someone will be',
+  '                   asked to run a command and watch it fail. Do not file a bug you cannot imagine',
+  '                   a reproduction for.',
+  '    test_defect  = an existing test is wrong, toothless, dead, or duplicated. Proven by sabotage.',
+  '    missing_test = behavior that is implemented but untested. Proven by a coverage search.',
+  '    dead_code    = code with no reachable caller. DETERMINISTIC: provable by deleting it and',
+  '                   watching the build and full suite still pass. File it only when you believe',
+  '                   that would hold.',
+  '    duplication  = the same logic exists elsewhere, or a shared helper already does this. This is',
+  '                   a JUDGEMENT CALL, not a fact — it goes to a separate reviewer who decides',
+  '                   whether consolidating is worth it. Say plainly what you would merge into what.',
   '- Classify `scope`: `local` if the fix touches only this unit\'s own files; `cross_cutting` if it',
   '  would change another unit. Cross-cutting fixes are routed to their owning wave, so mislabeling',
   '  one as local will make two worktrees collide.',
@@ -444,27 +452,54 @@ const CODE_LENSES = [
   },
   {
     id: 'C5',
+    name: 'dead-code',
+    focus: [
+      'Find code with NO REACHABLE CALLER. This is the deterministic half of the cleanup work: a dead',
+      'symbol is a fact you can prove, not an opinion.',
+      '- exported and private functions never called.',
+      '- struct fields written but never read, or never touched at all.',
+      '- enum variants never constructed, switch arms never reachable.',
+      '- branches whose condition cannot hold, and error paths for errors the callee cannot return.',
+      '- whole files nobody imports, and test helpers with zero consumers (this repo already carries',
+      '  `TestWriter` and `StdoutCapture` in src/common/test_utils.zig with no users at all).',
+      'Method: for each candidate, grep the WHOLE tree for its name and show that the only hits are',
+      'the definition itself, its own doc comment, and nothing else. Be careful with the two ways this',
+      'codebase hides live references: `@import` chains that only look dead (see',
+      'src/common/force_import_lint.zig) and symbols reached through comptime or a struct literal',
+      'rather than by name.',
+      'Set `kind` to `dead_code`. The proof obligation is deletion: someone will delete it and confirm',
+      'the build and the full suite still pass, so only file it when you expect that to hold.',
+    ].join('\n'),
+  },
+  {
+    id: 'C6',
     name: 'duplication-and-reuse',
     focus: [
-      'Find code that should not exist because it already exists elsewhere. Read the shared module',
-      'list first (`ls src/common/`), then look for hand-rolled versions of:',
+      'Find logic that already exists elsewhere. Unlike the other lenses this one is a JUDGEMENT CALL,',
+      'and you are expected to exercise judgement rather than report every similarity you notice.',
+      'Read the shared module list first (`ls src/common/`), then look for hand-rolled versions of:',
       '- directory traversal that should use common/walker.zig (bounded, cycle-aware; hand-rolled',
-      '  walks here have shipped symlink-loop and sibling-alias data-loss bugs).',
+      '  walks here have shipped symlink-loop and sibling-alias data-loss bugs, so this one usually',
+      '  IS worth consolidating).',
       '- argument parsing that should use common/argparse.zig; help/version output that should use',
       '  common/help.zig; mode parsing that should use common/mode.zig; path manipulation that should',
       '  use common/path.zig; copy and permission primitives in common/file_ops.zig; error printing',
       '  that should use common.printErrorWithProgram.',
       '- the same non-trivial logic copy-pasted between two units (compare against the sibling that',
       '  shares the behavior — cp/mv, rm/rmdir, head/tail, chmod/chown).',
-      '- dead code: functions, branches, and struct fields with no reachable caller.',
-      'Every finding here is behavior-preserving by definition, so `kind` is `refactor`. If replacing',
-      'the local copy would CHANGE behavior, that is a `bug` finding instead — say which behavior',
-      'moves. Judge honestly whether the duplication is worth removing: a little copying is better',
-      'than a little dependency, and this project does not refactor for its own sake.',
+      'This project states its own bias plainly: a little copying is better than a little dependency,',
+      'and it does not refactor for its own sake. So the bar is not "these look similar" — it is',
+      '"merging these would make the code genuinely better, and the shared version would not need a',
+      'flag or a branch for each caller." Two functions that resemble each other but drift for good',
+      'reasons are correctly duplicated. Report the weak ones anyway if you find them, but say so',
+      'honestly in `claim`; a reviewer decides, and an inflated list wastes its time.',
+      'Set `kind` to `duplication` and state exactly what you would merge into what.',
+      'If replacing the local copy would CHANGE behavior, that is a `bug` finding instead — say which',
+      'behavior moves.',
     ].join('\n'),
   },
   {
-    id: 'C6',
+    id: 'C7',
     name: 'cross-utility-consistency',
     focus: [
       'Find where this unit is INCONSISTENT with its siblings on behavior every utility should share.',
@@ -493,7 +528,7 @@ const CODE_LENSES = [
 const FINDING_PROPS = {
   id: { type: 'string', description: 'Lens id + number, e.g. T1-1, C2-3, D-7.' },
   severity: { type: 'string', enum: ['CRITICAL', 'IMPORTANT', 'SUGGESTION'] },
-  kind: { type: 'string', enum: ['bug', 'test_defect', 'missing_test', 'refactor'] },
+  kind: { type: 'string', enum: ['bug', 'test_defect', 'missing_test', 'dead_code', 'duplication'] },
   scope: { type: 'string', enum: ['local', 'cross_cutting'] },
   location: { type: 'string', description: 'file:line you actually read' },
   claim: { type: 'string' },
@@ -562,6 +597,35 @@ const DIFF_SCHEMA = {
       },
     },
     notes: { type: 'string' },
+  },
+};
+
+const REPRO_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['finding_id', 'reproduced', 'reproduction_kind', 'command', 'observed', 'expected'],
+  properties: {
+    finding_id: { type: 'string' },
+    reproduced: {
+      type: 'boolean',
+      description: 'You RAN this and SAW the defect. Not "the code looks like it would".',
+    },
+    reproduction_kind: {
+      type: 'string',
+      enum: ['shell', 'zig_test', 'sabotage', 'coverage_gap', 'not_reproducible'],
+    },
+    setup: { type: 'string', description: 'Commands creating the fixtures, runnable as-is. Empty if none.' },
+    command: { type: 'string', description: 'The exact command that exhibits the defect, runnable after setup.' },
+    observed: { type: 'string', description: 'Verbatim output and exit code you actually saw.' },
+    expected: { type: 'string', description: 'Verbatim reference output and exit code, or the behavior required.' },
+    reference_command: { type: 'string', description: 'The GNU invocation used to pin `expected`, if applicable.' },
+    platforms: {
+      type: 'array',
+      items: { type: 'string', enum: ['macos', 'linux'] },
+      description: 'Where you confirmed it. Empty means you confirmed it nowhere.',
+    },
+    corpus_input: { type: 'string', description: 'File content that triggers it, for tests/fuzz/<u>/corpus/.' },
+    notes: { type: 'string', description: 'If not reproduced, why — and what would be needed to stage it.' },
   },
 };
 
@@ -1090,12 +1154,27 @@ function divergencesToFindings(diff, round) {
 function renderFindings(list) {
   if (!list || list.length === 0) return '(none)';
   return list
-    .map(
-      (f) =>
+    .map((f) => {
+      const head =
         `### ${f.id} [${f.severity}/${f.kind}/${f.scope}] ${f.location}\n` +
         `claim: ${f.claim}\nevidence: ${f.evidence}\nfix: ${f.fix}` +
-        (f.reproducer ? `\nreproducer: ${f.reproducer}` : ''),
-    )
+        (f.reproducer ? `\nreproducer: ${f.reproducer}` : '');
+      const r = f.repro;
+      if (!r) return head;
+      // The verified reproduction is the most useful thing downstream agents
+      // get: it is a command someone already ran and watched fail.
+      return [
+        head,
+        `VERIFIED REPRODUCTION (${r.reproduction_kind}, confirmed on ${(r.platforms || []).join(' + ') || 'no platform'}):`,
+        r.setup ? `  setup:    ${r.setup}` : '',
+        `  command:  ${r.command}`,
+        `  observed: ${r.observed}`,
+        `  expected: ${r.expected}`,
+        r.reference_command ? `  pinned by: ${r.reference_command}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+    })
     .join('\n\n');
 }
 
@@ -1282,6 +1361,195 @@ async function refute(c, target, list, lens, round) {
       phase: 'Consensus',
       model: 'opus',
       schema: REFUTE_SCHEMA,
+    },
+  ).catch(() => null);
+}
+
+// What counts as a reproduction depends on what kind of defect is claimed.
+// A behavior bug is reproduced by making it happen; a toothless test is
+// reproduced by breaking what it guards and watching it pass anyway.
+const REPRO_OBLIGATION = {
+  bug: [
+    'This claims the implementation BEHAVES INCORRECTLY. Reproduce it by making it happen:',
+    '  1. Build the binary and construct whatever fixtures are needed. Keep them minimal — the',
+    '     smallest input that still exhibits the defect, not the one from the finding.',
+    '  2. Run our binary. Capture stdout, stderr, and the exit code verbatim.',
+    '  3. Pin the reference: run the real GNU utility on the Linux VM with the SAME input and the',
+    '     same pinned environment (LC_ALL=C, LANG=C, TZ=UTC). Capture all three channels. Put the',
+    '     invocation in reference_command. Never write `expected` from memory or from the finding —',
+    '     it must come from a command you ran, or from the flag matrix if the flag is ours alone.',
+    '  4. Confirm the two differ in the way the finding claims. If they differ some OTHER way, say so',
+    '     in notes: the finding is mis-stated even if a defect exists.',
+    'reproduction_kind is `shell` when a command line demonstrates it, `zig_test` when it can only be',
+    'shown through an in-process test (an internal API, an allocator failure, a code path with no CLI',
+    'route).',
+  ].join('\n'),
+  test_defect: [
+    'This claims an EXISTING TEST IS BROKEN. A test cannot be shown broken by reading it, so',
+    'reproduce it by SABOTAGE:',
+    '  1. Temporarily mutate the implementation to break exactly the behavior this test claims to',
+    '     guard. Write the mutation into `command` so it is reproducible.',
+    '  2. Run the test. If it still PASSES, the defect is real and reproduced: the test has no teeth.',
+    '     `observed` is the passing result under sabotage; `expected` is that it should have failed.',
+    '  3. REVERT the mutation immediately and confirm the suite is back to its original state. Never',
+    '     leave one in place. Say in notes that you reverted.',
+    'If the test DOES fail under sabotage, it has teeth and the finding is wrong — set',
+    'reproduced=false and say so. That is a valuable result, not a failure on your part.',
+    'For a test that is claimed DEAD rather than toothless, reproduce differently: show the runner',
+    'never reaches it (the glob that excludes the file, the missing call site, the absent',
+    'force-import) by running the command that proves it. reproduction_kind is still `sabotage`.',
+  ].join('\n'),
+  missing_test: [
+    'This claims behavior is IMPLEMENTED BUT UNTESTED. Reproduce the GAP, not a bug:',
+    '  1. Show the behavior exists: run the invocation and capture what it does. That is `observed`.',
+    '  2. Show nothing asserts it: grep the unit tests and the integration file for any assertion',
+    '     covering it, and put that search in `command` with its (empty or irrelevant) output.',
+    '  3. `expected` is what a test SHOULD assert about this behavior, pinned against GNU where GNU',
+    '     defines it.',
+    'reproduction_kind is `coverage_gap`. If you find an existing test that DOES cover it, the finding',
+    'is wrong: set reproduced=false and cite that test.',
+  ].join('\n'),
+  dead_code: [
+    'This claims code has NO REACHABLE CALLER. That is deterministic, so prove it deterministically —',
+    'by deletion, not by reading:',
+    '  1. Grep the whole tree for every reference to the symbol. Put that search and its output in',
+    '     `command` and `observed`. Watch for the two ways this codebase hides live references:',
+    '     `@import` force-import chains (src/common/force_import_lint.zig exists because of exactly',
+    '     this) and symbols reached through comptime or a struct literal rather than by name.',
+    '  2. Then actually DELETE it and build. Run the full unit suite and, for a utility, the scoped',
+    '     integration suite. If everything still passes, the code is dead and you have proven it.',
+    '  3. REVERT the deletion and confirm the tree is byte-identical to how you found it. Say in',
+    '     notes that you reverted. The deletion is the proof, not the fix — a later phase does that.',
+    '`expected` is that the build and suites pass without it. If ANY of them fail, the code is live:',
+    'set reproduced=false and name the caller you uncovered. reproduction_kind is `sabotage`.',
+  ].join('\n'),
+};
+
+const DUP_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdicts'],
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'worth_doing', 'reason'],
+        properties: {
+          id: { type: 'string' },
+          worth_doing: { type: 'boolean' },
+          reason: { type: 'string', description: 'Cite the two sites and say what merging would cost or save.' },
+          consolidation: { type: 'string', description: 'If worth doing: exactly what merges into what.' },
+        },
+      },
+    },
+    summary: { type: 'string' },
+  },
+};
+
+// Duplication is the one finding class with no fact to establish. Nothing can
+// be run to prove that two similar functions SHOULD be one, so it gets a
+// judgement gate instead of a reproduction gate. The bias is the project's
+// own: a little copying beats a little dependency.
+async function judgeDuplication(c, list, round) {
+  return await agent(
+    [
+      wtPreamble(c),
+      '',
+      '## YOUR TASK (duplication reviewer — decide what is actually worth merging)',
+      `Auditors flagged the duplication below in \`${c.util}\`. Unlike every other finding in this`,
+      'sweep there is nothing to reproduce: no command proves that two similar functions ought to be',
+      'one. It is a judgement call, and you are making it.',
+      '',
+      'This project states its bias plainly, and you are bound by it:',
+      '  "Prefer simple, well-known tools. Avoid unnecessary complexity. A little copying is better',
+      '   than a little dependency."',
+      '  "Do not refactor, abstract, or add error handling beyond what the task requires. Do not',
+      '   design for hypothetical future requirements."',
+      'So the default answer is NO. Say yes only when merging makes the code genuinely better today.',
+      '',
+      'Go read BOTH sites before deciding — the whole function, not the flagged lines. Then weigh:',
+      '  - Would the shared version need a flag, a branch, or a callback for each caller? If so the',
+      '    duplication is doing real work and should stay. This is the most common reason to decline.',
+      '  - Have the two copies already DRIFTED? Drift is usually a sign they answer different',
+      '    questions, not that one is stale — but check whether the drift is a latent bug, and if it',
+      '    is, say so: that is a `bug`, not duplication.',
+      '  - Is one copy demonstrably more correct? Consolidating onto the better one fixes a real',
+      '    defect and is usually worth it. common/walker.zig is the precedent: hand-rolled traversals',
+      '    here shipped symlink-loop and sibling-alias data-loss bugs that the shared walker does not',
+      '    have.',
+      '  - How large and how tangled is the duplicated logic? Three similar lines are not worth a new',
+      '    abstraction. Two hundred lines of subtle traversal or permission logic usually are.',
+      '  - Would merging cross a unit boundary into src/common, and is that justified by more than',
+      '    one caller needing it?',
+      '',
+      'You may read and build; you may NOT edit. Every reason must cite both sites by file:line.',
+      'Declining is a real answer and needs no apology — record it and move on.',
+      '',
+      HOUSE_RULES,
+      '',
+      '## DUPLICATION TO JUDGE',
+      renderFindings(list),
+    ].join('\n'),
+    {
+      label: `dup-review:${c.util}:r${round}`,
+      phase: 'Reproduce',
+      model: 'opus',
+      schema: DUP_SCHEMA,
+    },
+  ).catch(() => null);
+}
+
+// The finder claims; an independent agent must make the defect happen. A finder
+// that both asserts and "verifies" its own bug is not evidence, which is the
+// same separation this repo already enforces between tests and implementation.
+async function reproduce(c, target, f, round) {
+  const obligation = REPRO_OBLIGATION[f.kind] || REPRO_OBLIGATION.bug;
+  return await agent(
+    [
+      wtPreamble(c),
+      '',
+      '## YOUR TASK (reproduction engineer — build it and run it)',
+      'A finding has survived two independent audits and three adversarial refuters. Before anyone',
+      'writes a test or changes a line of code, YOU must make the defect actually happen and record',
+      'exactly how.',
+      '',
+      'You did not find this and you have no stake in it being real. Report what the machine does, not',
+      'what the finding predicts. `reproduced=true` means you RAN something and SAW the defect — never',
+      'that the code looks like it would misbehave. If you cannot make it happen, say so: an',
+      'unreproduced finding is quarantined rather than fixed, and that is the correct outcome.',
+      '',
+      'Everything you write must be runnable AS-IS by someone who has only this worktree:',
+      '  - `setup` creates every fixture from scratch in a fresh temp directory.',
+      '  - `command` is the exact invocation, with our binary referenced by path.',
+      '  - `observed` and `expected` are verbatim captures, including the exit code, not paraphrases.',
+      'Prefer the smallest reproduction that still exhibits the defect. This becomes the regression',
+      'test in the next phase, so a bloated one becomes a bloated test.',
+      '',
+      `Build with \`${c.linux_build_cmd}\` for Linux work and a plain \`cd ${c.workdir} && zig build\``,
+      `for macOS. The real GNU utilities are on the VM (\`${COMMON.linux_prefix} ...\`).`,
+      'Try BOTH platforms and record in `platforms` where it actually reproduced — a defect that',
+      'appears on only one is still real, and knowing which one is what makes the fix correct.',
+      'If the trigger is file CONTENT rather than arguments, put that content in `corpus_input`; it',
+      `becomes a permanent fixture under tests/fuzz/${c.util}/corpus/.`,
+      '',
+      'You may create scratch files under /tmp and you may build. You may NOT edit any tracked file,',
+      'except for a sabotage mutation you revert before finishing.',
+      '',
+      `## THE OBLIGATION FOR THIS KIND OF FINDING (${f.kind})`,
+      obligation,
+      '',
+      HOUSE_RULES,
+      '',
+      '## THE FINDING',
+      renderFindings([f]),
+    ].join('\n'),
+    {
+      label: `repro:${c.util}:${f.id}`,
+      phase: 'Reproduce',
+      model: 'opus',
+      schema: REPRO_SCHEMA,
     },
   ).catch(() => null);
 }
@@ -1500,7 +1768,65 @@ async function adjudicate(c, target, opusFindings, codexFindings, codexOkCount, 
     }
   }
 
-  return { confirmed, dropped, judged };
+  // Final gate, and it splits by kind. Everything with a fact to establish must
+  // be PROVEN by an agent that did not find it: a bug by reproducing it, a
+  // toothless test by sabotage, a coverage gap by search, dead code by deleting
+  // it and watching the suite pass. A defect nobody can demonstrate is a defect
+  // nobody has proven, and acting on one costs more than losing it — the
+  // discovery loop resurfaces anything genuinely real on a later round.
+  //
+  // Duplication is the exception. There is no experiment that shows two similar
+  // functions ought to be one, so it gets a judgement gate instead, biased
+  // toward leaving the code alone.
+  const provable = confirmed.filter((f) => f.kind !== 'duplication');
+  const dupes = confirmed.filter((f) => f.kind === 'duplication');
+
+  const proofJobs = [
+    () => (dupes.length > 0 ? judgeDuplication(c, dupes, round) : Promise.resolve(null)),
+  ].concat(provable.map((f) => () => reproduce(c, target, f, round)));
+  const proofOut = await parallel(proofJobs);
+  const dupRuling = proofOut[0];
+  const repros = proofOut.slice(1);
+
+  const reproduced = [];
+  const unreproduced = [];
+  for (let i = 0; i < provable.length; i += 1) {
+    const f = provable[i];
+    const r = repros[i];
+    if (r && r.reproduced) {
+      reproduced.push({ ...f, repro: r, corpus_input: r.corpus_input || f.corpus_input || '' });
+    } else {
+      unreproduced.push({
+        ...f,
+        repro: r || null,
+        quarantine_reason: r ? r.notes || 'could not be demonstrated' : 'proof agent returned nothing',
+      });
+    }
+  }
+
+  const declined = [];
+  for (const f of dupes) {
+    const v = dupRuling && (dupRuling.verdicts || []).find((x) => String(x.id) === String(f.id));
+    if (v && v.worth_doing) {
+      reproduced.push({ ...f, fix: v.consolidation || f.fix, dup_reason: v.reason });
+    } else {
+      declined.push({
+        ...f,
+        dropped_by: 'duplication review',
+        drop_reason: v ? v.reason : 'no verdict returned; left alone by default',
+      });
+    }
+  }
+  dropped.push(...declined);
+
+  if (confirmed.length > 0) {
+    log(
+      `${c.util}/${target} r${round}: proved ${reproduced.length - (dupes.length - declined.length)}/${provable.length}, ` +
+        `${unreproduced.length} quarantined; duplication ${dupes.length - declined.length}/${dupes.length} judged worth doing.`,
+    );
+  }
+
+  return { confirmed: reproduced, unreproduced, dropped, judged };
 }
 
 // ---------------------------------------------------------------------------
@@ -1514,6 +1840,7 @@ async function adjudicate(c, target, opusFindings, codexFindings, codexOkCount, 
 async function auditTarget(c, target, lenses, seed) {
   const seen = new Map();
   const confirmed = [];
+  const unreproduced = [];
   const dropped = [];
   const judged = [];
   let codexOkTotal = 0;
@@ -1543,6 +1870,7 @@ async function auditTarget(c, target, lenses, seed) {
 
     const adj = await adjudicate(c, target, freshOpus, freshCodex, r.codexOk, round);
     confirmed.push(...adj.confirmed);
+    unreproduced.push(...(adj.unreproduced || []));
     dropped.push(...adj.dropped);
     judged.push(...adj.judged);
   }
@@ -1554,8 +1882,9 @@ async function auditTarget(c, target, lenses, seed) {
   const deferred = confirmed.filter((f) => isCrossCutting(c, f));
   const actionable = confirmed.filter((f) => !isCrossCutting(c, f));
   log(
-    `${c.util}/${target}: converged after ${round} rounds — ${actionable.length} actionable, ` +
-      `${deferred.length} deferred, ${dropped.length} dropped.`,
+    `${c.util}/${target}: converged after ${round} rounds — ${actionable.length} actionable ` +
+      `(all reproduced), ${deferred.length} deferred, ${unreproduced.length} quarantined, ` +
+      `${dropped.length} dropped.`,
   );
 
   return {
@@ -1564,6 +1893,7 @@ async function auditTarget(c, target, lenses, seed) {
     converged: dry >= DRY_ROUNDS_REQUIRED,
     agreed: actionable,
     deferred,
+    unreproduced,
     dropped,
     judged,
     codex_lens_runs_ok: codexOkTotal,
@@ -1606,7 +1936,7 @@ async function writeTests(c, audit, extra) {
   const testDefects = findingsByKind(audit, ['test_defect']);
   const missing = findingsByKind(audit, ['missing_test']);
   const bugs = findingsByKind(audit, ['bug']);
-  const refactors = findingsByKind(audit, ['refactor']);
+  const refactors = findingsByKind(audit, ['dead_code', 'duplication']);
   const withCorpus = bugs.filter((f) => f.corpus_input);
   return await agent(
     [
@@ -1629,10 +1959,14 @@ async function writeTests(c, audit, extra) {
       '   Some will PASS — good, that is coverage. Some will FAIL because the behavior is actually',
       '   wrong: leave those FAILING and list them in expected_failing. Never weaken a test to pass.',
       '',
-      '3. WRITE THE RED TESTS. For each `bug` finding, write a test that fails NOW and passes once the',
-      '   bug is fixed. Assert the reference (GNU) behavior; findings from differential testing carry',
-      '   a `reproducer` that already pins it, so build the test directly on that command. For the',
-      `   rest, pin it yourself with \`${COMMON.linux_prefix} ${c.util} ...\`.`,
+      '3. WRITE THE RED TESTS. Every finding below carries a VERIFIED REPRODUCTION: a command an',
+      '   independent agent already ran and watched fail, with the observed and expected output',
+      '   captured verbatim. Build each test directly on that — the reproduction IS the test, and',
+      '   translating it into the suite is most of your job here.',
+      '   Assert `expected` exactly as recorded; it was pinned by running the real GNU utility, so do',
+      '   not soften it to a substring match or re-derive it from your own reasoning. If the recorded',
+      '   reproduction looks wrong to you, say so in `refused` rather than quietly asserting something',
+      '   weaker.',
       '   List each in expected_failing with exactly what it asserts.',
       '',
       withCorpus.length > 0
@@ -1646,9 +1980,13 @@ async function writeTests(c, audit, extra) {
       '',
       refactors.length > 0
         ? [
-            'REFACTOR findings are behavior-preserving, so they get CHARACTERIZATION tests instead:',
-            'tests that pass against the code as it stands today and still pass after the refactor.',
-            'Write those too, and do NOT list them in expected_failing.',
+            'DEAD CODE and DUPLICATION findings are behavior-preserving, so they get CHARACTERIZATION',
+            'tests instead: tests that pass against the code as it stands today and still pass after',
+            'the cleanup. Write those too, and do NOT list them in expected_failing.',
+            'Dead-code findings arrive with a deletion proof — an agent already removed the symbol and',
+            'watched the build and suite pass. So the characterization test is not about the dead code',
+            'itself (there is nothing to preserve); write it for the surrounding behavior the deletion',
+            'must not disturb.',
           ].join('\n')
         : '',
       '',
@@ -1673,7 +2011,7 @@ async function writeTests(c, audit, extra) {
       `## BUGS NEEDING A RED TEST (${bugs.length})`,
       renderFindings(bugs),
       '',
-      `## REFACTORS NEEDING CHARACTERIZATION TESTS (${refactors.length})`,
+      `## DEAD CODE AND DUPLICATION NEEDING CHARACTERIZATION TESTS (${refactors.length})`,
       renderFindings(refactors),
       extra ? `\n## FEEDBACK FROM THE PREVIOUS ROUND\n${extra}` : '',
     ].join('\n'),
@@ -1774,7 +2112,7 @@ async function redPhase(c, audit) {
     check = await redCheck(c, written.expected_failing);
   }
 
-  const refactors = findingsByKind(audit, ['refactor']);
+  const refactors = findingsByKind(audit, ['dead_code', 'duplication']);
   const teeth = refactors.length > 0 ? await proveTeeth(c, refactors) : null;
 
   const ready =
@@ -2077,12 +2415,12 @@ async function finalVerify(c) {
 
 function renderForImplementer(audit) {
   const bugs = findingsByKind(audit, ['bug']);
-  const refactors = findingsByKind(audit, ['refactor']);
+  const refactors = findingsByKind(audit, ['dead_code', 'duplication']);
   return [
     `## BUGS TO FIX (${bugs.length}) — each has a failing test waiting for it`,
     renderFindings(bugs),
     '',
-    `## REFACTORS TO APPLY (${refactors.length}) — behavior-preserving; characterization tests stay green`,
+    `## CLEANUPS TO APPLY (${refactors.length}) — dead code and approved duplication; behavior-preserving, characterization tests stay green`,
     renderFindings(refactors),
     '',
     'The tests are already written and committed. Make them pass by changing the implementation.',

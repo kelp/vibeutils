@@ -44,6 +44,36 @@ Anything still contested goes to a Fable judge, which reads the
 code rather than arbitrating between the written positions. Its
 ruling is binding.
 
+**Nothing is fixed until it is demonstrated.** Every survivor goes
+to an agent that did not find it and must be shown to be real —
+not argued to be real. What counts as a demonstration depends on
+what is claimed:
+
+| Kind | Obligation |
+|---|---|
+| `bug` | Run it. Build the fixtures, run our binary, run the real GNU utility on the Linux VM with `LC_ALL=C`/`TZ=UTC` pinned, and capture all three channels verbatim. `expected` must come from a command that was run, never from memory. |
+| `test_defect` | Sabotage. Mutate the implementation to break what the test guards; if the test still passes it has no teeth. Revert. If it *does* fail, the finding is wrong. |
+| `missing_test` | Search. Show the behavior happens, then show nothing asserts it. |
+| `dead_code` | Delete it. Grep for every reference, then actually remove the symbol and confirm the build and full suite still pass. Revert. If anything fails, the code is live. |
+| `duplication` | **None.** No experiment shows two similar functions ought to be one. |
+
+A finding that cannot be demonstrated is **quarantined**, not
+fixed and not silently dropped — it stays in the ledger for human
+review. Losing a marginal finding is cheaper than acting on a
+false one, and the discovery loop resurfaces anything genuinely
+real on a later round.
+
+`duplication` is the one class with no fact to establish, so it
+gets a judgement gate instead, bound by the project's own stated
+bias: *a little copying is better than a little dependency*, and
+*do not refactor beyond what the task requires*. The default
+answer is no. It says yes when merging makes the code better
+today — most often when one copy is demonstrably more correct, as
+with the hand-rolled traversals that shipped data-loss bugs the
+shared walker does not have. It says no when the shared version
+would need a flag or a branch per caller, which is the usual
+reason two similar functions should stay two.
+
 Tests are audited before the implementation, and the test audit's
 coverage gaps seed the code audit: untested paths are where bugs
 survive.
@@ -171,13 +201,27 @@ Format:
 - green `<sha>` — N fixes; codex found K, J upheld; full suites
   green on both platforms
 - findings
-  - ✅ T1-1 `tests/utilities/<u>_test.sh:44` — <what was wrong>
   - ✅ C2-3 `src/<u>.zig:1902` — <what was wrong>
+        repro: `<exact command>` → observed `<...>`, expected
+        `<...>` (pinned by `orb -m ubuntu <u> ...`), confirmed on
+        macOS + Linux
+  - ✅ T1-1 `tests/utilities/<u>_test.sh:44` — <what was wrong>
+        repro: sabotage `<mutation>` → test still passed
+  - ✅ C5-1 `src/<u>.zig:220` — dead code, <symbol>
+        repro: deleted it, build and full suite still green
+  - ❓ C1-4 `src/<u>.zig:77` — QUARANTINED, could not be
+    demonstrated: <what was tried and why it did not reproduce>
   - ❌ C4-1 `src/<u>.zig:88` — judge REJECT: <why, with the
     file:line that refutes it>
-  - ⏸ C5-2 `src/common/mode.zig:210` — cross-cutting, wave 17
+  - ❌ C6-2 `src/<u>.zig:400` — duplication declined: <why the
+    shared version would need a flag per caller>
+  - ⏸ C3-2 `src/common/mode.zig:210` — routed to wave S3
   - 🚫 T4-6 — test-writer refused: <why the finding was wrong>
 ```
+
+Marks: ✅ demonstrated and queued for fixing, ❓ quarantined
+(real-looking but never demonstrated), ❌ rejected, ⏸ routed to
+another wave, 🚫 refused by the test-writer.
 
 ### whoami
 
