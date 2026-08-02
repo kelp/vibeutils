@@ -23,7 +23,12 @@ const phaseArg = a.phase || 'audit';
 // Bounds. Every loop in this script terminates on one of these.
 // ---------------------------------------------------------------------------
 const DRY_ROUNDS_REQUIRED = 2; // consecutive rounds finding nothing new
-const AUDIT_ROUNDS_MAX = 8; // hard backstop on the discovery loop
+// Hard backstop on the discovery loop. Raised from 8 after S0/argparse ran all
+// eight productive rounds without ever hitting two consecutive dry ones — and
+// the findings held up (the refuters killed 18 of 111, and 58 of 66 survivors
+// were demonstrated), so the cap was cutting off real discovery rather than
+// noise. This is a backstop against a pathological loop, not a budget.
+const AUDIT_ROUNDS_MAX = 20;
 const REFUTERS = 3; // adversarial skeptics per agreed set
 const REFUTE_KILL_VOTES = 2; // majority of REFUTERS kills a finding
 const TESTFIX_ROUNDS_MAX = 3;
@@ -1038,8 +1043,17 @@ async function opusAudit(c, target, lens, seed, seen, round) {
       'READ ONLY. Do not edit, do not commit, do not run a formatter.',
       'You MAY build and run things to check a hypothesis; prefer the scoped, quiet commands:',
       `  ${c.util_test_cmd}`,
-      c.it_cmd ? `  ${c.it_cmd}` : '',
+      c.kind === 'utility' ? `  ${c.it_cmd}` : '',
       'and pipe verbose output through `tail`.',
+      c.kind === 'module'
+        ? [
+            'This module has NO scoped suite — the common test binary has no per-module filter and the',
+            'integration suite covers all 47 utilities, so both take many minutes. Use `zig build` to',
+            'compile-check a hypothesis, run the unit suite sparingly, and do not run the integration',
+            'suite during the audit at all. Reading is cheaper than running here, and the gates in a',
+            'later phase do the exhaustive verification.',
+          ].join('\n')
+        : '',
       '',
       HOUSE_RULES,
       '',
