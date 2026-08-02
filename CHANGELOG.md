@@ -26,6 +26,20 @@
   BSD defines none (#93).
 
 ### Changed
+- **`ls` reserves the git-status column only when something has a
+  status.** The 3-column indicator was reserved for every entry
+  whenever git status was active, so a repository with no changes
+  listed with a permanent blank indent. Because `--git` turns itself
+  on implicitly wherever icons are on inside a repository, a plain
+  `ls` on a dev machine paid for it. The decision is now made per
+  directory section: a section whose entries are all clean drops the
+  column and renders exactly like `--git=never`, while a section
+  holding any modified or untracked entry keeps the column on all of
+  its entries, clean ones included, so the indicator stays aligned.
+  Under `-R` each section decides independently, so a clean
+  subdirectory lists flush left in the same run where its parent does
+  not. A single non-directory operand still reserves the column,
+  since it never forms a section (#113 follow-up).
 - **`stat` is now documented as a GNU-interface utility, and BSD
   `-f FORMAT` / `-t TIMEFMT` are explicitly declined.** `stat` is the
   only utility where BSD and GNU give the same flag letter different

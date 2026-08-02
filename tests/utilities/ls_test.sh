@@ -1353,6 +1353,209 @@ test_ls() {
             "git not found on PATH"
     fi
 
+    # --- Issue #ls-git-column: the 3-column git-status prefix must be
+    # reserved PER DIRECTORY SECTION, based on whether any entry in that
+    # section is actually dirty/untracked -- not per entry. A repo where
+    # every tracked file is clean must render identically to --git=never,
+    # with no reserved column at all. ---
+    if command -v git >/dev/null 2>&1; then
+        local g09_dir=$(create_temp_dir)
+        (cd "$g09_dir" && git init -q >/dev/null 2>&1) || true
+        if [[ ! -d "$g09_dir/.git" ]]; then
+            print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-C)" "SKIP" \
+                "git init failed in test environment"
+            print_test_result "ls #ls-git-column: all-clean repo matches --git=never (implicit one-per-line)" "SKIP" \
+                "git init failed in test environment"
+            print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "SKIP" \
+                "git init failed in test environment"
+        else
+            (cd "$g09_dir" && git config commit.gpgsign false) || true
+            (cd "$g09_dir" && git config user.email "test@example.com") || true
+            (cd "$g09_dir" && git config user.name "Test User") || true
+            create_temp_file "one" "$g09_dir/clean1.txt"
+            create_temp_file "two" "$g09_dir/clean2.txt"
+            (cd "$g09_dir" && git add -A >/dev/null 2>&1) || true
+            local g09_committed=1
+            # -c core.hooksPath=/dev/null and --no-verify: a host or CI
+            # runner with a global core.hooksPath (this repo's own
+            # `just install-hooks` sets a repo-local one, but a user could
+            # set a global one too) must not be able to fail this commit
+            # and silently SKIP all of the coverage below.
+            (cd "$g09_dir" && git -c core.hooksPath=/dev/null commit --no-verify -q -m init >/dev/null 2>&1) || g09_committed=0
+
+            if [[ "$g09_committed" -ne 1 ]]; then
+                print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-C)" "SKIP" \
+                    "git commit failed in test environment"
+                print_test_result "ls #ls-git-column: all-clean repo matches --git=never (implicit one-per-line)" "SKIP" \
+                    "git commit failed in test environment"
+                print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "SKIP" \
+                    "git commit failed in test environment"
+            else
+                # -C: explicit multi-column, fixed width so the arithmetic
+                # is deterministic regardless of the host's real terminal.
+                # Pin the exact literal (not just equality with --git=never)
+                # so a host where git status silently comes back empty
+                # can't make this pass vacuously: -w 40, two 10-char names,
+                # colwidth = (10+8)&~7 = 16, both fit on one row.
+                local g09_c_always g09_c_never
+                g09_c_always=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=always -C -w 40 2>/dev/null | strip_ansi)
+                g09_c_never=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=never -C -w 40 2>/dev/null | strip_ansi)
+                local g09_c_expected=$'clean1.txt\tclean2.txt'
+                if [[ "$g09_c_always" == "$g09_c_never" && "$g09_c_always" == "$g09_c_expected" ]]; then
+                    print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-C)" "PASS"
+                else
+                    print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-C)" "FAIL" \
+                        "Expected $(printf '%q' "$g09_c_expected"), got: $(printf '%q' "$g09_c_always")"
+                fi
+
+                # No -C: implicit non-tty single-column default (issue
+                # #113's piped case), still with --git=always in effect.
+                local g09_1_always g09_1_never
+                g09_1_always=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=always 2>/dev/null | strip_ansi)
+                g09_1_never=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=never 2>/dev/null | strip_ansi)
+                local g09_1_expected=$'clean1.txt\nclean2.txt'
+                if [[ "$g09_1_always" == "$g09_1_never" && "$g09_1_always" == "$g09_1_expected" ]]; then
+                    print_test_result "ls #ls-git-column: all-clean repo matches --git=never (implicit one-per-line)" "PASS"
+                else
+                    print_test_result "ls #ls-git-column: all-clean repo matches --git=never (implicit one-per-line)" "FAIL" \
+                        "Expected $(printf '%q' "$g09_1_expected"), got: $(printf '%q' "$g09_1_always")"
+                fi
+
+                # -l: long format dispatches through printEntries_longFormat
+                # -> printLongFormatEntryAligned -> display.printEntryName
+                # (formatter.zig:489), a separate call site from -C/-1 that
+                # forwards options independently. A fix scoped only to the
+                # columnar/one-per-line paths would leave this one buggy.
+                # Rather than pin the whole line (owner/group/perm bits are
+                # environment-dependent), require byte-identical output
+                # between --git=always and --git=never AND a discriminating
+                # negative check: the fixed name field is preceded by
+                # exactly one space (the date column's own trailing space),
+                # so two or more spaces immediately before the filename at
+                # end of line can only happen if the 3-column reservation
+                # leaked in. This "exactly one space" invariant depends on
+                # clean1.txt and clean2.txt formatting to equal-length
+                # timestamps (writeDateColored in formatter.zig pads to
+                # max_time_width before its own trailing space) -- true here
+                # because both files are created back-to-back with the
+                # default time style, but a future edit that changes the
+                # fixture's mtimes or time style could desync the two
+                # timestamps' widths and produce a confusing false FAIL.
+                local g09_l_always g09_l_never
+                g09_l_always=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=always -l 2>/dev/null | strip_ansi)
+                g09_l_never=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=never -l 2>/dev/null | strip_ansi)
+                if [[ "$g09_l_always" == "$g09_l_never" ]] \
+                    && printf '%s\n' "$g09_l_always" | grep -qE '(^|[^ ]) clean1\.txt$' \
+                    && ! printf '%s\n' "$g09_l_always" | grep -qE '  clean1\.txt$'; then
+                    print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "PASS"
+                else
+                    print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "FAIL" \
+                        "Expected byte-identical -l output with exactly one space before the name, got --git=always: $(printf '%q' "$g09_l_always")"
+                fi
+
+                # Positive control: prove git status is actually live in
+                # this environment, so the two PASSes above cannot be
+                # explained by git status silently coming back empty
+                # (GitContext.init / refreshStatus in git.zig swallow
+                # failures and fall back to .not_in_repo for every entry,
+                # which would make --git=always and --git=never collapse
+                # to the same bytes even on unfixed code). Deliberately NOT
+                # using explicit -1 here: that flag unconditionally zeroes
+                # show_git_status itself (formatter.zig's one_per_line
+                # branch), which is unrelated pre-existing behavior that
+                # would mask the control -- use the same implicit
+                # non-tty-default invocation as the "(implicit
+                # one-per-line)" test above.
+                printf 'modified' >"$g09_dir/clean1.txt"
+                local g09_dirty_output
+                g09_dirty_output=$(cd "$g09_dir" && NO_COLOR=1 "$binary" --git=always 2>/dev/null | strip_ansi)
+                if [[ "$g09_dirty_output" == M\ \ clean1.txt* ]]; then
+                    print_test_result "ls #ls-git-column: git status positive control (modified file shows M  prefix)" "PASS"
+                else
+                    print_test_result "ls #ls-git-column: git status positive control (modified file shows M  prefix)" "FAIL" \
+                        "Expected output to start with 'M  clean1.txt', got: $(printf '%q' "$g09_dirty_output")"
+                fi
+            fi
+        fi
+
+        # --- -R: each directory section decides independently. A dirty
+        # root (an untracked file) must keep the reserved column for
+        # every root entry, while a clean subdirectory nested inside the
+        # same run lists flush left. ---
+        local g09r_dir=$(create_temp_dir)
+        mkdir -p "$g09r_dir/subdir"
+        (cd "$g09r_dir" && git init -q >/dev/null 2>&1) || true
+        if [[ ! -d "$g09r_dir/.git" ]]; then
+            print_test_result "ls #ls-git-column: -R decides each directory section independently" "SKIP" \
+                "git init failed in test environment"
+        else
+            (cd "$g09r_dir" && git config commit.gpgsign false) || true
+            (cd "$g09r_dir" && git config user.email "test@example.com") || true
+            (cd "$g09r_dir" && git config user.name "Test User") || true
+            create_temp_file "a" "$g09r_dir/subdir/clean_a.txt"
+            create_temp_file "b" "$g09r_dir/subdir/clean_b.txt"
+            (cd "$g09r_dir" && git add -A >/dev/null 2>&1) || true
+            local g09r_committed=1
+            # -c core.hooksPath=/dev/null and --no-verify: see the g09
+            # block above for why this must not be able to SKIP silently
+            # on a host with a global core.hooksPath.
+            (cd "$g09r_dir" && git -c core.hooksPath=/dev/null commit --no-verify -q -m init >/dev/null 2>&1) || g09r_committed=0
+
+            if [[ "$g09r_committed" -ne 1 ]]; then
+                print_test_result "ls #ls-git-column: -R decides each directory section independently" "SKIP" \
+                    "git commit failed in test environment"
+            else
+                create_temp_file "new" "$g09r_dir/untracked.txt"
+                # Run from inside the repo (matching the operand-resolution
+                # test above): GitContext is anchored to the process cwd,
+                # so invoking against an absolute path from a different cwd
+                # would resolve git status against the wrong repository --
+                # a separate, pre-existing limitation this test must not
+                # trip over.
+                local g09r_expected
+                g09r_expected=$'.:\n   subdir\n?? untracked.txt\n\n./subdir:\nclean_a.txt\nclean_b.txt'
+                local g09r_output
+                g09r_output=$(cd "$g09r_dir" && NO_COLOR=1 "$binary" --git=always -R . 2>/dev/null | strip_ansi)
+                if [[ "$g09r_output" == "$g09r_expected" ]]; then
+                    print_test_result "ls #ls-git-column: -R decides each directory section independently" "PASS"
+                else
+                    print_test_result "ls #ls-git-column: -R decides each directory section independently" "FAIL" \
+                        "Expected $(printf '%q' "$g09r_expected"), got: $(printf '%q' "$g09r_output")"
+                fi
+            fi
+        fi
+
+        # NOTE: a mirror-image "-R clean parent / dirty child" shell test was
+        # considered here but is not reachable at the CLI: recursive git
+        # status lookups resolve subdirectory entries by bare basename
+        # (src/ls/entry_collector.zig:208-209 -> GitRepo.getFileStatus ->
+        # makeRelativePath in src/common/git.zig, which does not prepend the
+        # subdirectory prefix), while the status map is keyed by
+        # repo-root-relative paths from `git status --porcelain`. So any
+        # subdirectory entry looks up its bare name against the map and
+        # misses, resolving to .clean regardless of its real status -- a
+        # pre-existing bug outside this issue's scope (entry_collector.zig /
+        # git.zig are not in the implementer's allowed file list). Only the
+        # top-level section (operand ".", cwd == repo root) gets correct
+        # statuses, which is exactly what the dirty-root/clean-child test
+        # above exercises. The reverse (parent-then-child, clean-after-dirty)
+        # ordering is covered at unit level instead, where git_status can be
+        # set directly on synthetic types.Entry values without going through
+        # basename resolution: see "printEntries: per-call git column
+        # decision does not depend on other calls" and "printEntries:
+        # sequential calls into the same writer do not leak the reserve
+        # decision" in src/ls/integration_test.zig.
+    else
+        print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-C)" "SKIP" \
+            "git not found on PATH"
+        print_test_result "ls #ls-git-column: all-clean repo matches --git=never (implicit one-per-line)" "SKIP" \
+            "git not found on PATH"
+        print_test_result "ls #ls-git-column: all-clean repo matches --git=never (-l)" "SKIP" \
+            "git not found on PATH"
+        print_test_result "ls #ls-git-column: -R decides each directory section independently" "SKIP" \
+            "git not found on PATH"
+    fi
+
     # --- Mixed operand case: at least one file operand AND at least one
     # directory operand together. Pins that the Bug B restructure keeps
     # file operands (a) sorted, (b) preceding directory operands, (c)
