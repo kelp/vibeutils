@@ -12,6 +12,10 @@ const BLOCK_SIZE = common.constants.BLOCK_SIZE;
 const BLOCK_ROUNDING = BLOCK_SIZE - 1;
 const COLUMN_PADDING = common.constants.COLUMN_PADDING;
 
+/// Terminal tab stop interval. -C rounds its column width up to a multiple of
+/// this and pads with literal tabs, matching BSD ls; -x keeps space padding.
+const TAB_WIDTH: usize = 8; // tiger:allow:usize-arch mixes with getDisplayWidth
+
 // Time constants for age-based coloring (in nanoseconds)
 const NS_PER_MINUTE: i128 = 60 * std.time.ns_per_s;
 const NS_PER_HOUR: i128 = 3600 * std.time.ns_per_s;
@@ -707,9 +711,10 @@ fn printColumnar_writeBlockPrefix(
     try writer.print("{d} ", .{blocks});
 }
 
-/// Pad the current column to max_width plus the column padding, using the
-/// width cached during the pre-calculation pass. Caller guards this so the
-/// entry is neither the last column nor the last entry.
+/// Pad the current column to max_width plus the column padding with spaces,
+/// using the width cached during the pre-calculation pass. Only -x
+/// (printColumnarAcross) uses this; -C pads with tabs instead. Caller guards
+/// this so the entry is neither the last column nor the last entry.
 fn printColumnar_writePadding(
     entries: []Entry,
     idx: usize, // tiger:allow:usize-arch slice index
@@ -733,6 +738,87 @@ fn printColumnar_writePadding(
     for (0..padding) |_| {
         try writer.writeByte(' ');
     }
+}
+
+/// Advance the cursor from `chcnt` to the start of the next column by writing
+/// literal tab characters, exactly like BSD ls printcol(): keep hopping to the
+/// next 8-column tab stop while that stop still lands at or before `endcol`.
+/// Returns the resulting cursor column.
+fn printColumnar_writeTabs(
+    chcnt: usize, // tiger:allow:usize-arch getDisplayWidth returns usize
+    endcol: usize, // tiger:allow:usize-arch derived from column widths
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch mirrors the cursor column type
+    // endcol is a positive multiple of the column width and the cursor never
+    // runs past the column it is currently filling.
+    std.debug.assert(endcol >= TAB_WIDTH);
+    std.debug.assert(chcnt < endcol);
+    var cursor = chcnt;
+    // Each iteration advances the cursor by a full tab stop, so this many
+    // iterations always reaches endcol and the loop stays bounded.
+    for (0..@divFloor(endcol, TAB_WIDTH) + 1) |_| {
+        const next = (cursor + TAB_WIDTH) & ~(TAB_WIDTH - 1);
+        if (next > endcol) break;
+        try writer.writeByte('\t');
+        cursor = next;
+    }
+    // Tabs only ever move the cursor forward, and never past the column end.
+    std.debug.assert(cursor >= chcnt);
+    std.debug.assert(cursor <= endcol);
+    return cursor;
+}
+
+/// Column-major layout parameters shared by every row of a -C listing.
+const ColumnarLayout = struct {
+    num_cols: usize, // tiger:allow:usize-arch slice index arithmetic
+    num_rows: usize, // tiger:allow:usize-arch slice index arithmetic
+    col_width: usize, // tiger:allow:usize-arch getDisplayWidth returns usize
+    block_prefix_width: usize, // tiger:allow:usize-arch matches blockCountWidth
+};
+
+/// Print one fill-down row of a -C listing. Padding is written only between
+/// two printed cells, so a row whose remaining columns are empty (a partially
+/// filled last row) never ends in whitespace.
+fn printColumnar_writeRow(
+    entries: []Entry,
+    row: usize, // tiger:allow:usize-arch slice index
+    layout: ColumnarLayout,
+    options: LsOptions,
+    writer: anytype,
+    style: anytype,
+) !void {
+    // The caller derives the layout from a non-empty slice, so every row has
+    // at least one cell and at least one column to place it in.
+    std.debug.assert(entries.len > 0);
+    std.debug.assert(row < layout.num_rows);
+    var chcnt: usize = 0; // tiger:allow:usize-arch cursor column
+    var endcol = layout.col_width;
+    for (0..layout.num_cols) |col| {
+        const idx = col * layout.num_rows + row;
+        if (idx >= entries.len) break;
+        if (options.show_blocks) {
+            try printColumnar_writeBlockPrefix(
+                entries[idx],
+                options,
+                layout.block_prefix_width,
+                writer,
+            );
+            chcnt += layout.block_prefix_width;
+        }
+        try display.printEntryName(entries[idx], writer, style, options);
+        chcnt += entries[idx].getDisplayWidth(
+            options.file_type_indicators,
+            options.append_slash_dirs,
+            common.icons.shouldShowIcons(options.icon_mode, options.is_terminal),
+            options.show_git_status,
+        );
+        // Stop before padding when no further cell follows on this row.
+        if (col + 1 >= layout.num_cols) break;
+        if ((col + 1) * layout.num_rows + row >= entries.len) break;
+        chcnt = try printColumnar_writeTabs(chcnt, endcol, writer);
+        endcol += layout.col_width;
+    }
+    try writer.writeByte('\n');
 }
 
 /// Print entries in columnar format
@@ -761,8 +847,12 @@ pub fn printColumnar(
     // This ensures all widths are cached and finds the maximum width
     const max_width = printColumnar_maxEntryWidth(entries, options);
 
-    // Add padding between columns, including block prefix
-    const col_width = block_prefix_width + max_width + COLUMN_PADDING;
+    // BSD ls rounds the widest cell (name plus any -s/-i prefix) UP to the
+    // next tab stop, so a width already sitting on a stop gains a whole one:
+    // 8 becomes 16, not 8. That rounding replaces additive column padding.
+    const col_width = (block_prefix_width + max_width + TAB_WIDTH) & ~(TAB_WIDTH - 1);
+    // Rounding up always leaves room for the widest cell plus a separator.
+    std.debug.assert(col_width > block_prefix_width + max_width);
 
     // Calculate number of columns that fit
     const num_cols = @max(1, term_width / col_width);
@@ -776,28 +866,16 @@ pub fn printColumnar(
     // least one row, bounding the outer row loop.
     std.debug.assert(num_rows >= 1);
 
-    // Print in column-major order (like GNU ls)
+    const layout = ColumnarLayout{
+        .num_cols = num_cols,
+        .num_rows = num_rows,
+        .col_width = col_width,
+        .block_prefix_width = block_prefix_width,
+    };
+
+    // Print in column-major order (fill down the columns, like BSD ls)
     for (0..num_rows) |row| {
-        for (0..num_cols) |col| {
-            const idx = col * num_rows + row;
-            if (idx >= entries.len) break;
-
-            const entry = entries[idx];
-
-            // Print block count prefix if -s
-            if (options.show_blocks) {
-                try printColumnar_writeBlockPrefix(entry, options, block_prefix_width, writer);
-            }
-
-            // Print entry name with color and indicator
-            try display.printEntryName(entry, writer, style, options);
-
-            // Pad to column width (except for last column)
-            if (col < num_cols - 1 and idx < entries.len - 1) {
-                try printColumnar_writePadding(entries, idx, max_width, options, writer);
-            }
-        }
-        try writer.writeByte('\n');
+        try printColumnar_writeRow(entries, row, layout, options, writer, style);
     }
 }
 

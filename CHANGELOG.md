@@ -37,8 +37,25 @@
   `stat --help` and a CAVEATS section in `stat(1)` — where someone
   surprised by it will actually look — instead of only from the spec
   matrix (#79, #93).
+- **`ls -C` separates columns with tabs, matching BSD `ls`.** Column
+  width is now `(width + 8) & ~7`, rounded up to a tab stop, and the
+  gap is filled with tab characters instead of runs of spaces. A width
+  already on a tab stop still gains a full stop, so 8 rounds to 16.
+  The rule comes from Apple's `file_cmds` `ls/print.c` and was
+  confirmed against `/bin/ls` on 18 fixtures straddling both
+  boundaries; our output is byte-identical to `/bin/ls` on them. GNU
+  is deliberately not the reference here: it sizes each column to its
+  own longest entry, which is denser but is a different layout.
+  `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`ls` multi-column rows no longer end in whitespace.** The padding
+  guard skipped only the last column and the globally last entry, so
+  any row whose final cell was followed by an out-of-range column got
+  padded anyway: 3 of 4 rows on this repo's root ended in spaces.
+  BSD and GNU both stop before padding the last cell of a row. The
+  columnar path now breaks on the same row-relative test, which also
+  covers a partially filled final row (#113 follow-up).
 - **`ls` prints one entry per line when stdout is not a terminal.**
   POSIX requires the default format to be `-1` off a terminal, as GNU
   and BSD both do; we kept the column layout everywhere. Because
