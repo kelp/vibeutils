@@ -40,12 +40,6 @@ pub const LINE_BUFFER_SIZE: usize = 8192;
 // File System and Formatting Constants
 // =============================================================================
 
-/// Minimum spacing between columns in tabular output formats.
-/// 2 spaces provides clear visual separation without excessive whitespace.
-/// Note that ls -C no longer uses this: it pads with tabs to a tab-stop
-/// aligned column width, matching BSD ls. Only ls -x still pads additively.
-pub const COLUMN_PADDING: usize = 2;
-
 /// Standard block size for file system operations and size calculations.
 /// 512 bytes is the traditional Unix block size used by utilities like du.
 /// Matches the st_blksize field in struct stat on most systems.
@@ -111,10 +105,6 @@ test "buffer sizes are powers of 2" {
 }
 
 test "formatting constants are reasonable" {
-    // Column padding should provide clear separation without waste
-    try testing.expect(COLUMN_PADDING >= 1);
-    try testing.expect(COLUMN_PADDING <= 8);
-
     // Block size should match traditional Unix value
     try testing.expectEqual(@as(usize, 512), BLOCK_SIZE);
     try testing.expect(std.math.isPowerOfTwo(BLOCK_SIZE));
@@ -159,7 +149,6 @@ test "constants have consistent types" {
 
     // Verify size constants use usize (for memory operations)
     try testing.expectEqual(usize, @TypeOf(LINE_BUFFER_SIZE));
-    try testing.expectEqual(usize, @TypeOf(COLUMN_PADDING));
     try testing.expectEqual(usize, @TypeOf(BLOCK_SIZE));
 
     // Verify permission bits use u32 (to match mode_t)

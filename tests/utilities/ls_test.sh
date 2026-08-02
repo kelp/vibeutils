@@ -1806,9 +1806,11 @@ test_ls() {
     # first row holds the first entries in reading order ("aaa", "bbb")
     # rather than the down-column order ("aaa", "ccc") -- same intent as
     # the Zig companion test "columns_across: -x first row contains
-    # first entries" (same 4 names; -w 12 empirically forces the same
-    # 2x2 grid here that width 20 forces against the Zig harness's
-    # column-width math).
+    # first entries" (same 4 names and the same -w 20). On the BSD grid
+    # these 3-char names give a column width of (3+8)&~7 = 8, so 20/8 = 2
+    # columns fit and the four names take a 2x2 grid. A narrower width
+    # such as -w 12 would fit only ONE column and print one name per line,
+    # which cannot show traversal order at all.
     local i113_x_dir=$(create_temp_dir)
     create_temp_file "" "$i113_x_dir/aaa"
     create_temp_file "" "$i113_x_dir/bbb"
@@ -1816,7 +1818,7 @@ test_ls() {
     create_temp_file "" "$i113_x_dir/ddd"
 
     local i113_x_output
-    i113_x_output=$(NO_COLOR=1 "$binary" -x -w 12 "$i113_x_dir" 2>/dev/null | strip_ansi)
+    i113_x_output=$(NO_COLOR=1 "$binary" -x -w 20 "$i113_x_dir" 2>/dev/null | strip_ansi)
     local i113_x_lines
     i113_x_lines=$(printf '%s\n' "$i113_x_output" | wc -l | tr -d ' ')
     local i113_x_first_line
@@ -1995,12 +1997,16 @@ test_ls() {
             "Found a row ending in space or tab in one of the -C fixture outputs above"
     fi
 
-    # -x (printColumnarAcross) shares printColumnar_writePadding with -C,
-    # but the pinned target behavior for this issue is explicit that -x
-    # is unaffected: it must keep padding with plain runs of spaces at
-    # (max_width + 2), never tabs. This pins today's byte-exact output
-    # so an accidental edit to the shared padding helper while fixing
-    # -C is caught.
+    # -x (printColumnarAcross) lays out on the SAME grid as -C and differs
+    # only in traversal order: BSD fills across rows for -x and down columns
+    # for -C, but both round the widest cell up to the next 8-column tab
+    # stop and separate cells with literal tabs. -x used a flat two-space
+    # pad at (max_width + 2) instead, which both mis-sized the column and
+    # emitted the wrong separator byte. With max_width = 3 the column is
+    # (3+8)&~7 = 8 wide and only 20/8 = 2 columns fit, so these four names
+    # take two rows with a single tab hop in each gap. Pinned against macOS
+    # /bin/ls -x at COLUMNS=20, which prints "aaa\tbbb\nccc\tddd"; the old
+    # two-space pad put all four names on one row.
     local tabs_x_dir=$(create_temp_dir)
     create_temp_file "" "$tabs_x_dir/aaa"
     create_temp_file "" "$tabs_x_dir/bbb"
@@ -2008,13 +2014,97 @@ test_ls() {
     create_temp_file "" "$tabs_x_dir/ddd"
 
     local tabs_x_expected
-    tabs_x_expected='aaa  bbb  ccc  ddd'
+    tabs_x_expected=$'aaa\tbbb\nccc\tddd'
     local tabs_x_output
     tabs_x_output=$(NO_COLOR=1 "$binary" -x -w 20 "$tabs_x_dir" 2>/dev/null | strip_ansi)
     if [[ "$tabs_x_output" == "$tabs_x_expected" ]]; then
-        print_test_result "ls #ls-column-tabs: -x still pads with spaces, unaffected by the -C tab fix" "PASS"
+        print_test_result "ls #ls-column-tabs: -x pads with tabs on the -C tab-stop grid" "PASS"
     else
-        print_test_result "ls #ls-column-tabs: -x still pads with spaces, unaffected by the -C tab fix" "FAIL" \
+        print_test_result "ls #ls-column-tabs: -x pads with tabs on the -C tab-stop grid" "FAIL" \
             "Expected $(printf '%q' "$tabs_x_expected"), got: $(printf '%q' "$tabs_x_output")"
+    fi
+
+    # The four-name fixture above only ever needs one tab hop per gap. This
+    # one has nine names of increasing width (max 9), so colwidth =
+    # (9+8)&~7 = 16 and num_cols = 40/16 = 2, and every gap needs TWO hops
+    # to reach column 16 (1 -> 8 -> 16 for "a", 3 -> 8 -> 16 for "ccc", and
+    # so on). An implementation that emits exactly one tab per gap passes
+    # the fixture above and fails here. Pinned against macOS /bin/ls -x at
+    # COLUMNS=40, which also proves the column COUNT: the two-space pad fit
+    # three columns where BSD fits two.
+    local tabs_x_wide_dir=$(create_temp_dir)
+    local tabs_x_name
+    for tabs_x_name in a bb ccc dddd eeeee ffffff ggggggg hhhhhhhh iiiiiiiii; do
+        create_temp_file "" "$tabs_x_wide_dir/$tabs_x_name"
+    done
+
+    local tabs_x_wide_expected
+    tabs_x_wide_expected=$'a\t\tbb\nccc\t\tdddd\neeeee\t\tffffff\nggggggg\t\thhhhhhhh\niiiiiiiii'
+    local tabs_x_wide_output
+    tabs_x_wide_output=$(NO_COLOR=1 "$binary" -x -w 40 "$tabs_x_wide_dir" 2>/dev/null | strip_ansi)
+    if [[ "$tabs_x_wide_output" == "$tabs_x_wide_expected" ]]; then
+        print_test_result "ls #ls-column-tabs: -x pads across intervening tab stops" "PASS"
+    else
+        print_test_result "ls #ls-column-tabs: -x pads across intervening tab stops" "FAIL" \
+            "Expected $(printf '%q' "$tabs_x_wide_expected"), got: $(printf '%q' "$tabs_x_wide_output")"
+    fi
+
+    # The -s block-count field must be sized to the WIDEST count in the
+    # section and right-aligned inside it, not padded to a fixed four
+    # columns. An empty file occupies 0 blocks and an 8 KiB file occupies
+    # 16 (512-byte units) on APFS and on ext4 alike, so the field is two
+    # columns wide here. Pinned against macOS /bin/ls -1s, which prints
+    # " 0 a" / "16 b"; the hardcoded width printed "   0 a" / "  16 b".
+    # GNU `gls -1s` sizes the field the same way.
+    local sfield_dir=$(create_temp_dir)
+    create_temp_file "" "$sfield_dir/a"
+    dd if=/dev/zero of="$sfield_dir/b" bs=1024 count=8 2>/dev/null
+
+    local sfield_expected
+    sfield_expected=$'total 16\n 0 a\n16 b'
+    local sfield_output
+    sfield_output=$(NO_COLOR=1 "$binary" -1s "$sfield_dir" 2>/dev/null | strip_ansi)
+    if [[ "$sfield_output" == "$sfield_expected" ]]; then
+        print_test_result "ls #ls-s-field-width: -s sizes the block field to the widest count" "PASS"
+    else
+        print_test_result "ls #ls-s-field-width: -s sizes the block field to the widest count" "FAIL" \
+            "Expected $(printf '%q' "$sfield_expected"), got: $(printf '%q' "$sfield_output")"
+    fi
+
+    # Negative space for the test above: a section whose counts are all a
+    # single digit gets a one-column field, which is where a hardcoded four
+    # is most visibly wrong. Two empty files occupy no blocks on either
+    # filesystem. Pinned against macOS /bin/ls -1s ("0 a" / "0 b").
+    local snarrow_dir=$(create_temp_dir)
+    create_temp_file "" "$snarrow_dir/a"
+    create_temp_file "" "$snarrow_dir/b"
+
+    local snarrow_expected
+    snarrow_expected=$'total 0\n0 a\n0 b'
+    local snarrow_output
+    snarrow_output=$(NO_COLOR=1 "$binary" -1s "$snarrow_dir" 2>/dev/null | strip_ansi)
+    if [[ "$snarrow_output" == "$snarrow_expected" ]]; then
+        print_test_result "ls #ls-s-field-width: -s uses a one-column field for single-digit counts" "PASS"
+    else
+        print_test_result "ls #ls-s-field-width: -s uses a one-column field for single-digit counts" "FAIL" \
+            "Expected $(printf '%q' "$snarrow_expected"), got: $(printf '%q' "$snarrow_output")"
+    fi
+
+    # Long format prints the -s prefix from its own call site, which carried
+    # a separate copy of the hardcoded width. Only the prefix is asserted:
+    # our nlink/owner/group/size padding diverges from BSD's, a pre-existing
+    # gap that would make a whole-line comparison fail for unrelated
+    # reasons. Pinned against macOS /bin/ls -ls on this fixture, whose lines
+    # begin " 0 -" and "16 -".
+    local slong_output
+    slong_output=$(NO_COLOR=1 "$binary" -ls "$sfield_dir" 2>/dev/null | strip_ansi)
+    local slong_a slong_b
+    slong_a=$(printf '%s\n' "$slong_output" | sed -n '2p')
+    slong_b=$(printf '%s\n' "$slong_output" | sed -n '3p')
+    if [[ "${slong_a:0:4}" == " 0 -" && "${slong_b:0:4}" == "16 -" ]]; then
+        print_test_result "ls #ls-s-field-width: -l -s sizes the block field to the widest count" "PASS"
+    else
+        print_test_result "ls #ls-s-field-width: -l -s sizes the block field to the widest count" "FAIL" \
+            "Expected lines starting ' 0 -' and '16 -', got: $(printf '%q' "$slong_a") and $(printf '%q' "$slong_b")"
     fi
 }

@@ -63,6 +63,26 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`ls -x` lays out the BSD column grid instead of padding with
+  spaces.** `-x` sized its columns as the widest entry plus two
+  spaces and filled the gaps with spaces, while BSD gives `-x` and
+  `-C` the identical grid and differs only in fill order: across
+  rows rather than down columns. Both the separator and the number
+  of columns per row were wrong, so `-x` disagreed with `/bin/ls`
+  on essentially every listing, not only under `-F`. Nine names of
+  ascending length in an 80-column terminal came out in seven
+  space-padded columns where BSD prints five tab-separated ones.
+  `-x` now shares the column arithmetic with `-C`, including the
+  `-F`/`-p` widening and the `-s` prefix, and is byte-identical to
+  `/bin/ls` at every width tested.
+- **`ls -s` sizes its block-count field to the widest count.** The
+  field was a fixed four columns, so a listing whose counts are all
+  single digits printed three leading spaces that BSD and GNU both
+  omit, and one holding a five-digit count would have run its
+  numbers together with the names. The field is now as wide as the
+  widest count in the section plus a separating space, right
+  aligned, which is what the multi-column path already did. It
+  applies to `-1` and `-l` alike.
 - **`ls -s` reports allocated blocks instead of a size-derived
   count.** Block counts came from `ceil(size / 512)`, which measures
   how much of a file is written rather than how much space it

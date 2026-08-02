@@ -1622,9 +1622,58 @@ test "ls -s prints the block prefix for file operands and no total line" {
 
     // BSD and GNU both prefix each file operand with its block count and
     // both omit the "total" line, which only heads a directory section.
+    // The field is sized to the widest count in the section, so two
+    // single-digit counts give a one-column field: pinned against macOS
+    // /bin/ls -s -1 aa bb, which prints "8 aa" and not "   8 aa". GNU
+    // `gls -s -1 aa bb` agrees on the width and differs only in the unit.
     const args = [_][]const u8{ "-s", "-1", "aa", "bb" };
     const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("   8 aa\n   8 bb\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("8 aa\n8 bb\n", stdout_aw.writer.buffered());
+}
+
+test "ls -s sizes the operand block field across all operands, not per operand" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // The equal-width fixture above cannot tell a section-wide field from a
+    // per-entry one, because both render identically when every count is the
+    // same. Mixed widths separate them: one byte occupies a single 4 KiB
+    // allocation unit (8 blocks) and 8 KiB occupies 16, both verified with
+    // stat(1) on APFS and on ext4.
+    {
+        const file = try tmp_dir.dir.createFile(io, "aa", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "x");
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "bb", .{});
+        defer file.close(io);
+        const data: [8192]u8 = @splat('z');
+        try file.writeStreamingAll(io, &data);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Operands reach the formatter as ONE section (issue #119), so the
+    // widest count in that section sizes the field for every operand and
+    // the narrow one is right-aligned into it. Computing the width per
+    // operand instead would print "8 aa" / "16 bb" and lose the alignment.
+    // Pinned against macOS /bin/ls -s -1 aa bb, which prints " 8 aa" and
+    // "16 bb", still with no "total" line.
+    const args = [_][]const u8{ "-s", "-1", "aa", "bb" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings(" 8 aa\n16 bb\n", stdout_aw.writer.buffered());
 }
