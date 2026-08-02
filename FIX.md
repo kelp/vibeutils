@@ -123,7 +123,7 @@ touching shared code.
 
 | Wave | Modules | Lines | Why here | Audit | Red | Green |
 |---|---|---|---|---|---|---|
-| S0 | argparse | 1141 | every utility parses through it; known CRITICAL | ⬜ | ⬜ | ⬜ |
+| S0 | argparse | 1141 | every utility parses through it; known CRITICAL | 🔄 | ⬜ | ⬜ |
 | S1 | walker | 2269 | 8 utilities traverse through it; data-loss history | ⬜ | ⬜ | ⬜ |
 | S2 | file_ops, file, directory | 1690 | file primitives | ⬜ | ⬜ | ⬜ |
 | S3 | mode, user_group | 1251 | permissions and identity | ⬜ | ⬜ | ⬜ |
@@ -305,18 +305,78 @@ That `whoami`, the fourth-smallest utility in the repo, surfaced a
 CRITICAL in the argument parser every utility shares is the
 evidence for sweeping shared code first.
 
+### df (round 1, pre-redesign)
+
+Audited under the original single-round design as a scaling probe,
+before the shared waves were moved ahead of the utilities. These
+are valid round-1 findings for U1, not a converged result.
+
+`df` turned out to be the sharpest demonstration so far of why the
+stub lens exists: **three flags are parsed and never read**, and in
+every case the tests assert the parsed field rather than the
+behavior, so the suite stays green while the flag does nothing.
+
+- ✅ `src/df.zig:110,428` — `-I` (macOS, suppress inodes) is
+  stored in `opts.suppress_inodes` and read by no renderer.
+  `df -i -I /` still prints `Inodes IUsed IFree IUse%`; BSD `df`
+  resolves last-flag-wins and omits them. The guarding test at
+  `src/df.zig:4123` documents its own toothlessness in a comment —
+  it names the real check ("the Inodes column should be absent")
+  and then asserts only `exit == 0`.
+- ✅ `src/df.zig:108,301,304` — `--output` is stored in
+  `opts.output_fields` and read by no renderer.
+  `df --output=source,size /` prints the full default layout,
+  byte-identical to bare `df /`. Both guarding tests assert only
+  that the field parsed.
+- ✅ `src/df.zig:88,340` — `-h` cannot be distinguished from a
+  no-op: `human_readable` already defaults to true, so every
+  assertion passes against the default. Changing the parse arm to
+  `'h' => {}` leaves the whole suite green while `df -k -h` stays
+  wrongly in 1K-block mode.
+- ✅ `src/df.zig:2491` — `printHeader` / `printFsRow` /
+  `printTotal` are only reached through `runDf_renderInodes`,
+  which opens with `std.debug.assert(opts.inodes)`. Production
+  therefore never executes their non-inode branches, yet nine
+  tests exercise exactly those branches. The dead path prints
+  `Available` where the live `-P` path prints `Avail`, so the
+  tests and the binary disagree and nothing notices.
+- ✅ `tests/utilities/df_test.sh:51` — `df /` is asserted with
+  `[[ "$output" =~ "/" ]]`; every df line contains a `/`, so
+  printing the entire mount table would pass.
+- ✅ `src/df.zig:3577` — "printHeader - color mode no Usage
+  column" is byte-identical to the plain-mode test above it and
+  never enables color.
+
 ## Calibration record
 
-Wave 0's `whoami` audit is the pipeline's own validation run.
-Measured, not estimated:
+Two single-round audits were run as calibration probes. Measured,
+not estimated:
 
-| Metric | Value |
-|---|---|
-| Agents | 24 (0 errors, 0 empty results) |
-| Subagent tokens | 1.34M |
-| Wall clock | 22 min |
-| Tool uses | 247 |
-| Target size | 309 source lines, 62 integration lines |
+| Metric | whoami | df |
+|---|---|---|
+| Source lines | 309 | 4228 |
+| Agents | 24 | 26 |
+| Errors / empty results | 0 / 0 | 0 / 0 |
+| Subagent tokens | 1.34M | 2.02M |
+| Wall clock | 22 min | 59 min |
+| Tool uses | 247 | 507 |
+
+**Cost scales with unit count, not with source size.** A 13.7×
+larger target cost 1.5× the tokens and 2.7× the wall clock, and
+the agent count barely moved. Fitting the two points gives roughly
+1.2M tokens of fixed cost per unit plus ~170 tokens per source
+line, so the ~101K lines of utility source across 47 units come to
+about 73M tokens for a single audit round — dominated by the 56M
+of per-unit overhead, not by the code volume.
+
+The current design multiplies that: loop-until-dry runs 3–4 rounds
+where this measured one, and each round adds three refuters, a
+differential tester, and one reproduction agent per surviving
+finding. Budget several hundred million tokens for the audits
+alone, with `red` and `green` on top, and the honest wall-clock
+estimate is weeks of continuous running rather than days. Both
+probes ran one utility at a time; three per wave overlaps but does
+not divide that, since the machine is the bottleneck.
 
 All five preflight checks passed: args threaded (no `undefined`
 in any prompt), all 12 Codex invocations returned
