@@ -1052,6 +1052,490 @@ test "columnar: -C width arithmetic uses getDisplayWidth (icon prefix)" {
 }
 
 // ============================================================================
+// Issue #ls-git-column: the 3-column git-status prefix must be reserved per
+// DIRECTORY SECTION (i.e. per call to printEntries, which is invoked once
+// per directory including once per -R subdirectory), not per entry. A
+// section where every entry is .clean (or .not_in_repo) must render with no
+// reserved column at all, matching --git=never byte for byte; a section
+// with at least one real status keeps the column for every entry in that
+// section, including the clean ones, so the alignment holds.
+// ============================================================================
+
+test "printEntries: all-clean git section drops the reserved column (implicit one-per-line)" {
+    var buf_always: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_always.deinit();
+    var buf_never: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_never.deinit();
+
+    var entries_always = [_]types.Entry{
+        .{ .name = "clean1.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "clean2.txt", .kind = .file, .git_status = .clean },
+    };
+    var entries_never = [_]types.Entry{
+        .{ .name = "clean1.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "clean2.txt", .kind = .file, .git_status = .clean },
+    };
+
+    const style_always = try display.initStyle(testing.allocator, &buf_always.writer, .never);
+    const style_never = try display.initStyle(testing.allocator, &buf_never.writer, .never);
+
+    // No explicit -1/-C/-x and is_terminal = false: the non-tty default
+    // path (POSIX "same as -1"), exactly issue #113's implicit-pipe case.
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries_always,
+        &buf_always.writer,
+        .{ .show_git_status = true },
+        style_always,
+    );
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries_never,
+        &buf_never.writer,
+        .{ .show_git_status = false },
+        style_never,
+    );
+
+    // A directory where every tracked file is clean must render exactly
+    // like --git=never: no reserved column, names start at column 0.
+    try std.testing.expectEqualStrings("clean1.txt\nclean2.txt\n", buf_never.writer.buffered());
+    try std.testing.expectEqualStrings(buf_never.writer.buffered(), buf_always.writer.buffered());
+}
+
+test "printEntries: all-clean git section matches --git=never column width arithmetic (-C)" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Same 5-char-name fixture as the "-C width arithmetic ... (git
+    // prefix)" test above, but every entry is clean instead of modified.
+    var entries = [_]types.Entry{
+        .{ .name = "bbbbb", .kind = .file, .git_status = .clean },
+        .{ .name = "ccccc", .kind = .file, .git_status = .clean },
+        .{ .name = "ddddd", .kind = .file, .git_status = .clean },
+    };
+
+    const options = types.LsOptions{
+        .terminal_width = 40,
+        .show_git_status = true,
+        .multi_column = true,
+    };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    // A wholly clean section must NOT reserve the 3-column git prefix, so
+    // the width arithmetic collapses back to the --git=never shape:
+    // colwidth = (5+8)&~7 = 8, num_cols = 40/8 = 5, all three names fit on
+    // one row with a single tab between each (matching the un-prefixed
+    // "bbbbb\tccccc\tddddd" shape the sibling icon/git-prefix tests use as
+    // their baseline).
+    try std.testing.expectEqualStrings("bbbbb\tccccc\tddddd\n", buf.writer.buffered());
+}
+
+test "printEntries: not_in_repo entries stay unaffected inside an all-clean section" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    var entries = [_]types.Entry{
+        .{ .name = "clean.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "outside.txt", .kind = .file, .git_status = .not_in_repo },
+    };
+
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries,
+        &buf.writer,
+        .{ .show_git_status = true },
+        style,
+    );
+
+    // Neither a clean tracked file nor a file outside the repo counts as
+    // "dirty", so the section as a whole reserves no column and both names
+    // start at column 0.
+    try std.testing.expectEqualStrings("clean.txt\noutside.txt\n", buf.writer.buffered());
+}
+
+test "printEntries: not_in_repo entry prints no indicator inside a dirty section" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Section is dirty overall (mmm is modified), so the column IS
+    // reserved -- but the .not_in_repo entry must still print nothing of
+    // its own (per-entry rule, unchanged from before this fix), distinct
+    // from the .clean entry elsewhere which prints a blank "   " pad for
+    // alignment. A fix that replaces the per-entry `!= .not_in_repo`
+    // guards in types.zig/display.zig with the per-section flag alone
+    // (instead of ANDing the two) would make "out" print a spurious
+    // indicator or blank prefix; this test pins the difference.
+    var entries = [_]types.Entry{
+        .{ .name = "mmm", .kind = .file, .git_status = .modified },
+        .{ .name = "out", .kind = .file, .git_status = .not_in_repo },
+    };
+
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries,
+        &buf.writer,
+        .{ .show_git_status = true },
+        style,
+    );
+
+    // "mmm" gets its "M  " indicator; "out" gets nothing at all -- no
+    // indicator and no blank pad, because it is outside the repo, not
+    // merely clean.
+    try std.testing.expectEqualStrings("M  mmm\nout\n", buf.writer.buffered());
+}
+
+test "printEntries: not_in_repo entry stays width-unaffected inside a dirty section (-C)" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Mirrors the two one-per-line not_in_repo tests above, but drives the
+    // multi-column width arithmetic (printColumnar_maxEntryWidth /
+    // printColumnar_writePadding, both gated on options.show_git_status)
+    // instead of just the print path (display.printEntryName). The two are
+    // separate `!= .not_in_repo` guards that a half-fix could desynchronize:
+    // this test fails if either one stops excluding "out" from the +3 width
+    // contribution while the section is dirty.
+    //
+    // Widths: "m" (modified) = 3 (indicator) + 1 = 4. "cc" (clean, section
+    // is dirty so the column stays reserved) = 3 + 2 = 5. "out"
+    // (not_in_repo) = 0 + 3 = 3, unaffected by the section decision.
+    // max_width = 5, so col_width = (5+8)&~7 = 8; at terminal_width = 40,
+    // num_cols = 40/8 = 5 and all three entries fit on a single row.
+    var entries = [_]types.Entry{
+        .{ .name = "m", .kind = .file, .git_status = .modified },
+        .{ .name = "cc", .kind = .file, .git_status = .clean },
+        .{ .name = "out", .kind = .file, .git_status = .not_in_repo },
+    };
+
+    const options = types.LsOptions{
+        .terminal_width = 40,
+        .show_git_status = true,
+        .multi_column = true,
+    };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    // "M  m" (width 4) pads to the col-8 boundary with one tab; "   cc"
+    // (blank 3-space pad plus name, width 5) also pads with one tab; "out"
+    // is the last cell and gets neither an indicator nor trailing padding.
+    try std.testing.expectEqualStrings("M  m\t   cc\tout\n", buf.writer.buffered());
+}
+
+test "printEntries: per-call git column decision does not depend on other calls" {
+    var buf_clean: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_clean.deinit();
+    var buf_dirty: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_dirty.deinit();
+
+    // Section A: stands in for a clean -R subdirectory.
+    var clean_entries = [_]types.Entry{
+        .{ .name = "a.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "b.txt", .kind = .file, .git_status = .clean },
+    };
+    // Section B: stands in for a dirty -R parent directory. Same options
+    // (show_git_status = true) as section A -- only the entries differ --
+    // so any difference in output proves the decision is made per call
+    // (per directory section), not once globally.
+    var dirty_entries = [_]types.Entry{
+        .{ .name = "m.txt", .kind = .file, .git_status = .modified },
+        .{ .name = "c.txt", .kind = .file, .git_status = .clean },
+    };
+
+    const style_clean = try display.initStyle(testing.allocator, &buf_clean.writer, .never);
+    const style_dirty = try display.initStyle(testing.allocator, &buf_dirty.writer, .never);
+
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &clean_entries,
+        &buf_clean.writer,
+        .{ .show_git_status = true },
+        style_clean,
+    );
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &dirty_entries,
+        &buf_dirty.writer,
+        .{ .show_git_status = true },
+        style_dirty,
+    );
+
+    // Section A (all clean) drops the column entirely...
+    try std.testing.expectEqualStrings("a.txt\nb.txt\n", buf_clean.writer.buffered());
+    // ...while Section B (one dirty entry) keeps it for every entry,
+    // including the clean one.
+    try std.testing.expectEqualStrings("M  m.txt\n   c.txt\n", buf_dirty.writer.buffered());
+}
+
+test "printEntries: sequential calls into the same writer do not leak the reserve decision" {
+    // Unlike the isolated-buffer test above, both calls write into the
+    // SAME writer, one right after the other -- the shape of a real -R
+    // run walking dirty-then-clean or clean-then-dirty subdirectories in
+    // sequence. This is the only unit test that could catch a fix that
+    // caches "reserve the column" in something wider than the current
+    // call's own entries (e.g. a module-level or writer-scoped flag):
+    // such a leak would make the second call's decision match the
+    // first's instead of its own entries.
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    var dirty_first = [_]types.Entry{
+        .{ .name = "d1.txt", .kind = .file, .git_status = .modified },
+    };
+    var clean_second = [_]types.Entry{
+        .{ .name = "c1.txt", .kind = .file, .git_status = .clean },
+    };
+
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &dirty_first,
+        &buf.writer,
+        .{ .show_git_status = true },
+        style,
+    );
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &clean_second,
+        &buf.writer,
+        .{ .show_git_status = true },
+        style,
+    );
+
+    // The dirty call reserves its column ("M  d1.txt"); the clean call
+    // that follows, in the same writer, must NOT inherit that reservation
+    // -- it drops the column entirely ("c1.txt", no leading pad).
+    try std.testing.expectEqualStrings("M  d1.txt\nc1.txt\n", buf.writer.buffered());
+}
+
+test "printEntries: dirty section keeps the reserved column for every entry (-C, mixed statuses)" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    var entries = [_]types.Entry{
+        .{ .name = "bbbbb", .kind = .file, .git_status = .modified },
+        .{ .name = "ccccc", .kind = .file, .git_status = .clean },
+        .{ .name = "ddddd", .kind = .file, .git_status = .untracked },
+    };
+
+    const options = types.LsOptions{
+        .terminal_width = 40,
+        .show_git_status = true,
+        .multi_column = true,
+    };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    // One dirty entry (bbbbb) is enough to reserve the column for the
+    // whole section: ccccc (clean) still gets the blank 3-space prefix for
+    // alignment instead of losing it, and ddddd (untracked) keeps its own
+    // indicator. This pins the "preserve" half of the fix -- the decision
+    // must never drop the prefix per-entry inside a dirty section, only
+    // per-section.
+    try std.testing.expectEqualStrings("M  bbbbb\t?? ddddd\n   ccccc\n", buf.writer.buffered());
+}
+
+test "printEntries: --git=never suppresses the column even in a dirty section" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // A section with real, non-clean statuses -- the exact case where a
+    // buggy fix might compute "section has status" and ASSIGN it straight
+    // into show_git_status instead of ANDing it with the caller's own
+    // --git=never request. If that slip happens this test catches it:
+    // show_git_status = false must mean no column, full stop, regardless
+    // of what the entries' statuses are.
+    var entries = [_]types.Entry{
+        .{ .name = "m.txt", .kind = .file, .git_status = .modified },
+        .{ .name = "u.txt", .kind = .file, .git_status = .untracked },
+    };
+
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries,
+        &buf.writer,
+        .{ .show_git_status = false },
+        style,
+    );
+
+    // --git=never must win outright: no indicator, no reserved column,
+    // even though both entries have a real (non-clean) git status.
+    try std.testing.expectEqualStrings("m.txt\nu.txt\n", buf.writer.buffered());
+}
+
+test "printEntries: an untracked-only section still reserves the git column" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    var entries = [_]types.Entry{
+        .{ .name = "file1", .kind = .file, .git_status = .untracked },
+        .{ .name = "file2", .kind = .file, .git_status = .untracked },
+    };
+
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries,
+        &buf.writer,
+        .{ .show_git_status = true },
+        style,
+    );
+
+    // An untracked file is a real status (neither clean nor not_in_repo),
+    // so even a section with no *modified* files still reserves the
+    // column.
+    try std.testing.expectEqualStrings("?? file1\n?? file2\n", buf.writer.buffered());
+}
+
+// Fixed-width placeholder columns that printLongFormatEntryAligned emits
+// for an Entry with `.stat = null` (the default): permissions, link count,
+// owner, group, size, and date all fall back to their "unknown" literals
+// (formatter.zig:450, 458, 564, 565, 590, 485). Concatenating them gives a
+// fully deterministic 55-byte prefix that precedes the name column,
+// independent of the host's real uid/gid/mtime -- letting these -l tests
+// pin an exact byte string instead of only a length/substring comparison.
+const long_format_null_stat_prefix =
+    "----------" ++ // permissions fallback
+    "   ? " ++ // link-count fallback
+    "?        " ++ // owner fallback
+    "?        " ++ // group fallback
+    "       ? " ++ // size fallback
+    "??? ?? ??:?? "; // date fallback
+
+test "printEntries: long format (-l) all-clean git section drops the reserved column" {
+    var buf_always: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_always.deinit();
+    var buf_never: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_never.deinit();
+
+    var entries_always = [_]types.Entry{
+        .{ .name = "clean1.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "clean2.txt", .kind = .file, .git_status = .clean },
+    };
+    var entries_never = [_]types.Entry{
+        .{ .name = "clean1.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "clean2.txt", .kind = .file, .git_status = .clean },
+    };
+
+    const style_always = try display.initStyle(testing.allocator, &buf_always.writer, .never);
+    const style_never = try display.initStyle(testing.allocator, &buf_never.writer, .never);
+
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries_always,
+        &buf_always.writer,
+        .{ .long_format = true, .show_git_status = true },
+        style_always,
+    );
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries_never,
+        &buf_never.writer,
+        .{ .long_format = true, .show_git_status = false },
+        style_never,
+    );
+
+    // -l dispatches to printEntries_longFormat -> printLongFormatEntryAligned
+    // -> display.printEntryName, a call site separate from -C/-1. A fix
+    // scoped only to the columnar/one-per-line branches of printEntries
+    // would leave this path forwarding the raw (unfixed) options and still
+    // reserving the column here even though every entry is clean.
+    const expected = "total 0\n" ++
+        long_format_null_stat_prefix ++ "clean1.txt\n" ++
+        long_format_null_stat_prefix ++ "clean2.txt\n";
+    try std.testing.expectEqualStrings(expected, buf_never.writer.buffered());
+    try std.testing.expectEqualStrings(buf_never.writer.buffered(), buf_always.writer.buffered());
+}
+
+test "printEntries: long format (-l) dirty git section keeps the reserved column for every entry" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    var entries = [_]types.Entry{
+        .{ .name = "d.txt", .kind = .file, .git_status = .modified },
+        .{ .name = "c.txt", .kind = .file, .git_status = .clean },
+    };
+
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(
+        testing.allocator,
+        &entries,
+        &buf.writer,
+        .{ .long_format = true, .show_git_status = true },
+        style,
+    );
+
+    // A single dirty entry (d.txt) reserves the column for the whole
+    // section, so c.txt -- genuinely clean -- still gets the blank 3-space
+    // pad instead of losing it. This is the -l counterpart of the -C
+    // "dirty section keeps the reserved column" test above, closing the
+    // one dispatch branch of printEntries that test left uncovered.
+    const expected = "total 0\n" ++
+        long_format_null_stat_prefix ++ "M  d.txt\n" ++
+        long_format_null_stat_prefix ++ "   c.txt\n";
+    try std.testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -x (columns_across) all-clean git section drops the reserved column" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Same 5-char-name fixture as the "-C ... (git prefix)" tests, but
+    // -x (columns_across) instead of -C: printColumnarAcross shares
+    // printColumnar_maxEntryWidth/printColumnar_writePadding with -C, but
+    // is a separate dispatch branch in printEntries (formatter.zig:996-998)
+    // that a -C-only fix could leave forwarding the raw options.
+    var entries = [_]types.Entry{
+        .{ .name = "bbbbb", .kind = .file, .git_status = .clean },
+        .{ .name = "ccccc", .kind = .file, .git_status = .clean },
+        .{ .name = "ddddd", .kind = .file, .git_status = .clean },
+    };
+
+    const options = types.LsOptions{
+        .terminal_width = 40,
+        .show_git_status = true,
+        .columns_across = true,
+    };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    // With no reserved column: max_width = 5, col_width = 5 + 2 = 7,
+    // num_cols = 40 / 7 = 5 -- all three names fit on one row, padded by
+    // plain runs of (max_width + 2 - width) spaces (confirmed by the
+    // pre-existing "-x still pads with spaces at (max_width + 2)" pin).
+    try std.testing.expectEqualStrings("bbbbb  ccccc  ddddd\n", buf.writer.buffered());
+}
+
+test "printEntries: -m (comma_format) all-clean git section drops the reserved column" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    var entries = [_]types.Entry{
+        .{ .name = "clean1.txt", .kind = .file, .git_status = .clean },
+        .{ .name = "clean2.txt", .kind = .file, .git_status = .clean },
+    };
+
+    const options = types.LsOptions{ .show_git_status = true, .comma_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    // -m (comma_format) calls display.printEntryName directly inside
+    // printEntries itself (formatter.zig:989-995), the one dispatch branch
+    // that never delegates to a printColumnar* or printEntries_* helper --
+    // a fix that only touches the helpers it calls out to would leave this
+    // inline branch on the raw options and still reserve the column here.
+    try std.testing.expectEqualStrings("clean1.txt, clean2.txt\n", buf.writer.buffered());
+}
+
+// ============================================================================
 // -x flag: multi-column sorted across rows
 // ============================================================================
 
