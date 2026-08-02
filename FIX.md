@@ -85,9 +85,9 @@ survive.
 is a defect in every utility at once. Auditing 47 utilities
 against broken foundations wastes those audits and risks baking
 the shared defect into 47 new test files — `whoami` alone surfaced
-a CRITICAL in `argparse`. The seventeen shared waves therefore run
+a CRITICAL in `argparse`. The thirteen shared waves therefore run
 before any utility wave, and **again afterwards** (ids
-`S0b`–`S16b`), because the utility fixes add new callers and new
+`S0b`–`S12b`), because the utility fixes add new callers and new
 duplication.
 
 **Red.** The test-writer fixes the test defects, adds the missing
@@ -119,7 +119,7 @@ rather than fixed in place.
 **Teardown is mandatory, not tidiness.** Every worktree
 accumulates a `.zig-cache` of 1.3–3.6 GB, and OrbStack mounts
 `/Users` from the host, so those bytes are charged to the host and
-the VM at once. At roughly 3 GB per unit across 63 waves the sweep
+the VM at once. At roughly 3 GB per unit across 47 waves the sweep
 would need something like 300 GB if nothing were reclaimed, on a
 host that ran out of headroom at 97% during wave `S0`. So after a
 wave's green commit merges back, remove its worktrees:
@@ -146,21 +146,17 @@ touching shared code.
 |---|---|---|---|---|---|---|
 | S0 | argparse | 1142 | every utility parses args through it; already has a known CRITICAL | 🔄 | ⬜ | ⬜ |
 | S1 | walker | 2270 | 8 utilities traverse through it; history of data-loss bugs | ⬜ | ⬜ | ⬜ |
-| S2 | file_ops, file | 1512 | file primitives | ⬜ | ⬜ | ⬜ |
-| S3 | directory, path | 739 | directory and path handling | ⬜ | ⬜ | ⬜ |
-| S4 | mode, user_group | 1253 | permissions and identity | ⬜ | ⬜ | ⬜ |
-| S5 | glob, env | 357 | globbing and environment | ⬜ | ⬜ | ⬜ |
-| S6 | constants, format | 357 | shared constants and formatting | ⬜ | ⬜ | ⬜ |
-| S7 | help, prompt | 968 | user-facing output plumbing | ⬜ | ⬜ | ⬜ |
-| S8 | main, lib | 1077 | entry points and the library root | ⬜ | ⬜ | ⬜ |
-| S9 | icons, unicode | 2053 | glyphs and width computation | ⬜ | ⬜ | ⬜ |
-| S10 | display_config, style | 694 | display configuration and styling | ⬜ | ⬜ | ⬜ |
-| S11 | colors, terminal | 268 | color and terminal capability detection | ⬜ | ⬜ | ⬜ |
-| S12 | time, relative_date | 714 | time formatting | ⬜ | ⬜ | ⬜ |
-| S13 | git, force_import_lint | 1189 | repository state and the dormant-test lint | ⬜ | ⬜ | ⬜ |
-| S14 | test_utils, test_utils_privilege | 777 | test infrastructure; this repo has shipped 272 dormant tests | ⬜ | ⬜ | ⬜ |
-| S15 | test_dir, privilege_test | 417 | test fixtures and the privilege harness | ⬜ | ⬜ | ⬜ |
-| S16 | privilege_test_integration | 283 | the privilege integration harness | ⬜ | ⬜ | ⬜ |
+| S2 | file_ops, file, directory | 1701 | file primitives | ⬜ | ⬜ | ⬜ |
+| S3 | mode, user_group, path | 1803 | permissions, identity, and paths | ⬜ | ⬜ | ⬜ |
+| S4 | glob, env, constants | 531 | globbing, environment, shared constants | ⬜ | ⬜ | ⬜ |
+| S5 | help, prompt, format | 1151 | user-facing output plumbing | ⬜ | ⬜ | ⬜ |
+| S6 | main, lib | 1077 | entry points and the library root | ⬜ | ⬜ | ⬜ |
+| S7 | icons, unicode | 2053 | glyphs and width computation | ⬜ | ⬜ | ⬜ |
+| S8 | display_config, style, colors | 864 | display configuration and color | ⬜ | ⬜ | ⬜ |
+| S9 | terminal, time, relative_date | 812 | terminal capability and time formatting | ⬜ | ⬜ | ⬜ |
+| S10 | git, force_import_lint | 1189 | repository state and the dormant-test lint | ⬜ | ⬜ | ⬜ |
+| S11 | test_utils, test_utils_privilege, test_dir | 969 | test infrastructure; this repo has shipped 272 dormant tests | ⬜ | ⬜ | ⬜ |
+| S12 | privilege_test, privilege_test_integration | 508 | the privilege harnesses | ⬜ | ⬜ | ⬜ |
 
 31 modules, 16030 lines, complete coverage of `src/common/`.
 
@@ -168,58 +164,53 @@ touching shared code.
 
 | Wave | Utilities | Lines | Audit | Red | Green |
 |---|---|---|---|---|---|
-| U0 | whoami, true | 394 | ⬜ | ⬜ | ⬜ |
-| U1 | false, free | 1406 | ⬜ | ⬜ | ⬜ |
-| U2 | df | 4229 | ⬜ | ⬜ | ⬜ |
-| U3 | du | 4052 | ⬜ | ⬜ | ⬜ |
-| U4 | dd | 4156 | ⬜ | ⬜ | ⬜ |
-| U5 | sort, seq | 4093 | ⬜ | ⬜ | ⬜ |
-| U6 | id, nl | 3647 | ⬜ | ⬜ | ⬜ |
-| U7 | tr, cut | 3347 | ⬜ | ⬜ | ⬜ |
-| U8 | date, timeout | 2870 | ⬜ | ⬜ | ⬜ |
-| U9 | uniq, tac | 1991 | ⬜ | ⬜ | ⬜ |
-| U10 | env, realpath | 3626 | ⬜ | ⬜ | ⬜ |
-| U11 | readlink, mktemp | 2375 | ⬜ | ⬜ | ⬜ |
-| U12 | find | 9178 | ⬜ | ⬜ | ⬜ |
-| U13 | stat | 6292 | ⬜ | ⬜ | ⬜ |
-| U14 | printf, test/`[` | 4899 | ⬜ | ⬜ | ⬜ |
-| U15 | ls | 8378 | ⬜ | ⬜ | ⬜ |
-| U16 | cp | 5364 | ⬜ | ⬜ | ⬜ |
-| U17 | grep | 5149 | ⬜ | ⬜ | ⬜ |
-| U18 | mv | 3280 | ⬜ | ⬜ | ⬜ |
-| U19 | chmod | 3267 | ⬜ | ⬜ | ⬜ |
-| U20 | chown, rm | 5047 | ⬜ | ⬜ | ⬜ |
-| U21 | rmdir, mkdir | 1563 | ⬜ | ⬜ | ⬜ |
-| U22 | ln, touch | 3568 | ⬜ | ⬜ | ⬜ |
-| U23 | tail, head | 3978 | ⬜ | ⬜ | ⬜ |
-| U24 | wc, cat | 2262 | ⬜ | ⬜ | ⬜ |
-| U25 | tee, sleep | 1337 | ⬜ | ⬜ | ⬜ |
-| U26 | echo, yes | 1256 | ⬜ | ⬜ | ⬜ |
-| U27 | basename, dirname | 1082 | ⬜ | ⬜ | ⬜ |
-| U28 | pwd | 458 | ⬜ | ⬜ | ⬜ |
+| U0 | whoami, true, false | 497 | ⬜ | ⬜ | ⬜ |
+| U1 | df | 4229 | ⬜ | ⬜ | ⬜ |
+| U2 | du | 4052 | ⬜ | ⬜ | ⬜ |
+| U3 | dd | 4156 | ⬜ | ⬜ | ⬜ |
+| U4 | free, sort, seq | 5396 | ⬜ | ⬜ | ⬜ |
+| U5 | id, nl, tr | 5183 | ⬜ | ⬜ | ⬜ |
+| U6 | cut, date, timeout | 4681 | ⬜ | ⬜ | ⬜ |
+| U7 | uniq, tac, env | 3573 | ⬜ | ⬜ | ⬜ |
+| U8 | realpath, readlink, mktemp | 4419 | ⬜ | ⬜ | ⬜ |
+| U9 | find | 9178 | ⬜ | ⬜ | ⬜ |
+| U10 | stat | 6292 | ⬜ | ⬜ | ⬜ |
+| U11 | printf, test/`[`, mv | 8179 | ⬜ | ⬜ | ⬜ |
+| U12 | ls | 8378 | ⬜ | ⬜ | ⬜ |
+| U13 | cp | 5364 | ⬜ | ⬜ | ⬜ |
+| U14 | grep | 5149 | ⬜ | ⬜ | ⬜ |
+| U15 | chmod, chown, rm | 8314 | ⬜ | ⬜ | ⬜ |
+| U16 | rmdir, mkdir, ln | 3555 | ⬜ | ⬜ | ⬜ |
+| U17 | touch, tail, head | 5554 | ⬜ | ⬜ | ⬜ |
+| U18 | wc, cat, tee | 3035 | ⬜ | ⬜ | ⬜ |
+| U19 | sleep, echo, yes | 1820 | ⬜ | ⬜ | ⬜ |
+| U20 | basename, dirname, pwd | 1540 | ⬜ | ⬜ | ⬜ |
 
 47 utility units, covering all 48 entries in `build/utils.zig`
 (`test` and `[` share `src/test.zig` and are one unit).
 
 Ordering is still by implementation-size-to-test-coverage gap.
-`U0`–`U1` calibrate cheaply; `U2`–`U4` are the worst gaps (`df` is
+`U0` calibrates cheaply; `U1`–`U3` are the worst gaps (`df` is
 4228 source lines against 26 integration assertions, `du` 4051
-against 43). Anything over ~3000 lines runs alone.
+against 43). The eight utilities over 4000 lines run alone.
 
 ### Shared code, re-swept
 
-Waves `S0b`–`S16b` re-run every shared module after the utilities
+Waves `S0b`–`S12b` re-run every shared module after the utilities
 are done. The utility fixes add callers, add duplication, and
 change how the shared modules are used, so the first sweep's
 conclusions expire.
 
 | Wave | Audit | Red | Green |
 |---|---|---|---|
-| S0b–S16b | ⬜ | ⬜ | ⬜ |
+| S0b–S12b | ⬜ | ⬜ | ⬜ |
 
-**63 waves total**, none wider than two units — a wave's width is
-a disk reservation, not just a concurrency setting, since every
-unit gets a worktree carrying gigabytes of build cache.
+**47 waves total**, none wider than three units. Width barely
+affects wall clock — the harness runs min(16, cores-2) = 14
+concurrent agents per invocation, so a wider wave queues more work
+behind the same slots rather than finishing sooner. What width
+costs is disk, since every unit gets a worktree carrying gigabytes
+of build cache.
 
 Legend: A = agreed by both model families,
 D = dropped at cross-check or by the refuters, J = decided by the
