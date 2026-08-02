@@ -111,6 +111,22 @@ be applied inside this unit's worktree without two of them
 colliding on one file. Those are routed to the owning unit's wave
 rather than fixed in place.
 
+**Teardown is mandatory, not tidiness.** Every worktree
+accumulates a `.zig-cache` of 1.3–3.6 GB, and OrbStack mounts
+`/Users` from the host, so those bytes are charged to the host and
+the VM at once. At roughly 3 GB per unit across 35 waves the sweep
+would need something like 300 GB if nothing were reclaimed, on a
+host that ran out of headroom at 97% during wave `S0`. So after a
+wave's green commit merges back, remove its worktrees:
+
+```
+git worktree remove --force /Users/tcole/code/vibeutils-fix-<slug>
+git branch -D fix/sweep-<slug>
+```
+
+Never remove a worktree whose wave is still running — the agents
+hold it as their working directory. Check for a live run first.
+
 ## Wave status
 
 ### Shared code — `src/common/`, swept first
