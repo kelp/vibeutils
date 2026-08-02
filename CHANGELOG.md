@@ -38,8 +38,8 @@
   its entries, clean ones included, so the indicator stays aligned.
   Under `-R` each section decides independently, so a clean
   subdirectory lists flush left in the same run where its parent does
-  not. A single non-directory operand still reserves the column,
-  since it never forms a section (#113 follow-up).
+  not. Non-directory operands make the same decision as a group
+  (#113 follow-up, #119).
 - **`stat` is now documented as a GNU-interface utility, and BSD
   `-f FORMAT` / `-t TIMEFMT` are explicitly declined.** `stat` is the
   only utility where BSD and GNU give the same flag letter different
@@ -63,6 +63,34 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`ls -s` reports allocated blocks instead of a size-derived
+  count.** Block counts came from `ceil(size / 512)`, which measures
+  how much of a file is written rather than how much space it
+  occupies. A 100-byte file reported 1 block where the filesystem had
+  allocated 8, and a sparse file reported blocks it does not hold at
+  all. `st_blocks` from the stat we already perform is now used, as
+  BSD and GNU both do, which corrects the per-entry counts, the
+  `total` line that sums them, and the same total under `-l`. `-k`
+  rounds that count up to whole kilobytes (#117).
+- **`ls` prints non-directory operands as one section.** Operands were
+  printed one at a time, so none of them reached the formatter seam
+  that lays out a section. A clean tracked file listed as an operand
+  reserved the git-status column and came out indented three spaces
+  while the very same file listed flush left inside a directory
+  section; `ls -C a b` ignored `-C` and printed one operand per line;
+  and `ls -s a b` printed no block counts at all. The operand group
+  now flows through that seam, so it columnates, prefixes, and
+  reserves the git column as a group. `ls -d dir` takes the same path,
+  which also gives it the `-F` indicator and the color it was missing.
+  The `total` line stays suppressed for operands, matching BSD and GNU
+  (#119).
+- **`ls -C -F` sizes its columns the way BSD does.** The `-F` type
+  indicator was folded into each entry's own width, so it widened the
+  column only when the widest entry happened to carry one. BSD adds a
+  flat `+1` to the raw maximum name length whenever `-F` or `-p` is
+  active, whichever entries get an indicator. A listing of two 7-char
+  files and a directory laid out one tab stop narrower than `/bin/ls`;
+  it is now byte-identical (#121).
 - **`ls` multi-column rows no longer end in whitespace.** The padding
   guard skipped only the last column and the globally last entry, so
   any row whose final cell was followed by an out-of-range column got

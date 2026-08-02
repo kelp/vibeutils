@@ -8,8 +8,6 @@ const LsOptions = types.LsOptions;
 const TimeStyle = types.TimeStyle;
 
 // Use common constants
-const BLOCK_SIZE = common.constants.BLOCK_SIZE;
-const BLOCK_ROUNDING = BLOCK_SIZE - 1;
 const COLUMN_PADDING = common.constants.COLUMN_PADDING;
 
 /// Terminal tab stop interval. -C rounds its column width up to a multiple of
@@ -416,17 +414,6 @@ fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
     });
 }
 
-/// Print a single entry in long format (public API, no time alignment)
-pub fn printLongFormatEntry(
-    allocator: std.mem.Allocator,
-    entry: Entry,
-    writer: anytype,
-    options: LsOptions,
-    style: anytype,
-) !void {
-    return printLongFormatEntryAligned(allocator, entry, writer, options, style, 0);
-}
-
 /// Print a single entry in long format with time column alignment
 fn printLongFormatEntryAligned(
     allocator: std.mem.Allocator,
@@ -688,6 +675,49 @@ fn printColumnar_maxEntryWidth(
     return max_width;
 }
 
+/// Widest cell for a -C column, sized the way BSD ls sizes it: the raw
+/// maximum entry width with the -F/-p type indicator excluded, plus a flat
+/// `+1` once whenever either flag is active.
+///
+///     colwidth = dp->maxlen;
+///     if (f_type || f_typedir) colwidth += 1;
+///
+/// Taking the maximum over per-entry widths that already fold the indicator
+/// in only widens the column when the LONGEST entry happens to carry one, so
+/// a listing whose widest name is a plain file lays out one tab stop narrower
+/// than /bin/ls (issue #121). Excluding the indicator here does not
+/// under-size the column: every entry gains at most one column from it, which
+/// is exactly the term added back.
+fn printColumnar_bsdColumnWidth(
+    entries: []Entry,
+    options: LsOptions,
+) usize { // tiger:allow:usize-arch getDisplayWidth returns usize
+    // Called only from the columnar path, which early-returns on empty input.
+    std.debug.assert(entries.len > 0);
+    const show_icons = common.icons.shouldShowIcons(options.icon_mode, options.is_terminal);
+    const indicators = options.file_type_indicators or options.append_slash_dirs;
+
+    var max_width: usize = 0; // tiger:allow:usize-arch getDisplayWidth returns usize
+    for (entries) |*entry| {
+        // Deliberately not getDisplayWidth: the cache holds the real width,
+        // indicator included, and every other caller needs that one.
+        const width = entry.calculateDisplayWidth(
+            false,
+            false,
+            show_icons,
+            options.show_git_status,
+        );
+        max_width = @max(max_width, width);
+    }
+
+    const col_width = max_width + @intFromBool(indicators);
+    // Without an indicator flag this is the plain maximum; with one it is
+    // wider by exactly the flat term, never by more.
+    std.debug.assert(col_width >= max_width);
+    std.debug.assert(col_width <= max_width + 1);
+    return col_width;
+}
+
 /// Write the right-aligned -s block-count prefix for one entry. Caller invokes
 /// this only inside the options.show_blocks branch.
 fn printColumnar_writeBlockPrefix(
@@ -843,9 +873,7 @@ pub fn printColumnar(
     else
         0;
 
-    // Pre-calculate display widths for all entries in a single pass
-    // This ensures all widths are cached and finds the maximum width
-    const max_width = printColumnar_maxEntryWidth(entries, options);
+    const max_width = printColumnar_bsdColumnWidth(entries, options);
 
     // BSD ls rounds the widest cell (name plus any -s/-i prefix) UP to the
     // next tab stop, so a width already sitting on a stop gains a whole one:
@@ -879,21 +907,19 @@ pub fn printColumnar(
     }
 }
 
-/// Calculate filesystem blocks for a file (512-byte units)
-fn calculateBlocks(entry: Entry) u64 {
-    if (entry.stat) |stat| {
-        return (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
-    }
-    return 0;
-}
-
-/// Calculate display blocks, respecting -k (1024-byte units)
+/// Blocks allocated to a file, in 512-byte units by default and in 1 KiB
+/// units under -k. BSD and GNU both report st_blocks -- the space the file
+/// occupies -- rather than a count derived from its size, which disagrees
+/// whenever the size is not a whole allocation unit and disagrees wildly
+/// for sparse files.
 fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
     if (entry.stat) |stat| {
+        // -k rounds the 512-byte count up to whole kilobytes, matching
+        // BSD's howmany(st_blocks, 2).
         if (options.kilobytes) {
-            return (stat.size + 1023) / 1024;
+            return @divFloor(stat.blocks + 1, 2);
         }
-        return (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
+        return stat.blocks;
     }
     return 0;
 }
@@ -977,7 +1003,8 @@ fn sectionReservesGitColumn(entries: []const Entry, options: LsOptions) bool {
     return false;
 }
 
-/// Print entries in the appropriate format based on options
+/// Print a directory section: the "total" line where the format calls for
+/// one, then the entries in the format the options select.
 pub fn printEntries(
     allocator: std.mem.Allocator,
     entries: []Entry,
@@ -1002,8 +1029,46 @@ pub fn printEntries(
     // Totals are only accumulated for the two formats that display them.
     std.debug.assert(total_blocks == 0 or options.show_blocks or options.long_format);
 
-    // The git-status column is reserved per directory section, so every
-    // downstream width and print call sees the section's own decision.
+    try printSection(allocator, entries, writer, options, style, total_blocks, true);
+    std.debug.assert(entries.len > 0 or total_blocks == 0);
+    return total_blocks;
+}
+
+/// Print the group of non-directory operands as a single section, so it makes
+/// the same layout and git-column decisions a directory section makes. The
+/// "total" line is the one difference: it heads a directory listing only, and
+/// neither BSD nor GNU emits it for operands (issue #119).
+pub fn printOperandSection(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !void {
+    // Every caller partitions operands before reaching here, so an empty
+    // group is never printed as a section.
+    std.debug.assert(entries.len > 0);
+    std.debug.assert(entries.len <= std.math.maxInt(u32));
+    try printSection(allocator, entries, writer, options, style, 0, false);
+}
+
+/// Format one section's entries, after any "total" line the caller owns.
+/// `print_total` reaches printEntries_longFormat, which prints its total
+/// inline rather than ahead of the entries.
+fn printSection(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+    total_blocks: u64,
+    print_total: bool,
+) !void {
+    // A suppressed total has nothing to report, so the count must be unset.
+    std.debug.assert(print_total or total_blocks == 0);
+
+    // The git-status column is reserved per section, so every downstream
+    // width and print call sees the section's own decision.
     var section_opts = options;
     section_opts.show_git_status = sectionReservesGitColumn(entries, options);
 
@@ -1014,7 +1079,15 @@ pub fn printEntries(
         explicit_opts.show_git_status = false;
         try printEntries_onePerLine(entries, writer, explicit_opts, style);
     } else if (options.long_format) {
-        try printEntries_longFormat(allocator, entries, writer, section_opts, style, total_blocks);
+        try printEntries_longFormat(
+            allocator,
+            entries,
+            writer,
+            section_opts,
+            style,
+            total_blocks,
+            print_total,
+        );
     } else if (options.comma_format) {
         // Comma-separated format
         for (entries, 0..) |entry, i| {
@@ -1039,8 +1112,9 @@ pub fn printEntries(
         try printEntries_onePerLine(entries, writer, default_opts, style);
     }
 
-    std.debug.assert(entries.len > 0 or total_blocks == 0);
-    return total_blocks;
+    // The section decision is derived from this call's own entries and never
+    // outlives it, so the caller's options are unchanged.
+    std.debug.assert(section_opts.show_git_status == false or options.show_git_status);
 }
 
 /// Print entries one per line, one entry per call to printEntryName. Callers
@@ -1078,10 +1152,12 @@ fn printEntries_longFormat(
     options: LsOptions,
     style: anytype,
     total_blocks: u64,
+    print_total: bool,
 ) !void {
     std.debug.assert(options.long_format);
-    // Print total if we have entries
-    if (entries.len > 0) {
+    std.debug.assert(print_total or total_blocks == 0);
+    // A directory section is headed by its total; an operand group is not.
+    if (print_total and entries.len > 0) {
         try writer.print("total {d}\n", .{total_blocks});
     }
 

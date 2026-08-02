@@ -541,11 +541,14 @@ fn lsMain_listOperandGroups(
         };
     }
 
-    // File operands: no headers.
-    for (files.items) |entry| {
-        listDirectory(
+    // File operands: no headers, and one section rather than one listing per
+    // operand, so the group columnates and reserves the git column together
+    // (issue #119). Deciding per operand would misalign the column the same
+    // way deciding per entry misaligns a directory section.
+    if (files.items.len > 0) {
+        lsMain_printFileOperands(
             io,
-            entry.name,
+            files.items,
             writer,
             stderr_writer,
             options,
@@ -570,6 +573,35 @@ fn lsMain_listOperandGroups(
     }
 
     return had_error;
+}
+
+/// Print the whole non-directory operand group as one section.
+fn lsMain_printFileOperands(
+    io: std.Io,
+    files: []Entry,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) !void {
+    // The caller guards the empty case, since an empty group must print
+    // nothing at all rather than an empty section.
+    std.debug.assert(files.len > 0);
+
+    const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "failed to initialize styling: {s}",
+            .{common.posixErrorString(err)},
+        );
+        return err;
+    };
+
+    lsMain_resolveOperandGitStatus(io, files, options, git_context);
+    try formatter.printOperandSection(allocator, files, writer, options, style);
 }
 
 /// Sort one operand group the way directory contents are sorted, except that
@@ -845,15 +877,11 @@ fn listDirectory(
         return err;
     };
 
-    // If it's a file (not a directory), just print the file entry
-    if (stat.kind != .directory) {
+    // A non-directory operand, and a directory operand under -d, both name one
+    // entry to print rather than a directory to walk, so both take the
+    // operand-section path and make the decisions that seam owns.
+    if (stat.kind != .directory or options.directory) {
         try listSingleFileEntry(io, path, writer, options, allocator, git_context, style, stat);
-        return;
-    }
-
-    // If -d is specified, just list the directory itself
-    if (options.directory) {
-        try listDirectoryItself(path, writer, options, allocator, style, stat);
         return;
     }
 
@@ -885,7 +913,12 @@ fn listDirectory(
     );
 }
 
-/// Print a single non-directory operand as one entry, with optional git status.
+/// Print a single non-directory operand as a one-entry operand section.
+///
+/// Printing it directly instead would bypass formatter.printOperandSection,
+/// and with it every decision that seam owns -- the per-section git-column
+/// reservation above all, which made the same clean tracked file indent as an
+/// operand and list flush left as a section entry (issue #119).
 fn listSingleFileEntry(
     io: std.Io,
     path: []const u8,
@@ -896,49 +929,36 @@ fn listSingleFileEntry(
     style: anytype,
     stat: common.file.FileInfo,
 ) anyerror!void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(stat.kind != .directory or options.directory);
     // GNU echoes a non-directory operand exactly as written, so the operand
     // keeps its directory component here instead of being reduced to a
     // basename.
-    var entry = Entry{
+    var entries = [_]Entry{.{
         .name = path,
         .kind = stat.kind,
         .stat = stat,
         .symlink_target = null,
-    };
+    }};
 
-    // Get Git status for the file if requested
-    if (options.show_git_status and git_context != null) {
-        entry.git_status = git_context.?.getFileStatus(io, entry.name) orelse .not_in_repo;
-    }
-
-    if (options.long_format) {
-        try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
-    } else {
-        try display.printEntryName(entry, writer, style, options);
-    }
-    try writer.writeAll("\n");
+    lsMain_resolveOperandGitStatus(io, &entries, options, git_context);
+    try formatter.printOperandSection(allocator, &entries, writer, options, style);
 }
 
-/// Print just the directory operand itself (the -d case), not its contents.
-fn listDirectoryItself(
-    path: []const u8,
-    writer: anytype,
+/// Look up the git status of each operand in a group, leaving every entry at
+/// .not_in_repo when git status is off or unavailable.
+fn lsMain_resolveOperandGitStatus(
+    io: std.Io,
+    entries: []Entry,
     options: LsOptions,
-    allocator: std.mem.Allocator,
-    style: anytype,
-    stat: common.file.FileInfo,
-) anyerror!void {
-    if (options.long_format) {
-        const entry = Entry{
-            .name = path,
-            .kind = .directory,
-            .stat = stat,
-            .symlink_target = null,
-        };
-
-        try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
-    } else {
-        try writer.print("{s}\n", .{path});
+    git_context: ?*types.GitContext,
+) void {
+    std.debug.assert(entries.len <= std.math.maxInt(u32));
+    if (!options.show_git_status) return;
+    const ctx = git_context orelse return;
+    for (entries) |*entry| {
+        std.debug.assert(entry.name.len > 0);
+        entry.git_status = ctx.getFileStatus(io, entry.name) orelse .not_in_repo;
     }
 }
 
@@ -1535,4 +1555,76 @@ test "ls mixed operands: files first, one blank line before the dir section" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("z_file\n\na_dir:\nx\n", stdout_aw.writer.buffered());
+}
+
+// ============================================================
+// Issue #119: non-directory operands are printed one at a time rather
+// than as one section, so they never reach the formatter.printEntries
+// seam. Everything that seam decides is therefore missing on the
+// operand path: the per-section git-column reservation (the filed
+// symptom), the multi-column layout, and the -s block prefix.
+//
+// The git-column half needs a real repository and lives in
+// tests/utilities/ls_test.sh; the two cases below pin the same routing
+// with no git dependency.
+// ============================================================
+
+test "ls -C lays out multiple file operands in columns, not one per line" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    for ([_][]const u8{ "big", "small" }) |name| {
+        const file = try tmp_dir.dir.createFile(io, name, .{});
+        file.close(io);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Widest operand is 5 chars, so colwidth = (5 + 8) & ~7 = 8 and the
+    // gap after "big" (cursor column 3) is a single tab. Pinned against
+    // macOS /bin/ls -C big small, which prints one tab-separated row.
+    const args = [_][]const u8{ "-C", "-w", "80", "big", "small" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("big\tsmall\n", stdout_aw.writer.buffered());
+}
+
+test "ls -s prints the block prefix for file operands and no total line" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    // One byte each, so both occupy a single 4 KiB allocation unit: eight
+    // 512-byte blocks, verified against `stat` on APFS and on ext4.
+    for ([_][]const u8{ "aa", "bb" }) |name| {
+        const file = try tmp_dir.dir.createFile(io, name, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "x");
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // BSD and GNU both prefix each file operand with its block count and
+    // both omit the "total" line, which only heads a directory section.
+    const args = [_][]const u8{ "-s", "-1", "aa", "bb" };
+    const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("   8 aa\n   8 bb\n", stdout_aw.writer.buffered());
 }

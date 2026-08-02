@@ -978,6 +978,136 @@ test "columnar: -C folds the -s block prefix into the column width" {
     );
 }
 
+test "columnar: -C -F widens the column even when the widest name has no indicator" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Issue #121. Two 7-char regular files and a 4-char directory, so the
+    // WIDEST entry ("bbbbbbb") carries no -F indicator and the only entry
+    // that does ("dir1/") is short. BSD ls sizes the column from the raw
+    // maximum NAME length plus a flat +1 whenever -F is active:
+    //   colwidth = (7 + 1 + 8) & ~7 = 16
+    // so each gap needs two tabs (7 -> 8 -> 16, then 23 -> 24 -> 32).
+    // Folding the indicator into each entry's own display width instead
+    // yields max_width = 7, colwidth = (7 + 8) & ~7 = 8 and a single tab
+    // per gap. Pinned byte-for-byte against macOS /bin/ls -C -F.
+    try env.createFile("aaaaaaa", "");
+    try env.createFile("bbbbbbb", "");
+    try env.createDir("dir1");
+
+    try env.runLs(.{
+        .multi_column = true,
+        .file_type_indicators = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaa\t\tbbbbbbb\t\tdir1/\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C -p widens the column even when the widest name has no slash" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Same fixture and same arithmetic as the -F case above. BSD folds -p
+    // (`f_typedir`) into the identical `colwidth += 1` term, so -p alone
+    // must widen the column the same way. Pinned against macOS
+    // /bin/ls -C -p.
+    try env.createFile("aaaaaaa", "");
+    try env.createFile("bbbbbbb", "");
+    try env.createDir("dir1");
+
+    try env.runLs(.{
+        .multi_column = true,
+        .append_slash_dirs = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaa\t\tbbbbbbb\t\tdir1/\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C without an indicator flag keeps the plain maxlen column width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Negative space for the two tests above: the flat +1 is owed to -F/-p
+    // and nothing else. On the same fixture without either flag BSD
+    // computes colwidth = (7 + 8) & ~7 = 8, one tab per gap. A fix that
+    // adds the term unconditionally passes both tests above and fails
+    // this one. Pinned against macOS /bin/ls -C.
+    try env.createFile("aaaaaaa", "");
+    try env.createFile("bbbbbbb", "");
+    try env.createDir("dir1");
+
+    try env.runLs(.{
+        .multi_column = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaa\tbbbbbbb\tdir1\n",
+        env.getStdout(),
+    );
+}
+
+test "blocks: -s reports st_blocks, not a size-derived count" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Issue #117. A wholly sparse 1 MiB file occupies no blocks at all,
+    // while a 1-byte file occupies one 4 KiB allocation unit (8 blocks of
+    // 512 bytes). Both facts were verified against `stat` on APFS and on
+    // ext4, and they invert the size-derived answer: ceil(size / 512)
+    // gives 2048 for the sparse file and 1 for the tiny one, so an
+    // implementation reading st_blocks and one deriving from the size
+    // cannot agree on either entry or on the total.
+    {
+        const file = try env.tmp_dir.dir.createFile(std.testing.io, "sparse", .{});
+        defer file.close(std.testing.io);
+        try file.setLength(std.testing.io, 1 << 20);
+    }
+    try env.createFile("tiny", "x");
+
+    try env.runLs(.{ .show_blocks = true, .one_per_line = true });
+
+    try std.testing.expectEqualStrings(
+        "total 8\n" ++
+            "   0 sparse\n" ++
+            "   8 tiny\n",
+        env.getStdout(),
+    );
+}
+
+test "blocks: -s -k converts st_blocks to 1 KiB units" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Same fixture as the test above, in the -k unit. BSD rounds the
+    // 512-byte block count up to whole kilobytes (`howmany(blocks, 2)`),
+    // so 0 stays 0 and 8 becomes 4. Deriving from the size instead yields
+    // ceil(1048576 / 1024) = 1024 and ceil(1 / 1024) = 1.
+    {
+        const file = try env.tmp_dir.dir.createFile(std.testing.io, "sparse", .{});
+        defer file.close(std.testing.io);
+        try file.setLength(std.testing.io, 1 << 20);
+    }
+    try env.createFile("tiny", "x");
+
+    try env.runLs(.{ .show_blocks = true, .kilobytes = true, .one_per_line = true });
+
+    try std.testing.expectEqualStrings(
+        "total 4\n" ++
+            "   0 sparse\n" ++
+            "   4 tiny\n",
+        env.getStdout(),
+    );
+}
+
 test "columnar: -C width arithmetic uses getDisplayWidth (git prefix)" {
     var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buf_aw.deinit();
