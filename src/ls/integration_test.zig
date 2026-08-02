@@ -1055,6 +1055,205 @@ test "columnar: -C without an indicator flag keeps the plain maxlen column width
     );
 }
 
+// Regression tests for -x column geometry. BSD lays -x out on exactly the
+// same grid as -C -- the widest name with the -F/-p indicator excluded, plus
+// a flat +1 when either flag is active, plus any -s prefix, all rounded UP
+// to the next 8-column tab stop, with the gap filled by literal tabs -- and
+// differs from -C only in traversal order (-x fills across rows, -C down
+// columns). printColumnarAcross instead used a flat two-space pad at
+// max_width + 2, which both mis-sizes the column and emits the wrong
+// separator byte. Every expectation below was pinned against macOS /bin/ls
+// -x; the fixtures mirror the -C tests above so the two paths are held to
+// one rule.
+
+test "columnar: -x pads with tabs to the BSD tab-stop column width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Nine names of increasing width (max 9: "iiiiiiiii"), so colwidth =
+    // (9+8)&~7 = 16 and num_cols = 40/16 = 2. Row-major fill puts a and bb
+    // on the first row, and every gap here needs two tab hops to reach
+    // column 16 (1 -> 8 -> 16 for "a", 3 -> 8 -> 16 for "ccc", and so on).
+    // The two-space pad produced three columns instead of two, so this
+    // fixture pins the column COUNT as well as the separator.
+    const files = [_][]const u8{
+        "a",      "bb",      "ccc",      "dddd",      "eeeee",
+        "ffffff", "ggggggg", "hhhhhhhh", "iiiiiiiii",
+    };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .columns_across = true, .terminal_width = 40 });
+
+    try std.testing.expectEqualStrings(
+        "a\t\tbb\n" ++
+            "ccc\t\tdddd\n" ++
+            "eeeee\t\tffffff\n" ++
+            "ggggggg\t\thhhhhhhh\n" ++
+            "iiiiiiiii\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -x pads across intervening tab stops, not a single tab" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // The same nine names at 80 columns: colwidth is still 16 but num_cols
+    // is 80/16 = 5, so the second row exposes the one gap where a single
+    // tab is the right answer. After "hhhhhhhh" the cursor sits at absolute
+    // column 40, and one hop reaches the 48 boundary; every other gap on
+    // both rows needs two hops. An implementation that always emits exactly
+    // one tab per gap passes the 40-column fixture above and fails here,
+    // and one that always emits two fails only on this row's last gap.
+    const files = [_][]const u8{
+        "a",      "bb",      "ccc",      "dddd",      "eeeee",
+        "ffffff", "ggggggg", "hhhhhhhh", "iiiiiiiii",
+    };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .columns_across = true, .terminal_width = 80 });
+
+    try std.testing.expectEqualStrings(
+        "a\t\tbb\t\tccc\t\tdddd\t\teeeee\n" ++
+            "ffffff\t\tggggggg\t\thhhhhhhh\tiiiiiiiii\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -x falls back to one entry per line when a single column fits" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Negative space for the two tests above: widening the column to the
+    // next tab stop must not manufacture columns that do not fit. The same
+    // nine names at 20 columns give colwidth 16 and num_cols = 20/16 = 1,
+    // so BSD prints one name per line with no separator at all. Verified
+    // against macOS /bin/ls -x at COLUMNS=20.
+    const files = [_][]const u8{
+        "a",      "bb",      "ccc",      "dddd",      "eeeee",
+        "ffffff", "ggggggg", "hhhhhhhh", "iiiiiiiii",
+    };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    try env.runLs(.{ .columns_across = true, .terminal_width = 20 });
+
+    try std.testing.expectEqualStrings(
+        "a\nbb\nccc\ndddd\neeeee\nffffff\nggggggg\nhhhhhhhh\niiiiiiiii\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -x -F widens the column even when the widest name has no indicator" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // The -x mirror of the -C -F test above, on the identical fixture: the
+    // widest entry ("bbbbbbb") carries no indicator and the only one that
+    // does ("dir1/") is short, so the flat +1 has to come from the flag
+    // rather than from any entry's own width. colwidth = (7+1+8)&~7 = 16
+    // and each gap needs two tabs. Pinned against macOS /bin/ls -x -F.
+    try env.createFile("aaaaaaa", "");
+    try env.createFile("bbbbbbb", "");
+    try env.createDir("dir1");
+
+    try env.runLs(.{
+        .columns_across = true,
+        .file_type_indicators = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaa\t\tbbbbbbb\t\tdir1/\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -x -p widens the column even when the widest name has no slash" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // BSD folds -p into the same `colwidth += 1` term as -F, so -p alone
+    // must widen the -x column identically. Pinned against macOS
+    // /bin/ls -x -p on the same fixture.
+    try env.createFile("aaaaaaa", "");
+    try env.createFile("bbbbbbb", "");
+    try env.createDir("dir1");
+
+    try env.runLs(.{
+        .columns_across = true,
+        .append_slash_dirs = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaa\t\tbbbbbbb\t\tdir1/\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -x without an indicator flag keeps the plain maxlen column width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Negative space for the -F and -p tests above: the flat +1 is owed to
+    // those flags and nothing else. Without either, colwidth = (7+8)&~7 = 8
+    // and one tab closes each gap. A fix that adds the term unconditionally
+    // passes both tests above and fails this one. Pinned against macOS
+    // /bin/ls -x.
+    try env.createFile("aaaaaaa", "");
+    try env.createFile("bbbbbbb", "");
+    try env.createDir("dir1");
+
+    try env.runLs(.{
+        .columns_across = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaa\tbbbbbbb\tdir1\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -x folds the -s block prefix into the column width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // The -x mirror of the -C block-prefix test, on the identical fixture,
+    // so the -s prefix has to enter the column width BEFORE the tab-stop
+    // rounding rather than after. Names are 6 chars and the widest block
+    // count is one digit, so base = 2 + 6 = 8 and colwidth = (8+8)&~7 = 16;
+    // dropping the prefix would give base 6 and colwidth 8, a different
+    // grid. num_cols = 80/16 = 5, and row-major fill puts the first five
+    // entries on row one. aa0006 is exactly 4096 bytes, whose 8-block count
+    // is stable on APFS and on ext4. Verified byte-identical to macOS
+    // /bin/ls -x -s on this fixture.
+    const empty = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005" };
+    for (empty) |name| {
+        try env.createFile(name, "");
+    }
+    try env.createFileWithSize("aa0006", TEST_SIZE_4K, 'z');
+
+    try env.runLs(.{
+        .columns_across = true,
+        .show_blocks = true,
+        .terminal_width = 80,
+    });
+
+    try std.testing.expectEqualStrings(
+        "total 8\n" ++
+            "0 aa0001\t0 aa0002\t0 aa0003\t0 aa0004\t0 aa0005\n" ++
+            "8 aa0006\n",
+        env.getStdout(),
+    );
+}
+
 test "blocks: -s reports st_blocks, not a size-derived count" {
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
@@ -1075,10 +1274,13 @@ test "blocks: -s reports st_blocks, not a size-derived count" {
 
     try env.runLs(.{ .show_blocks = true, .one_per_line = true });
 
+    // Both counts are a single digit, so BSD sizes the block field to one
+    // column plus its trailing space; verified against macOS /bin/ls -1s on
+    // this exact fixture, which prints "0 sparse" and not "   0 sparse".
     try std.testing.expectEqualStrings(
         "total 8\n" ++
-            "   0 sparse\n" ++
-            "   8 tiny\n",
+            "0 sparse\n" ++
+            "8 tiny\n",
         env.getStdout(),
     );
 }
@@ -1100,12 +1302,154 @@ test "blocks: -s -k converts st_blocks to 1 KiB units" {
 
     try env.runLs(.{ .show_blocks = true, .kilobytes = true, .one_per_line = true });
 
+    // -k shrinks both counts but leaves them one digit wide, so the field
+    // stays one column plus its trailing space. Verified against macOS
+    // /bin/ls -1sk on this fixture, which prints "0 sparse" / "4 tiny".
     try std.testing.expectEqualStrings(
         "total 4\n" ++
-            "   0 sparse\n" ++
-            "   4 tiny\n",
+            "0 sparse\n" ++
+            "4 tiny\n",
         env.getStdout(),
     );
+}
+
+// Regression tests for the -s block-count FIELD WIDTH. BSD ls sizes that
+// field to the widest block count in the section and right-aligns every
+// count inside it, then writes one trailing space -- it does not reserve a
+// fixed number of columns. The columnar (-C) path already does this via
+// printColumnar_blockPrefixWidth; the one-per-line and long-format paths
+// hardcoded four columns ("{d: >4} "), which pads every narrow listing with
+// three phantom spaces. GNU `gls -1s` agrees with BSD here, so both
+// references point the same way. Each expectation below was pinned against
+// macOS /bin/ls. The unpadded "total N" line is correct already and must
+// stay unpadded.
+
+test "blocks: -s uses a one-column field when every count is a single digit" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Two empty files occupy no blocks on APFS and on ext4 alike, so the
+    // widest count is the single digit 0 and the whole prefix is "0 ". This
+    // is the narrowest possible field and the case the hardcoded width of
+    // four gets most wrong. Verified against macOS /bin/ls -1s, which
+    // prints "0 a" and not "   0 a".
+    try env.createFile("a", "");
+    try env.createFile("b", "");
+
+    try env.runLs(.{ .show_blocks = true, .one_per_line = true });
+
+    try std.testing.expectEqualStrings(
+        "total 0\n" ++
+            "0 a\n" ++
+            "0 b\n",
+        env.getStdout(),
+    );
+}
+
+test "blocks: -s right-aligns counts in a field sized to the widest count" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // The width-1 fixture above cannot tell "size the field to the widest
+    // count" apart from "never pad at all", so this one mixes widths: an
+    // empty file holds 0 blocks and an 8 KiB file holds 16 (both confirmed
+    // with stat(1) on APFS and on ext4). The widest count is two digits, so
+    // the field is two columns and the narrow count is right-aligned into
+    // it as " 0 ". Verified against macOS /bin/ls -1s on this fixture.
+    try env.createFile("a", "");
+    try env.createFileWithSize("b", TEST_SIZE_4K * 2, 'z');
+
+    try env.runLs(.{ .show_blocks = true, .one_per_line = true });
+
+    try std.testing.expectEqualStrings(
+        "total 16\n" ++
+            " 0 a\n" ++
+            "16 b\n",
+        env.getStdout(),
+    );
+}
+
+test "blocks: -s keeps a four-column field when the widest count has four digits" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Negative space for the two tests above: sizing the field to the data
+    // must not shrink a listing that genuinely needs four columns. A dense
+    // 1 MiB file occupies 2048 blocks and a 2-byte file occupies 8 (both
+    // confirmed with stat(1) on APFS and on ext4), so the field is four
+    // columns wide -- coincidentally the width the old code hardcoded, which
+    // is why this fixture alone could never have caught the bug. A fix that
+    // always emits the count unpadded passes both tests above and fails this
+    // one. Verified against macOS /bin/ls -1s.
+    try env.createFileWithSize("huge", 1 << 20, 'z');
+    try env.createFile("tiny", "xy");
+
+    try env.runLs(.{ .show_blocks = true, .one_per_line = true });
+
+    try std.testing.expectEqualStrings(
+        "total 2056\n" ++
+            "2048 huge\n" ++
+            "   8 tiny\n",
+        env.getStdout(),
+    );
+}
+
+test "blocks: -l -s uses a one-column field when every count is a single digit" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Long format prints the -s prefix from printLongFormatEntryAligned, a
+    // call site separate from the one-per-line and columnar paths, and it
+    // carried its own copy of the hardcoded four-column format. Synthetic
+    // entries with no stat report 0 blocks, which keeps the rest of the line
+    // on the "?" fallbacks and lets this pin the whole line byte for byte
+    // instead of only the prefix. Verified against macOS /bin/ls -ls on two
+    // empty files, whose lines begin "0 -rw-r--r--" and not "   0 -rw-...".
+    var entries = [_]types.Entry{
+        .{ .name = "a.txt", .kind = .file },
+        .{ .name = "b.txt", .kind = .file },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .show_blocks = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    const expected = "total 0\n" ++
+        "0 " ++ long_format_null_stat_prefix ++ "a.txt\n" ++
+        "0 " ++ long_format_null_stat_prefix ++ "b.txt\n";
+    try std.testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "blocks: -l -s right-aligns counts in a field sized to the widest count" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Same mixed-width fixture as the one-per-line alignment test, through
+    // the long-format path. Only the -s prefix is asserted: our long format
+    // pads the nlink, owner, group and size columns differently from BSD,
+    // which is a pre-existing divergence and out of scope here, so matching
+    // a whole -l line against /bin/ls would fail for unrelated reasons. The
+    // prefix slice below is still an exact byte comparison of the region
+    // under test. Verified against macOS /bin/ls -ls, whose lines begin
+    // " 0 -" and "16 -".
+    try env.createFile("a", "");
+    try env.createFileWithSize("b", TEST_SIZE_4K * 2, 'z');
+
+    try env.runLs(.{ .show_blocks = true, .long_format = true });
+
+    // Line 0 is the "total" header, so the two entry lines are 1 and 2.
+    var lines = std.mem.splitScalar(u8, env.getStdout(), '\n');
+    _ = lines.next() orelse return error.MissingTotalLine;
+    const line_a = lines.next() orelse return error.MissingEntryLine;
+    const line_b = lines.next() orelse return error.MissingEntryLine;
+
+    // A block field of three bytes covers the two-digit count plus its
+    // trailing space; the permission string starts immediately after.
+    try std.testing.expect(line_a.len >= 4);
+    try std.testing.expect(line_b.len >= 4);
+    try std.testing.expectEqualStrings(" 0 -", line_a[0..4]);
+    try std.testing.expectEqualStrings("16 -", line_b[0..4]);
 }
 
 test "columnar: -C width arithmetic uses getDisplayWidth (git prefix)" {
@@ -1323,9 +1667,9 @@ test "printEntries: not_in_repo entry stays width-unaffected inside a dirty sect
     defer buf.deinit();
 
     // Mirrors the two one-per-line not_in_repo tests above, but drives the
-    // multi-column width arithmetic (printColumnar_maxEntryWidth /
-    // printColumnar_writePadding, both gated on options.show_git_status)
-    // instead of just the print path (display.printEntryName). The two are
+    // multi-column width arithmetic -- the column-width reduction and the
+    // tab padding, both gated on options.show_git_status -- instead of just
+    // the print path (display.printEntryName). The two are
     // separate `!= .not_in_repo` guards that a half-fix could desynchronize:
     // this test fails if either one stops excluding "out" from the +3 width
     // contribution while the section is dirty.
@@ -1617,10 +1961,10 @@ test "printEntries: -x (columns_across) all-clean git section drops the reserved
     defer buf.deinit();
 
     // Same 5-char-name fixture as the "-C ... (git prefix)" tests, but
-    // -x (columns_across) instead of -C: printColumnarAcross shares
-    // printColumnar_maxEntryWidth/printColumnar_writePadding with -C, but
-    // is a separate dispatch branch in printEntries (formatter.zig:996-998)
-    // that a -C-only fix could leave forwarding the raw options.
+    // -x (columns_across) instead of -C: printColumnarAcross shares the
+    // column-width and tab-padding machinery with -C, yet reaches it
+    // through its own dispatch branch in printEntries -- one a -C-only fix
+    // could leave forwarding the raw options.
     var entries = [_]types.Entry{
         .{ .name = "bbbbb", .kind = .file, .git_status = .clean },
         .{ .name = "ccccc", .kind = .file, .git_status = .clean },
@@ -1636,11 +1980,11 @@ test "printEntries: -x (columns_across) all-clean git section drops the reserved
 
     _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
 
-    // With no reserved column: max_width = 5, col_width = 5 + 2 = 7,
-    // num_cols = 40 / 7 = 5 -- all three names fit on one row, padded by
-    // plain runs of (max_width + 2 - width) spaces (confirmed by the
-    // pre-existing "-x still pads with spaces at (max_width + 2)" pin).
-    try std.testing.expectEqualStrings("bbbbb  ccccc  ddddd\n", buf.writer.buffered());
+    // With no reserved column: max_width = 5, colwidth = (5+8)&~7 = 8 and
+    // num_cols = 40/8 = 5, so all three names fit on one row and each gap
+    // is one tab hop (5 -> 8, then 13 -> 16). Reserving the git column
+    // would push max_width to 8 and colwidth to 16, changing the tab count.
+    try std.testing.expectEqualStrings("bbbbb\tccccc\tddddd\n", buf.writer.buffered());
 }
 
 test "printEntries: -m (comma_format) all-clean git section drops the reserved column" {
@@ -1712,15 +2056,11 @@ test "columns_across: -x first row contains first entries" {
     try testing.expect(std.mem.indexOf(u8, first_line, "bbb") != null);
 }
 
-// Regression pin for issue #ls-column-tabs: -x (printColumnarAcross)
-// shares printColumnar_writePadding and the COLUMN_PADDING/col_width
-// arithmetic with -C (printColumnar), but the pinned target behavior
-// for this issue is explicit that -x is unaffected -- it must keep
-// padding with plain runs of spaces at (max_width + 2), never tabs.
-// An accidental edit to the shared padding helper (or to COLUMN_PADDING
-// itself) while fixing -C would silently flip -x's separator to tabs
-// or change its column count; this exact byte comparison catches that.
-test "columns_across: -x still pads with spaces at (max_width + 2), not tabs" {
+// Regression pin for -x's column geometry on the smallest fixture that
+// still has two rows. -x and -C share printColumnar_writeTabs and the
+// tab-stop rounding; only the traversal order differs, so an edit to the
+// shared machinery while working on -C must not change either one's bytes.
+test "columns_across: -x pads with tabs at the tab-stop column width, not spaces" {
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
 
@@ -1729,11 +2069,13 @@ test "columns_across: -x still pads with spaces at (max_width + 2), not tabs" {
         try env.createFile(name, "");
     }
 
-    // max_width = 3, col_width = 3 + 2 = 5, num_cols = 20 / 5 = 4 --
-    // all four entries fit on a single row.
+    // max_width = 3, colwidth = (3+8)&~7 = 8, num_cols = 20/8 = 2, so the
+    // four entries fill two rows across and each gap is a single tab hop
+    // from column 3 to column 8. Verified against macOS /bin/ls -x at
+    // COLUMNS=20; the old two-space pad put all four on one row instead.
     try env.runLs(.{ .columns_across = true, .terminal_width = 20 });
 
-    try std.testing.expectEqualStrings("aaa  bbb  ccc  ddd\n", env.getStdout());
+    try std.testing.expectEqualStrings("aaa\tbbb\nccc\tddd\n", env.getStdout());
 }
 
 // ============================================================================
