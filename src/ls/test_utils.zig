@@ -195,6 +195,7 @@ pub fn freeTestEntries(entries: []types.Entry, allocator: std.mem.Allocator) voi
 
 // Test environment constants
 pub const TEST_SIZE_2K = 2048;
+pub const TEST_SIZE_4K = 4096;
 pub const TEST_SIZE_1_5K = 1500;
 pub const TEST_TERMINAL_WIDTH = 40;
 

@@ -12,6 +12,7 @@ const PlatformHelpers = test_utils.PlatformHelpers;
 
 // Import constants for readability
 const TEST_SIZE_2K = test_utils.TEST_SIZE_2K;
+const TEST_SIZE_4K = test_utils.TEST_SIZE_4K;
 const TEST_SIZE_1_5K = test_utils.TEST_SIZE_1_5K;
 const TEST_TERMINAL_WIDTH = test_utils.TEST_TERMINAL_WIDTH;
 
@@ -935,6 +936,44 @@ test "columnar: -C pads across intervening tab stops, not a single tab" {
 
     try std.testing.expectEqualStrings(
         "a\t\tbbbbbbbbb\tccccc\t\tdddddddd\tee\n",
+        env.getStdout(),
+    );
+}
+
+test "columnar: -C folds the -s block prefix into the column width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // The one fixture where dropping the block prefix from the column
+    // width changes the layout instead of merely shifting it. Names are
+    // 6 chars and the widest block count is one digit, so the prefix is
+    // 2 chars: base = 2 + 6 = 8 and colwidth = (8+8)&~7 = 16, a base on
+    // a tab stop still gaining a full stop. Without the prefix the base
+    // would be 6 and colwidth (6+8)&~7 = 8, giving a different grid.
+    // num_cols = 80/16 = 5, num_rows = ceil(6/5) = 2, so column-major
+    // fill-down shows 3 columns. Each cell is 8 chars wide and reaches
+    // the next stop at 16 with a single tab.
+    //
+    // aa0006 is exactly 4096 bytes so its block count is 8 whether it
+    // is derived from the size or read from st_blocks; the two disagree
+    // for sizes that are not a multiple of the allocation unit.
+    const empty = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005" };
+    for (empty) |name| {
+        try env.createFile(name, "");
+    }
+    try env.createFileWithSize("aa0006", TEST_SIZE_4K, 'z');
+
+    try env.runLs(.{
+        .multi_column = true,
+        .show_blocks = true,
+        .terminal_width = 80,
+    });
+
+    // Verified byte-identical to macOS /bin/ls -C -s on this fixture.
+    try std.testing.expectEqualStrings(
+        "total 8\n" ++
+            "0 aa0001\t0 aa0003\t0 aa0005\n" ++
+            "0 aa0002\t0 aa0004\t8 aa0006\n",
         env.getStdout(),
     );
 }
