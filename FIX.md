@@ -13,18 +13,48 @@ parallel worktrees cannot conflict on it.
 
 ## Protocol
 
-**Audit.** Ten read-only finders per target. Opus lenses T1–T5 and
-C1–C5 run against the same brief as five Codex lenses driven
-through `codex exec`. A merge agent sorts the results into
-*agreed* (both families), *opus-only*, and *codex-only*. Each
-family then cross-checks the other's one-sided findings, returning
-CONFIRM, REJECT, or DISPUTE. Anything still disputed goes to a
-Fable judge, which reads the code rather than arbitrating between
-the two written positions. Its ruling is binding.
+**Audit.** Read-only finders per target: five Opus lenses and five
+Codex lenses driven through `codex exec`, plus — on the code side
+of any utility — a mechanical differential tester that builds our
+binary and GNU's and diffs stdout, stderr, and exit code across
+flag combinations and input edge cases inside the Linux VM. A
+divergence becomes a finding with a runnable reproducer attached,
+which is the strongest evidence this sweep produces.
+
+The whole round then **repeats until it goes dry**: each round is
+handed every finding already surfaced and told to find what those
+rounds missed. A unit is done only after two consecutive rounds
+find nothing new, capped at eight rounds. Deduplication is against
+everything ever *seen*, not against what was confirmed — dedup
+against the confirmed set would resurface every refuted finding
+each round and the loop would never terminate.
+
+Per round: a merge agent sorts findings into *agreed* (both
+families), *opus-only*, and *codex-only*. Each family cross-checks
+the other's one-sided findings, returning CONFIRM, REJECT, or
+DISPUTE. **Agreed findings are not trusted either** — three
+adversarial refuters attack them from distinct angles (does it
+reproduce, is it actually wrong, is the proposed fix safe), each
+told to default to refuted when uncertain. A majority kills the
+finding; a split panel sends it to the judge. Two models agreeing
+is not proof, and a bad finding acted on becomes a bad test and
+then a bad change to real code.
+
+Anything still contested goes to a Fable judge, which reads the
+code rather than arbitrating between the written positions. Its
+ruling is binding.
 
 Tests are audited before the implementation, and the test audit's
 coverage gaps seed the code audit: untested paths are where bugs
 survive.
+
+**Shared code goes first.** A defect in `argparse` or the `walker`
+is a defect in every utility at once. Auditing 47 utilities
+against broken foundations wastes those audits and risks baking
+the shared defect into 47 new test files — `whoami` alone surfaced
+a CRITICAL in `argparse`. The nine shared waves therefore run
+before any utility wave, and **again afterwards** (ids `S0b`–`S8b`),
+because the utility fixes add new callers and new duplication.
 
 **Red.** The test-writer fixes the test defects, adds the missing
 tests, and writes a failing test for every agreed bug. A red check
@@ -32,6 +62,9 @@ proves each fails *for the right reason* — the assertion matching
 the bug, not a compile error or a skip — on macOS and Linux.
 Refactor findings are behavior-preserving, so they get
 characterization tests proven by transient sabotage instead.
+Findings that carry a `corpus_input` also get that content written
+under `tests/fuzz/<util>/corpus/`, so every divergence found
+becomes a permanent regression fixture outliving this sweep.
 
 **Green.** The implementer makes the minimal fix. It may never
 edit a test; when a test genuinely needs to change it routes back
@@ -43,48 +76,82 @@ judge on deadlock, then the authoritative full run — full unit,
 full privileged, and *full* integration on macOS plus full unit
 and scoped integration on Linux.
 
-**Deferred.** A finding whose fix would change `src/common/*` or
-another utility cannot be applied inside a per-utility worktree
-without three of them colliding on one file. Those are recorded
-here and fixed serially in the cross-cutting wave.
+**Deferred.** A finding whose fix reaches into another unit cannot
+be applied inside this unit's worktree without two of them
+colliding on one file. Those are routed to the owning unit's wave
+rather than fixed in place.
 
 ## Wave status
 
+### Shared code — `src/common/`, swept first
+
+A defect here is a defect in every utility that imports the
+module. These waves have no scoped gate: the common test binary
+has no per-module filter and the blast radius is the whole tree,
+so every iteration runs the full suites. That is the real cost of
+touching shared code.
+
+| Wave | Modules | Lines | Why here | Audit | Red | Green |
+|---|---|---|---|---|---|---|
+| S0 | argparse | 1141 | every utility parses through it; known CRITICAL | ⬜ | ⬜ | ⬜ |
+| S1 | walker | 2269 | 8 utilities traverse through it; data-loss history | ⬜ | ⬜ | ⬜ |
+| S2 | file_ops, file, directory | 1690 | file primitives | ⬜ | ⬜ | ⬜ |
+| S3 | mode, user_group | 1251 | permissions and identity | ⬜ | ⬜ | ⬜ |
+| S4 | path, glob, env, constants | 1076 | path and environment | ⬜ | ⬜ | ⬜ |
+| S5 | help, format, prompt, main | 1470 | user-facing output plumbing | ⬜ | ⬜ | ⬜ |
+| S6 | icons, unicode, display_config, style, colors, terminal | 3009 | terminal presentation | ⬜ | ⬜ | ⬜ |
+| S7 | time, relative_date, git | 1145 | time and repository state | ⬜ | ⬜ | ⬜ |
+| S8 | test_utils, test_utils_privilege, test_dir, privilege_test, privilege_test_integration, force_import_lint, lib | 3059 | the test infrastructure itself; 272 dormant tests have shipped here | ⬜ | ⬜ | ⬜ |
+
+31 modules, 16030 lines, complete coverage of `src/common/`.
+
+### Utilities
+
 | Wave | Utilities | Audit | Red | Green | A / D / J | Deferred |
 |---|---|---|---|---|---|---|
-| 0 | whoami, true, false | 🔄 | ⬜ | ⬜ | 11 / 2 / 0 | 6 |
-| 1 | df, du, free | ⬜ | ⬜ | ⬜ | | |
-| 2 | dd, sort, seq | ⬜ | ⬜ | ⬜ | | |
-| 3 | id, nl, tr | ⬜ | ⬜ | ⬜ | | |
-| 4 | cut, date, timeout | ⬜ | ⬜ | ⬜ | | |
-| 5 | uniq, tac, env | ⬜ | ⬜ | ⬜ | | |
-| 6 | realpath, readlink, mktemp | ⬜ | ⬜ | ⬜ | | |
-| 7 | find | ⬜ | ⬜ | ⬜ | | |
-| 8 | stat, printf | ⬜ | ⬜ | ⬜ | | |
-| 9 | cp, mv | ⬜ | ⬜ | ⬜ | | |
-| 10 | grep, ls | ⬜ | ⬜ | ⬜ | | |
-| 11 | chmod, chown | ⬜ | ⬜ | ⬜ | | |
-| 12 | rm, rmdir, mkdir | ⬜ | ⬜ | ⬜ | | |
-| 13 | ln, touch, test/`[` | ⬜ | ⬜ | ⬜ | | |
-| 14 | tail, head, wc | ⬜ | ⬜ | ⬜ | | |
-| 15 | cat, tee, sleep | ⬜ | ⬜ | ⬜ | | |
-| 16 | echo, yes, basename, dirname, pwd | ⬜ | ⬜ | ⬜ | | |
-| 17 | cross-cutting (`src/common/*`), serial | ⬜ | ⬜ | ⬜ | | |
+| U0 | whoami, true, false | 🔄 | ⬜ | ⬜ | 11 / 2 / 0 | 6 |
+| U1 | df, du, free | 🔄 | ⬜ | ⬜ | | |
+| U2 | dd, sort, seq | ⬜ | ⬜ | ⬜ | | |
+| U3 | id, nl, tr | ⬜ | ⬜ | ⬜ | | |
+| U4 | cut, date, timeout | ⬜ | ⬜ | ⬜ | | |
+| U5 | uniq, tac, env | ⬜ | ⬜ | ⬜ | | |
+| U6 | realpath, readlink, mktemp | ⬜ | ⬜ | ⬜ | | |
+| U7 | find | ⬜ | ⬜ | ⬜ | | |
+| U8 | stat, printf | ⬜ | ⬜ | ⬜ | | |
+| U9 | cp, mv | ⬜ | ⬜ | ⬜ | | |
+| U10 | grep, ls | ⬜ | ⬜ | ⬜ | | |
+| U11 | chmod, chown | ⬜ | ⬜ | ⬜ | | |
+| U12 | rm, rmdir, mkdir | ⬜ | ⬜ | ⬜ | | |
+| U13 | ln, touch, test/`[` | ⬜ | ⬜ | ⬜ | | |
+| U14 | tail, head, wc | ⬜ | ⬜ | ⬜ | | |
+| U15 | cat, tee, sleep | ⬜ | ⬜ | ⬜ | | |
+| U16 | echo, yes, basename, dirname, pwd | ⬜ | ⬜ | ⬜ | | |
 
 47 utility units, covering all 48 entries in `build/utils.zig`
 (`test` and `[` share `src/test.zig` and are one unit).
 
 Ordering is by implementation-size-to-test-coverage gap, not by
-size. Wave 0 calibrates the pipeline cheaply. Waves 1–6 hit the
-worst gaps: `df` is 4228 source lines against 26 integration
-assertions, `du` 4051 against 43, `free` 1302 against 26. Giants
-land mid-sweep with smaller waves, because wall-clock scales with
+size. U0 calibrates the pipeline cheaply. U1–U6 hit the worst
+gaps: `df` is 4228 source lines against 26 integration assertions,
+`du` 4051 against 43, `free` 1302 against 26. Giants land
+mid-sweep with smaller waves, because wall-clock scales with
 source size rather than with utility count.
 
-Legend: A = agreed by both model families, D = dropped at
-cross-check, J = decided by the judge.
-Marks: ⬜ pending, 🔄 in flight, ✅ committed, ⚠️ committed with a
-caveat recorded below.
+### Shared code, re-swept
+
+Waves `S0b`–`S8b` re-run every shared module after the utilities
+are done. The utility fixes add callers, add duplication, and
+change how the shared modules are used, so the first sweep's
+conclusions expire.
+
+| Wave | Audit | Red | Green |
+|---|---|---|---|
+| S0b–S8b | ⬜ | ⬜ | ⬜ |
+
+**35 waves total.** Legend: A = agreed by both model families,
+D = dropped at cross-check or by the refuters, J = decided by the
+judge. Marks: ⬜ pending, 🔄 in flight, ✅ committed, ⚠️ committed
+with a caveat recorded below.
 
 ## Findings
 
@@ -170,20 +237,29 @@ Format:
     struct declares the glibc layout.
   - ⏸ T1-2, T2-5, C5-2 — shared test-helper and message defects.
 
-## Cross-cutting backlog (wave 17)
+## Routed findings
 
-Findings deferred out of their own wave because the fix touches
-shared code. Fixed serially at the end, gated on the full suite
-rather than a scoped one.
+Findings surfaced in one unit's wave whose fix belongs to another
+unit. They are carried into the owning wave's input rather than
+applied in place, because two worktrees editing one file collide.
 
-- `src/common/argparse.zig` — long-option abbreviation rejection
-  (C1-3, CRITICAL); option-error messages missing the offending
-  option and the GNU hint line (C1-2). Both found via whoami;
-  both affect every utility.
-- `src/common/user_group.zig:6` — `c_passwd` declares the
-  glibc/Linux `struct passwd` layout (C4-2).
-- `src/common/test_utils.zig:73,107` — `TestWriter` and
-  `StdoutCapture` are dead, zero consumers (C5-2).
+Found during `whoami` (U0), all routed into the shared waves that
+now run **first**:
+
+- → **S0** `src/common/argparse.zig:79-88` — **CRITICAL.**
+  Unambiguous long-option abbreviations are rejected; GNU
+  `getopt_long` accepts them. Affects all 47 utilities.
+- → **S0** `src/common/argparse.zig:540-549` — option-error
+  messages discard the offending option text and the GNU hint
+  line.
+- → **S3** `src/common/user_group.zig:6` — the `c_passwd` extern
+  struct declares the glibc/Linux `struct passwd` layout.
+- → **S8** `src/common/test_utils.zig:73,107` — `TestWriter` and
+  `StdoutCapture` are dead, zero consumers.
+
+That `whoami`, the fourth-smallest utility in the repo, surfaced a
+CRITICAL in the argument parser every utility shares is the
+evidence for sweeping shared code first.
 
 ## Calibration record
 
@@ -215,3 +291,13 @@ Two results that should change how later waves are run:
   discovery.
 - **The Fable judge never ran.** Zero deadlocks: the cross-check
   resolved every one-sided finding. That path is still unproven.
+
+Both results drove the redesign that followed: the audit now loops
+until dry, agreed findings face three adversarial refuters, a
+mechanical GNU differential tester runs alongside the reading
+lenses, and shared code is swept first.
+
+**`whoami`'s audit above ran under the original single-round
+design.** It is a valid round 1, not a converged result, and U0
+must be re-run under the current workflow before it can be called
+clean.

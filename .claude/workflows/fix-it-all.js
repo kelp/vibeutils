@@ -1,14 +1,15 @@
 export const meta = {
   name: 'fix-it-all',
   description:
-    'Sweep every vibeutils utility: five Opus lenses and five Codex lenses over its tests, then the same over its implementation, a consensus round, a Fable judge on deadlock, and a red-green fix. Commits are done by the orchestrator in the main loop (signing policy), not here.',
+    'Exhaustive per-unit audit sweep: five Opus lenses and five Codex lenses plus mechanical GNU differential testing, looped until two consecutive rounds find nothing new, every agreed finding attacked by three adversarial refuters, and a Fable judge on deadlock. Fixes go through a red-green pipeline. Commits are done by the orchestrator in the main loop (signing policy), not here.',
   whenToUse:
-    'Auditing and fixing a wave of utilities end to end. Dispatch phase:"audit" with a wave number, record the findings in FIX.md and commit, then phase:"red" with the audit result, commit the tests, then phase:"green" with the same audit result, commit the fixes.',
+    'Auditing and fixing a wave end to end. Dispatch phase:"audit" with a wave id (S0-S8 shared code, U0-U16 utilities), record the findings in FIX.md and commit, then phase:"red" with the audit result, commit the tests, then phase:"green", commit the fixes.',
   phases: [
-    { title: 'Audit tests', detail: '5 opus lenses + 5 codex lenses over the unit and integration tests' },
-    { title: 'Audit code', detail: '5 opus lenses + 5 codex lenses over the implementation, seeded with the test gaps' },
-    { title: 'Consensus', detail: 'merge, cross-check the one-sided findings, Fable judge on deadlock' },
-    { title: 'Red', detail: 'test-writer fixes test defects and writes failing tests; RED proven on both platforms' },
+    { title: 'Audit tests', detail: '5 opus + 5 codex lenses over the tests, looped until dry' },
+    { title: 'Audit code', detail: '5 opus + 5 codex lenses over the implementation, seeded with the test gaps' },
+    { title: 'Differential', detail: 'mechanical ours-vs-GNU comparison on the Linux VM' },
+    { title: 'Consensus', detail: 'merge, cross-check, three adversarial refuters, Fable judge on deadlock' },
+    { title: 'Red', detail: 'test-writer fixes tests, writes failing tests, persists fuzz corpora' },
     { title: 'Green', detail: 'implementer fixes the code; scoped loop gate, tiger, review, codex diff review, full final gate' },
   ],
 };
@@ -20,6 +21,10 @@ const phaseArg = a.phase || 'audit';
 // ---------------------------------------------------------------------------
 // Bounds. Every loop in this script terminates on one of these.
 // ---------------------------------------------------------------------------
+const DRY_ROUNDS_REQUIRED = 2; // consecutive rounds finding nothing new
+const AUDIT_ROUNDS_MAX = 8; // hard backstop on the discovery loop
+const REFUTERS = 3; // adversarial skeptics per agreed set
+const REFUTE_KILL_VOTES = 2; // majority of REFUTERS kills a finding
 const TESTFIX_ROUNDS_MAX = 3;
 const GATE_FIX_MAX = 4;
 const REVIEW_ROUND_MAX = 6;
@@ -39,22 +44,38 @@ const COMMON = {
 };
 
 // ---------------------------------------------------------------------------
-// Utility registry
+// Unit registry
 //
-// Everything follows src/<u>.zig + tests/utilities/<u>_test.sh +
-// docs/specs/<u>-flags.md, so only the two exceptions are spelled out: ls is a
-// directory, and `test`/`[` are one source with two binaries and two
-// integration files.
+// Two kinds of unit. A `utility` has a CLI, an integration test file, and a
+// flag matrix, so it can be diff-tested against GNU and its suites can be
+// scoped. A `module` under src/common/ has none of those: its tests are in the
+// shared `common` test binary, which has no per-module filter, and its blast
+// radius is every utility that imports it — so its gates are the FULL suites,
+// always.
 // ---------------------------------------------------------------------------
-function unit(name, over) {
+function utility(name, over) {
   const o = over || {};
   return {
+    kind: 'utility',
+    key: name,
     util: name,
     test_util: o.test_util || name,
     src: o.src || [`src/${name}.zig`],
     it_files: o.it_files || [`tests/utilities/${name}_test.sh`],
     it_targets: o.it_targets || [name],
     spec: o.spec || [`docs/specs/${name}-flags.md`],
+  };
+}
+
+function module_(name) {
+  return {
+    kind: 'module',
+    key: `common/${name}`,
+    util: `common/${name}`,
+    src: [`src/common/${name}.zig`],
+    it_files: [],
+    it_targets: [],
+    spec: [],
   };
 }
 
@@ -78,69 +99,95 @@ const OVERRIDES = {
   },
   echo: {
     // echo_test_complex.sh does not match the runner's *_test.sh glob and has
-    // therefore never executed. The T3 lens is expected to find this; listing
-    // it here makes sure the finders actually read it.
+    // therefore never executed. Listing it makes the finders actually read it.
     it_files: ['tests/utilities/echo_test.sh', 'tests/utilities/echo_test_complex.sh'],
   },
 };
 
-// Waves are ordered by implementation-size-to-test-coverage gap, not by size
-// alone. Wave 0 is a cheap calibration run. Giants get smaller waves because
-// wall-clock scales with source size, not with utility count.
-const WAVES = [
-  ['whoami', 'true', 'false'],
-  ['df', 'du', 'free'],
-  ['dd', 'sort', 'seq'],
-  ['id', 'nl', 'tr'],
-  ['cut', 'date', 'timeout'],
-  ['uniq', 'tac', 'env'],
-  ['realpath', 'readlink', 'mktemp'],
-  ['find'],
-  ['stat', 'printf'],
-  ['cp', 'mv'],
-  ['grep', 'ls'],
-  ['chmod', 'chown'],
-  ['rm', 'rmdir', 'mkdir'],
-  ['ln', 'touch', 'test'],
-  ['tail', 'head', 'wc'],
-  ['cat', 'tee', 'sleep'],
-  ['echo', 'yes', 'basename', 'dirname', 'pwd'],
+// Shared code is swept FIRST. A bug in argparse or the walker is a bug in all
+// 47 utilities at once, and auditing a utility against a broken foundation
+// wastes the audit and risks baking the shared defect into its new tests.
+// These same waves run AGAIN at the end (ids S0b..S8b), because the utility
+// fixes add new callers and new duplication worth consolidating.
+const SHARED_WAVES = [
+  { id: 'S0', why: 'every utility parses args through it; already has a known CRITICAL', modules: ['argparse'] },
+  { id: 'S1', why: '8 utilities traverse through it; history of data-loss bugs', modules: ['walker'] },
+  { id: 'S2', why: 'file primitives', modules: ['file_ops', 'file', 'directory'] },
+  { id: 'S3', why: 'permissions and identity', modules: ['mode', 'user_group'] },
+  { id: 'S4', why: 'path and environment', modules: ['path', 'glob', 'env', 'constants'] },
+  { id: 'S5', why: 'user-facing output plumbing', modules: ['help', 'format', 'prompt', 'main'] },
+  { id: 'S6', why: 'terminal presentation', modules: ['icons', 'unicode', 'display_config', 'style', 'colors', 'terminal'] },
+  { id: 'S7', why: 'time and repository state', modules: ['time', 'relative_date', 'git'] },
+  {
+    id: 'S8',
+    why: 'the test infrastructure itself; this repo has shipped 272 dormant tests',
+    modules: ['test_utils', 'test_utils_privilege', 'test_dir', 'privilege_test', 'privilege_test_integration', 'force_import_lint', 'lib'],
+  },
 ];
 
-function cfgFor(name) {
-  const u = unit(name, OVERRIDES[name]);
-  const workdir = `${WT_ROOT}/vibeutils-fix-${name}`;
+// Utility waves, ordered by implementation-size-to-test-coverage gap. Giants
+// get smaller waves because wall-clock scales with source size.
+const UTIL_WAVES = [
+  { id: 'U0', utils: ['whoami', 'true', 'false'] },
+  { id: 'U1', utils: ['df', 'du', 'free'] },
+  { id: 'U2', utils: ['dd', 'sort', 'seq'] },
+  { id: 'U3', utils: ['id', 'nl', 'tr'] },
+  { id: 'U4', utils: ['cut', 'date', 'timeout'] },
+  { id: 'U5', utils: ['uniq', 'tac', 'env'] },
+  { id: 'U6', utils: ['realpath', 'readlink', 'mktemp'] },
+  { id: 'U7', utils: ['find'] },
+  { id: 'U8', utils: ['stat', 'printf'] },
+  { id: 'U9', utils: ['cp', 'mv'] },
+  { id: 'U10', utils: ['grep', 'ls'] },
+  { id: 'U11', utils: ['chmod', 'chown'] },
+  { id: 'U12', utils: ['rm', 'rmdir', 'mkdir'] },
+  { id: 'U13', utils: ['ln', 'touch', 'test'] },
+  { id: 'U14', utils: ['tail', 'head', 'wc'] },
+  { id: 'U15', utils: ['cat', 'tee', 'sleep'] },
+  { id: 'U16', utils: ['echo', 'yes', 'basename', 'dirname', 'pwd'] },
+];
+
+function cfgFor(u) {
+  const slug = u.key.replace('/', '-');
+  const workdir = `${WT_ROOT}/vibeutils-fix-${slug}`;
   const at = (p) => `${workdir}/${p}`;
   const inWt = (cmd) => `cd ${workdir} && ${cmd}`;
-  const itScoped = u.it_targets.map((t) => inWt(`bash tests/integration.sh ${t}`)).join(' ; ');
+  const isUtil = u.kind === 'utility';
+  // A module change can break any utility, and the common test binary has no
+  // per-module filter, so its "scoped" gate is the full suite. That is the
+  // real cost of touching shared code, not an oversight.
+  const scopedUnit = isUtil ? `zig build test -Dtest-util=${u.test_util}` : COMMON.test_cmd;
+  const scopedIt = isUtil
+    ? u.it_targets.map((t) => inWt(`bash tests/integration.sh ${t}`)).join(' ; ')
+    : inWt(COMMON.full_it_cmd);
   return {
     ...u,
     workdir,
     src_abs: u.src.map(at),
     it_abs: u.it_files.map(at),
     spec_abs: u.spec.map(at),
-    util_test_cmd: inWt(`zig build test -Dtest-util=${u.test_util}`),
-    it_cmd: itScoped,
+    util_test_cmd: inWt(scopedUnit),
+    it_cmd: scopedIt,
     test_cmd: inWt(COMMON.test_cmd),
     privileged_test_cmd: inWt(COMMON.privileged_test_cmd),
     fmt_cmd: inWt(COMMON.fmt_cmd),
     full_it_cmd: inWt(COMMON.full_it_cmd),
     tiger_cmd: inWt(COMMON.tiger_cmd),
-    linux_test_cmd: inWt(`${COMMON.linux_prefix} zig build test`),
+    linux_test_cmd: inWt(`${COMMON.linux_prefix} ${COMMON.test_cmd}`),
     linux_build_cmd: inWt(`${COMMON.linux_prefix} zig build`),
-    linux_it_cmd: u.it_targets
-      .map((t) => inWt(`${COMMON.linux_prefix} bash tests/integration.sh ${t}`))
-      .join(' ; '),
+    linux_it_cmd: isUtil
+      ? u.it_targets.map((t) => inWt(`${COMMON.linux_prefix} bash tests/integration.sh ${t}`)).join(' ; ')
+      : inWt(`${COMMON.linux_prefix} ${COMMON.full_it_cmd}`),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Shared preambles. Byte-identical across every agent in a utility's chain so
-// the wave shares prompt-cache prefixes instead of paying for a fresh preamble
-// on each dispatch.
+// Shared preambles. Byte-identical across every agent in a unit's chain so the
+// wave shares prompt-cache prefixes instead of paying for a fresh preamble on
+// each dispatch.
 // ---------------------------------------------------------------------------
 function wtPreamble(c) {
-  return [
+  const lines = [
     `WORKING DIRECTORY: ${c.workdir}`,
     `That path is a dedicated git worktree for \`${c.util}\`, NOT the main checkout. Other agents are`,
     'working concurrently in sibling worktrees; staying inside yours is what keeps them isolated.',
@@ -153,17 +200,25 @@ function wtPreamble(c) {
     'For Read/Edit/Write, always use ABSOLUTE paths beginning with the working directory above.',
     'Never read, edit, build, or run anything under /Users/tcole/code/vibeutils itself.',
     '',
-    `Utility: ${c.util}`,
-    `Implementation: ${c.src.join(', ')}`,
-    `Integration tests: ${c.it_files.join(', ')}`,
+    `Unit: ${c.util} (${c.kind})`,
+    `Source: ${c.src.join(', ')}`,
     `Unit tests: embedded \`test "..."\` blocks inside ${c.src.join(', ')}`,
-    `Flag matrix: ${c.spec.join(', ')}`,
-  ].join('\n');
+  ];
+  if (c.kind === 'utility') {
+    lines.push(`Integration tests: ${c.it_files.join(', ')}`);
+    lines.push(`Flag matrix: ${c.spec.join(', ')}`);
+  } else {
+    lines.push('This is a SHARED MODULE under src/common/. It has no integration test file and no flag');
+    lines.push('matrix. Every utility that imports it is its blast radius, so a defect here is a defect');
+    lines.push('in many utilities at once — and its tests live in the shared `common` test binary,');
+    lines.push('which has NO per-module filter.');
+  }
+  return lines.join('\n');
 }
 
-// The house rules an auditor has to know before it can tell a real defect from
-// a house convention. Distilled inline so no agent spends a turn re-reading
-// CLAUDE.md or docs/TESTING_STRATEGY.md (see the fleet-efficiency rules).
+// The house rules an auditor needs to tell a real defect from a convention.
+// Distilled inline so no agent spends a turn re-reading CLAUDE.md or
+// docs/TESTING_STRATEGY.md (see the fleet-efficiency rules).
 const HOUSE_RULES = [
   'PROJECT FACTS you must not re-derive:',
   '- GNU coreutils is the primary behavioral reference. Where a flag exists in GNU, GNU wins. For',
@@ -203,11 +258,13 @@ const REPORTING_RULES = [
   '    test_defect  = an existing test is wrong, toothless, dead, or duplicated.',
   '    missing_test = behavior that is implemented but untested.',
   '    refactor     = duplication or a missed reuse opportunity; behavior-preserving by definition.',
-  '- Classify `scope`: `local` if the fix touches only this utility\'s own files; `cross_cutting` if',
-  '  it would change src/common/* or another utility. Cross-cutting fixes are deferred to a serial',
-  '  wave, so mislabeling one as local will make three worktrees collide.',
+  '- Classify `scope`: `local` if the fix touches only this unit\'s own files; `cross_cutting` if it',
+  '  would change another unit. Cross-cutting fixes are routed to their owning wave, so mislabeling',
+  '  one as local will make two worktrees collide.',
   '- Severity: CRITICAL = wrong output/exit code/crash/data loss. IMPORTANT = a real defect with a',
   '  narrower blast radius. SUGGESTION = everything else.',
+  '- Fill `reproducer` with an exact shell command that demonstrates the defect whenever one exists.',
+  '  A finding with a reproducer is worth several without one.',
   '- If you find nothing, return an empty list. An empty list is a legitimate answer and is far more',
   '  useful than a padded one. Do not invent findings to look thorough.',
   '- Do NOT edit any file. This is a read-only pass.',
@@ -223,15 +280,16 @@ const TEST_LENSES = [
     name: 'toothless',
     focus: [
       'Find tests that CANNOT FAIL, or that pass for the wrong reason. Concretely:',
-      '- An expected value derived the same way the utility derives it (asserting `whoami` equals',
-      '  $USER proves nothing; both read the same source).',
+      '- An expected value derived the same way the code under test derives it. This is the defect',
+      '  that hid a real CRITICAL bug in this repo: whoami\'s integration test did `expected=$(whoami)`',
+      '  with an unqualified name while PATH was pinned to zig-out/bin, so the oracle WAS the binary',
+      '  under test. Check every oracle for this.',
       '- test_command_output_pattern with a pattern loose enough to match any plausible output.',
-      '- A missing `|| return 1` after test_binary_exists, so the rest of the function runs against a',
-      '  binary that does not exist.',
+      '- A missing `|| return 1` after test_binary_exists, so the rest runs against a missing binary.',
       '- Assertions on a variable that is empty or unset when the assertion runs.',
       '- A test whose command always succeeds regardless of the behavior under test.',
-      '- Unit tests that assert on the PARSED FLAG rather than on the behavior — `parsed.follow ==',
-      '  true` is not a test of following.',
+      '- Unit tests that assert on the PARSED FLAG rather than the behavior — `parsed.follow == true`',
+      '  is not a test of following.',
       'For each candidate, state the concrete mutation to the implementation that SHOULD break the',
       'test but would not. That mutation is your evidence.',
     ].join('\n'),
@@ -240,13 +298,12 @@ const TEST_LENSES = [
     id: 'T2',
     name: 'wrong-expectation',
     focus: [
-      'Find tests whose EXPECTED VALUE is wrong — they pin current behavior rather than the',
-      'reference behavior. These are the worst class of defect here: they actively defend a bug.',
+      'Find tests whose EXPECTED VALUE is wrong — they pin current behavior rather than the reference',
+      'behavior. These are the worst class of defect here: they actively defend a bug.',
       'Compare each assertion against what GNU coreutils actually does. You have a Linux VM: run',
-      '`orb -m ubuntu <the real GNU utility> <args>` to pin the reference output, exit code, and',
-      'error text rather than reasoning from memory. Check the exit code and the stderr text, not',
-      'just stdout — error-message wording and operand quoting are in scope and have been the source',
-      'of real bugs here.',
+      '`orb -m ubuntu <the real GNU utility> <args>` to pin the reference output, exit code, and error',
+      'text rather than reasoning from memory. Check the exit code and the stderr text, not just',
+      'stdout — error-message wording and operand quoting are in scope and have been real bugs here.',
       'Also flag assertions that are over-constrained: pinning an incidental detail (a timestamp, a',
       'device number, an inode, a locale-dependent string) that will flake rather than catch a bug.',
     ].join('\n'),
@@ -256,34 +313,35 @@ const TEST_LENSES = [
     name: 'duplication-and-dead',
     focus: [
       'Find test code that does not earn its place:',
-      '- Near-identical cases that exercise exactly the same code path with different literals.',
+      '- Near-identical cases that exercise the same code path with different literals.',
       '- Tests that never execute. The runner only picks up tests/utilities/<u>_test.sh and calls',
-      '  test_<u>; a helper file with any other name is dead. A test function defined but never',
-      '  called from test_<u> is dead. A Zig test in a file that is never force-imported is dormant',
-      '  (this repo has shipped 272 dormant tests before — see src/common/force_import_lint.zig).',
+      '  test_<u>; a helper file with any other name is dead. A test function defined but never called',
+      '  from test_<u> is dead. A Zig test in a file that is never force-imported is dormant — this',
+      '  repo has shipped 272 dormant tests, three separate times (see force_import_lint.zig).',
       '- Setup or fixtures built and never used.',
       '- Unit tests and integration tests asserting the identical thing, where one is redundant.',
-      'Prove deadness: show the glob, the call site that is missing, or the import that is absent.',
+      'Prove deadness: show the glob, the missing call site, or the absent import.',
     ].join('\n'),
   },
   {
     id: 'T4',
     name: 'missing-edge-cases',
     focus: [
-      'Find behavior that is implemented but UNTESTED. Work from the flag matrix: for every MUST and',
-      'SHOULD flag marked `yes` in the `Ours` column, find the test that proves it changes behavior.',
-      'A flag with no behavioral test is a finding.',
+      'Find behavior that is implemented but UNTESTED. For a utility, work from the flag matrix: for',
+      'every MUST and SHOULD flag marked `yes` in the `Ours` column, find the test that proves it',
+      'changes behavior. A flag with no behavioral test is a finding. For a shared module, work from',
+      'the public API: every exported function and every branch inside it.',
       'Then the input edge cases this codebase has actually been bitten by:',
       '- no operands at all; `-` as an operand; `--` end-of-options; an empty string operand.',
-      '- empty input, input with no trailing newline, input with CRLF, binary/NUL bytes, invalid',
-      '  UTF-8, a line longer than the 8192-byte buffer (this raises error.StreamTooLong, not',
-      '  EndOfStream, and has crashed a utility here).',
+      '- empty input, input with no trailing newline, CRLF, NUL bytes, invalid UTF-8, a line longer',
+      '  than the 8192-byte buffer (raises error.StreamTooLong, not EndOfStream, and has crashed a',
+      '  utility here).',
       '- 0, 1, and enormous numeric arguments; negative where the flag accepts a sign.',
       '- symlinks, symlink loops, dangling symlinks, a symlink whose target is a directory.',
       '- unreadable files, unwritable directories, a nonexistent path mid-operand-list (partial',
       '  failure must still emit the good output AND exit 1).',
-      '- output to a pipe vs to a terminal, where the utility changes behavior on isatty.',
-      '- TZ, LANG/LC_ALL, NO_COLOR, and TERM where the utility reads them.',
+      '- output to a pipe vs a terminal, where behavior changes on isatty.',
+      '- TZ, LANG/LC_ALL, NO_COLOR, and TERM where they are read.',
     ].join('\n'),
   },
   {
@@ -299,12 +357,12 @@ const TEST_LENSES = [
       '- A privileged test using testing.allocator instead of privilege_test.TestArena (fakeroot',
       '  incompatibility — this hangs).',
       '- Unquoted shell expansions that break on paths with spaces; `local x=$(...)` swallowing the',
-      '  exit status; missing cleanup that leaks temp state into the next test.',
+      '  exit status; missing cleanup leaking temp state into the next test.',
       '- A 4096-byte buffer where the convention is 8192.',
-      '- Anything that mutates the environment via libc setenv/unsetenv inside a test — Zig 0.16',
-      '  captured `environ` at init, and corrupting it has deadlocked the panic handler and hung the',
-      '  whole suite (issue #95).',
-      '- A test that depends on wall-clock timing or on another test having run first.',
+      '- Anything mutating the environment via libc setenv/unsetenv inside a test — Zig 0.16 captured',
+      '  `environ` at init, and corrupting it deadlocked the panic handler and hung the whole suite',
+      '  (issue #95).',
+      '- A test depending on wall-clock timing or on another test having run first.',
     ].join('\n'),
   },
 ];
@@ -317,11 +375,12 @@ const CODE_LENSES = [
       'Compare this implementation against GNU coreutils behavior, flag by flag. You have a Linux VM',
       'with the real GNU utilities: run `orb -m ubuntu <util> <args>` to pin actual behavior instead',
       'of reasoning from memory, and compare byte-for-byte with our output.',
-      'In scope: flag semantics and their interactions; the default behavior with no flags; exit',
-      'codes (0/1/2, argument errors are 2); stdout formatting down to separators, padding, and',
-      'trailing newlines; stderr wording, the `util: ` prefix, and operand quoting; the order in',
-      'which operands are processed and errors reported; what happens when flags conflict (GNU',
-      'usually resolves last-wins rather than erroring).',
+      'In scope: flag semantics and their interactions; default behavior with no flags; exit codes',
+      '(0/1/2, argument errors are 2); stdout formatting down to separators, padding, and trailing',
+      'newlines; stderr wording, the `util: ` prefix, and operand quoting; the order operands are',
+      'processed and errors reported; what happens when flags conflict (GNU usually resolves',
+      'last-wins rather than erroring).',
+      'For a shared module, compare the behavior it produces in each utility that calls it.',
       'Do NOT report a flag the matrix marks WONT as missing.',
     ].join('\n'),
   },
@@ -329,17 +388,19 @@ const CODE_LENSES = [
     id: 'C2',
     name: 'stubs',
     focus: [
-      'Find flags that are PARSED BUT NEVER PLUMBED — accepted on the command line, stored in the',
-      'options struct, and then never consulted where they would change behavior. This is the single',
-      'highest-yield defect class in this codebase: `ls -C` was parsed and ignored for months, and',
-      '`ls` never consulted the `is_terminal` value it had already computed.',
+      'Find flags and options that are PARSED BUT NEVER PLUMBED — accepted, stored in the options',
+      'struct, then never consulted where they would change behavior. This is the highest-yield',
+      'defect class in this codebase: `ls -C` was parsed and ignored for months, and `ls` never',
+      'consulted the `is_terminal` value it had already computed.',
       'Method, do not skip it: for EVERY field of the parsed-options struct, grep for every read of',
-      'that field in the implementation. A field that is written by the parser and read nowhere is a',
-      'stub. A field read only inside help text, only in a test, or only to be copied into another',
-      'struct that is itself never read, is also a stub.',
-      'Then the weaker form: a flag consulted on one code path but not on the parallel path that',
-      'handles the other case (single operand vs many, file vs directory, terminal vs pipe).',
-      'Report the field name, its parse site, and the absence of a real read site.',
+      'that field. A field written by the parser and read nowhere is a stub. A field read only in',
+      'help text, only in a test, or only to be copied into another struct that is itself never read,',
+      'is also a stub.',
+      'Then the weaker form: a flag consulted on one code path but not on the parallel path handling',
+      'the other case (single operand vs many, file vs directory, terminal vs pipe).',
+      'For a shared module: every exported function with no caller, every parameter never read, every',
+      'struct field never consulted.',
+      'Report the field name, its write site, and the absence of a real read site.',
     ].join('\n'),
   },
   {
@@ -348,18 +409,17 @@ const CODE_LENSES = [
     focus: [
       'Find resource defects:',
       '- Allocations not freed on a path the arena does not cover; frees on memory the arena owns.',
-      '- Use-after-free, especially pointers into memory owned by something that is reset or freed.',
+      '- Use-after-free, especially pointers into memory owned by something reset or freed.',
       '- Pointers returned by libc into STATIC buffers — getpwuid, getgrgid, getpwnam, strerror,',
       '  localtime — used after any other libc call could have reused the buffer. This has caused a',
       '  real bug here; the rule is copy the string out immediately.',
       '- File descriptors, directory handles, and mapped memory not closed on the error path.',
       '- Buffered writers not flushed before the buffer goes out of scope (data loss), or flushed',
       '  after the underlying file is closed.',
-      '- Unbounded loops: a `while (true)` with no counter, a retry loop with no cap (an uncapped',
-      '  getgrouplist retry once hung CI for 29 minutes), a read loop that does not terminate on a',
-      '  short read.',
-      '- Integer overflow or truncation in size, offset, and count arithmetic, and casts that can',
-      '  trap in a safe build.',
+      '- Unbounded loops: `while (true)` with no counter, a retry loop with no cap (an uncapped',
+      '  getgrouplist retry once hung CI for 29 minutes), a read loop not terminating on a short read.',
+      '- Integer overflow or truncation in size, offset, and count arithmetic, and casts that can trap',
+      '  in a safe build.',
     ].join('\n'),
   },
   {
@@ -368,14 +428,15 @@ const CODE_LENSES = [
     focus: [
       'Find behavior that is wrong on one platform. Verify on the Linux VM (`orb -m ubuntu`) rather',
       'than assuming; you are running on macOS.',
-      '- Signed stat fields: macOS st_dev on devfs is a signed i32 with the high bit set, so',
-      '  @intCast to u64 traps. It must be @bitCast. Check every cast of a libc struct field.',
+      '- Signed stat fields: macOS st_dev on devfs is a signed i32 with the high bit set, so @intCast',
+      '  to u64 traps. It must be @bitCast. Check every cast of a libc struct field.',
       '- isatty gating: color, columns, progress, and every interactive prompt need their OWN isatty',
       '  check, not one check on the first path. ColorMode.detect() only reads env vars — without an',
       '  isatty check ANSI codes leak into pipes and test buffers.',
       '- errno values that differ between platforms, and errno classified as unexpected when it is an',
       '  ordinary case (std.posix.unexpectedErrno dumps a stack trace in safe builds).',
-      '- struct stat layout and timespec field differences, and File.Stat.atime being optional.',
+      '- struct layout differences between glibc and macOS libc for any extern struct, and',
+      '  File.Stat.atime being optional.',
       '- Timezone handling: std.time.epoch has no tz database, so a naive conversion prints UTC.',
       '- Regex, locale, and libc feature differences (macOS libc rejects GNU regex escapes).',
       '- Zig 0.16 API correctness on paths the compiler may not reach: every blocking call takes io.',
@@ -385,21 +446,43 @@ const CODE_LENSES = [
     id: 'C5',
     name: 'duplication-and-reuse',
     focus: [
-      'Find code that should not exist because it already exists in src/common/. Read the module list',
-      'first (`ls src/common/`), then look for hand-rolled versions of:',
+      'Find code that should not exist because it already exists elsewhere. Read the shared module',
+      'list first (`ls src/common/`), then look for hand-rolled versions of:',
       '- directory traversal that should use common/walker.zig (bounded, cycle-aware; hand-rolled',
       '  walks here have shipped symlink-loop and sibling-alias data-loss bugs).',
       '- argument parsing that should use common/argparse.zig; help/version output that should use',
-      '  common/help.zig; mode/permission parsing that should use common/mode.zig; path manipulation',
-      '  that should use common/path.zig; copy/permission primitives in common/file_ops.zig;',
-      '  error printing that should use common.printErrorWithProgram.',
-      '- the same non-trivial logic copy-pasted between two utilities (compare against the sibling',
-      '  utility that shares the behavior — cp/mv, rm/rmdir, head/tail, chmod/chown).',
+      '  common/help.zig; mode parsing that should use common/mode.zig; path manipulation that should',
+      '  use common/path.zig; copy and permission primitives in common/file_ops.zig; error printing',
+      '  that should use common.printErrorWithProgram.',
+      '- the same non-trivial logic copy-pasted between two units (compare against the sibling that',
+      '  shares the behavior — cp/mv, rm/rmdir, head/tail, chmod/chown).',
       '- dead code: functions, branches, and struct fields with no reachable caller.',
       'Every finding here is behavior-preserving by definition, so `kind` is `refactor`. If replacing',
       'the local copy would CHANGE behavior, that is a `bug` finding instead — say which behavior',
       'moves. Judge honestly whether the duplication is worth removing: a little copying is better',
       'than a little dependency, and this project does not refactor for its own sake.',
+    ].join('\n'),
+  },
+  {
+    id: 'C6',
+    name: 'cross-utility-consistency',
+    focus: [
+      'Find where this unit is INCONSISTENT with its siblings on behavior every utility should share.',
+      'This class is invisible to a per-unit audit, so it is yours alone. A real example from this',
+      'sweep: whoami omits the `Try \'whoami --help\' for more information.` line that 14 other',
+      'vibeutils utilities emit after a usage error — found only by comparison.',
+      'Method: pick the behavior, then grep the whole of src/ for how every other utility does it, and',
+      'report this unit as the outlier (or report that it is right and the majority is wrong — say',
+      'which, and check GNU to break the tie).',
+      'Behaviors worth comparing across all utilities:',
+      '- the exact shape of usage/argument errors, and whether the `Try ... --help` hint follows.',
+      '- the `--help` layout, the `--version` string format, and whether both are handled in',
+      '  command-line order.',
+      '- how operands are quoted in error messages.',
+      '- exit code selection for the same class of failure.',
+      '- whether `--` and a bare `-` are honored.',
+      '- isatty gating and NO_COLOR handling.',
+      '- how errors from a shared helper are reported to the user.',
     ].join('\n'),
   },
 ];
@@ -408,7 +491,7 @@ const CODE_LENSES = [
 // Schemas
 // ---------------------------------------------------------------------------
 const FINDING_PROPS = {
-  id: { type: 'string', description: 'Lens id + number, e.g. T1-1 or C2-3.' },
+  id: { type: 'string', description: 'Lens id + number, e.g. T1-1, C2-3, D-7.' },
   severity: { type: 'string', enum: ['CRITICAL', 'IMPORTANT', 'SUGGESTION'] },
   kind: { type: 'string', enum: ['bug', 'test_defect', 'missing_test', 'refactor'] },
   scope: { type: 'string', enum: ['local', 'cross_cutting'] },
@@ -416,6 +499,7 @@ const FINDING_PROPS = {
   claim: { type: 'string' },
   evidence: { type: 'string' },
   fix: { type: 'string', description: 'The concrete change, or the behavior the missing test must assert.' },
+  reproducer: { type: 'string', description: 'Exact shell command demonstrating the defect, if one exists.' },
 };
 
 const FINDINGS_SCHEMA = {
@@ -444,6 +528,40 @@ const CODEX_FINDINGS_SCHEMA = {
     invoked_ok: { type: 'boolean', description: 'true only if `codex exec` actually ran and produced output' },
     raw_excerpt: { type: 'string', description: 'Last ~40 lines of Codex output, or the error if it failed.' },
     findings: FINDINGS_SCHEMA.properties.findings,
+  },
+};
+
+const DIFF_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['invocations_compared', 'divergences', 'both_built'],
+  properties: {
+    both_built: { type: 'boolean', description: 'Our Linux binary built AND the GNU reference was found.' },
+    invocations_compared: { type: 'integer' },
+    divergences: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['reproducer', 'ours', 'gnu', 'channel', 'severity'],
+        properties: {
+          reproducer: { type: 'string', description: 'Exact command, runnable as-is on the Linux VM.' },
+          channel: { type: 'string', enum: ['stdout', 'stderr', 'exit_code', 'multiple'] },
+          ours: { type: 'string' },
+          gnu: { type: 'string' },
+          severity: { type: 'string', enum: ['CRITICAL', 'IMPORTANT', 'SUGGESTION'] },
+          corpus_input: {
+            type: 'string',
+            description: 'Input file content that triggers it, if the reproducer needs one, for tests/fuzz/<u>/corpus/.',
+          },
+          environment_dependent: {
+            type: 'boolean',
+            description: 'true if the difference is host state (mounts, uid, clock), not a defect.',
+          },
+        },
+      },
+    },
+    notes: { type: 'string' },
   },
 };
 
@@ -483,6 +601,27 @@ const CROSSCHECK_SCHEMA = {
   },
 };
 
+const REFUTE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdicts'],
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'refuted', 'reason'],
+        properties: {
+          id: { type: 'string' },
+          refuted: { type: 'boolean', description: 'true if the finding is wrong or does not reproduce' },
+          reason: { type: 'string', description: 'Must cite file:line or a command you ran.' },
+        },
+      },
+    },
+  },
+};
+
 const JUDGE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -513,6 +652,7 @@ const TESTWRITE_SCHEMA = {
   properties: {
     tests_written: { type: 'integer' },
     tests_fixed: { type: 'integer' },
+    corpus_files_written: { type: 'array', items: { type: 'string' } },
     expected_failing: {
       type: 'array',
       description: 'Tests deliberately left failing because the CODE is wrong. These are the RED tests.',
@@ -732,8 +872,8 @@ const FINAL_SCHEMA = {
 // ---------------------------------------------------------------------------
 // Codex layer. Codex is not a subagent type: a sonnet RUNNER agent writes the
 // prompt to a file and shells out to `codex exec`. The runner is a courier,
-// never a substitute reviewer — a silently-Claude "Codex" opinion would void
-// the whole two-family premise of this sweep.
+// never a substitute auditor — a silently-Claude "Codex" opinion would void
+// the two-family premise this whole sweep rests on.
 // ---------------------------------------------------------------------------
 function codexInstructions(promptFile) {
   return [
@@ -751,36 +891,52 @@ function codexInstructions(promptFile) {
   ].join('\n');
 }
 
-function codexAuditPrompt(c, target, lens, seed) {
+// Findings already surfaced in earlier rounds. Rendered compactly: the finders
+// need to know what is taken, not to re-read it.
+function knownList(seen) {
+  if (!seen || seen.length === 0) return '';
+  return [
+    '',
+    `## ALREADY FOUND (${seen.length}) — do NOT report these again`,
+    'Earlier rounds surfaced the findings below. Reporting any of them again is wasted work. Your job',
+    'this round is to find what those rounds MISSED. Go deeper: read the code paths nobody cited,',
+    'follow the callers, try the input shapes nobody tried. If after genuine effort there is nothing',
+    'new, return an empty list — that is the signal this unit is converging, and a padded list',
+    'actively harms it.',
+    seen.map((f) => `- ${f.location}: ${f.claim}`).join('\n'),
+  ].join('\n');
+}
+
+function codexAuditPrompt(c, target, lens, seed, seen) {
   const files = target === 'tests' ? c.it_files.concat(c.src) : c.src;
   return [
-    `You are auditing the vibeutils repository (a Zig 0.16 implementation of GNU coreutils).`,
-    `Utility: \`${c.util}\`. Target: the ${target === 'tests' ? 'TESTS' : 'IMPLEMENTATION'}.`,
+    'You are auditing the vibeutils repository (a Zig 0.16 implementation of GNU coreutils).',
+    `Unit: \`${c.util}\`. Target: the ${target === 'tests' ? 'TESTS' : 'IMPLEMENTATION'}.`,
     `Read these files yourself: ${files.join(', ')}.`,
-    target === 'tests'
-      ? `The unit tests are the \`test "..."\` blocks embedded in ${c.src.join(', ')}; the integration tests are ${c.it_files.join(', ')}.`
-      : `Its tests are ${c.it_files.join(', ')} plus the \`test "..."\` blocks in the source.`,
-    `The authoritative flag matrix is ${c.spec.join(', ')}.`,
+    c.kind === 'utility'
+      ? `The unit tests are the \`test "..."\` blocks embedded in ${c.src.join(', ')}; the integration tests are ${c.it_files.join(', ')}. The authoritative flag matrix is ${c.spec.join(', ')}.`
+      : 'This is a shared module under src/common/. It has no integration test file and no flag matrix; its tests live in the shared `common` test binary, and every utility importing it is its blast radius.',
     '',
     HOUSE_RULES,
     '',
     `## YOUR LENS — ${lens.id} (${lens.name}). Stay on it; other agents cover the rest.`,
     lens.focus,
     seed ? `\n## CONTEXT FROM THE TEST AUDIT\n${seed}` : '',
+    knownList(seen),
     '',
     REPORTING_RULES,
     '',
     'Output ONLY a JSON array, nothing else:',
-    '[{"id":"' + lens.id + '-1","severity":"CRITICAL|IMPORTANT|SUGGESTION",',
+    `[{"id":"${lens.id}-1","severity":"CRITICAL|IMPORTANT|SUGGESTION",`,
     '  "kind":"bug|test_defect|missing_test|refactor","scope":"local|cross_cutting",',
     '  "location":"file:line","claim":"what is wrong","evidence":"the code or behavior you cite",',
-    '  "fix":"the concrete change"}]',
+    '  "fix":"the concrete change","reproducer":"exact shell command, or empty"}]',
     'Return [] if you find nothing.',
   ].join('\n');
 }
 
-async function codexAudit(c, target, lens, seed) {
-  const promptFile = `${CODEX_TMP}/${c.util}-${target}-${lens.id}.md`;
+async function codexAudit(c, target, lens, seed, seen, round) {
+  const promptFile = `${CODEX_TMP}/${c.key.replace('/', '-')}-${target}-${lens.id}-r${round}.md`;
   return await agent(
     [
       wtPreamble(c),
@@ -792,11 +948,11 @@ async function codexAudit(c, target, lens, seed) {
       codexInstructions(promptFile),
       '',
       `--- BEGIN audit request to write to ${promptFile} ---`,
-      codexAuditPrompt(c, target, lens, seed),
+      codexAuditPrompt(c, target, lens, seed, seen),
       '--- END audit request ---',
     ].join('\n'),
     {
-      label: `codex:${c.util}:${target}:${lens.id}`,
+      label: `codex:${c.util}:${target}:${lens.id}:r${round}`,
       phase: target === 'tests' ? 'Audit tests' : 'Audit code',
       model: 'sonnet',
       schema: CODEX_FINDINGS_SCHEMA,
@@ -804,16 +960,13 @@ async function codexAudit(c, target, lens, seed) {
   ).catch(() => null);
 }
 
-// ---------------------------------------------------------------------------
-// Opus finders
-// ---------------------------------------------------------------------------
-async function opusAudit(c, target, lens, seed) {
+async function opusAudit(c, target, lens, seed, seen, round) {
   const files = target === 'tests' ? c.it_abs.concat(c.src_abs) : c.src_abs;
   return await agent(
     [
       wtPreamble(c),
       '',
-      `## YOUR TASK (auditor — lens ${lens.id}, ${lens.name})`,
+      `## YOUR TASK (auditor — lens ${lens.id}, ${lens.name}, round ${round})`,
       `Audit the ${target === 'tests' ? 'TESTS' : 'IMPLEMENTATION'} of \`${c.util}\` through ONE lens.`,
       `Read: ${files.join(', ')}.`,
       'You are one of ten auditors on this target, each with a different lens. Stay on yours — the',
@@ -821,7 +974,7 @@ async function opusAudit(c, target, lens, seed) {
       'READ ONLY. Do not edit, do not commit, do not run a formatter.',
       'You MAY build and run things to check a hypothesis; prefer the scoped, quiet commands:',
       `  ${c.util_test_cmd}`,
-      `  ${c.it_cmd}`,
+      c.it_cmd ? `  ${c.it_cmd}` : '',
       'and pipe verbose output through `tail`.',
       '',
       HOUSE_RULES,
@@ -829,16 +982,106 @@ async function opusAudit(c, target, lens, seed) {
       `## YOUR LENS — ${lens.id} (${lens.name})`,
       lens.focus,
       seed ? `\n## CONTEXT FROM THE TEST AUDIT\n${seed}` : '',
+      knownList(seen),
       '',
       REPORTING_RULES,
     ].join('\n'),
     {
-      label: `opus:${c.util}:${target}:${lens.id}`,
+      label: `opus:${c.util}:${target}:${lens.id}:r${round}`,
       phase: target === 'tests' ? 'Audit tests' : 'Audit code',
       model: 'opus',
       schema: FINDINGS_SCHEMA,
     },
   ).catch(() => null);
+}
+
+// ---------------------------------------------------------------------------
+// Differential testing. The only stage that finds defects mechanically rather
+// than by reading — it runs our binary and GNU's side by side and diffs them.
+// Both run INSIDE the Linux VM so a divergence means a real behavior
+// difference, not a macOS-versus-Linux artifact.
+// ---------------------------------------------------------------------------
+async function differentialTest(c, seen, round) {
+  return await agent(
+    [
+      wtPreamble(c),
+      '',
+      `## YOUR TASK (differential tester — ours vs GNU, round ${round})`,
+      `Mechanically compare \`${c.util}\` against the real GNU coreutils implementation and report`,
+      'every behavioral difference. This is the one stage that finds bugs by RUNNING code rather than',
+      'reading it, so bias hard toward running more invocations rather than reasoning about fewer.',
+      '',
+      'SETUP — both binaries must run in the same environment or the comparison is worthless:',
+      `  1. Build ours for Linux:  ${c.linux_build_cmd}`,
+      `  2. Confirm the GNU one exists: cd ${c.workdir} && ${COMMON.linux_prefix} which ${c.util}`,
+      `     and check it is GNU: ${COMMON.linux_prefix} ${c.util} --version | head -1`,
+      '  3. Run BOTH inside the VM. Ours is ./zig-out/bin/<u>; GNU is the absolute path from `which`.',
+      '     Never compare a macOS run against a Linux run — that conflates platform with defect.',
+      '  4. Pin the environment on every invocation: LC_ALL=C, LANG=C, TZ=UTC, and a fresh temp',
+      '     directory with fixtures you create, so both see identical inputs.',
+      'If either binary cannot be built or found, set both_built=false and say why. Do not guess at',
+      'what GNU would print.',
+      '',
+      'WHAT TO COMPARE — for each invocation capture stdout, stderr, AND exit code separately, and',
+      'diff all three. Most real findings in this repo have been in stderr text or the exit code, not',
+      'stdout.',
+      '',
+      'WHAT TO INVOKE — be systematic, not anecdotal:',
+      `  - every MUST and SHOULD flag in ${c.spec.join(', ')}, alone.`,
+      '  - pairs and triples of flags that plausibly interact, including combinations the matrix does',
+      '    not mention and combinations that contradict each other (GNU usually resolves last-wins',
+      '    rather than erroring — verify which).',
+      '  - the argument edge cases: no operands, `-`, `--`, an empty-string operand, a nonexistent',
+      '    path, a path that is a directory where a file is expected, too many operands, an unknown',
+      '    flag, a flag missing its required value, a numeric argument of 0 and one absurdly large.',
+      '  - the input edge cases where the utility reads data: empty input, no trailing newline, CRLF,',
+      '    NUL bytes, invalid UTF-8, a line longer than 8192 bytes, a very large file.',
+      '  - filesystem shapes where relevant: symlinks, symlink loops, dangling symlinks, unreadable',
+      '    files, unwritable directories, a directory operand.',
+      '',
+      'WHAT NOT TO REPORT — mark environment_dependent=true instead, and keep going:',
+      '  - output that legitimately depends on host state: mount tables, uids, the clock, hostnames,',
+      '    inode and device numbers, filesystem free space, memory totals.',
+      '  - version strings and any `vibeutils` self-identification.',
+      '  - differences that follow from a flag the matrix marks WONT.',
+      'Everything else is a real divergence. GNU is the reference: when we differ, we are wrong unless',
+      'the matrix says the flag is ours alone.',
+      '',
+      'For each divergence give a `reproducer` that runs AS-IS on the VM and demonstrates it, plus',
+      'both outputs verbatim. Where the trigger is file content rather than arguments, put that',
+      'content in `corpus_input` — it becomes a permanent regression fixture under',
+      `tests/fuzz/${c.util}/corpus/.`,
+      'Report invocations_compared honestly; it is the measure of how hard you looked.',
+      'Do NOT edit any file, and do NOT write the corpus yourself — a later stage does that.',
+      knownList(seen),
+    ].join('\n'),
+    {
+      label: `diff-test:${c.util}:r${round}`,
+      phase: 'Differential',
+      model: 'opus',
+      schema: DIFF_SCHEMA,
+    },
+  ).catch(() => null);
+}
+
+// A divergence is a finding with a reproducer attached and machine-checked
+// evidence, which makes it the strongest kind this sweep produces.
+function divergencesToFindings(diff, round) {
+  if (!diff || !diff.both_built) return [];
+  return (diff.divergences || [])
+    .filter((d) => !d.environment_dependent)
+    .map((d, i) => ({
+      id: `D${round}-${i + 1}`,
+      severity: d.severity || 'IMPORTANT',
+      kind: 'bug',
+      scope: 'local',
+      location: `${d.reproducer}`,
+      claim: `Differs from GNU on ${d.channel}: ours produced ${JSON.stringify(d.ours).slice(0, 300)}, GNU produced ${JSON.stringify(d.gnu).slice(0, 300)}.`,
+      evidence: `Machine-compared inside the Linux VM with LC_ALL=C and TZ=UTC. Reproducer: ${d.reproducer}`,
+      fix: 'Match GNU behavior on this invocation.',
+      reproducer: d.reproducer,
+      corpus_input: d.corpus_input || '',
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -850,18 +1093,19 @@ function renderFindings(list) {
     .map(
       (f) =>
         `### ${f.id} [${f.severity}/${f.kind}/${f.scope}] ${f.location}\n` +
-        `claim: ${f.claim}\nevidence: ${f.evidence}\nfix: ${f.fix}`,
+        `claim: ${f.claim}\nevidence: ${f.evidence}\nfix: ${f.fix}` +
+        (f.reproducer ? `\nreproducer: ${f.reproducer}` : ''),
     )
     .join('\n\n');
 }
 
-async function mergeFindings(c, target, opusFindings, codexFindings) {
+async function mergeFindings(c, target, opusFindings, codexFindings, round) {
   return await agent(
     [
       wtPreamble(c),
       '',
       '## YOUR TASK (consensus — merge two independent audits)',
-      `Two model families audited the ${target} of \`${c.util}\` through the same five lenses,`,
+      `Two model families audited the ${target} of \`${c.util}\` through the same lenses,`,
       'independently. Merge their findings into three buckets. READ ONLY.',
       '',
       'Two findings are THE SAME finding when they describe the same defect, even if they cite',
@@ -874,11 +1118,11 @@ async function mergeFindings(c, target, opusFindings, codexFindings) {
       '  opus_only  — only the first family found it.',
       '  codex_only — only the second family found it.',
       '',
-      'Also collapse duplicates WITHIN a family (five lenses overlap at the edges) and report how',
-      'many you collapsed. Preserve every id you merged in the claim text so nothing becomes',
-      'untraceable, e.g. "(T1-2, T4-5)".',
-      'Do not add findings of your own. Do not drop a finding because you disagree with it — that is',
-      'the cross-check stage\'s job, not yours.',
+      'Also collapse duplicates WITHIN a family (the lenses overlap at the edges) and report how many',
+      'you collapsed. Preserve every id you merged in the claim text so nothing becomes untraceable,',
+      'e.g. "(T1-2, T4-5)".',
+      'Do not add findings of your own. Do not drop a finding because you disagree with it — later',
+      'stages exist for that, and dropping it here hides it from them.',
       '',
       `## FAMILY A (opus) — ${(opusFindings || []).length} findings`,
       renderFindings(opusFindings),
@@ -887,7 +1131,7 @@ async function mergeFindings(c, target, opusFindings, codexFindings) {
       renderFindings(codexFindings),
     ].join('\n'),
     {
-      label: `merge:${c.util}:${target}`,
+      label: `merge:${c.util}:${target}:r${round}`,
       phase: 'Consensus',
       model: 'opus',
       schema: MERGE_SCHEMA,
@@ -895,21 +1139,21 @@ async function mergeFindings(c, target, opusFindings, codexFindings) {
   ).catch(() => null);
 }
 
-async function opusCrossCheck(c, target, list) {
+async function opusCrossCheck(c, target, list, round) {
   return await agent(
     [
       wtPreamble(c),
       '',
-      '## YOUR TASK (cross-check — adjudicate the other family\'s findings)',
-      `An independent auditor (Codex, a different model family) reported these defects in the`,
+      "## YOUR TASK (cross-check — adjudicate the other family's findings)",
+      'An independent auditor (Codex, a different model family) reported these defects in the',
       `${target} of \`${c.util}\`. Your family did NOT find them. That asymmetry is information, but`,
       'it cuts both ways: it can mean the finding is wrong, or that your family missed it.',
       '',
       'For each, go read the actual code at the cited location and decide:',
       '  CONFIRM — the defect is real. It joins the agreed set and will be fixed.',
       '  REJECT  — the defect is not real. Say concretely why, citing the code that refutes it.',
-      '            Rejecting because it is inconvenient, or because a WONT-tier flag is involved',
-      '            when it is not, is worse than confirming a marginal finding.',
+      '            Rejecting because it is inconvenient, or because you assume a WONT-tier flag is',
+      '            involved when it is not, is worse than confirming a marginal finding.',
       '  DISPUTE — you cannot settle it. It goes to a judge.',
       'READ ONLY. You may run the scoped checks to settle a factual question; you may not edit.',
       '',
@@ -919,7 +1163,7 @@ async function opusCrossCheck(c, target, list) {
       renderFindings(list),
     ].join('\n'),
     {
-      label: `crosscheck-opus:${c.util}:${target}`,
+      label: `crosscheck-opus:${c.util}:${target}:r${round}`,
       phase: 'Consensus',
       model: 'opus',
       schema: CROSSCHECK_SCHEMA,
@@ -927,8 +1171,8 @@ async function opusCrossCheck(c, target, list) {
   ).catch(() => null);
 }
 
-async function codexCrossCheck(c, target, list) {
-  const promptFile = `${CODEX_TMP}/${c.util}-${target}-crosscheck.md`;
+async function codexCrossCheck(c, target, list, round) {
+  const promptFile = `${CODEX_TMP}/${c.key.replace('/', '-')}-${target}-crosscheck-r${round}.md`;
   return await agent(
     [
       wtPreamble(c),
@@ -939,7 +1183,7 @@ async function codexCrossCheck(c, target, list) {
       codexInstructions(promptFile),
       '',
       `--- BEGIN request to write to ${promptFile} ---`,
-      `Continuing your audit of the vibeutils utility \`${c.util}\` (${target}).`,
+      `Continuing your audit of the vibeutils unit \`${c.util}\` (${target}).`,
       'Another auditor (a different model family) reported the defects below. You did not find them.',
       'That asymmetry can mean the finding is wrong, or that you missed it — it is not evidence',
       'either way on its own.',
@@ -960,7 +1204,7 @@ async function codexCrossCheck(c, target, list) {
       '--- END request ---',
     ].join('\n'),
     {
-      label: `crosscheck-codex:${c.util}:${target}`,
+      label: `crosscheck-codex:${c.util}:${target}:r${round}`,
       phase: 'Consensus',
       model: 'sonnet',
       schema: CROSSCHECK_SCHEMA,
@@ -968,13 +1212,88 @@ async function codexCrossCheck(c, target, list) {
   ).catch(() => null);
 }
 
-async function judge(c, target, disputed) {
+// Both families agreeing is weaker evidence than it looks: they can be
+// confidently wrong together, and a bad finding acted on becomes a bad test.
+// Three skeptics with distinct lenses try to kill the agreed set.
+const REFUTE_LENSES = [
+  {
+    id: 'R1',
+    name: 'does-it-reproduce',
+    focus: [
+      'Attack the CLAIM OF FACT. For each finding, actually try to make the defect happen: build the',
+      'binary, run the reproducer if there is one, construct one if there is not, and observe. A',
+      'finding whose described behavior you cannot produce is refuted, regardless of how plausible',
+      'the reasoning looks. Say exactly what you ran and what you saw.',
+    ].join('\n'),
+  },
+  {
+    id: 'R2',
+    name: 'is-it-actually-wrong',
+    focus: [
+      'Grant that the behavior happens, and attack whether it is WRONG. Check the reference: run the',
+      'real GNU utility on the Linux VM and see whether it does the same thing. Check the flag matrix',
+      'for a WONT tier that makes the gap deliberate. Check CLAUDE.md conventions for a house rule',
+      'that makes it correct here. Many "bugs" are the specified behavior, and this repo deliberately',
+      'declines whole categories of validation.',
+    ].join('\n'),
+  },
+  {
+    id: 'R3',
+    name: 'is-the-fix-right',
+    focus: [
+      'Grant that it is a real defect, and attack the PROPOSED FIX. Would applying it break another',
+      'caller, another platform, or another test? Does it change shared behavior that other units',
+      'depend on? Is it scoped to this unit, or does it silently reach into src/common where it would',
+      'collide with a concurrent worktree? Is it minimal, or does it drag in refactoring? Refute if',
+      'the fix as written would do damage, and say what it would break.',
+    ].join('\n'),
+  },
+];
+
+async function refute(c, target, list, lens, round) {
+  return await agent(
+    [
+      wtPreamble(c),
+      '',
+      `## YOUR TASK (adversarial refuter — lens ${lens.id}, ${lens.name})`,
+      `Two independent auditors AGREED on the findings below about \`${c.util}\`. Your job is to prove`,
+      'them WRONG. Agreement between two models is not proof: they share training data and they can',
+      'be confidently wrong together. You are the check on that.',
+      '',
+      'Default to refuted=true when you are uncertain. A wrong finding that survives becomes a wrong',
+      'test and then a wrong "fix" to real code, which is far more expensive than losing a marginal',
+      'finding — another round of the audit loop will resurface anything genuinely real.',
+      '',
+      `## YOUR ANGLE OF ATTACK — ${lens.id}`,
+      lens.focus,
+      '',
+      'You may build, run, and read anything, including the real GNU utilities on the Linux VM',
+      `(\`${COMMON.linux_prefix} ...\`). You may NOT edit any file.`,
+      'Every reason must cite a file:line you read or a command you ran with its output. "Seems fine"',
+      'is not a refutation, and neither is "seems right" a confirmation.',
+      '',
+      HOUSE_RULES,
+      '',
+      '## FINDINGS TO ATTACK',
+      renderFindings(list),
+    ].join('\n'),
+    {
+      label: `refute:${c.util}:${target}:${lens.id}:r${round}`,
+      phase: 'Consensus',
+      model: 'opus',
+      schema: REFUTE_SCHEMA,
+    },
+  ).catch(() => null);
+}
+
+async function judge(c, target, disputed, round) {
   const items = disputed
     .map(
       (d) =>
         `### ${d.id} [${d.severity}/${d.kind}] ${d.location}\n` +
         `CLAIMED: ${d.claim}\nEVIDENCE: ${d.evidence}\nPROPOSED FIX: ${d.fix}\n` +
-        `THE OTHER FAMILY SAYS: ${d.counter || '(did not find it and could not settle it)'}`,
+        (d.reproducer ? `REPRODUCER: ${d.reproducer}\n` : '') +
+        `THE OPPOSING VIEW: ${d.counter || '(unsettled)'}`,
     )
     .join('\n\n');
   return await agent(
@@ -982,23 +1301,23 @@ async function judge(c, target, disputed) {
       wtPreamble(c),
       '',
       '## YOUR TASK (judge — break a deadlock)',
-      `Two independent auditors disagree about the ${target} of \`${c.util}\` and neither will move.`,
-      'You decide, and your decision is final.',
+      `Independent reviewers disagree about \`${c.util}\` (${target}) and neither will move. You`,
+      'decide, and your decision is final.',
       '',
       'You must NOT arbitrate between the two written positions. Both may be wrong. Go read the',
       'actual code: open the cited files and read enough of the surrounding code to judge for',
       'yourself. You may run the scoped checks to settle a factual question',
-      `(\`${c.util_test_cmd}\`, \`${c.it_cmd}\`) and you may run the real GNU utility on the Linux VM`,
-      `(\`${COMMON.linux_prefix} ${c.util} ...\`) to pin reference behavior. You may NOT edit any file.`,
+      `(\`${c.util_test_cmd}\`${c.it_cmd ? `, \`${c.it_cmd}\`` : ''}) and you may run the real GNU`,
+      `utility on the Linux VM (\`${COMMON.linux_prefix} ...\`) to pin reference behavior. You may NOT`,
+      'edit any file.',
       '',
       HOUSE_RULES,
       '',
       'For each disputed finding return one verdict:',
       '  UPHOLD — the defect is real. `directive` states the concrete change to make.',
       '  REJECT — the defect is not real. `directive` is "none".',
-      '  DEFER_CROSS_CUTTING — the defect is real but the fix would change src/common/* or another',
-      '    utility, so it cannot be fixed inside this utility\'s worktree. `directive` states the',
-      '    change for the later serial wave.',
+      '  DEFER_CROSS_CUTTING — the defect is real but the fix would change another unit, so it cannot',
+      "    be applied inside this unit's worktree. `directive` states the change for the owning wave.",
       'Every rationale must cite specific code you actually read (file:line). A rationale that only',
       "restates one side's argument is not acceptable.",
       '',
@@ -1006,7 +1325,7 @@ async function judge(c, target, disputed) {
       items,
     ].join('\n'),
     {
-      label: `judge:${c.util}:${target}`,
+      label: `judge:${c.util}:${target}:r${round}`,
       phase: 'Consensus',
       model: 'fable',
       schema: JUDGE_SCHEMA,
@@ -1014,88 +1333,138 @@ async function judge(c, target, disputed) {
   ).catch(() => null);
 }
 
-// A finding that touches shared code cannot be fixed inside a per-utility
-// worktree without three of them colliding on the same file. Decide this in
-// code rather than trusting the model's own `scope` label alone.
+// A finding whose fix reaches into another unit cannot be applied inside this
+// worktree without two of them colliding on one file. Decide it in code rather
+// than trusting the model's own label alone.
 function isCrossCutting(c, f) {
   if (!f) return false;
   if (f.scope === 'cross_cutting') return true;
   const loc = String(f.location || '');
-  if (loc.startsWith('src/common/')) return true;
-  if (loc.includes('/src/common/')) return true;
   const own = c.src.concat(c.it_files);
   const inOwn = own.some((p) => loc.includes(p));
-  return loc.startsWith('src/') && !inOwn;
+  if (inOwn) return false;
+  // A location that names some other source file belongs to that file's wave.
+  return /(^|\/)src\//.test(loc) && !inOwn;
+}
+
+// Dedup key. Deliberately coarse: the same defect reported at a slightly
+// different line in a later round must collide, or the loop never goes dry.
+function dedupKey(f) {
+  const loc = String(f.location || '').split(':')[0];
+  const claim = String(f.claim || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .split(/\s+/)
+    .filter((w) => w.length > 3)
+    .slice(0, 8)
+    .join(' ');
+  return `${loc}|${claim}`;
 }
 
 // ---------------------------------------------------------------------------
-// One audit target (tests, then code). Ten finders, merge, cross-check, judge.
+// One discovery round over one target.
 // ---------------------------------------------------------------------------
-async function auditTarget(c, target, lenses, seed) {
+async function auditRound(c, target, lenses, seed, seen, round) {
   const thunks = [];
-  for (const lens of lenses) thunks.push(() => opusAudit(c, target, lens, seed));
-  for (const lens of lenses) thunks.push(() => codexAudit(c, target, lens, seed));
-  const results = await parallel(thunks);
+  for (const lens of lenses) thunks.push(() => opusAudit(c, target, lens, seed, seen, round));
+  for (const lens of lenses) thunks.push(() => codexAudit(c, target, lens, seed, seen, round));
+  // Differential testing is a code-side discovery channel and only exists for
+  // units with a CLI.
+  const wantDiff = target === 'code' && c.kind === 'utility';
+  if (wantDiff) thunks.push(() => differentialTest(c, seen, round));
 
+  const results = await parallel(thunks);
   const opusRuns = results.slice(0, lenses.length).filter(Boolean);
-  const codexRuns = results.slice(lenses.length).filter(Boolean);
+  const codexRuns = results.slice(lenses.length, lenses.length * 2).filter(Boolean);
+  const diffRun = wantDiff ? results[lenses.length * 2] : null;
+
   const codexOk = codexRuns.filter((r) => r.invoked_ok);
   if (codexOk.length === 0) {
-    log(`${c.util}/${target}: NO codex lens ran — the two-family premise is void for this target.`);
+    log(`${c.util}/${target} r${round}: NO codex lens ran — the two-family premise is void this round.`);
   } else if (codexOk.length < lenses.length) {
-    log(`${c.util}/${target}: only ${codexOk.length}/${lenses.length} codex lenses ran.`);
+    log(`${c.util}/${target} r${round}: only ${codexOk.length}/${lenses.length} codex lenses ran.`);
   }
 
-  const opusFindings = opusRuns.flatMap((r) => r.findings || []);
-  const codexFindings = codexOk.flatMap((r) => r.findings || []);
-  log(`${c.util}/${target}: opus ${opusFindings.length}, codex ${codexFindings.length} raw findings.`);
-
-  if (opusFindings.length === 0 && codexFindings.length === 0) {
-    return { target, agreed: [], dropped: [], judged: [], deferred: [], codex_lenses_ok: codexOk.length };
+  const diffFindings = divergencesToFindings(diffRun, round);
+  if (wantDiff) {
+    if (!diffRun || !diffRun.both_built) {
+      log(`${c.util} r${round}: differential testing did NOT run (both_built=false) — surfacing, not skipping.`);
+    } else {
+      log(
+        `${c.util} r${round}: differential compared ${diffRun.invocations_compared} invocations, ` +
+          `${(diffRun.divergences || []).length} divergences (${diffFindings.length} real).`,
+      );
+    }
   }
 
-  const merged = await mergeFindings(c, target, opusFindings, codexFindings);
-  if (!merged) {
-    return {
-      target,
-      agreed: opusFindings.concat(codexFindings),
-      dropped: [],
-      judged: [],
-      deferred: [],
-      codex_lenses_ok: codexOk.length,
-      merge_failed: true,
-    };
-  }
+  return {
+    opus: opusRuns.flatMap((r) => r.findings || []).concat(diffFindings),
+    codex: codexOk.flatMap((r) => r.findings || []),
+    codexOk: codexOk.length,
+    diff: diffRun,
+  };
+}
+
+// Adjudicate one round's fresh findings: merge, cross-check the one-sided ones,
+// attack the agreed ones, judge whatever is still contested.
+async function adjudicate(c, target, opusFindings, codexFindings, codexOkCount, round) {
+  const merged = await mergeFindings(c, target, opusFindings, codexFindings, round);
+  if (!merged) return { confirmed: opusFindings.concat(codexFindings), dropped: [], judged: [] };
 
   const agreed = merged.agreed || [];
   const opusOnly = merged.opus_only || [];
   const codexOnly = merged.codex_only || [];
   log(
-    `${c.util}/${target}: ${agreed.length} agreed, ${opusOnly.length} opus-only, ` +
-      `${codexOnly.length} codex-only (collapsed ${merged.duplicates_collapsed || 0} duplicates).`,
+    `${c.util}/${target} r${round}: ${agreed.length} agreed, ${opusOnly.length} opus-only, ` +
+      `${codexOnly.length} codex-only (collapsed ${merged.duplicates_collapsed || 0}).`,
   );
 
-  // Each family adjudicates the findings the OTHER family raised alone.
-  const checks = await parallel([
-    () => (codexOnly.length > 0 ? opusCrossCheck(c, target, codexOnly) : Promise.resolve(null)),
-    () => (opusOnly.length > 0 && codexOk.length > 0 ? codexCrossCheck(c, target, opusOnly) : Promise.resolve(null)),
-  ]);
-
-  const verdictOf = (res, id) => {
-    const v = res && (res.verdicts || []).find((x) => x.id === id);
-    return v || null;
-  };
+  // Each family adjudicates what the other raised alone; three skeptics attack
+  // what both raised together. All of it runs concurrently.
+  const jobs = [
+    () => (codexOnly.length > 0 ? opusCrossCheck(c, target, codexOnly, round) : Promise.resolve(null)),
+    () =>
+      opusOnly.length > 0 && codexOkCount > 0
+        ? codexCrossCheck(c, target, opusOnly, round)
+        : Promise.resolve(null),
+  ];
+  for (const lens of REFUTE_LENSES.slice(0, REFUTERS)) {
+    jobs.push(() => (agreed.length > 0 ? refute(c, target, agreed, lens, round) : Promise.resolve(null)));
+  }
+  const out = await parallel(jobs);
+  const opusCheck = out[0];
+  const codexCheck = out[1];
+  const refutations = out.slice(2).filter(Boolean);
 
   const confirmed = [];
   const dropped = [];
   const disputed = [];
-  const sort = (list, res, sideLabel) => {
+
+  // Agreed findings survive only if fewer than a majority of skeptics kill them.
+  for (const f of agreed) {
+    const votes = refutations
+      .map((r) => (r.verdicts || []).find((v) => String(v.id) === String(f.id)))
+      .filter(Boolean);
+    const kills = votes.filter((v) => v.refuted);
+    if (kills.length >= REFUTE_KILL_VOTES) {
+      dropped.push({
+        ...f,
+        dropped_by: `${kills.length}/${refutations.length} adversarial refuters`,
+        drop_reason: kills.map((v) => v.reason).join(' | '),
+      });
+    } else if (kills.length > 0) {
+      // A split panel is exactly what the judge is for.
+      disputed.push({ ...f, counter: kills.map((v) => v.reason).join(' | ') });
+    } else {
+      confirmed.push({ ...f, survived_refutation: `${votes.length} skeptics, 0 kills` });
+    }
+  }
+
+  const sortOneSided = (list, res, sideLabel) => {
     for (const f of list) {
-      const v = verdictOf(res, f.id);
+      const v = res && (res.verdicts || []).find((x) => String(x.id) === String(f.id));
       if (!v) {
-        // No verdict came back for this finding. Not settled, so do not silently
-        // keep it and do not silently drop it — send it to the judge.
-        disputed.push({ ...f, counter: `${sideLabel} returned no verdict for this finding.` });
+        disputed.push({ ...f, counter: `${sideLabel} returned no verdict.` });
       } else if (v.verdict === 'CONFIRM') {
         confirmed.push({ ...f, confirmed_by: sideLabel, confirm_reason: v.reason });
       } else if (v.verdict === 'REJECT') {
@@ -1105,22 +1474,20 @@ async function auditTarget(c, target, lenses, seed) {
       }
     }
   };
-  sort(codexOnly, checks[0], 'opus cross-check');
-  if (opusOnly.length > 0 && codexOk.length > 0) {
-    sort(opusOnly, checks[1], 'codex cross-check');
+  sortOneSided(codexOnly, opusCheck, 'opus cross-check');
+  if (opusOnly.length > 0 && codexOkCount > 0) {
+    sortOneSided(opusOnly, codexCheck, 'codex cross-check');
   } else {
-    // Codex never ran, so nothing can cross-check the opus-only set. Judge it
-    // rather than accepting it unexamined.
     for (const f of opusOnly) disputed.push({ ...f, counter: 'codex was unavailable to cross-check.' });
   }
 
   let judged = [];
   if (disputed.length > 0) {
-    const ruling = await judge(c, target, disputed);
+    const ruling = await judge(c, target, disputed, round);
     judged = (ruling && ruling.verdicts) || [];
-    log(`${c.util}/${target}: judge ruled on ${judged.length}/${disputed.length} disputed findings.`);
+    log(`${c.util}/${target} r${round}: judge ruled on ${judged.length}/${disputed.length}.`);
     for (const f of disputed) {
-      const v = judged.find((x) => x.id === f.id);
+      const v = judged.find((x) => String(x.id) === String(f.id));
       if (!v) {
         dropped.push({ ...f, dropped_by: 'judge', drop_reason: 'no verdict returned' });
       } else if (v.verdict === 'UPHOLD') {
@@ -1133,22 +1500,74 @@ async function auditTarget(c, target, lenses, seed) {
     }
   }
 
-  const all = agreed.concat(confirmed);
-  const deferred = all.filter((f) => isCrossCutting(c, f));
-  const actionable = all.filter((f) => !isCrossCutting(c, f));
+  return { confirmed, dropped, judged };
+}
+
+// ---------------------------------------------------------------------------
+// Loop-until-dry over one target. Rounds keep running until DRY_ROUNDS_REQUIRED
+// consecutive rounds surface nothing new.
+//
+// Dedup is against everything ever SEEN, not against what was confirmed. Using
+// the confirmed set instead would resurface every refuted finding on every
+// round and the loop would never terminate.
+// ---------------------------------------------------------------------------
+async function auditTarget(c, target, lenses, seed) {
+  const seen = new Map();
+  const confirmed = [];
+  const dropped = [];
+  const judged = [];
+  let codexOkTotal = 0;
+  let diffTotal = 0;
+  let dry = 0;
+  let round = 0;
+
+  while (dry < DRY_ROUNDS_REQUIRED && round < AUDIT_ROUNDS_MAX) {
+    round += 1;
+    const known = [...seen.values()];
+    const r = await auditRound(c, target, lenses, seed, known, round);
+    codexOkTotal += r.codexOk;
+    if (r.diff && r.diff.both_built) diffTotal += r.diff.invocations_compared || 0;
+
+    const freshOpus = (r.opus || []).filter((f) => !seen.has(dedupKey(f)));
+    const freshCodex = (r.codex || []).filter((f) => !seen.has(dedupKey(f)));
+    const freshCount = freshOpus.length + freshCodex.length;
+
+    if (freshCount === 0) {
+      dry += 1;
+      log(`${c.util}/${target} r${round}: nothing new (dry ${dry}/${DRY_ROUNDS_REQUIRED}).`);
+      continue;
+    }
+    dry = 0;
+    for (const f of freshOpus.concat(freshCodex)) seen.set(dedupKey(f), f);
+    log(`${c.util}/${target} r${round}: ${freshCount} new raw findings (${seen.size} seen total).`);
+
+    const adj = await adjudicate(c, target, freshOpus, freshCodex, r.codexOk, round);
+    confirmed.push(...adj.confirmed);
+    dropped.push(...adj.dropped);
+    judged.push(...adj.judged);
+  }
+
+  if (round >= AUDIT_ROUNDS_MAX && dry < DRY_ROUNDS_REQUIRED) {
+    log(`${c.util}/${target}: hit the ${AUDIT_ROUNDS_MAX}-round cap while still finding new defects — NOT converged.`);
+  }
+
+  const deferred = confirmed.filter((f) => isCrossCutting(c, f));
+  const actionable = confirmed.filter((f) => !isCrossCutting(c, f));
   log(
-    `${c.util}/${target}: ${actionable.length} actionable, ${deferred.length} deferred cross-cutting, ` +
-      `${dropped.length} dropped.`,
+    `${c.util}/${target}: converged after ${round} rounds — ${actionable.length} actionable, ` +
+      `${deferred.length} deferred, ${dropped.length} dropped.`,
   );
 
   return {
     target,
+    rounds: round,
+    converged: dry >= DRY_ROUNDS_REQUIRED,
     agreed: actionable,
     deferred,
     dropped,
     judged,
-    codex_lenses_ok: codexOk.length,
-    merge_notes: merged.notes || '',
+    codex_lens_runs_ok: codexOkTotal,
+    diff_invocations: diffTotal,
   };
 }
 
@@ -1160,15 +1579,15 @@ function seedFromTests(testResult) {
   if (gaps.length === 0) return '';
   return [
     'The test audit found these gaps. Behavior that is untested is where bugs survive, so weight',
-    'these code paths first — but audit through YOUR lens, not through the test audit\'s.',
+    "these code paths first — but audit through YOUR lens, not through the test audit's.",
     gaps.map((f) => `- [${f.kind}] ${f.location}: ${f.claim}`).join('\n'),
   ].join('\n');
 }
 
-async function auditUtility(c) {
+async function auditUnit(c) {
   const tests = await auditTarget(c, 'tests', TEST_LENSES, '');
   const code = await auditTarget(c, 'code', CODE_LENSES, seedFromTests(tests));
-  return { util: c.util, workdir: c.workdir, tests, code };
+  return { util: c.util, key: c.key, kind: c.kind, workdir: c.workdir, tests, code };
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,38 +1607,48 @@ async function writeTests(c, audit, extra) {
   const missing = findingsByKind(audit, ['missing_test']);
   const bugs = findingsByKind(audit, ['bug']);
   const refactors = findingsByKind(audit, ['refactor']);
+  const withCorpus = bugs.filter((f) => f.corpus_input);
   return await agent(
     [
       wtPreamble(c),
       '',
       '## YOUR TASK (test-writer — you own every test in this worktree)',
-      `A ten-pass audit of \`${c.util}\` agreed on the findings below. Act on the test-side ones.`,
+      `An exhaustive audit of \`${c.util}\` agreed on the findings below. Act on the test-side ones.`,
       `Files you may edit: ${c.it_abs.concat(c.src_abs).join(', ')} — but in the source files you may`,
       'edit ONLY the `test "..."` blocks, never the implementation. Another agent owns that.',
       'Do NOT commit. Do NOT run a tree-wide formatter (`zig build fmt`); use `zig build fmt-check`.',
       'Do NOT touch TODO.md, CHANGELOG.md, or any file not listed above.',
       '',
-      'Three jobs, in order:',
+      'Four jobs, in order:',
       '',
       '1. FIX THE BROKEN TESTS. For each test_defect finding, repair the test so it would fail if the',
-      '   behavior regressed. A test that is merely deleted is not fixed unless the finding says the',
-      '   test is genuinely dead. Keep every test TOOTHFUL.',
+      '   behavior regressed. A test that is merely deleted is not fixed unless the finding says it is',
+      '   genuinely dead. Keep every test TOOTHFUL.',
       '',
-      '2. ADD THE MISSING TESTS. For each missing_test finding, write a test that asserts the',
-      '   BEHAVIOR, not the parse. Some of these will PASS (the behavior is right, it was just',
-      '   untested) — good, that is coverage. Some will FAIL, because the behavior is actually wrong.',
-      '   Leave those FAILING and list them in expected_failing. Do NOT weaken a test to make it pass.',
+      '2. ADD THE MISSING TESTS. For each missing_test finding, assert the BEHAVIOR, not the parse.',
+      '   Some will PASS — good, that is coverage. Some will FAIL because the behavior is actually',
+      '   wrong: leave those FAILING and list them in expected_failing. Never weaken a test to pass.',
       '',
-      '3. WRITE THE RED TESTS. For each `bug` finding, write a test that fails NOW and will pass once',
-      '   the bug is fixed. Assert the reference (GNU) behavior. You have a Linux VM: pin the real',
-      `   behavior with \`${COMMON.linux_prefix} ${c.util} ...\` rather than reasoning from memory.`,
+      '3. WRITE THE RED TESTS. For each `bug` finding, write a test that fails NOW and passes once the',
+      '   bug is fixed. Assert the reference (GNU) behavior; findings from differential testing carry',
+      '   a `reproducer` that already pins it, so build the test directly on that command. For the',
+      `   rest, pin it yourself with \`${COMMON.linux_prefix} ${c.util} ...\`.`,
       '   List each in expected_failing with exactly what it asserts.',
+      '',
+      withCorpus.length > 0
+        ? [
+            `4. PERSIST THE FUZZ CORPORA. ${withCorpus.length} finding(s) carry a \`corpus_input\`: the`,
+            `   file content that triggers the divergence. Write each under tests/fuzz/${c.util}/corpus/`,
+            '   with a short descriptive filename, so it becomes a permanent regression fixture beyond',
+            '   this sweep. Report the paths in corpus_files_written.',
+          ].join('\n')
+        : '4. No findings carry corpus input this time; skip the corpus step.',
       '',
       refactors.length > 0
         ? [
             'REFACTOR findings are behavior-preserving, so they get CHARACTERIZATION tests instead:',
-            'tests that pass against the code as it stands today and will still pass after the',
-            'refactor. Write those too, and do NOT list them in expected_failing.',
+            'tests that pass against the code as it stands today and still pass after the refactor.',
+            'Write those too, and do NOT list them in expected_failing.',
           ].join('\n')
         : '',
       '',
@@ -1228,7 +1657,7 @@ async function writeTests(c, audit, extra) {
       '',
       'Check your work with the scoped commands only (pipe through `tail`):',
       `  ${c.util_test_cmd}`,
-      `  ${c.it_cmd}`,
+      c.it_cmd ? `  ${c.it_cmd}` : '',
       `  ${c.fmt_cmd}`,
       'Everything must compile and `fmt-check` must be clean. Failures are expected ONLY from the',
       'tests you listed in expected_failing.',
@@ -1278,7 +1707,7 @@ async function redCheck(c, expectedFailing) {
       'Run on BOTH platforms — a bug that reproduces on only one is still a bug, but we need to know',
       'which:',
       `  macOS unit:        ${c.util_test_cmd}`,
-      `  macOS integration: ${c.it_cmd}`,
+      c.it_cmd ? `  macOS integration: ${c.it_cmd}` : '',
       `  Linux build:       ${c.linux_build_cmd}`,
       `  Linux unit:        ${c.linux_test_cmd}`,
       `  Linux integration: ${c.linux_it_cmd}`,
@@ -1289,12 +1718,7 @@ async function redCheck(c, expectedFailing) {
       '## TESTS EXPECTED TO BE RED',
       items || '(none — report all_red_for_right_reason=true and check that the suites are green)',
     ].join('\n'),
-    {
-      label: `red-check:${c.util}`,
-      phase: 'Red',
-      model: 'sonnet',
-      schema: REDCHECK_SCHEMA,
-    },
+    { label: `red-check:${c.util}`, phase: 'Red', model: 'sonnet', schema: REDCHECK_SCHEMA },
   );
 }
 
@@ -1310,21 +1734,16 @@ async function proveTeeth(c, refactors) {
       '',
       'For each characterization test:',
       '  1. Temporarily mutate the implementation to break the behavior it asserts.',
-      `  2. Run just that test (use \`-Dtest-filter\` or the scoped ${c.util_test_cmd}) and confirm RED.`,
+      `  2. Run just that test (use \`-Dtest-filter\` or ${c.util_test_cmd}) and confirm RED.`,
       '  3. REVERT the mutation immediately. Never leave one in place, never commit one.',
       'At the end, run `git diff` and confirm the implementation is byte-identical to how you found',
-      'it, then confirm the suite is green again. Report restored_clean honestly — a leftover',
-      'mutation would be committed as if it were the fix.',
+      'it, then confirm the suite is green again. Report restored_clean honestly — a leftover mutation',
+      'would be committed as if it were the fix.',
       '',
       '## CHARACTERIZATION TESTS TO PROVE',
       renderFindings(refactors),
     ].join('\n'),
-    {
-      label: `sabotage:${c.util}`,
-      phase: 'Red',
-      model: 'sonnet',
-      schema: SABOTAGE_SCHEMA,
-    },
+    { label: `sabotage:${c.util}`, phase: 'Red', model: 'sonnet', schema: SABOTAGE_SCHEMA },
   );
 }
 
@@ -1356,10 +1775,7 @@ async function redPhase(c, audit) {
   }
 
   const refactors = findingsByKind(audit, ['refactor']);
-  let teeth = null;
-  if (refactors.length > 0) {
-    teeth = await proveTeeth(c, refactors);
-  }
+  const teeth = refactors.length > 0 ? await proveTeeth(c, refactors) : null;
 
   const ready =
     !!written &&
@@ -1375,6 +1791,7 @@ async function redPhase(c, audit) {
     workdir: c.workdir,
     tests_written: written ? written.tests_written : 0,
     tests_fixed: written ? written.tests_fixed : 0,
+    corpus_files_written: written ? written.corpus_files_written || [] : [],
     expected_failing: written ? written.expected_failing || [] : [],
     refused: written ? written.refused || [] : [],
     red_check: check,
@@ -1384,10 +1801,7 @@ async function redPhase(c, audit) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase: green — the implementer owns the implementation and may never edit a
-// test. When a test genuinely needs to change, it routes to the test-writer,
-// which judges first and may refuse. Without that, an implementer could dodge a
-// real bug by rewriting the test that caught it.
+// Phase: green
 // ---------------------------------------------------------------------------
 async function dispatchImplementer(c, body, label) {
   return await agent(
@@ -1396,22 +1810,22 @@ async function dispatchImplementer(c, body, label) {
       '',
       '## YOUR TASK (implementer — you own the implementation, never the tests)',
       `Implementation files you may edit: ${c.src_abs.join(', ')} (NOT the \`test "..."\` blocks).`,
-      `Test files you may NOT edit under any circumstances: ${c.it_abs.join(', ')}, and every`,
-      '`test "..."` block in the source.',
+      `Test files you may NOT edit under any circumstances: ${c.it_abs.join(', ') || '(none)'}, and`,
+      'every `test "..."` block in the source.',
       'Make the MINIMAL change that fixes each finding. Do not refactor surrounding code, do not add',
       'error handling the fix does not need, do not design for hypothetical requirements.',
       'Do NOT weaken, delete, or narrow any test. Do NOT commit. Do NOT run a tree-wide formatter.',
       '',
       'If a finding can only be resolved by changing a TEST, do not do it — return',
-      'outcome="needs_test_change" with a precise description of what the test should assert',
-      'instead. It routes to the test-writer, which decides whether the test is genuinely wrong.',
+      'outcome="needs_test_change" with a precise description of what the test should assert instead.',
+      'It routes to the test-writer, which decides whether the test is genuinely wrong.',
       '',
       'Check your work with the scoped, quiet commands ONLY (pipe through `tail`):',
       `  ${c.util_test_cmd}`,
-      `  ${c.it_cmd}`,
+      c.it_cmd ? `  ${c.it_cmd}` : '',
       `  ${c.fmt_cmd}`,
-      'Do not run the full unit, privileged, or full integration suites — a separate gate runs those',
-      'and reports distilled results.',
+      'Do not run the privileged or full-platform suites — a separate gate runs those and reports',
+      'distilled results.',
       '',
       HOUSE_RULES,
       '',
@@ -1427,7 +1841,7 @@ async function dispatchImplementer(c, body, label) {
   );
 }
 
-async function routeTestChange(c, audit, requests) {
+async function routeTestChange(c, requests) {
   const body = requests.map((t) => `### ${t.id}\nRequested: ${t.note}`).join('\n\n');
   return await agent(
     [
@@ -1437,15 +1851,15 @@ async function routeTestChange(c, audit, requests) {
       'The implementer says these test changes are needed. You own the tests; it does not.',
       'Judge FIRST, edit second.',
       '',
-      `Test files you own: ${c.it_abs.join(', ')} and the \`test "..."\` blocks in ${c.src_abs.join(', ')}.`,
-      'Implementation code you may NOT touch: everything else in those source files.',
+      `Test files you own: ${c.it_abs.join(', ') || '(none)'} and the \`test "..."\` blocks in`,
+      `${c.src_abs.join(', ')}. Implementation code you may NOT touch: everything else in those files.`,
       '',
       'For each request: if the test is genuinely wrong — it asserts the buggy behavior, or asserts',
-      'something the reference behavior does not require — fix it, but keep it TOOTHFUL: it must',
-      'still fail if the bug returns. If the test is correct and the IMPLEMENTATION is what needs to',
-      'change, REFUSE and say so plainly; the implementer will fix the code instead.',
-      'The refusal is the point of this stage. An implementer that can rewrite the test that caught',
-      'it can make any bug disappear.',
+      'something the reference behavior does not require — fix it, but keep it TOOTHFUL: it must still',
+      'fail if the bug returns. If the test is correct and the IMPLEMENTATION is what needs to change,',
+      'REFUSE and say so plainly; the implementer will fix the code instead.',
+      'The refusal is the point of this stage. An implementer that can rewrite the test that caught it',
+      'can make any bug disappear.',
       '',
       'Do NOT commit.',
       '',
@@ -1462,13 +1876,13 @@ async function routeTestChange(c, audit, requests) {
   );
 }
 
-async function runImplementer(c, audit, body, label) {
+async function runImplementer(c, body, label) {
   let res = await dispatchImplementer(c, body, label);
   for (let hop = 0; hop < ROUTE_HOPS_MAX; hop += 1) {
     if (!res || res.outcome !== 'needs_test_change') break;
     const reqs = res.test_change_requests || [];
     if (reqs.length === 0) break;
-    const tw = await routeTestChange(c, audit, reqs);
+    const tw = await routeTestChange(c, reqs);
     log(`${c.util}: routed ${reqs.length} test-change request(s): ${(tw && tw.summary) || 'no reply'}`);
     const refused = ((tw && tw.resolutions) || []).filter((r) => r.action === 'disputed');
     const feedback = [
@@ -1491,13 +1905,13 @@ async function gate(c, why) {
       wtPreamble(c),
       '',
       '## YOUR TASK (verify gate — run and report only)',
-      `${why}. Run EXACTLY these, in order, and stop reporting detail after the first failure:`,
+      `${why}. Run EXACTLY these, in order:`,
       `  scoped unit:        ${c.util_test_cmd}`,
-      `  scoped integration: ${c.it_cmd}`,
+      c.it_cmd ? `  scoped integration: ${c.it_cmd}` : '',
       `  lint:               ${c.fmt_cmd}`,
-      'Pipe verbose output through `tail`. Report facts only; do not edit anything, do not fix',
-      'anything. If something fails, put the first real failure (the assertion and its message, not',
-      'the summary line) in first_failure.',
+      'Pipe verbose output through `tail`. Report facts only; do not edit or fix anything. If',
+      'something fails, put the first real failure (the assertion and its message, not the summary',
+      'line) in first_failure.',
     ].join('\n'),
     { label: `gate:${c.util}`, phase: 'Green', model: 'haiku', schema: GATE_SCHEMA },
   );
@@ -1512,8 +1926,8 @@ async function tigerCheck(c) {
       `Run \`${c.tiger_cmd}\`. It prints TAB-separated \`<rule>\\t<file>:<line>\\t<status>\\t<detail>\``,
       'lines and a final `SUMMARY total=<N> new=<N>`.',
       'The repo baseline is ZERO violations and CI fails on any, so report clean=true only when the',
-      'scan is genuinely clean. Report new_violations as the count attributable to the changes in',
-      'this worktree (`git diff main...HEAD` shows them). Do not edit anything.',
+      'scan is genuinely clean. Report new_violations as the count attributable to the changes in this',
+      'worktree (`git diff main...HEAD` shows them). Do not edit anything.',
     ].join('\n'),
     { label: `tiger:${c.util}`, phase: 'Green', model: 'haiku', schema: TIGER_SCHEMA },
   );
@@ -1529,12 +1943,12 @@ async function codeReview(c, round) {
       '`git diff`, and read the surrounding code.',
       '',
       'Do NOT run the test, privileged, or integration suites, and do not build. A separate gate has',
-      'already proven the suites green; re-running them here wastes time and tells you nothing new.',
-      'Review by reading.',
+      'already proven the suites green; re-running them wastes time and tells you nothing new. Review',
+      'by reading.',
       '',
       'Review for, in priority order:',
-      '  1. Does each change actually fix the finding it claims to, including the edge cases the',
-      '     tests do not cover?',
+      '  1. Does each change actually fix the finding it claims to, including edge cases the tests do',
+      '     not cover?',
       '  2. Was any test weakened, deleted, or made tautological to reach green?',
       '  3. Does the change break an adjacent code path that shares the modified function?',
       '  4. Zig 0.16 correctness: `io` on every blocking call, std.Io not std.fs, buffered writers',
@@ -1543,8 +1957,8 @@ async function codeReview(c, round) {
       '     buffer held across another libc call.',
       '  6. Is the change minimal? Refactoring beyond the fix is a finding here, not a virtue.',
       '',
-      'Do NOT report style preferences, naming opinions, or speculative refactors. Report only what',
-      'is wrong or would break. Return APPROVED when there is nothing left that is wrong.',
+      'Do NOT report style preferences, naming opinions, or speculative refactors. Report only what is',
+      'wrong or would break. Return APPROVED when there is nothing left that is wrong.',
       '',
       HOUSE_RULES,
     ].join('\n'),
@@ -1559,7 +1973,7 @@ async function codeReview(c, round) {
 }
 
 async function codexDiffReview(c) {
-  const promptFile = `${CODEX_TMP}/${c.util}-diff-review.md`;
+  const promptFile = `${CODEX_TMP}/${c.key.replace('/', '-')}-diff-review.md`;
   return await agent(
     [
       wtPreamble(c),
@@ -1570,11 +1984,11 @@ async function codexDiffReview(c) {
       codexInstructions(promptFile),
       '',
       `--- BEGIN review request to write to ${promptFile} ---`,
-      `You are reviewing bug fixes to \`${c.util}\` in the vibeutils repository (a Zig 0.16`,
-      'implementation of GNU coreutils).',
+      `You are reviewing fixes to \`${c.util}\` in the vibeutils repository (a Zig 0.16 implementation`,
+      'of GNU coreutils).',
       '',
-      'Inspect the change yourself: run `git diff main...HEAD` and `git diff` and read the',
-      'surrounding code. Do not rely on any summary.',
+      'Inspect the change yourself: run `git diff main...HEAD` and `git diff` and read the surrounding',
+      'code. Do not rely on any summary.',
       '',
       HOUSE_RULES,
       '',
@@ -1585,8 +1999,8 @@ async function codexDiffReview(c) {
       '  4. Zig 0.16 correctness and memory handling.',
       '  5. Whether the change is minimal, or drags in unrelated refactoring.',
       '',
-      'Do NOT report style preferences, naming opinions, or speculative refactors. Report only what',
-      'is wrong or would break.',
+      'Do NOT report style preferences, naming opinions, or speculative refactors. Report only what is',
+      'wrong or would break.',
       '',
       'Output ONLY a JSON array, nothing else:',
       '[{"id":"X1","severity":"CRITICAL|IMPORTANT|SUGGESTION","kind":"bug","scope":"local",',
@@ -1594,17 +2008,12 @@ async function codexDiffReview(c) {
       'Return [] if the change is clean.',
       '--- END review request ---',
     ].join('\n'),
-    {
-      label: `codex-review:${c.util}`,
-      phase: 'Green',
-      model: 'sonnet',
-      schema: CODEX_FINDINGS_SCHEMA,
-    },
+    { label: `codex-review:${c.util}`, phase: 'Green', model: 'sonnet', schema: CODEX_FINDINGS_SCHEMA },
   );
 }
 
 async function codexRebuttal(c, disputed) {
-  const promptFile = `${CODEX_TMP}/${c.util}-rebuttal.md`;
+  const promptFile = `${CODEX_TMP}/${c.key.replace('/', '-')}-rebuttal.md`;
   const items = disputed
     .map(
       (d) =>
@@ -1647,14 +2056,14 @@ async function finalVerify(c) {
       wtPreamble(c),
       '',
       '## YOUR TASK (final gate — the authoritative run; report only)',
-      'Run EXACTLY these and report each result. This is the gate the commit depends on, so run all',
-      'of them even if an early one fails:',
-      `  macOS full unit:         ${c.test_cmd}`,
-      `  macOS full privileged:   ${c.privileged_test_cmd}`,
-      `  macOS FULL integration:  ${c.full_it_cmd}`,
-      `  Linux build:             ${c.linux_build_cmd}`,
-      `  Linux full unit:         ${c.linux_test_cmd}`,
-      `  Linux scoped integration:${c.linux_it_cmd}`,
+      'Run EXACTLY these and report each result. This is the gate the commit depends on, so run all of',
+      'them even if an early one fails:',
+      `  macOS full unit:        ${c.test_cmd}`,
+      `  macOS full privileged:  ${c.privileged_test_cmd}`,
+      `  macOS FULL integration: ${c.full_it_cmd}`,
+      `  Linux build:            ${c.linux_build_cmd}`,
+      `  Linux full unit:        ${c.linux_test_cmd}`,
+      `  Linux integration:      ${c.linux_it_cmd}`,
       '',
       'The FULL integration suite is deliberate: a scoped run cannot catch the cross-utility',
       'regressions that shared-code changes cause.',
@@ -1673,7 +2082,7 @@ function renderForImplementer(audit) {
     `## BUGS TO FIX (${bugs.length}) — each has a failing test waiting for it`,
     renderFindings(bugs),
     '',
-    `## REFACTORS TO APPLY (${refactors.length}) — behavior-preserving; characterization tests must stay green`,
+    `## REFACTORS TO APPLY (${refactors.length}) — behavior-preserving; characterization tests stay green`,
     renderFindings(refactors),
     '',
     'The tests are already written and committed. Make them pass by changing the implementation.',
@@ -1683,7 +2092,7 @@ function renderForImplementer(audit) {
 
 async function greenPhase(c, audit) {
   const body = renderForImplementer(audit);
-  let impl = await runImplementer(c, audit, body, `implement:${c.util}`);
+  const impl = await runImplementer(c, body, `implement:${c.util}`);
   let testsChanged = impl.tests_changed;
 
   let g = await gate(c, 'The implementer has applied the fixes');
@@ -1692,7 +2101,6 @@ async function greenPhase(c, audit) {
     log(`${c.util}: gate round ${round} failed — ${g.first_failure || 'see notes'}`);
     const fix = await runImplementer(
       c,
-      audit,
       [
         body,
         '',
@@ -1718,13 +2126,7 @@ async function greenPhase(c, audit) {
     log(`${c.util}: review round ${round - 1} — ${blocking.length} blocking issue(s).`);
     const fix = await runImplementer(
       c,
-      audit,
-      [
-        body,
-        '',
-        '## CODE REVIEW REQUIRES CHANGES',
-        blocking.map((i) => `- [${i.severity}] ${i.location}: ${i.claim}`).join('\n'),
-      ].join('\n'),
+      [body, '', '## CODE REVIEW REQUIRES CHANGES', blocking.map((i) => `- [${i.severity}] ${i.location}: ${i.claim}`).join('\n')].join('\n'),
       `implement:${c.util}:review${round - 1}`,
     );
     testsChanged = testsChanged || fix.tests_changed;
@@ -1732,9 +2134,8 @@ async function greenPhase(c, audit) {
     review = await codeReview(c, round);
   }
 
-  // Independent Codex review of the finished diff, with bounded rebuttal.
   const cx = await codexDiffReview(c);
-  let codexOk = !!(cx && cx.invoked_ok);
+  const codexOk = !!(cx && cx.invoked_ok);
   let deadlocks = [];
   let open = codexOk ? (cx.findings || []).filter((f) => f.severity !== 'SUGGESTION') : [];
   if (!codexOk) log(`${c.util}: codex diff review did not run — surfacing, not silently skipping.`);
@@ -1742,7 +2143,6 @@ async function greenPhase(c, audit) {
   for (let round = 1; round <= CODEX_ROUNDS_MAX && open.length > 0; round += 1) {
     const resp = await runImplementer(
       c,
-      audit,
       [
         body,
         '',
@@ -1768,7 +2168,7 @@ async function greenPhase(c, audit) {
       break;
     }
     const reb = await codexRebuttal(c, disputed);
-    const stance = new Map((((reb && reb.verdicts) || [])).map((v) => [String(v.id), v]));
+    const stance = new Map(((reb && reb.verdicts) || []).map((v) => [String(v.id), v]));
     const stillLive = disputed.filter((d) => {
       const s = stance.get(String(d.id));
       return s && s.stance === 'REAFFIRMED';
@@ -1780,7 +2180,7 @@ async function greenPhase(c, audit) {
 
   let verdicts = [];
   if (deadlocks.length > 0) {
-    const ruling = await judge(c, 'the fix diff', deadlocks.map((d) => ({ ...d, counter: d.dispute })));
+    const ruling = await judge(c, 'the fix diff', deadlocks.map((d) => ({ ...d, counter: d.dispute })), 1);
     verdicts = (ruling && ruling.verdicts) || [];
     const upheld = verdicts.filter((v) => v.verdict === 'UPHOLD');
     if (upheld.length > 0) {
@@ -1794,7 +2194,6 @@ async function greenPhase(c, audit) {
       });
       const fix = await runImplementer(
         c,
-        audit,
         [body, '', '## BINDING JUDGE RULINGS', renderFindings(binding)].join('\n'),
         `implement:${c.util}:judged`,
       );
@@ -1844,27 +2243,33 @@ async function greenPhase(c, audit) {
 // Entry
 // ---------------------------------------------------------------------------
 function resolveUnits() {
-  if (Array.isArray(a.utils) && a.utils.length > 0) return a.utils.map(String);
-  const w = Number(a.wave);
-  if (!Number.isInteger(w) || w < 0 || w >= WAVES.length) {
-    throw new Error(`fix-it-all: args.wave must be 0..${WAVES.length - 1}, or pass args.utils`);
+  if (Array.isArray(a.utils) && a.utils.length > 0) {
+    return a.utils.map((n) => (String(n).startsWith('common/') ? module_(String(n).slice(7)) : utility(String(n), OVERRIDES[n])));
   }
-  return WAVES[w];
+  const id = String(a.wave || '');
+  const base = id.replace(/b$/, '');
+  const shared = SHARED_WAVES.find((w) => w.id === base);
+  if (shared) return shared.modules.map(module_);
+  const uw = UTIL_WAVES.find((w) => w.id === base);
+  if (uw) return uw.utils.map((n) => utility(n, OVERRIDES[n]));
+  const ids = SHARED_WAVES.map((w) => w.id).concat(UTIL_WAVES.map((w) => w.id));
+  throw new Error(`fix-it-all: unknown wave "${a.wave}". Known: ${ids.join(', ')} (append "b" for a re-sweep), or pass args.utils`);
 }
 
-const names = resolveUnits();
-const cfgs = names.map(cfgFor);
-log(`fix-it-all: phase=${phaseArg} wave=${a.wave === undefined ? '(explicit)' : a.wave} utils=${names.join(', ')}`);
+const units = resolveUnits();
+const cfgs = units.map(cfgFor);
+log(`fix-it-all: phase=${phaseArg} wave=${a.wave || '(explicit)'} units=${units.map((u) => u.key).join(', ')}`);
 
 if (phaseArg === 'audit') {
   phase('Audit tests');
-  const out = (await parallel(cfgs.map((c) => () => auditUtility(c)))).filter(Boolean);
+  const out = (await parallel(cfgs.map((c) => () => auditUnit(c)))).filter(Boolean);
   for (const r of out) {
     const n = (r.tests.agreed || []).length + (r.code.agreed || []).length;
     const d = (r.tests.deferred || []).length + (r.code.deferred || []).length;
-    log(`${r.util}: ${n} actionable finding(s), ${d} deferred.`);
+    const conv = r.tests.converged && r.code.converged;
+    log(`${r.util}: ${n} actionable, ${d} deferred, ${r.tests.rounds}+${r.code.rounds} rounds${conv ? '' : ' — NOT CONVERGED'}.`);
   }
-  return { phase: 'audit', utils: names, audits: out };
+  return { phase: 'audit', wave: a.wave, units: units.map((u) => u.key), audits: out };
 }
 
 const audits = a.audits || [];
@@ -1873,42 +2278,33 @@ if (audits.length === 0) {
 }
 const byUtil = new Map(audits.map((x) => [x.util, x]));
 
+function runPhase(fn, label, readyKey) {
+  return parallel(
+    cfgs.map((c) => () => {
+      const audit = byUtil.get(c.util);
+      if (!audit) {
+        log(`${c.util}: no audit in args.audits — skipping.`);
+        return Promise.resolve(null);
+      }
+      return fn(c, audit);
+    }),
+  ).then((out) => {
+    const res = out.filter(Boolean);
+    const ready = res.filter((r) => r[readyKey]).map((r) => r.util);
+    const blocked = res.filter((r) => !r[readyKey]).map((r) => r.util);
+    log(`fix-it-all ${label} done. ready: ${ready.join(', ') || 'none'}${blocked.length ? `; NOT ready: ${blocked.join(', ')}` : ''}`);
+    return res;
+  });
+}
+
 if (phaseArg === 'red') {
   phase('Red');
-  const out = (
-    await parallel(
-      cfgs.map((c) => () => {
-        const audit = byUtil.get(c.util);
-        if (!audit) {
-          log(`${c.util}: no audit in args.audits — skipping.`);
-          return Promise.resolve(null);
-        }
-        return redPhase(c, audit);
-      }),
-    )
-  ).filter(Boolean);
-  const blocked = out.filter((r) => !r.ready_to_commit_red).map((r) => r.util);
-  log(`fix-it-all red done. ready: ${out.filter((r) => r.ready_to_commit_red).map((r) => r.util).join(', ') || 'none'}${blocked.length ? `; NOT ready: ${blocked.join(', ')}` : ''}`);
-  return { phase: 'red', results: out };
+  return { phase: 'red', wave: a.wave, results: await runPhase(redPhase, 'red', 'ready_to_commit_red') };
 }
 
 if (phaseArg === 'green') {
   phase('Green');
-  const out = (
-    await parallel(
-      cfgs.map((c) => () => {
-        const audit = byUtil.get(c.util);
-        if (!audit) {
-          log(`${c.util}: no audit in args.audits — skipping.`);
-          return Promise.resolve(null);
-        }
-        return greenPhase(c, audit);
-      }),
-    )
-  ).filter(Boolean);
-  const blocked = out.filter((r) => !r.ready_to_commit_green).map((r) => r.util);
-  log(`fix-it-all green done. ready: ${out.filter((r) => r.ready_to_commit_green).map((r) => r.util).join(', ') || 'none'}${blocked.length ? `; NOT ready: ${blocked.join(', ')}` : ''}`);
-  return { phase: 'green', results: out };
+  return { phase: 'green', wave: a.wave, results: await runPhase(greenPhase, 'green', 'ready_to_commit_green') };
 }
 
 throw new Error(`fix-it-all: unknown phase "${phaseArg}" (expected audit, red, or green)`);
