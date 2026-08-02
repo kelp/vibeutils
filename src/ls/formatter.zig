@@ -953,6 +953,30 @@ pub fn printColumnarAcross(
     }
 }
 
+/// Whether this directory section reserves the 3-column git-status prefix.
+/// The decision is made per section rather than per entry so a directory
+/// where every tracked file is clean renders exactly like --git=never, while
+/// a section holding at least one real status keeps the column on every
+/// entry (clean ones included) and stays aligned.
+fn sectionReservesGitColumn(entries: []const Entry, options: LsOptions) bool {
+    std.debug.assert(entries.len <= std.math.maxInt(u32));
+    // --git=never wins outright, whatever the entries' statuses are.
+    if (!options.show_git_status) return false;
+
+    for (entries) |entry| {
+        const status = entry.git_status;
+        // .clean and .not_in_repo both render as blank, so neither alone
+        // justifies spending a column on the whole section.
+        if (status != .clean and status != .not_in_repo) {
+            // Every reserving status renders a 2-char indicator, which is
+            // what the 3 columns of prefix width are sized for.
+            std.debug.assert(status.getIndicator().len == 2);
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Print entries in the appropriate format based on options
 pub fn printEntries(
     allocator: std.mem.Allocator,
@@ -978,34 +1002,39 @@ pub fn printEntries(
     // Totals are only accumulated for the two formats that display them.
     std.debug.assert(total_blocks == 0 or options.show_blocks or options.long_format);
 
+    // The git-status column is reserved per directory section, so every
+    // downstream width and print call sees the section's own decision.
+    var section_opts = options;
+    section_opts.show_git_status = sectionReservesGitColumn(entries, options);
+
     if (options.one_per_line) {
         // Explicit -1 also suppresses icons and git status.
-        var explicit_opts = options;
+        var explicit_opts = section_opts;
         explicit_opts.icon_mode = .never;
         explicit_opts.show_git_status = false;
         try printEntries_onePerLine(entries, writer, explicit_opts, style);
     } else if (options.long_format) {
-        try printEntries_longFormat(allocator, entries, writer, options, style, total_blocks);
+        try printEntries_longFormat(allocator, entries, writer, section_opts, style, total_blocks);
     } else if (options.comma_format) {
         // Comma-separated format
         for (entries, 0..) |entry, i| {
             if (i > 0) try writer.writeAll(", ");
-            try display.printEntryName(entry, writer, style, options);
+            try display.printEntryName(entry, writer, style, section_opts);
         }
         if (entries.len > 0) try writer.writeByte('\n');
     } else if (options.columns_across) {
         // -x: multi-column sorted across rows
-        try printColumnarAcross(allocator, entries, writer, options, style);
+        try printColumnarAcross(allocator, entries, writer, section_opts, style);
     } else if (options.multi_column or options.is_terminal) {
         // Multi-column layout (sorted down columns): the default on a
         // terminal, and forced anywhere by an explicit -C.
-        try printColumnar(allocator, entries, writer, options, style);
+        try printColumnar(allocator, entries, writer, section_opts, style);
     } else {
         // POSIX: "If the standard output is not a terminal, the default
         // format shall be the same as the -1 option." Icons and git status
         // keep whatever the user configured, because this is an implicit
         // default rather than an explicit -1.
-        var default_opts = options;
+        var default_opts = section_opts;
         default_opts.one_per_line = true;
         try printEntries_onePerLine(entries, writer, default_opts, style);
     }
