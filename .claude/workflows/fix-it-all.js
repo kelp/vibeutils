@@ -115,42 +115,67 @@ const OVERRIDES = {
 // wastes the audit and risks baking the shared defect into its new tests.
 // These same waves run AGAIN at the end (ids S0b..S8b), because the utility
 // fixes add new callers and new duplication worth consolidating.
+// Capped at WAVE_UNITS_MAX. Every unit gets its own worktree and every
+// worktree carries 1.3-3.6 GB of .zig-cache (more once the green phase starts
+// running full suites), so a wave's width is a disk reservation, not just a
+// concurrency knob. The earlier theme-based grouping put 7 modules in one wave,
+// which would have meant ~21 GB of simultaneous cache on a host that had 35 GB
+// free.
 const SHARED_WAVES = [
   { id: 'S0', why: 'every utility parses args through it; already has a known CRITICAL', modules: ['argparse'] },
   { id: 'S1', why: '8 utilities traverse through it; history of data-loss bugs', modules: ['walker'] },
-  { id: 'S2', why: 'file primitives', modules: ['file_ops', 'file', 'directory'] },
-  { id: 'S3', why: 'permissions and identity', modules: ['mode', 'user_group'] },
-  { id: 'S4', why: 'path and environment', modules: ['path', 'glob', 'env', 'constants'] },
-  { id: 'S5', why: 'user-facing output plumbing', modules: ['help', 'format', 'prompt', 'main'] },
-  { id: 'S6', why: 'terminal presentation', modules: ['icons', 'unicode', 'display_config', 'style', 'colors', 'terminal'] },
-  { id: 'S7', why: 'time and repository state', modules: ['time', 'relative_date', 'git'] },
-  {
-    id: 'S8',
-    why: 'the test infrastructure itself; this repo has shipped 272 dormant tests',
-    modules: ['test_utils', 'test_utils_privilege', 'test_dir', 'privilege_test', 'privilege_test_integration', 'force_import_lint', 'lib'],
-  },
+  { id: 'S2', why: 'file primitives', modules: ['file_ops', 'file'] },
+  { id: 'S3', why: 'directory and path handling', modules: ['directory', 'path'] },
+  { id: 'S4', why: 'permissions and identity', modules: ['mode', 'user_group'] },
+  { id: 'S5', why: 'globbing and environment', modules: ['glob', 'env'] },
+  { id: 'S6', why: 'shared constants and formatting', modules: ['constants', 'format'] },
+  { id: 'S7', why: 'user-facing output plumbing', modules: ['help', 'prompt'] },
+  { id: 'S8', why: 'entry points and the library root', modules: ['main', 'lib'] },
+  { id: 'S9', why: 'glyphs and width computation', modules: ['icons', 'unicode'] },
+  { id: 'S10', why: 'display configuration and styling', modules: ['display_config', 'style'] },
+  { id: 'S11', why: 'color and terminal capability detection', modules: ['colors', 'terminal'] },
+  { id: 'S12', why: 'time formatting', modules: ['time', 'relative_date'] },
+  { id: 'S13', why: 'repository state and the dormant-test lint', modules: ['git', 'force_import_lint'] },
+  { id: 'S14', why: 'test infrastructure; this repo has shipped 272 dormant tests', modules: ['test_utils', 'test_utils_privilege'] },
+  { id: 'S15', why: 'test fixtures and the privilege harness', modules: ['test_dir', 'privilege_test'] },
+  { id: 'S16', why: 'the privilege integration harness', modules: ['privilege_test_integration'] },
 ];
 
 // Utility waves, ordered by implementation-size-to-test-coverage gap. Giants
 // get smaller waves because wall-clock scales with source size.
+// Same cap. Anything over ~3000 source lines runs alone, because its cache and
+// its wall clock are both roughly double a small utility's; the rest pair up.
+// Ordering is still by implementation-size-to-test-coverage gap.
 const UTIL_WAVES = [
-  { id: 'U0', utils: ['whoami', 'true', 'false'] },
-  { id: 'U1', utils: ['df', 'du', 'free'] },
-  { id: 'U2', utils: ['dd', 'sort', 'seq'] },
-  { id: 'U3', utils: ['id', 'nl', 'tr'] },
-  { id: 'U4', utils: ['cut', 'date', 'timeout'] },
-  { id: 'U5', utils: ['uniq', 'tac', 'env'] },
-  { id: 'U6', utils: ['realpath', 'readlink', 'mktemp'] },
-  { id: 'U7', utils: ['find'] },
-  { id: 'U8', utils: ['stat', 'printf'] },
-  { id: 'U9', utils: ['cp', 'mv'] },
-  { id: 'U10', utils: ['grep', 'ls'] },
-  { id: 'U11', utils: ['chmod', 'chown'] },
-  { id: 'U12', utils: ['rm', 'rmdir', 'mkdir'] },
-  { id: 'U13', utils: ['ln', 'touch', 'test'] },
-  { id: 'U14', utils: ['tail', 'head', 'wc'] },
-  { id: 'U15', utils: ['cat', 'tee', 'sleep'] },
-  { id: 'U16', utils: ['echo', 'yes', 'basename', 'dirname', 'pwd'] },
+  { id: 'U0', utils: ['whoami', 'true'] },
+  { id: 'U1', utils: ['false', 'free'] },
+  { id: 'U2', utils: ['df'] },
+  { id: 'U3', utils: ['du'] },
+  { id: 'U4', utils: ['dd'] },
+  { id: 'U5', utils: ['sort', 'seq'] },
+  { id: 'U6', utils: ['id', 'nl'] },
+  { id: 'U7', utils: ['tr', 'cut'] },
+  { id: 'U8', utils: ['date', 'timeout'] },
+  { id: 'U9', utils: ['uniq', 'tac'] },
+  { id: 'U10', utils: ['env', 'realpath'] },
+  { id: 'U11', utils: ['readlink', 'mktemp'] },
+  { id: 'U12', utils: ['find'] },
+  { id: 'U13', utils: ['stat'] },
+  { id: 'U14', utils: ['printf', 'test'] },
+  { id: 'U15', utils: ['ls'] },
+  { id: 'U16', utils: ['cp'] },
+  { id: 'U17', utils: ['grep'] },
+  { id: 'U18', utils: ['mv'] },
+  { id: 'U19', utils: ['chmod'] },
+  { id: 'U20', utils: ['chown', 'rm'] },
+  { id: 'U21', utils: ['rmdir', 'mkdir'] },
+  { id: 'U22', utils: ['ln', 'touch'] },
+  { id: 'U23', utils: ['tail', 'head'] },
+  { id: 'U24', utils: ['wc', 'cat'] },
+  { id: 'U25', utils: ['tee', 'sleep'] },
+  { id: 'U26', utils: ['echo', 'yes'] },
+  { id: 'U27', utils: ['basename', 'dirname'] },
+  { id: 'U28', utils: ['pwd'] },
 ];
 
 function cfgFor(u) {

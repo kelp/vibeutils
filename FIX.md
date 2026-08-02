@@ -24,7 +24,10 @@ which is the strongest evidence this sweep produces.
 The whole round then **repeats until it goes dry**: each round is
 handed every finding already surfaced and told to find what those
 rounds missed. A unit is done only after two consecutive rounds
-find nothing new, capped at eight rounds. Deduplication is against
+find nothing new, with a 20-round backstop against a pathological
+loop. The backstop started at eight and was raised when `S0` ran
+all eight productive rounds without ever going twice-dry — it was
+truncating real discovery, not noise. Deduplication is against
 everything ever *seen*, not against what was confirmed — dedup
 against the confirmed set would resurface every refuted finding
 each round and the loop would never terminate.
@@ -82,16 +85,18 @@ survive.
 is a defect in every utility at once. Auditing 47 utilities
 against broken foundations wastes those audits and risks baking
 the shared defect into 47 new test files — `whoami` alone surfaced
-a CRITICAL in `argparse`. The nine shared waves therefore run
-before any utility wave, and **again afterwards** (ids `S0b`–`S8b`),
-because the utility fixes add new callers and new duplication.
+a CRITICAL in `argparse`. The seventeen shared waves therefore run
+before any utility wave, and **again afterwards** (ids
+`S0b`–`S16b`), because the utility fixes add new callers and new
+duplication.
 
 **Red.** The test-writer fixes the test defects, adds the missing
 tests, and writes a failing test for every agreed bug. A red check
 proves each fails *for the right reason* — the assertion matching
 the bug, not a compile error or a skip — on macOS and Linux.
-Refactor findings are behavior-preserving, so they get
-characterization tests proven by transient sabotage instead.
+Dead-code and approved-duplication findings are
+behavior-preserving, so they get characterization tests proven by
+transient sabotage instead.
 Findings that carry a `corpus_input` also get that content written
 under `tests/fuzz/<util>/corpus/`, so every divergence found
 becomes a permanent regression fixture outliving this sweep.
@@ -114,7 +119,7 @@ rather than fixed in place.
 **Teardown is mandatory, not tidiness.** Every worktree
 accumulates a `.zig-cache` of 1.3–3.6 GB, and OrbStack mounts
 `/Users` from the host, so those bytes are charged to the host and
-the VM at once. At roughly 3 GB per unit across 35 waves the sweep
+the VM at once. At roughly 3 GB per unit across 63 waves the sweep
 would need something like 300 GB if nothing were reclaimed, on a
 host that ran out of headroom at 97% during wave `S0`. So after a
 wave's green commit merges back, remove its worktrees:
@@ -139,62 +144,84 @@ touching shared code.
 
 | Wave | Modules | Lines | Why here | Audit | Red | Green |
 |---|---|---|---|---|---|---|
-| S0 | argparse | 1141 | every utility parses through it; known CRITICAL | 🔄 | ⬜ | ⬜ |
-| S1 | walker | 2269 | 8 utilities traverse through it; data-loss history | ⬜ | ⬜ | ⬜ |
-| S2 | file_ops, file, directory | 1690 | file primitives | ⬜ | ⬜ | ⬜ |
-| S3 | mode, user_group | 1251 | permissions and identity | ⬜ | ⬜ | ⬜ |
-| S4 | path, glob, env, constants | 1076 | path and environment | ⬜ | ⬜ | ⬜ |
-| S5 | help, format, prompt, main | 1470 | user-facing output plumbing | ⬜ | ⬜ | ⬜ |
-| S6 | icons, unicode, display_config, style, colors, terminal | 3009 | terminal presentation | ⬜ | ⬜ | ⬜ |
-| S7 | time, relative_date, git | 1145 | time and repository state | ⬜ | ⬜ | ⬜ |
-| S8 | test_utils, test_utils_privilege, test_dir, privilege_test, privilege_test_integration, force_import_lint, lib | 3059 | the test infrastructure itself; 272 dormant tests have shipped here | ⬜ | ⬜ | ⬜ |
+| S0 | argparse | 1142 | every utility parses args through it; already has a known CRITICAL | 🔄 | ⬜ | ⬜ |
+| S1 | walker | 2270 | 8 utilities traverse through it; history of data-loss bugs | ⬜ | ⬜ | ⬜ |
+| S2 | file_ops, file | 1512 | file primitives | ⬜ | ⬜ | ⬜ |
+| S3 | directory, path | 739 | directory and path handling | ⬜ | ⬜ | ⬜ |
+| S4 | mode, user_group | 1253 | permissions and identity | ⬜ | ⬜ | ⬜ |
+| S5 | glob, env | 357 | globbing and environment | ⬜ | ⬜ | ⬜ |
+| S6 | constants, format | 357 | shared constants and formatting | ⬜ | ⬜ | ⬜ |
+| S7 | help, prompt | 968 | user-facing output plumbing | ⬜ | ⬜ | ⬜ |
+| S8 | main, lib | 1077 | entry points and the library root | ⬜ | ⬜ | ⬜ |
+| S9 | icons, unicode | 2053 | glyphs and width computation | ⬜ | ⬜ | ⬜ |
+| S10 | display_config, style | 694 | display configuration and styling | ⬜ | ⬜ | ⬜ |
+| S11 | colors, terminal | 268 | color and terminal capability detection | ⬜ | ⬜ | ⬜ |
+| S12 | time, relative_date | 714 | time formatting | ⬜ | ⬜ | ⬜ |
+| S13 | git, force_import_lint | 1189 | repository state and the dormant-test lint | ⬜ | ⬜ | ⬜ |
+| S14 | test_utils, test_utils_privilege | 777 | test infrastructure; this repo has shipped 272 dormant tests | ⬜ | ⬜ | ⬜ |
+| S15 | test_dir, privilege_test | 417 | test fixtures and the privilege harness | ⬜ | ⬜ | ⬜ |
+| S16 | privilege_test_integration | 283 | the privilege integration harness | ⬜ | ⬜ | ⬜ |
 
 31 modules, 16030 lines, complete coverage of `src/common/`.
 
 ### Utilities
 
-| Wave | Utilities | Audit | Red | Green | A / D / J | Deferred |
-|---|---|---|---|---|---|---|
-| U0 | whoami, true, false | 🔄 | ⬜ | ⬜ | 11 / 2 / 0 | 6 |
-| U1 | df, du, free | 🔄 | ⬜ | ⬜ | | |
-| U2 | dd, sort, seq | ⬜ | ⬜ | ⬜ | | |
-| U3 | id, nl, tr | ⬜ | ⬜ | ⬜ | | |
-| U4 | cut, date, timeout | ⬜ | ⬜ | ⬜ | | |
-| U5 | uniq, tac, env | ⬜ | ⬜ | ⬜ | | |
-| U6 | realpath, readlink, mktemp | ⬜ | ⬜ | ⬜ | | |
-| U7 | find | ⬜ | ⬜ | ⬜ | | |
-| U8 | stat, printf | ⬜ | ⬜ | ⬜ | | |
-| U9 | cp, mv | ⬜ | ⬜ | ⬜ | | |
-| U10 | grep, ls | ⬜ | ⬜ | ⬜ | | |
-| U11 | chmod, chown | ⬜ | ⬜ | ⬜ | | |
-| U12 | rm, rmdir, mkdir | ⬜ | ⬜ | ⬜ | | |
-| U13 | ln, touch, test/`[` | ⬜ | ⬜ | ⬜ | | |
-| U14 | tail, head, wc | ⬜ | ⬜ | ⬜ | | |
-| U15 | cat, tee, sleep | ⬜ | ⬜ | ⬜ | | |
-| U16 | echo, yes, basename, dirname, pwd | ⬜ | ⬜ | ⬜ | | |
+| Wave | Utilities | Lines | Audit | Red | Green |
+|---|---|---|---|---|---|
+| U0 | whoami, true | 394 | ⬜ | ⬜ | ⬜ |
+| U1 | false, free | 1406 | ⬜ | ⬜ | ⬜ |
+| U2 | df | 4229 | ⬜ | ⬜ | ⬜ |
+| U3 | du | 4052 | ⬜ | ⬜ | ⬜ |
+| U4 | dd | 4156 | ⬜ | ⬜ | ⬜ |
+| U5 | sort, seq | 4093 | ⬜ | ⬜ | ⬜ |
+| U6 | id, nl | 3647 | ⬜ | ⬜ | ⬜ |
+| U7 | tr, cut | 3347 | ⬜ | ⬜ | ⬜ |
+| U8 | date, timeout | 2870 | ⬜ | ⬜ | ⬜ |
+| U9 | uniq, tac | 1991 | ⬜ | ⬜ | ⬜ |
+| U10 | env, realpath | 3626 | ⬜ | ⬜ | ⬜ |
+| U11 | readlink, mktemp | 2375 | ⬜ | ⬜ | ⬜ |
+| U12 | find | 9178 | ⬜ | ⬜ | ⬜ |
+| U13 | stat | 6292 | ⬜ | ⬜ | ⬜ |
+| U14 | printf, test/`[` | 4899 | ⬜ | ⬜ | ⬜ |
+| U15 | ls | 8378 | ⬜ | ⬜ | ⬜ |
+| U16 | cp | 5364 | ⬜ | ⬜ | ⬜ |
+| U17 | grep | 5149 | ⬜ | ⬜ | ⬜ |
+| U18 | mv | 3280 | ⬜ | ⬜ | ⬜ |
+| U19 | chmod | 3267 | ⬜ | ⬜ | ⬜ |
+| U20 | chown, rm | 5047 | ⬜ | ⬜ | ⬜ |
+| U21 | rmdir, mkdir | 1563 | ⬜ | ⬜ | ⬜ |
+| U22 | ln, touch | 3568 | ⬜ | ⬜ | ⬜ |
+| U23 | tail, head | 3978 | ⬜ | ⬜ | ⬜ |
+| U24 | wc, cat | 2262 | ⬜ | ⬜ | ⬜ |
+| U25 | tee, sleep | 1337 | ⬜ | ⬜ | ⬜ |
+| U26 | echo, yes | 1256 | ⬜ | ⬜ | ⬜ |
+| U27 | basename, dirname | 1082 | ⬜ | ⬜ | ⬜ |
+| U28 | pwd | 458 | ⬜ | ⬜ | ⬜ |
 
 47 utility units, covering all 48 entries in `build/utils.zig`
 (`test` and `[` share `src/test.zig` and are one unit).
 
-Ordering is by implementation-size-to-test-coverage gap, not by
-size. U0 calibrates the pipeline cheaply. U1–U6 hit the worst
-gaps: `df` is 4228 source lines against 26 integration assertions,
-`du` 4051 against 43, `free` 1302 against 26. Giants land
-mid-sweep with smaller waves, because wall-clock scales with
-source size rather than with utility count.
+Ordering is still by implementation-size-to-test-coverage gap.
+`U0`–`U1` calibrate cheaply; `U2`–`U4` are the worst gaps (`df` is
+4228 source lines against 26 integration assertions, `du` 4051
+against 43). Anything over ~3000 lines runs alone.
 
 ### Shared code, re-swept
 
-Waves `S0b`–`S8b` re-run every shared module after the utilities
+Waves `S0b`–`S16b` re-run every shared module after the utilities
 are done. The utility fixes add callers, add duplication, and
 change how the shared modules are used, so the first sweep's
 conclusions expire.
 
 | Wave | Audit | Red | Green |
 |---|---|---|---|
-| S0b–S8b | ⬜ | ⬜ | ⬜ |
+| S0b–S16b | ⬜ | ⬜ | ⬜ |
 
-**35 waves total.** Legend: A = agreed by both model families,
+**63 waves total**, none wider than two units — a wave's width is
+a disk reservation, not just a concurrency setting, since every
+unit gets a worktree carrying gigabytes of build cache.
+
+Legend: A = agreed by both model families,
 D = dropped at cross-check or by the refuters, J = decided by the
 judge. Marks: ⬜ pending, 🔄 in flight, ✅ committed, ⚠️ committed
 with a caveat recorded below.
