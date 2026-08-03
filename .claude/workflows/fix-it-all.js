@@ -1697,24 +1697,31 @@ function dedupKey(f) {
 // One discovery round over one target.
 // ---------------------------------------------------------------------------
 async function auditRound(c, target, lenses, seed, seen, round) {
-  const thunks = [];
-  for (const lens of lenses) thunks.push(() => opusAudit(c, target, lens, seed, seen, round));
-  for (const lens of lenses) thunks.push(() => codexAudit(c, target, lens, seed, seen, round));
+  // C7 compares a unit against its siblings, which is the right question for a
+  // utility and the wrong one for a shared module: every one of the 47 callers
+  // looks like a comparison target, so on S0/argparse it produced 121 of the
+  // 140 deferrals — findings about find, chmod, du and cp that belong to those
+  // units' own waves. Drop it for modules rather than pay to route it away.
+  const activeLenses = c.kind === 'module' ? lenses.filter((l) => l.id !== 'C7') : lenses;
   // Differential testing is a code-side discovery channel and only exists for
   // units with a CLI.
   const wantDiff = target === 'code' && c.kind === 'utility';
+
+  const thunks = [];
+  for (const lens of activeLenses) thunks.push(() => opusAudit(c, target, lens, seed, seen, round));
+  for (const lens of activeLenses) thunks.push(() => codexAudit(c, target, lens, seed, seen, round));
   if (wantDiff) thunks.push(() => differentialTest(c, seen, round));
 
   const results = await parallel(thunks);
-  const opusRuns = results.slice(0, lenses.length).filter(Boolean);
-  const codexRuns = results.slice(lenses.length, lenses.length * 2).filter(Boolean);
-  const diffRun = wantDiff ? results[lenses.length * 2] : null;
+  const opusRuns = results.slice(0, activeLenses.length).filter(Boolean);
+  const codexRuns = results.slice(activeLenses.length, activeLenses.length * 2).filter(Boolean);
+  const diffRun = wantDiff ? results[activeLenses.length * 2] : null;
 
   const codexOk = codexRuns.filter((r) => r.invoked_ok);
   if (codexOk.length === 0) {
     log(`${c.util}/${target} r${round}: NO codex lens ran — the two-family premise is void this round.`);
-  } else if (codexOk.length < lenses.length) {
-    log(`${c.util}/${target} r${round}: only ${codexOk.length}/${lenses.length} codex lenses ran.`);
+  } else if (codexOk.length < activeLenses.length) {
+    log(`${c.util}/${target} r${round}: only / codex lenses ran.`);
   }
 
   const diffFindings = divergencesToFindings(diffRun, round);
