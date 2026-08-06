@@ -208,7 +208,7 @@ pub fn runLs(
             "argument parsing failed: {s}",
             .{common.posixErrorString(err)},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
     };
     defer allocator.free(parsed.positionals);
 

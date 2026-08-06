@@ -135,21 +135,24 @@ pub fn runCat(
         @intFromEnum(common.ExitCode.success);
 }
 
-/// Maps an argparse error to a misuse exit code, printing the matching GNU-style
-/// diagnostic. Unexpected errors propagate unchanged. Single-caller helper for runCat.
+/// Maps an argparse error to the general_error exit code, printing the matching
+/// GNU-style diagnostic. Unexpected errors propagate unchanged. Single-caller
+/// helper for runCat.
 fn runCat_mapParseError(
     allocator: std.mem.Allocator,
     stderr: *std.Io.Writer,
     err: anyerror,
 ) !u8 {
-    // Compile-time sanity: misuse and success are distinct exit codes (positive space).
-    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != @intFromEnum(common.ExitCode.success));
-    // Negative space: the misuse code is never the "no error" sentinel zero.
-    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != 0);
+    // Compile-time sanity: failure and success are distinct exit codes
+    // (positive space).
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) !=
+        @intFromEnum(common.ExitCode.success));
+    // Negative space: the failure code is never the "no error" sentinel zero.
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) != 0);
     switch (err) {
         error.UnknownFlag => {
             common.printErrorWithProgram(allocator, stderr, "cat", "unrecognized option", .{});
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.MissingValue => {
             common.printErrorWithProgram(
@@ -159,11 +162,11 @@ fn runCat_mapParseError(
                 "option requires an argument",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidValue => {
             common.printErrorWithProgram(allocator, stderr, "cat", "invalid option value", .{});
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         else => return err,
     }

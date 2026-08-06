@@ -860,7 +860,7 @@ pub fn runNl(
         args,
         "nl",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -875,9 +875,9 @@ pub fn runNl(
 
     // Resolve options
     const opts = resolveOptions(parsed_args, stderr_writer, allocator) catch {
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     } orelse {
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     };
     // Free compiled regex patterns to prevent leaks
     defer runNl_freeRegexStyles(opts, allocator);
@@ -1006,7 +1006,7 @@ test "nl invalid flag" {
         common.null_writer,
         common.null_writer,
     );
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "nl invalid body style" {
@@ -1017,7 +1017,7 @@ test "nl invalid body style" {
         common.null_writer,
         common.null_writer,
     );
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "nl invalid number format" {
@@ -1028,7 +1028,7 @@ test "nl invalid number format" {
         common.null_writer,
         common.null_writer,
     );
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "nl invalid width" {
@@ -1039,7 +1039,7 @@ test "nl invalid width" {
         common.null_writer,
         common.null_writer,
     );
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "nl non-existent file" {

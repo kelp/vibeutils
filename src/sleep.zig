@@ -122,7 +122,7 @@ fn printInvalidInterval(
     }
 }
 
-/// Report a parseTotalTime error to stderr and return the misuse exit code.
+/// Report a parseTotalTime error to stderr and return the general_error code.
 fn reportParseError(
     err: SleepParseError,
     allocator: std.mem.Allocator,
@@ -159,7 +159,7 @@ fn reportParseError(
             );
         },
     }
-    return @intFromEnum(common.ExitCode.misuse);
+    return @intFromEnum(common.ExitCode.general_error);
 }
 
 pub fn runSleep(
@@ -175,7 +175,7 @@ pub fn runSleep(
         args,
         "sleep",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -397,7 +397,7 @@ test "runSleep - missing arguments" {
 
     const result = try runSleep(testing.allocator, io, &.{}, common.null_writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
@@ -414,7 +414,7 @@ test "runSleep - invalid time format" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval") != null,
     );
@@ -433,7 +433,7 @@ test "runSleep - negative time (with separator)" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval") != null,
     );
@@ -452,7 +452,7 @@ test "runSleep - negative flag treated as unknown argument" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
     );
@@ -557,7 +557,7 @@ test "runSleep error message includes the invalid token" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     // The error message should include the invalid token 'xyz'
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "'xyz'") != null);
 }

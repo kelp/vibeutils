@@ -139,10 +139,10 @@ test_uniq() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Invalid flag
-    test_command_exit_code "uniq invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "uniq invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
 
     # Too many operands
-    test_command_exit_code "uniq too many operands" 2 "$binary" file1 file2 file3 2>/dev/null
+    test_command_exit_code "uniq too many operands" 1 "$binary" file1 file2 file3 2>/dev/null
 
     # Non-existent input file
     test_command_exit_code "uniq non-existent file" 1 "$binary" "/tmp/nonexistent_file_$$" 2>/dev/null

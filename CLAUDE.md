@@ -436,7 +436,9 @@ sabotage** (manual mutation testing):
 Filter utilities (`tee`, `cat`, `sort`, `uniq`, etc.) that read from stdin will **hang in unit tests**. You must:
 1. Identify if your utility is a filter utility
 2. Use the `runUtilWithInput()` pattern or skip unit tests
-3. Ensure exit codes are correct (`ExitCode.misuse` for arg errors)
+3. Ensure exit codes are correct (`ExitCode.general_error` for arg
+   errors; see the `ExitCode` doc comment in `src/common/lib.zig`
+   for the utilities that instead use 2 or 125)
 4. Use 8192-byte buffers consistently
 
 See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and patterns.

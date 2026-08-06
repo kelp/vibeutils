@@ -112,7 +112,7 @@ fn runYes_handleParseError(
                 "option requires an argument",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidValue => {
             common.printErrorWithProgram(
@@ -122,7 +122,7 @@ fn runYes_handleParseError(
                 "invalid option value",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         else => return err,
     }

@@ -115,8 +115,8 @@ test_free() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "free invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "free invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
     echo -e "${CYAN}Testing audit findings (wave 4)...${NC}"
@@ -142,11 +142,11 @@ test_free() {
     # AUDIT: -c without -s should error (GNU rejects it)
     "$binary" -c 3 2>/dev/null
     exit_code=$?
-    if [[ $exit_code -eq 2 ]]; then
-        print_test_result "free -c without -s exits 2" "PASS"
+    if [[ $exit_code -eq 1 ]]; then
+        print_test_result "free -c without -s exits 1" "PASS"
     else
-        print_test_result "free -c without -s exits 2" "FAIL" \
-            "Expected exit 2, got: $exit_code"
+        print_test_result "free -c without -s exits 1" "FAIL" \
+            "Expected exit 1, got: $exit_code"
     fi
 
     # AUDIT: -s should set seconds interval, not SI mode

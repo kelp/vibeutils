@@ -86,7 +86,7 @@ fn run(
         args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed.positionals);
 
     // Handle --help/--version and the too-many-templates guard up front. Each
@@ -174,7 +174,7 @@ fn run_handleEarlyExit(
             "too many templates\nTry 'mktemp --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return null;
@@ -742,7 +742,7 @@ test "mktemp too many templates" {
     const args = &[_][]const u8{ "tmp.XXX", "tmp2.XXX" };
     const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "too many templates") != null);
 }
 
@@ -949,7 +949,7 @@ test "mktemp invalid option" {
     const args = &[_][]const u8{"--invalid"};
     const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "mktemp generateTemp creates unique names" {

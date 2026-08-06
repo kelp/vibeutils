@@ -20,11 +20,17 @@ These surfaced in two independent units and are repo-wide. Fixing
 them per-utility would make the codebase less consistent, not
 more, so nothing has been changed.
 
-- **Argument errors exit 2; GNU exits 1.** Verified against GNU
-  coreutils 9.5 for both `whoami` and `df`. All 26 `parseOrExit`
-  call sites in `src/` share our convention, and df's own tests
-  and `tests/utilities/df_test.sh` pin 2. This is one decision
-  across 26 utilities.
+- ✅ **Argument errors exited 2; every reference exits 1.**
+  Resolved. POSIX 2024 mandates no number ("exit with an exit
+  status that indicates an error occurred"); OpenBSD source uses
+  `exit(1)` throughout with only `usr.bin/sort/sort.c:967` at 2;
+  GNU and macOS measured per-utility. `misuse = 2` was both
+  mis-valued and misnamed — "misuse of shell builtins" is bash's
+  convention and coreutils has no such concept. Replaced by
+  `general_error = 1`, `serious_error = 2` (ls, sort, grep,
+  test/`[`, which reserve 1 for a non-error outcome) and
+  `internal_error = 125` (env, timeout, which reserve 126/127 for
+  the child command). 38 utilities changed behavior.
 - **`src/common/argparse.zig:548` drops the offending flag name.**
   We print `whoami: unrecognized option`; GNU prints
   `whoami: unrecognized option '--invalid-flag'` plus the hint
@@ -34,13 +40,37 @@ more, so nothing has been changed.
   units.
 - **`src/common/user_group.zig:6`** — the `c_passwd` extern struct
   declares the glibc layout unconditionally.
-- **`scripts/tiger-check.sh` misclassifies violations as
-  pre-existing.** The NEW/PRE split keys on the function's
-  *declaration* line, so growing a body past the 70-line limit
-  without touching the signature reports as `PRE` and passes a
-  gate that keys on `new=0`. Caught live: `runDf` grew from under
-  70 to 77 lines and was reported `PRE`. Any gate trusting
-  `new=0` under-reports.
+- **`free -c 3` is rejected; procps accepts it.** GNU `free -c 3`
+  without `-s` exits **0**; ours exits non-zero. The divergence is
+  that we error at all, not which code we use, so it outlives the
+  exit-code change. `src/free.zig` also carried a comment claiming
+  "GNU exits 2 (misuse)" for this case, which is simply wrong.
+- **`printf` with no operands prints the wrong diagnostic.** GNU
+  emits `printf: missing operand` plus the `Try 'printf --help'`
+  hint; we emit `printf: usage: printf FORMAT [ARGUMENT...]`. The
+  exit code is corrected to 1; the message text is not.
+- **`scripts/tiger-check.sh` reports `new=0` unconditionally when
+  invoked with no mode flag.** Lines 590-593: `NEW` is only
+  computed when `$MODE` is `base` or `staged`, and is otherwise
+  hardcoded to 0. So `bash scripts/tiger-check.sh` — the bare form
+  this repo's docs and agent briefs use — cannot report a new
+  violation at all. It emits `SUMMARY total=N new=0`, which reads
+  as a pass. Caught live: the exit-code change pushed five lines
+  past 100 columns; the bare script reported `new=0` while the
+  pre-commit hook correctly rejected the commit. Use
+  `--base HEAD` or `--staged`, or run `.githooks/pre-commit`.
+- **`scripts/tiger-check.sh` also misclassifies violations in
+  `--base`/`--staged` mode.** A separate bug: the NEW/PRE split
+  keys on a function's *declaration* line, so growing a body past
+  the 70-line limit without touching the signature reports as
+  `PRE`. Caught live: `runDf` grew from under 70 to 77 lines and
+  was reported `PRE`.
+- **`zig-out/bin` is shared between the macOS host and the
+  OrbStack VM.** A background `zig build` in either environment
+  rewrites the binaries a concurrent `tests/integration.sh` run is
+  executing, producing failures that do not reproduce. Observed
+  twice, on `mkdir` both times. Never run a build concurrently
+  with the integration suite.
 
 ## whoami
 

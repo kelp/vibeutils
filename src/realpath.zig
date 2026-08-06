@@ -419,7 +419,7 @@ pub fn runRealpath(
         processed_args.items,
         "realpath",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -434,7 +434,7 @@ pub fn runRealpath(
 
     if (parsed_args.positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "realpath", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // The missing-operand guard above returns before reaching this loop, so at
@@ -545,7 +545,7 @@ test "realpath: missing operand" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
@@ -563,7 +563,7 @@ test "realpath: unknown flag" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "realpath: existing path" {

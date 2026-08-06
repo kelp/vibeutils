@@ -361,10 +361,10 @@ test_readlink() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # No arguments
-    test_command_exit_code "readlink no arguments" 2 "$binary"
+    test_command_exit_code "readlink no arguments" 1 "$binary"
 
     # Invalid flag
-    test_command_exit_code "readlink invalid flag" 2 \
+    test_command_exit_code "readlink invalid flag" 1 \
         "$binary" --invalid-flag 2>/dev/null
 
     echo -e "${CYAN}Testing help and version...${NC}"

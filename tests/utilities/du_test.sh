@@ -102,8 +102,8 @@ test_du() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "du invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "du invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
     # Nonexistent path exits with code 1
@@ -169,7 +169,7 @@ test_du() {
     fi
 
     # Invalid --color value exits with error
-    test_command_exit_code "du --color=invalid exits 2" 2 \
+    test_command_exit_code "du --color=invalid exits 1" 1 \
         "$binary" --color=invalid
 
     echo -e "${CYAN}Testing regression fixes...${NC}"

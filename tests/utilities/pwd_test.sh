@@ -267,8 +267,8 @@ test_pwd() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Test invalid flags
-    test_command_exit_code "pwd invalid long flag" 2 "$binary" --invalid-flag 2>/dev/null
-    test_command_exit_code "pwd invalid short flag" 2 "$binary" -z 2>/dev/null
+    test_command_exit_code "pwd invalid long flag" 1 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "pwd invalid short flag" 1 "$binary" -z 2>/dev/null
 
     # Test that stderr contains error message for invalid flag
     local invalid_stderr
@@ -280,10 +280,10 @@ test_pwd() {
     fi
 
     # Test multiple invalid flags
-    test_command_exit_code "pwd multiple invalid flags" 2 "$binary" -x -y -z 2>/dev/null
+    test_command_exit_code "pwd multiple invalid flags" 1 "$binary" -x -y -z 2>/dev/null
 
     # Test unknown long options
-    test_command_exit_code "pwd unknown long option" 2 "$binary" --unknown-option 2>/dev/null
+    test_command_exit_code "pwd unknown long option" 1 "$binary" --unknown-option 2>/dev/null
 
     echo -e "${CYAN}Testing positional arguments...${NC}"
 
@@ -306,7 +306,7 @@ test_pwd() {
 
     # POSIX exit codes
     test_command_exit_code "pwd POSIX success" 0 "$binary"
-    test_command_exit_code "pwd POSIX failure (invalid flag)" 2 "$binary" --invalid 2>/dev/null
+    test_command_exit_code "pwd POSIX failure (invalid flag)" 1 "$binary" --invalid 2>/dev/null
 
     # POSIX behavior: default is physical mode
     local posix_default

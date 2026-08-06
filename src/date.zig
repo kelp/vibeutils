@@ -689,7 +689,7 @@ pub fn runDate(
     const parsed = parseArgs(args);
     if (parsed.err) |err_msg| {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     const opts = parsed.opts;
 
@@ -708,7 +708,7 @@ pub fn runDate(
     // Validate precision arguments
     if (validatePrecision(opts)) |err_msg| {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Handle -v stub: not yet implemented, exit with error
@@ -1004,7 +1004,7 @@ test "date --version works" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
 }
 
-test "date invalid flag returns exit code 2" {
+test "date invalid flag returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1013,7 +1013,7 @@ test "date invalid flag returns exit code 2" {
 
     const args = [_][]const u8{"--invalid"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date -d @EPOCH with full default format" {
@@ -1083,7 +1083,7 @@ test "date --rfc-3339 invalid precision" {
 
     const args = [_][]const u8{"--rfc-3339=invalid"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date -I outputs ISO date" {
@@ -1175,7 +1175,7 @@ test "date -d missing argument" {
 
     const args = [_][]const u8{"-d"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date -r missing argument" {
@@ -1187,7 +1187,7 @@ test "date -r missing argument" {
 
     const args = [_][]const u8{"-r"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date +%N outputs nanoseconds" {
@@ -1366,7 +1366,7 @@ test "date -f flag accepts input format" {
     try testing.expectEqualStrings("1970\n", stdout_aw.writer.buffered());
 }
 
-test "date -f missing argument returns misuse" {
+test "date -f missing argument returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1375,7 +1375,7 @@ test "date -f missing argument returns misuse" {
 
     const args = [_][]const u8{"-f"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date -z flag accepts output timezone" {
@@ -1392,7 +1392,7 @@ test "date -z flag accepts output timezone" {
     try testing.expectEqualStrings("1970\n", stdout_aw.writer.buffered());
 }
 
-test "date -z missing argument returns misuse" {
+test "date -z missing argument returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1401,7 +1401,7 @@ test "date -z missing argument returns misuse" {
 
     const args = [_][]const u8{"-z"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date parseArgs -j sets no_set_date" {
@@ -1481,7 +1481,7 @@ test "date parseArgs -v with inline value" {
     try testing.expectEqualStrings("+1d", parsed.opts.v_adjust.?);
 }
 
-test "date -v missing argument returns misuse" {
+test "date -v missing argument returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1490,7 +1490,7 @@ test "date -v missing argument returns misuse" {
 
     const args = [_][]const u8{"-v"};
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "date -v should exit with non-zero code" {

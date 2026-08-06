@@ -66,7 +66,7 @@ pub fn runBasename(
                     "unrecognized option",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(
@@ -76,7 +76,7 @@ pub fn runBasename(
                     "option missing required argument",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(
@@ -86,7 +86,7 @@ pub fn runBasename(
                     "invalid option value",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
@@ -108,7 +108,7 @@ pub fn runBasename(
     // Validate arguments
     if (parsed_args.positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "basename", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     // The length-0 case returned above, so at least one operand is guaranteed
     // here; this is the precondition for the positionals[0]/[2] indexing below.
@@ -141,7 +141,7 @@ fn runBasenameProcess(
                 "extra operand '{s}'",
                 .{parsed_args.positionals[2]},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         }
         // The len > 2 case returned above; combined with len >= 1 this puts the
         // count in {1,2}, justifying positionals[0] and the guarded [1] access.
@@ -517,7 +517,7 @@ test "basename error handling" {
         &stdout_aw.writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result1);
+    try testing.expectEqual(@as(u8, 1), result1);
     try testing.expect(std.mem.indexOf(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 
     stderr_aw.deinit();
@@ -534,7 +534,7 @@ test "basename error handling" {
         &stdout_aw.writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result2);
+    try testing.expectEqual(@as(u8, 1), result2);
     try testing.expect(std.mem.indexOf(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 

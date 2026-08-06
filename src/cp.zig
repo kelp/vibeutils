@@ -180,7 +180,7 @@ fn filterPreserveBackupArgs(
 }
 
 /// Validate that at least a source and destination operand are present.
-/// Returns the misuse exit code (after printing the diagnostic) when fewer
+/// Returns the general_error exit code (after printing the diagnostic) when fewer
 /// than two positionals are given, or null when the count is valid.
 fn validateOperandCount(
     allocator: Allocator,
@@ -197,7 +197,7 @@ fn validateOperandCount(
             "missing file operand",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     common.printErrorWithProgram(
         allocator,
@@ -206,7 +206,7 @@ fn validateOperandCount(
         "missing destination file operand after '{s}'",
         .{positionals[0]},
     );
-    return @intFromEnum(common.ExitCode.misuse);
+    return @intFromEnum(common.ExitCode.general_error);
 }
 
 /// Run cp with provided writers for output
@@ -231,7 +231,7 @@ fn run(
         filtered_args.items,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(config.positionals);
 
     resolveConflicts(&config, args);

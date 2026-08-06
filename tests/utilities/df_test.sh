@@ -124,8 +124,8 @@ test_df() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "df invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "df invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
     # Nonexistent file exits with code 1
@@ -166,11 +166,11 @@ test_df() {
 
         "$binary" -n / >/dev/null 2>&1
         exit_code=$?
-        if [[ $exit_code -eq 2 ]]; then
-            print_test_result "df -n rejected on Linux (exit 2)" "PASS"
+        if [[ $exit_code -eq 1 ]]; then
+            print_test_result "df -n rejected on Linux (exit 1)" "PASS"
         else
-            print_test_result "df -n rejected on Linux (exit 2)" "FAIL" \
-                "Exit code: $exit_code (expected 2)"
+            print_test_result "df -n rejected on Linux (exit 1)" "FAIL" \
+                "Exit code: $exit_code (expected 1)"
         fi
     fi
 
@@ -235,11 +235,11 @@ test_df() {
             "Header: $header"
     fi
 
-    # Unknown field is an argument error (exit 2 by vibeutils convention)
-    test_command_exit_code "df --output rejects unknown field" 2 \
+    # Unknown field is an argument error (exit 1 by vibeutils convention)
+    test_command_exit_code "df --output rejects unknown field" 1 \
         "$binary" --output=bogus /
 
     # -i and --output are mutually exclusive in GNU df
-    test_command_exit_code "df -i --output is rejected" 2 \
+    test_command_exit_code "df -i --output is rejected" 1 \
         "$binary" -i --output=source /
 }

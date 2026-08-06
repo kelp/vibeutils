@@ -17,8 +17,8 @@ test_tr() {
     echo -e "${CYAN}Testing basic infrastructure...${NC}"
 
     # Missing operands
-    test_command_exit_code "tr no arguments" 2 "$binary" 2>/dev/null
-    test_command_exit_code "tr single arg (no SET2)" 2 bash -c "echo '' | '$binary' abc 2>/dev/null"
+    test_command_exit_code "tr no arguments" 1 "$binary" 2>/dev/null
+    test_command_exit_code "tr single arg (no SET2)" 1 bash -c "echo '' | '$binary' abc 2>/dev/null"
 
     echo -e "${CYAN}Testing basic translation...${NC}"
 
@@ -129,7 +129,7 @@ test_tr() {
     test_command_exit_code "tr success exit code" 0 bash -c "echo 'test' | '$binary' a b"
     test_command_exit_code "tr help exit code" 0 "$binary" --help >/dev/null
     test_command_exit_code "tr version exit code" 0 "$binary" --version >/dev/null
-    test_command_exit_code "tr invalid flag exit code" 2 "$binary" --invalid 2>/dev/null
+    test_command_exit_code "tr invalid flag exit code" 1 "$binary" --invalid 2>/dev/null
 
     # Stdin processing
     test_command_output "tr processes stdin" "HELLO" bash -c "echo -n 'hello' | '$binary' a-z A-Z"
@@ -140,11 +140,11 @@ test_tr() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Invalid flags
-    test_command_exit_code "tr invalid flag -x" 2 "$binary" -x 2>/dev/null
-    test_command_exit_code "tr invalid long flag" 2 "$binary" --invalid 2>/dev/null
+    test_command_exit_code "tr invalid flag -x" 1 "$binary" -x 2>/dev/null
+    test_command_exit_code "tr invalid long flag" 1 "$binary" --invalid 2>/dev/null
 
     # -ds requires two operands
-    test_command_exit_code "tr -ds needs two sets" 2 bash -c "echo '' | '$binary' -ds abc 2>/dev/null"
+    test_command_exit_code "tr -ds needs two sets" 1 bash -c "echo '' | '$binary' -ds abc 2>/dev/null"
 
     # Extra operands should be rejected (GNU: exit 1 with "extra operand")
     test_command_exit_code "tr extra operand rejected" 1 bash -c "echo test | '$binary' a b c 2>/dev/null"

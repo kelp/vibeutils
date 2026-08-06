@@ -1141,7 +1141,7 @@ pub fn runDu(
             "cannot both summarize and show each directory's size",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     const deref_mode = resolveDerefMode(args);
@@ -1203,7 +1203,7 @@ fn runDu_parseArgsError(allocator: Allocator, stderr: *std.Io.Writer, err: anyer
                 "invalid option\nTry 'du --help' for more information.",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.MissingValue => {
             common.printErrorWithProgram(
@@ -1213,7 +1213,7 @@ fn runDu_parseArgsError(allocator: Allocator, stderr: *std.Io.Writer, err: anyer
                 "option requires an argument\nTry 'du --help' for more information.",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidValue => {
             common.printErrorWithProgram(
@@ -1223,7 +1223,7 @@ fn runDu_parseArgsError(allocator: Allocator, stderr: *std.Io.Writer, err: anyer
                 "invalid argument value\nTry 'du --help' for more information.",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         else => {
             common.printErrorWithProgram(
@@ -1260,7 +1260,7 @@ fn runDu_resolveConfigError(
                 "invalid --block-size argument",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidMaxDepth => {
             common.printErrorWithProgram(
@@ -1270,7 +1270,7 @@ fn runDu_resolveConfigError(
                 "invalid maximum depth '{s}'",
                 .{opts.max_depth orelse ""},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidColorMode => {
             common.printErrorWithProgram(
@@ -1281,7 +1281,7 @@ fn runDu_resolveConfigError(
                     "Valid arguments are: 'always', 'auto', 'never'",
                 .{opts.color orelse ""},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidIconMode => {
             common.printErrorWithProgram(
@@ -1292,7 +1292,7 @@ fn runDu_resolveConfigError(
                     "Valid arguments are: 'always', 'auto', 'never'",
                 .{opts.icons orelse ""},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         error.InvalidThreshold => {
             common.printErrorWithProgram(
@@ -1302,7 +1302,7 @@ fn runDu_resolveConfigError(
                 "invalid --threshold argument '{s}'",
                 .{opts.threshold orelse ""},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
         else => unreachable,
     }
@@ -1548,7 +1548,7 @@ test "du --version shows version" {
     ) != null);
 }
 
-test "du invalid flag exits with code 2" {
+test "du invalid flag exits with code 1" {
     const io = testing.io;
     var stderr_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_buffer_aw.deinit();
@@ -1562,7 +1562,7 @@ test "du invalid flag exits with code 2" {
         &stderr_buffer_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "du nonexistent path exits with code 1" {
@@ -1587,7 +1587,7 @@ test "du nonexistent path exits with code 1" {
     ) != null);
 }
 
-test "du -s and -d conflict exits with code 2" {
+test "du -s and -d conflict exits with code 1" {
     const io = testing.io;
     var stderr_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_buffer_aw.deinit();
@@ -1601,7 +1601,7 @@ test "du -s and -d conflict exits with code 2" {
         &stderr_buffer_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "du on a file reports its size" {
@@ -1943,7 +1943,7 @@ test "resolveConfig - invalid color mode" {
     try testing.expectError(error.InvalidColorMode, resolveConfig(testing.allocator, opts, .none));
 }
 
-test "du --color=invalid exits with code 2" {
+test "du --color=invalid exits with code 1" {
     const io = testing.io;
     var stderr_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_buffer_aw.deinit();
@@ -1957,7 +1957,7 @@ test "du --color=invalid exits with code 2" {
         &stderr_buffer_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(
         u8,
         stderr_buffer_aw.writer.buffered(),
@@ -2153,8 +2153,14 @@ test "du -r flag is accepted by argparse" {
         &stderr_buffer_aw.writer,
     );
 
-    // Should not return misuse (2) — flag should be accepted
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "du -r produces same output as du" {
@@ -2223,8 +2229,14 @@ test "du -H flag is accepted by argparse" {
         &stderr_buffer_aw.writer,
     );
 
-    // Should not return misuse (2) — flag should be accepted
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "du -H follows symlinks given as command-line arguments" {
@@ -2345,8 +2357,14 @@ test "du -P flag is accepted by argparse" {
         &stderr_buffer_aw.writer,
     );
 
-    // Should not return misuse (2) — flag should be accepted
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "du -P does not follow symlinks" {
@@ -2515,7 +2533,14 @@ test "du -g flag is accepted by argparse" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "resolveConfig - gigabytes flag sets block_size to 1G" {
@@ -2542,7 +2567,14 @@ test "du -m flag is accepted by argparse" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "resolveConfig - megabytes flag sets block_size to 1M" {
@@ -2569,8 +2601,14 @@ test "du -I flag is accepted with value" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    // Should not return misuse (2) — flag should be accepted
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "du -I flag does not change output (stub)" {
@@ -2633,7 +2671,14 @@ test "du -l flag is accepted by argparse" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "resolveConfig - count_links flag" {
@@ -2660,7 +2705,14 @@ test "du -n flag is accepted by argparse" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "du -n acts as -P (no follow symlinks)" {
@@ -2718,7 +2770,14 @@ test "du -t flag is accepted by argparse" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "parseThreshold - positive values" {
@@ -2854,7 +2913,14 @@ test "du --si flag is accepted by argparse" {
         common.null_writer,
         &stderr_buffer_aw.writer,
     );
-    try testing.expect(exit_code != 2);
+    // Argument errors and operational errors now share exit code 1, so pin
+    // the absence of du's argument diagnostics instead of the exit code.
+    _ = exit_code;
+    const stderr_text = stderr_buffer_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr_text, "invalid option") == null);
+    try testing.expect(
+        std.mem.find(u8, stderr_text, "invalid argument value") == null,
+    );
 }
 
 test "resolveConfig - si flag enables human_readable and si" {

@@ -220,22 +220,22 @@ test_cut() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # No mode specified
-    test_command_exit_code "cut no mode" 2 "$binary" 2>/dev/null
+    test_command_exit_code "cut no mode" 1 "$binary" 2>/dev/null
 
     # Multiple modes
-    test_command_exit_code "cut -b and -f" 2 "$binary" -b 1 -f 1 2>/dev/null
+    test_command_exit_code "cut -b and -f" 1 "$binary" -b 1 -f 1 2>/dev/null
 
     # -s without -f
-    test_command_exit_code "cut -s without -f" 2 "$binary" -b 1 -s 2>/dev/null
+    test_command_exit_code "cut -s without -f" 1 "$binary" -b 1 -s 2>/dev/null
 
     # -d without -f
-    test_command_exit_code "cut -d without -f" 2 "$binary" -b 1 -d: 2>/dev/null
+    test_command_exit_code "cut -d without -f" 1 "$binary" -b 1 -d: 2>/dev/null
 
     # Invalid range
-    test_command_exit_code "cut invalid range 0" 2 bash -c "echo test | '$binary' -b 0 2>/dev/null"
+    test_command_exit_code "cut invalid range 0" 1 bash -c "echo test | '$binary' -b 0 2>/dev/null"
 
     # Invalid flag
-    test_command_exit_code "cut invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "cut invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
 
     # Non-existent file
     test_command_exit_code "cut nonexistent file" 1 "$binary" -b 1 /nonexistent_file_$$ 2>/dev/null
@@ -244,7 +244,7 @@ test_cut() {
 
     # POSIX exit codes
     test_command_exit_code "cut POSIX success" 0 bash -c "echo test | '$binary' -b 1"
-    test_command_exit_code "cut POSIX misuse" 2 "$binary" 2>/dev/null
+    test_command_exit_code "cut POSIX usage error" 1 "$binary" 2>/dev/null
 
     # POSIX default delimiter is tab
     test_command_output "cut POSIX default delim" "one" bash -c "printf 'one\ttwo\tthree' | '$binary' -f 1"

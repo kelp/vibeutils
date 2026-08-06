@@ -121,7 +121,7 @@ pub fn runChown(
         args,
         "chown",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle information requests (help/version) - these exit immediately
@@ -143,13 +143,13 @@ pub fn runChown(
 
     // Extract owner spec and file list based on whether --reference is used. A
     // null result means a missing-operand error was already reported; both
-    // missing-operand paths map to the same misuse exit code.
+    // missing-operand paths map to the same general_error exit code.
     const ops = runChown_extractOperands(
         allocator,
         positionals,
         parsed_args.reference != null,
         stderr_writer,
-    ) orelse return @intFromEnum(common.ExitCode.misuse);
+    ) orelse return @intFromEnum(common.ExitCode.general_error);
     const owner_spec = ops.owner_spec;
     const files = ops.files;
 
@@ -301,7 +301,7 @@ fn runChown_validate(
                 "invalid spec: '{s}' (numeric IDs only with -n)",
                 .{owner_spec},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         }
     }
 
@@ -370,7 +370,7 @@ fn runChown_processFiles(
     stderr_writer: *std.Io.Writer,
 ) u8 {
     // Precondition mirrored from runChown: the operand-count guards there
-    // return misuse before this call when too few positionals are given, so
+    // return general_error before this call when too few positionals are given, so
     // there is always at least one file to process here.
     assert(files.len >= 1);
     // The exit code starts at success and only ever moves to general_error.
@@ -1717,7 +1717,7 @@ test "chown -n flag rejects non-numeric owner spec" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), exit_code);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "numeric IDs only") != null);
 }
 
@@ -1737,8 +1737,15 @@ test "chown -n flag accepts numeric owner spec" {
         &stderr_aw.writer,
     );
 
-    // Should fail due to nonexistent file, not due to -n validation
-    try testing.expect(exit_code != @intFromEnum(common.ExitCode.misuse));
+    // Should fail due to nonexistent file, not due to -n validation. Argument
+    // errors and operational errors now share exit code 1, so the code alone
+    // cannot tell them apart; pin the diagnostic instead.
+    try testing.expect(exit_code != 0);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "numeric IDs only",
+    ) == null);
 }
 
 test "chown --preserve-root blocks recursive on /" {

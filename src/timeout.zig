@@ -336,7 +336,7 @@ pub fn runTimeout(
         processed_args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.internal_error);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -1088,7 +1088,7 @@ test "parseSignal - USR2 returns platform-correct value" {
 
 test "runTimeout - no arguments returns 125" {
     // GNU timeout returns exit 125 for missing operands.
-    // Exit 2 is for invalid flags only.
+    // Exit 125 also covers invalid flags.
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
@@ -1103,8 +1103,9 @@ test "runTimeout - no arguments returns 125" {
     try testing.expectEqual(@as(u8, 125), result);
 }
 
-test "runTimeout - unknown flag returns misuse exit code" {
-    // Arg parse errors (invalid flags) should return exit 2, not 125.
+test "runTimeout - unknown flag returns 125" {
+    // Arg parse errors are timeout's own failure, so they return 125 like
+    // every other timeout-internal error.
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
@@ -1116,7 +1117,7 @@ test "runTimeout - unknown flag returns misuse exit code" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.internal_error)), result);
 }
 
 test "runTimeout - missing command after duration returns 125" {

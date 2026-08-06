@@ -142,7 +142,7 @@ pub fn runWc(
         args,
         "wc",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(options.positionals);
 
     if (options.help) {
@@ -183,7 +183,7 @@ pub fn runWc(
                     "Valid arguments are: 'always', 'auto', 'never'",
                 .{opts.color orelse ""},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.general_error);
         },
     };
 
@@ -1134,7 +1134,7 @@ test "wc --libxo prints error and exits with code 1" {
     );
 }
 
-test "wc --color=invalid exits with code 2" {
+test "wc --color=invalid exits with code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1144,6 +1144,6 @@ test "wc --color=invalid exits with code 2" {
     const args = &[_][]const u8{"--color=invalid"};
     const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid argument") != null);
 }

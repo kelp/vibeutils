@@ -98,7 +98,7 @@ pub fn runChmod(
         parse_args,
         "chmod",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -114,7 +114,7 @@ pub fn runChmod(
     const positionals = parsed_args.positionals;
     const using_reference = parsed_args.reference != null;
     if (!try checkOperandCount(allocator, positionals, using_reference, stderr_writer)) {
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // With --reference, all args are files; otherwise the first is the mode.
@@ -205,7 +205,7 @@ fn prepareArgs(
 
 /// Validate that enough positional operands were supplied. Returns true when
 /// the operand count is sufficient; otherwise it reports the error and returns
-/// false so the caller can exit with the misuse status.
+/// false so the caller can exit with the general_error status.
 fn checkOperandCount(
     allocator: std.mem.Allocator,
     positionals: []const []const u8,
