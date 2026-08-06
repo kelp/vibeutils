@@ -49,16 +49,15 @@ more, so nothing has been changed.
   emits `printf: missing operand` plus the `Try 'printf --help'`
   hint; we emit `printf: usage: printf FORMAT [ARGUMENT...]`. The
   exit code is corrected to 1; the message text is not.
-- **`scripts/tiger-check.sh` reports `new=0` unconditionally when
-  invoked with no mode flag.** Lines 590-593: `NEW` is only
-  computed when `$MODE` is `base` or `staged`, and is otherwise
-  hardcoded to 0. So `bash scripts/tiger-check.sh` — the bare form
-  this repo's docs and agent briefs use — cannot report a new
-  violation at all. It emits `SUMMARY total=N new=0`, which reads
-  as a pass. Caught live: the exit-code change pushed five lines
-  past 100 columns; the bare script reported `new=0` while the
-  pre-commit hook correctly rejected the commit. Use
-  `--base HEAD` or `--staged`, or run `.githooks/pre-commit`.
+- ✅ **`scripts/tiger-check.sh` printed `new=0` for a value it had
+  not computed.** Fixed. `NEW` is only meaningful in `--base` and
+  `--staged` mode, which have a baseline; without one the script
+  printed 0 anyway. Its *exit code* was always correct — verified
+  by injecting a 110-column line, which produced
+  `SUMMARY total=1 new=0` and exit 1 — but two readers in a row,
+  an agent and me, read the summary text and concluded the gate
+  had passed. The non-diff modes now print `new=n/a`. An
+  uncomputed value must not render as a reassuring one.
 - **`scripts/tiger-check.sh` also misclassifies violations in
   `--base`/`--staged` mode.** A separate bug: the NEW/PRE split
   keys on a function's *declaration* line, so growing a body past
