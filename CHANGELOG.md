@@ -63,6 +63,21 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`whoami` prints the effective user, not the real one.** It looked
+  up the real uid via `getuid()`, so a set-user-ID invocation reported
+  the invoking user rather than the effective one. Its own help text
+  and GNU both define the output as the effective user ID, the same
+  identity `id -un` prints. It now resolves `geteuid()`. Only `whoami`
+  changed; the shared `getCurrentUserId()` helper keeps its real-uid
+  semantics for `chown`, `stat` and `id`.
+- **`whoami` appends GNU's hint line to the extra-operand error.**
+  An operand produced `whoami: extra operand 'x'` with no follow-up,
+  where GNU also prints `Try 'whoami --help' for more information.`
+- **`whoami` resolves `--help` and `--version` in command-line
+  order.** Both flags were parsed before either was acted on, and
+  help was always checked first, so `whoami --version --help` printed
+  the usage text. GNU acts on whichever flag appears first, so that
+  invocation now prints the version banner.
 - **`ls -x` lays out the BSD column grid instead of padding with
   spaces.** `-x` sized its columns as the widest entry plus two
   spaces and filled the gaps with spaces, while BSD gives `-x` and
