@@ -139,14 +139,78 @@ test_free() {
         fi
     fi
 
-    # AUDIT: -c without -s should error (GNU rejects it)
-    "$binary" -c 3 2>/dev/null
+    # AUDIT: -c N works WITHOUT -s, with an implied 1-second interval.
+    # procps-ng 4.0.4: `free -c 3` prints 3 reports, blank line between,
+    # exit 0. `free -c 1` returns immediately; the interval is only paid
+    # between reports. -c 2 costs ~1s, which is why it is not -c 3.
+    local count_out
+    count_out=$(run_with_limit 10 "$binary" -c 2 2>/dev/null)
+    exit_code=$?
+    local mem_lines
+    mem_lines=$(echo "$count_out" | grep -c "^Mem:")
+    if [[ $exit_code -eq 0 && $mem_lines -eq 2 ]]; then
+        print_test_result "free -c 2 without -s prints 2 reports" "PASS"
+    else
+        print_test_result "free -c 2 without -s prints 2 reports" "FAIL" \
+            "Expected exit 0 and 2 Mem: lines, got exit $exit_code and $mem_lines"
+    fi
+
+    # -c 1 must not sleep: one report, immediate exit.
+    count_out=$(run_with_limit 10 "$binary" -c 1 2>/dev/null)
+    exit_code=$?
+    mem_lines=$(echo "$count_out" | grep -c "^Mem:")
+    if [[ $exit_code -eq 0 && $mem_lines -eq 1 ]]; then
+        print_test_result "free -c 1 prints exactly 1 report" "PASS"
+    else
+        print_test_result "free -c 1 prints exactly 1 report" "FAIL" \
+            "Expected exit 0 and 1 Mem: line, got exit $exit_code and $mem_lines"
+    fi
+
+    # A count of zero is an error, never an unbounded loop. procps:
+    # "free: failed to parse count argument: '0': Numerical result out of
+    # range", exit 1. run_with_limit bounds the run so a regression that
+    # loops forever fails instead of hanging the suite.
+    local zero_out
+    zero_out=$(run_with_limit 5 "$binary" -c 0 2>/dev/null)
+    exit_code=$?
+    if [[ $exit_code -eq 1 && -z "$zero_out" ]]; then
+        print_test_result "free -c 0 exits 1 without printing" "PASS"
+    else
+        print_test_result "free -c 0 exits 1 without printing" "FAIL" \
+            "Expected exit 1 and empty stdout, got exit $exit_code, stdout '$zero_out'"
+    fi
+
+    # Same for an explicit interval: -s 1 -c 0 must not loop forever.
+    zero_out=$(run_with_limit 5 "$binary" -s 1 -c 0 2>/dev/null)
     exit_code=$?
     if [[ $exit_code -eq 1 ]]; then
-        print_test_result "free -c without -s exits 1" "PASS"
+        print_test_result "free -s 1 -c 0 exits 1 instead of looping" "PASS"
     else
-        print_test_result "free -c without -s exits 1" "FAIL" \
+        print_test_result "free -s 1 -c 0 exits 1 instead of looping" "FAIL" \
             "Expected exit 1, got: $exit_code"
+    fi
+
+    # A non-numeric or negative count is rejected, exit 1, nothing on stdout.
+    local bad_out
+    for bad in abc -1; do
+        bad_out=$(run_with_limit 5 "$binary" -c "$bad" 2>/dev/null)
+        exit_code=$?
+        if [[ $exit_code -eq 1 && -z "$bad_out" ]]; then
+            print_test_result "free -c $bad exits 1 without printing" "PASS"
+        else
+            print_test_result "free -c $bad exits 1 without printing" "FAIL" \
+                "Expected exit 1 and empty stdout, got exit $exit_code, stdout '$bad_out'"
+        fi
+    done
+
+    # --help must not repeat the retired "-c requires -s" constraint.
+    local count_help
+    count_help=$("$binary" --help 2>/dev/null)
+    if [[ "$count_help" != *"used with -s"* && "$count_help" != *"requires -s"* ]]; then
+        print_test_result "free --help does not tie -c to -s" "PASS"
+    else
+        print_test_result "free --help does not tie -c to -s" "FAIL" \
+            "Help still documents -c as requiring -s: '$count_help'"
     fi
 
     # AUDIT: -s should set seconds interval, not SI mode

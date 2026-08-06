@@ -88,6 +88,17 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`free -c N` no longer requires `-s`.** It rejected a bare count with
+  `free: -c requires -s option` (exit 1). procps accepts it: `-c N`
+  repeats N times with an implied one-second interval, paid only
+  between reports, so `free -c 1` prints once and returns immediately.
+  `-s N -c M` is unchanged. The help text and man page no longer tie
+  `-c` to `-s`.
+- **`printf` with no operands reports `missing operand`.** It printed
+  `printf: usage: printf FORMAT [ARGUMENT...]`; it now matches GNU with
+  `printf: missing operand` followed by the
+  `Try 'printf --help' for more information.` hint. The exit status
+  stays 1.
 - **`df --output=FIELD_LIST` selects columns instead of being ignored.**
   The option parsed and set a field list that no renderer ever read, so
   `df --output=source,size /` printed the ordinary table. It now renders

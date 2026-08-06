@@ -35,7 +35,7 @@ pub fn runPrintf(
             allocator,
             stderr_writer,
             "printf",
-            "usage: printf FORMAT [ARGUMENT...]",
+            "missing operand\nTry 'printf --help' for more information.",
             .{},
         );
         return @intFromEnum(common.ExitCode.general_error);
@@ -1859,6 +1859,12 @@ test "printf %b with escape sequences" {
     try testing.expectEqualStrings("hello\nworld", buffer_aw.writer.buffered());
 }
 
+// The exact stderr GNU coreutils emits with no operands, hint line
+// included. Verified with `LC_ALL=C /usr/bin/printf` on Ubuntu:
+//   printf: missing operand
+//   Try 'printf --help' for more information.
+// exit 1, empty stdout. GNU echoes argv[0] verbatim; we print the plain
+// utility name, matching uniq and whoami.
 test "printf no arguments shows usage error" {
     var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buffer_aw.deinit();
@@ -1874,6 +1880,11 @@ test "printf no arguments shows usage error" {
         &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", buffer_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "printf: missing operand\nTry 'printf --help' for more information.\n",
+        stderr_aw.writer.buffered(),
+    );
 }
 
 test "printf --help" {
