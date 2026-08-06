@@ -124,7 +124,7 @@ pub fn runHead(
         expanded_args,
         "head",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -141,7 +141,7 @@ pub fn runHead(
 
     // Parse line count, handling negative values (e.g., -n -3 means "all but last 3")
     const lc = try runHead_parseLineCount(allocator, parsed_args.lines, stderr_writer);
-    if (!lc.ok) return @intFromEnum(common.ExitCode.misuse);
+    if (!lc.ok) return @intFromEnum(common.ExitCode.general_error);
     const line_count = lc.line_count;
     const negative_count = lc.negative_count;
 
@@ -212,7 +212,8 @@ fn runHead_processInputs(
 
 /// Result of parsing the -n/--lines argument.
 /// When `ok` is false, the helper has already reported the error; the caller
-/// must exit with the misuse code and must not read line_count/negative_count.
+/// must exit with the general_error code and must not read
+/// line_count/negative_count.
 const ParsedLineCount = struct {
     line_count: u64,
     negative_count: u64,
@@ -903,7 +904,7 @@ test "head handles invalid line count" {
     const args = [_][]const u8{ "-n", "abc" };
     const result = try runHead(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "head help flag works" {
@@ -1279,7 +1280,7 @@ test "head with obsolete -NUM syntax" {
 
 test "head --silent is alias for --quiet" {
     const io = testing.io;
-    // BUG: --silent is not recognized (exits 2). GNU coreutils accepts
+    // BUG: --silent is not recognized (exits 1). GNU coreutils accepts
     // --silent as a synonym for --quiet/-q to suppress file headers.
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1317,7 +1318,7 @@ test "head --silent is alias for --quiet" {
 test "head -n -3 outputs all but last 3 lines" {
     const io = testing.io;
     // BUG: -n -3 (negative count) is not implemented. GNU head treats
-    // -n -NUM as "output all but the last NUM lines". Currently exits 2.
+    // -n -NUM as "output all but the last NUM lines". Currently exits 1.
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 

@@ -2426,8 +2426,8 @@ pub fn runGrep(
     stderr_writer: *std.Io.Writer,
 ) anyerror!u8 {
     var opts = (parseArgs(allocator, io, args, stderr_writer) catch {
-        return @intFromEnum(common.ExitCode.misuse);
-    }) orelse return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
+    }) orelse return @intFromEnum(common.ExitCode.serious_error);
     defer opts.deinit(allocator);
 
     // Handle --help/--version and the no-pattern error before searching.
@@ -2443,7 +2443,7 @@ pub fn runGrep(
     }
 
     (runGrep_compilePatterns(allocator, &opts, &compiled, stderr_writer)) orelse {
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
     };
     assert(compiled.items.len == opts.patterns.items.len);
 
@@ -2509,7 +2509,7 @@ fn runGrep_earlyExit(
             "no pattern specified\nTry 'grep --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
     }
     return null;
 }
@@ -2588,7 +2588,8 @@ fn runGrep_dispatchInputs(d: DispatchInputs) bool {
 }
 
 /// Compile every parsed pattern, appending to `compiled_ptr`.
-/// Returns null (error already printed) to signal the caller to exit misuse.
+/// Returns null (error already printed) to signal the caller to exit with
+/// the serious_error code.
 fn runGrep_compilePatterns(
     allocator: Allocator,
     opts: *const GrepOptions,
@@ -2982,7 +2983,7 @@ test "toLower empty string" {
     try testing.expectEqualStrings("", result);
 }
 
-test "runGrep no pattern returns misuse" {
+test "runGrep no pattern returns exit code 2" {
     const args = [_][]const u8{};
     const exit_code = try runGrep(
         testing.allocator,
@@ -3105,7 +3106,7 @@ test "runGrep -q quiet mode no match" {
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
-test "runGrep invalid regex returns misuse" {
+test "runGrep invalid regex returns exit code 2" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "--color=never", "[invalid", "/dev/null" };
@@ -3455,7 +3456,7 @@ test "parseArgs -P returns null (error stub)" {
     try testing.expect(result == null);
 }
 
-test "runGrep -P returns misuse exit code" {
+test "runGrep -P returns exit code 2" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "-P", "pattern", "/dev/null" };

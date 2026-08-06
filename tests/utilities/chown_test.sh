@@ -349,7 +349,7 @@ test_chown() {
     )
 
     for flag in "${flag_tests[@]}"; do
-        if "$binary" "$flag" --help >/dev/null 2>&1 || [[ $? -eq 1 || $? -eq 2 ]]; then
+        if "$binary" "$flag" --help >/dev/null 2>&1 || [[ $? -eq 1 ]]; then
             print_test_result "chown $flag recognized" "PASS"
         else
             print_test_result "chown $flag recognized" "FAIL" "Flag not recognized"

@@ -689,14 +689,14 @@ test_dd() {
     fi
 
     # Issue #64: invalid operand values must name the offending value
-    # with GNU's message shape; our rc stays 2 (misuse), not GNU's rc=1.
+    # with GNU's message shape and GNU's rc=1.
     local b65_invnum_err="$TEMP_DIR/dd65_invnum_err.txt"
     "$binary" if=/dev/null of=/dev/null count=1m 2>"$b65_invnum_err"
     local b65_invnum_rc=$?
-    if [[ "$b65_invnum_rc" -eq 2 ]] && grep -qF "dd: invalid number: '1m'" "$b65_invnum_err"; then
-        print_test_result "dd count=1m names value with GNU quoting, rc=2" "PASS"
+    if [[ "$b65_invnum_rc" -eq 1 ]] && grep -qF "dd: invalid number: '1m'" "$b65_invnum_err"; then
+        print_test_result "dd count=1m names value with GNU quoting, rc=1" "PASS"
     else
-        print_test_result "dd count=1m names value with GNU quoting, rc=2" "FAIL" \
+        print_test_result "dd count=1m names value with GNU quoting, rc=1" "FAIL" \
             "rc=$b65_invnum_rc stderr='$(cat "$b65_invnum_err")'"
     fi
 
@@ -704,10 +704,10 @@ test_dd() {
     local b65_garbage_err="$TEMP_DIR/dd65_garbage_err.txt"
     "$binary" if=/dev/null of=/dev/null bs=1kBx 2>"$b65_garbage_err"
     local b65_garbage_rc=$?
-    if [[ "$b65_garbage_rc" -eq 2 ]] && grep -qF "dd: invalid number: '1kBx'" "$b65_garbage_err"; then
-        print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=2" "PASS"
+    if [[ "$b65_garbage_rc" -eq 1 ]] && grep -qF "dd: invalid number: '1kBx'" "$b65_garbage_err"; then
+        print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=1" "PASS"
     else
-        print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=2" "FAIL" \
+        print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=1" "FAIL" \
             "rc=$b65_garbage_rc stderr='$(cat "$b65_garbage_err")'"
     fi
 }

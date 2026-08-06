@@ -528,8 +528,12 @@ pub const ArgParser = struct {
     /// Typical usage inside a `runX` function:
     /// ```zig
     /// const parsed = ArgParser.parseOrExit(Args, allocator, argv, "cat", stderr)
-    ///     catch return @intFromEnum(common.ExitCode.misuse);
+    ///     catch return @intFromEnum(common.ExitCode.general_error);
     /// ```
+    ///
+    /// `general_error` is right for nearly every utility. The exceptions are
+    /// documented on `common.ExitCode`: `grep`, `ls`, `sort`, and `test` use
+    /// `serious_error`, and `env` and `timeout` use `internal_error`.
     pub fn parseOrExit(
         comptime T: type,
         allocator: std.mem.Allocator,

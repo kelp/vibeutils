@@ -567,7 +567,7 @@ pub fn runSort(
     stderr_writer: *std.Io.Writer,
 ) !u8 {
     var opts = (try parseArgs(allocator, args, stderr_writer)) orelse
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
     defer opts.deinit(allocator);
 
     if (opts.help) {
@@ -657,7 +657,7 @@ fn runSort_expandFiles0From(
             "extra operand '{s}'\nfile operands cannot be combined with --files0-from",
             .{opts.files.items[0]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
     }
     const is_stdin = std.mem.eql(u8, f0f_path, "-");
     const f0f_file = if (is_stdin)
@@ -671,7 +671,7 @@ fn runSort_expandFiles0From(
                 "cannot open '{s}' for reading: {s}",
                 .{ f0f_path, common.posixErrorString(err) },
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.serious_error);
         };
     defer if (!is_stdin) f0f_file.close(io);
     var f0f_buf: [8192]u8 = undefined;
@@ -684,7 +684,7 @@ fn runSort_expandFiles0From(
             "cannot read '{s}': {s}",
             .{ f0f_path, common.posixErrorString(err) },
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.serious_error);
     };
     var it = std.mem.splitScalar(u8, content, 0);
     while (it.next()) |name| {
@@ -734,7 +734,7 @@ fn runSort_runMerge(
                     "cannot read: {s}: {s}",
                     .{ file_path, common.posixErrorString(err) },
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.serious_error);
             };
             defer file.close(io);
             try readLines(allocator, io, file, &file_lines, delimiter, &merge_buffers);
@@ -803,7 +803,7 @@ fn runSort_readAllFiles(
                         "cannot read: {s}: {s}",
                         .{ file_path, common.posixErrorString(err) },
                     );
-                    return @intFromEnum(common.ExitCode.misuse);
+                    return @intFromEnum(common.ExitCode.serious_error);
                 };
                 defer file.close(io);
                 try readLines(allocator, io, file, lines, delimiter, buffers);
@@ -841,7 +841,7 @@ fn runSort_writeOutput(
                 "open failed: {s}: {s}",
                 .{ out_path, common.posixErrorString(err) },
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.serious_error);
         };
         defer out_file.close(io);
         var out_buffer: [8192]u8 = undefined;
@@ -1810,7 +1810,7 @@ test "sort --version shows version" {
 // -V test removed: -V is now version-sort (not --version).
 // The --version test above covers version output.
 
-test "sort unknown flag returns misuse" {
+test "sort unknown flag returns exit code 2" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
@@ -1825,7 +1825,7 @@ test "sort unknown flag returns misuse" {
     try testing.expectEqual(@as(u8, 2), result);
 }
 
-test "sort invalid short flag returns misuse" {
+test "sort invalid short flag returns exit code 2" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 

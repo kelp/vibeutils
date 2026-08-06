@@ -167,18 +167,18 @@ test_timeout() {
             "Expected --help to mention --signal"
     fi
 
-    # Missing operands exit 125; invalid flags exit 2
+    # Missing operands and invalid flags both exit 125
     echo -e "${CYAN}Testing exit codes for missing operands and bad flags...${NC}"
 
     test_command_exit_code "timeout no args exits 125" 125 "$binary"
 
     "$binary" --bad-flag 2>/dev/null
     exit_code=$?
-    if [[ $exit_code -eq 2 ]]; then
-        print_test_result "timeout --bad-flag exits 2" "PASS"
+    if [[ $exit_code -eq 125 ]]; then
+        print_test_result "timeout --bad-flag exits 125" "PASS"
     else
-        print_test_result "timeout --bad-flag exits 2" "FAIL" \
-            "Expected exit 2, got $exit_code"
+        print_test_result "timeout --bad-flag exits 125" "FAIL" \
+            "Expected exit 125, got $exit_code"
     fi
 
     echo -e "${CYAN}Testing audit findings (wave 5)...${NC}"

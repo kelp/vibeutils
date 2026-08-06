@@ -725,13 +725,13 @@ const DdPositions = struct {
 
 /// Validate mutually-exclusive conversion combinations and the cbs
 /// requirement for block/unblock. Returns 0 when the config is valid,
-/// or a misuse exit code after printing the matching error message.
+/// or the general_error exit code after printing the matching error message.
 fn runDd_validateConfig(allocator: Allocator, stderr: *std.Io.Writer, config: *const DdConfig) u8 {
     // lcase and ucase are mutually exclusive
     if (config.conv_lcase and config.conv_ucase) {
         const message = "conv=lcase and conv=ucase are mutually exclusive";
         common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // ascii, ebcdic, and ibm are mutually exclusive
@@ -743,21 +743,21 @@ fn runDd_validateConfig(allocator: Allocator, stderr: *std.Io.Writer, config: *c
     if (charset_count > 1) {
         const message = "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive";
         common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // block and unblock are mutually exclusive
     if (config.conv_block and config.conv_unblock) {
         const message = "conv=block and conv=unblock are mutually exclusive";
         common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // block and unblock require cbs
     if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
         const message = "conv=block/unblock requires cbs operand";
         common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return @intFromEnum(common.ExitCode.success);
@@ -1404,7 +1404,7 @@ pub fn runDd(
     if (findUnsupportedOperand(args)) |name| {
         const message = "unsupported operand '{s}' (not implemented)";
         common.printErrorWithProgram(allocator, stderr, "dd", message, .{name});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     const config = parseOperands(args) catch |err| {
@@ -1435,7 +1435,7 @@ pub fn runDd(
                 common.printErrorWithProgram(allocator, stderr, "dd", "unrecognized operand", .{});
             },
         }
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     };
 
     if (config.help) {
@@ -1475,7 +1475,7 @@ fn runDd_copy(
     const obs = if (config.bs) |bs| bs else config.obs;
     if (ibs == 0 or obs == 0) {
         common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     // The guard above rejected zero block sizes, so both are positive
     // before the buffers are allocated against them.
@@ -2529,7 +2529,7 @@ test "runDd - mutually exclusive lcase and ucase" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "runDd - nonexistent input file" {
@@ -2564,7 +2564,7 @@ test "runDd - invalid operand" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "runDd - zero block size" {
@@ -2581,7 +2581,7 @@ test "runDd - zero block size" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "runDd - different ibs and obs" {
@@ -3035,7 +3035,7 @@ test "runDd - count=0x10 emits GNU zero-multiplier warning and copies nothing (i
 
 // Issue #64: invalid operand values must name the offending value and
 // use GNU's message shape, though the project deliberately keeps its
-// own misuse exit code (2) rather than GNU's rc=1 -- pinned verbatim
+// same rc=1 as GNU -- message shape pinned verbatim
 // on GNU dd 9.5: "dd: invalid number: '1m'".
 test "runDd - invalid count value names the operand with GNU quoting (issue #65 / #64)" {
     const io = testing.io;
@@ -3051,7 +3051,7 @@ test "runDd - invalid count value names the operand with GNU quoting (issue #65 
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(
         u8,
         stderr_aw.writer.buffered(),
@@ -3061,7 +3061,7 @@ test "runDd - invalid count value names the operand with GNU quoting (issue #65 
 
 // A garbage multi-suffix combo must be rejected the same way, naming
 // the exact value that was rejected. Pinned verbatim on GNU dd 9.5:
-// "dd: invalid number: '1kBx'" (our rc stays 2, not GNU's rc=1).
+// "dd: invalid number: '1kBx'".
 test "runDd - garbage suffix combo bs=1kBx rejected with GNU-quoted message (issue #65)" {
     const io = testing.io;
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3076,7 +3076,7 @@ test "runDd - garbage suffix combo bs=1kBx rejected with GNU-quoted message (iss
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(
         u8,
         stderr_aw.writer.buffered(),
@@ -3464,7 +3464,7 @@ test "runDd - mutually exclusive ascii and ebcdic" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "runDd - mutually exclusive block and unblock" {
@@ -3481,7 +3481,7 @@ test "runDd - mutually exclusive block and unblock" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "runDd - block requires cbs" {
@@ -3498,7 +3498,7 @@ test "runDd - block requires cbs" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "runDd - unblock requires cbs" {
@@ -3515,7 +3515,7 @@ test "runDd - unblock requires cbs" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "EBCDIC round-trip: ASCII->EBCDIC->ASCII for printable chars" {
@@ -3840,7 +3840,7 @@ test "audit: conv=ibm produces different output than conv=ebcdic for caret" {
 // stdin if the parser silently accepts the operand).
 
 /// Run dd with a single unsupported operand against a real tmp input file
-/// and assert misuse exit (2) with `expected_needle` in stderr.
+/// and assert a usage-error exit (1) with `expected_needle` in stderr.
 fn expectDdRejectsOperand(operand: []const u8, expected_needle: []const u8) !void {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
@@ -3872,7 +3872,7 @@ fn expectDdRejectsOperand(operand: []const u8, expected_needle: []const u8) !voi
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), expected_needle) != null);
 }
 

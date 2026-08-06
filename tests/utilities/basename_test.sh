@@ -150,7 +150,7 @@ test_basename() {
 
     # POSIX exit codes
     test_command_exit_code "POSIX: success exit code" 0 "$binary" "testfile"
-    test_command_exit_code "POSIX: error exit code" 2 "$binary" 2>/dev/null || true
+    test_command_exit_code "POSIX: error exit code" 1 "$binary" 2>/dev/null || true
 
     # POSIX specified edge cases
     test_command_output "POSIX: slash only" "/" "$binary" "/"

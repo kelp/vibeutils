@@ -108,12 +108,12 @@ test_id() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "id invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "id invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
-    # -n without -u/-g/-G exits with code 2
-    test_command_exit_code "id -n alone exits 2" 2 \
+    # -n without -u/-g/-G exits with code 1
+    test_command_exit_code "id -n alone exits 1" 1 \
         "$binary" -n
 
     # Nonexistent user exits with code 1
@@ -193,11 +193,11 @@ test_id() {
     # Audit: id -z alone should be rejected (GNU rejects without -u/-g/-G)
     "$binary" -z >/dev/null 2>&1
     exit_code=$?
-    if [[ $exit_code -eq 2 ]]; then
-        print_test_result "id -z alone exits 2 (GNU rejects)" "PASS"
+    if [[ $exit_code -eq 1 ]]; then
+        print_test_result "id -z alone exits 1 (GNU rejects)" "PASS"
     else
-        print_test_result "id -z alone exits 2 (GNU rejects)" "FAIL" \
-            "Expected exit 2, got $exit_code"
+        print_test_result "id -z alone exits 1 (GNU rejects)" "FAIL" \
+            "Expected exit 1, got $exit_code"
     fi
 
     # Audit: id -a should be a no-op (GNU ignores it in default format)

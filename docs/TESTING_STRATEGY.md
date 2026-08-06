@@ -363,10 +363,12 @@ fn testFuzz(allocator: Allocator, input: []const u8) !void {
 
 **Always use correct POSIX exit codes**:
 ```zig
-// Argument errors should return 2 (misuse), not 1 (general_error)
-error.UnknownFlag => return @intFromEnum(common.ExitCode.misuse),    // Returns 2
-error.MissingValue => return @intFromEnum(common.ExitCode.misuse),   // Returns 2
-error.InvalidValue => return @intFromEnum(common.ExitCode.misuse),   // Returns 2
+// Argument errors return 1. Exit 2 for "misuse" is a bash convention for
+// shell builtins; coreutils has no such concept. See common.ExitCode for
+// the few utilities that need serious_error (2) or internal_error (125).
+error.UnknownFlag => return @intFromEnum(common.ExitCode.general_error),
+error.MissingValue => return @intFromEnum(common.ExitCode.general_error),
+error.InvalidValue => return @intFromEnum(common.ExitCode.general_error),
 ```
 
 #### 3. Buffer Size Consistency

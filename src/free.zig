@@ -495,7 +495,8 @@ fn runFree_parseArgs(
     stderr_writer: *std.Io.Writer,
 ) !ParseResult {
     // Sanity on the exit-code constants this helper maps onto.
-    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != @intFromEnum(common.ExitCode.success));
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) !=
+        @intFromEnum(common.ExitCode.success));
     std.debug.assert(prog_name.len != 0);
 
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
@@ -508,7 +509,10 @@ fn runFree_parseArgs(
                     "unrecognized option",
                     .{},
                 );
-                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
             error.MissingValue => {
                 common.printErrorWithProgram(
@@ -518,7 +522,10 @@ fn runFree_parseArgs(
                     "option requires an argument",
                     .{},
                 );
-                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(
@@ -528,7 +535,10 @@ fn runFree_parseArgs(
                     "invalid option value",
                     .{},
                 );
-                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
             else => {
                 common.printErrorWithProgram(
@@ -626,7 +636,7 @@ fn runFree_handleEarlyExit(
             "extra operand '{s}'",
             .{parsed.positionals[0]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return null;
@@ -668,7 +678,7 @@ pub fn runFree(
             "-c requires -s option",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // No continuous mode requested, display once
@@ -985,7 +995,7 @@ test "runFree version flag" {
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
-test "runFree unknown flag returns misuse" {
+test "runFree unknown flag returns exit code 1" {
     const io = testing.io;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -996,12 +1006,12 @@ test "runFree unknown flag returns misuse" {
     const args = [_][]const u8{"--invalid"};
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "free:") != null);
 }
 
-test "runFree extra arguments returns misuse" {
+test "runFree extra arguments returns exit code 1" {
     const io = testing.io;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1012,7 +1022,7 @@ test "runFree extra arguments returns misuse" {
     const args = [_][]const u8{"extra"};
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
@@ -1269,8 +1279,8 @@ test "audit: free -c without -s should error" {
     const args = [_][]const u8{ "-c", "3" };
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    // GNU exits 2 (misuse) when -c is given without -s
-    try testing.expectEqual(@as(u8, 2), result);
+    // vibeutils rejects -c without -s and exits 1.
+    try testing.expectEqual(@as(u8, 1), result);
     // stderr should mention -s requirement
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-s") != null);
 }
@@ -1290,7 +1300,7 @@ test "audit: free -s should set seconds not si" {
 
     // free -s 1 -c 1 should run continuous mode (1 second, 1 count)
     // and succeed. With the bug, -s sets si=true, "1" becomes a
-    // positional, and we get "extra operand '1'" (exit 2).
+    // positional, and we get "extra operand '1'" (exit 1).
     const args = [_][]const u8{ "-s", "1", "-c", "1" };
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 

@@ -38,7 +38,7 @@ pub fn runPrintf(
             "usage: printf FORMAT [ARGUMENT...]",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Check for --help and --version before treating first arg as format
@@ -1873,7 +1873,7 @@ test "printf no arguments shows usage error" {
         &buffer_aw.writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "printf --help" {

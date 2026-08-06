@@ -153,13 +153,13 @@ test_nl() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Invalid flags
-    test_command_exit_code "nl invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "nl invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
 
     # Invalid numbering style
-    test_command_exit_code "nl invalid body style" 2 "$binary" -b x "$simple_file" 2>/dev/null
+    test_command_exit_code "nl invalid body style" 1 "$binary" -b x "$simple_file" 2>/dev/null
 
     # Invalid number format
-    test_command_exit_code "nl invalid number format" 2 "$binary" -n xx "$simple_file" 2>/dev/null
+    test_command_exit_code "nl invalid number format" 1 "$binary" -n xx "$simple_file" 2>/dev/null
 
     # Non-existent file
     test_command_exit_code "nl non-existent file" 1 "$binary" /tmp/nonexistent_nl_file_$$ 2>/dev/null

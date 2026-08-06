@@ -114,12 +114,26 @@ get_flags_with_args() {
     done
 }
 
+# Exit code a utility uses for an argument or usage error.
+# Most utilities use 1. ls/sort/grep/test/[ keep 2 to match GNU, and
+# env/timeout use 125 so their own failures stay distinct from the exit
+# code of the command they run.
+usage_error_code() {
+    case "$1" in
+        "ls"|"sort"|"grep"|"test"|"[") echo 2 ;;
+        "env"|"timeout") echo 125 ;;
+        *) echo 1 ;;
+    esac
+}
+
 # Generate test cases for boolean flags (no arguments)
 generate_boolean_flag_tests() {
     local util="$1"
     local binary="$BIN_DIR/$util"
     local -n flags=$2
     local -n test_cases_ref=$3
+    local err_code
+    err_code=$(usage_error_code "$util")
     
     test_cases_ref=()
     
@@ -143,7 +157,7 @@ generate_boolean_flag_tests() {
                 ;;
             *)
                 # Generic test - just run with flag to see if it parses
-                test_cases_ref+=("test_command_exit_code \"$util $flag parse\" 2 \"$binary\" \"$flag\"")
+                test_cases_ref+=("test_command_exit_code \"$util $flag parse\" $err_code \"$binary\" \"$flag\"")
                 ;;
         esac
     done
@@ -155,6 +169,8 @@ generate_argument_flag_tests() {
     local binary="$BIN_DIR/$util"
     local -n flags=$2
     local -n test_cases_ref=$3
+    local err_code
+    err_code=$(usage_error_code "$util")
     
     test_cases_ref=()
     
@@ -162,11 +178,11 @@ generate_argument_flag_tests() {
         case "$flag" in
             "--reference")
                 # Reference flag: test with existing file
-                test_cases_ref+=("test_command_exit_code \"$util $flag with /dev/null\" 2 \"$binary\" \"$flag=/dev/null\"")
+                test_cases_ref+=("test_command_exit_code \"$util $flag with /dev/null\" $err_code \"$binary\" \"$flag=/dev/null\"")
                 ;;
             "-c"|"--changes"|"-v"|"--verbose")
                 # Output flags: test with dummy file
-                test_cases_ref+=("test_command_exit_code \"$util $flag with dummy\" 2 \"$binary\" \"$flag\"")
+                test_cases_ref+=("test_command_exit_code \"$util $flag with dummy\" $err_code \"$binary\" \"$flag\"")
                 ;;
             *)
                 # Generic argument flag: test that it requires an argument

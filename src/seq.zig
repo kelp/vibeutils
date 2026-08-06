@@ -867,7 +867,7 @@ fn run(
         processed_args,
         "seq",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -1346,8 +1346,7 @@ test "audit: seq negative increment without double-dash" {
     try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_aw.writer.buffered());
 }
 
-// IMPORTANT: Error exit code is 2 (misuse) where GNU uses 1
-// GNU seq with invalid input exits 1, not 2.
+// GNU seq with invalid input exits 1, and so do we.
 test "audit: seq invalid number exits 1 not 2" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

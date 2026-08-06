@@ -169,7 +169,9 @@ test_env() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Unknown flag
-    test_command_fails "env unknown flag" "$binary" --invalid-flag
+    # An unknown flag is env's own failure, so it exits 125 like every other
+    # env-internal error (126/127 stay reserved for the child command).
+    test_command_exit_code "env unknown flag exits 125" 125 "$binary" --invalid-flag
 
     # Missing value for -u
     test_command_fails "env -u without value" "$binary" -u

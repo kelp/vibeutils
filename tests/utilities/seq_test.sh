@@ -57,8 +57,8 @@ test_seq() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "seq invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "seq invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
     echo -e "${CYAN}Testing separator flag...${NC}"
@@ -104,7 +104,7 @@ test_seq() {
 
     echo -e "${CYAN}Testing audit: error exit code should be 1...${NC}"
 
-    # IMPORTANT: Error exit code is 2 (misuse) where GNU uses 1
+    # GNU seq with invalid input exits 1, and so do we.
     local err_out="" err_err="" err_exit=""
     run_command err_cmd err_out err_err err_exit "$binary" abc
     if [[ $err_exit -eq 1 ]]; then

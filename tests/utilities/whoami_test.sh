@@ -174,20 +174,20 @@ test_whoami() {
         "whoami: extra operand 'extra'
 $hint" \
         "$binary" extra
-    test_command_exit_code "whoami extra operand exits 2" 2 "$binary" extra
+    test_command_exit_code "whoami extra operand exits 1" 1 "$binary" extra
 
     # A lone dash is an operand, not a flag.
     whoami_expect_stderr "whoami dash operand message" \
         "whoami: extra operand '-'
 $hint" \
         "$binary" -
-    test_command_exit_code "whoami dash operand exits 2" 2 "$binary" -
+    test_command_exit_code "whoami dash operand exits 1" 1 "$binary" -
 
     whoami_expect_stderr "whoami empty operand message" \
         "whoami: extra operand ''
 $hint" \
         "$binary" ""
-    test_command_exit_code "whoami empty operand exits 2" 2 "$binary" ""
+    test_command_exit_code "whoami empty operand exits 1" 1 "$binary" ""
 
     whoami_expect_stderr "whoami operand after -- message" \
         "whoami: extra operand 'extra'
@@ -196,7 +196,7 @@ $hint" \
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "whoami invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "whoami invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 }

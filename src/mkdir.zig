@@ -59,7 +59,7 @@ fn run(
         args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -78,7 +78,7 @@ fn run(
     const dirs = parsed_args.positionals;
     if (dirs.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Build options from parsed flags, parsing -m mode if present.
@@ -545,7 +545,7 @@ test "mkdir fails with missing operand" {
     const args = [_][]const u8{};
     const result = try run(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 

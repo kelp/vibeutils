@@ -168,7 +168,7 @@ test_realpath() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # No arguments
-    test_command_exit_code "no arguments" 2 "$binary" 2>/dev/null
+    test_command_exit_code "no arguments" 1 "$binary" 2>/dev/null
 
     # Missing operand error message
     local no_args_err
@@ -180,8 +180,8 @@ test_realpath() {
     fi
 
     # Invalid flags
-    test_command_exit_code "invalid flag" 2 "$binary" --invalid 2>/dev/null
-    test_command_exit_code "invalid short flag" 2 "$binary" -x 2>/dev/null
+    test_command_exit_code "invalid flag" 1 "$binary" --invalid 2>/dev/null
+    test_command_exit_code "invalid short flag" 1 "$binary" -x 2>/dev/null
 
     echo -e "${CYAN}Testing symlink resolution...${NC}"
 

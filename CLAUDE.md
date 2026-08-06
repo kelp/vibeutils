@@ -175,9 +175,11 @@ or integration tests.
   reading stdin (`tee`, `cat`, `sort`, `uniq`, …) blocks
   forever. Use the `runUtilWithInput()` pattern or skip
   the unit test, keep 8192-byte buffers, and return
-  `ExitCode.misuse` for arg errors. Full checklist:
-  `docs/TESTING_STRATEGY.md`, "Filter Utilities and
-  Stdin-Dependent Testing".
+  `ExitCode.general_error` for arg errors — a few
+  utilities use 2 or 125 instead, listed in the
+  `ExitCode` doc comment in `src/common/lib.zig`. Full
+  checklist: `docs/TESTING_STRATEGY.md`, "Filter
+  Utilities and Stdin-Dependent Testing".
 - **Privileged tests must use
   `privilege_test.TestArena`, never
   `testing.allocator`** — the latter hangs under

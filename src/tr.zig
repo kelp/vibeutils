@@ -410,7 +410,7 @@ pub fn runTr(
         args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -432,7 +432,7 @@ pub fn runTr(
             "missing operand\nTry 'tr --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // -d without -s requires only SET1
@@ -450,7 +450,7 @@ pub fn runTr(
             "missing operand after '{s}'\nTwo strings must be given when translating.",
             .{parsed.positionals[0]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     if (parsed.delete and parsed.squeeze_repeats and parsed.positionals.len < 2) {
@@ -462,7 +462,7 @@ pub fn runTr(
                 "deleting and squeezing.",
             .{parsed.positionals[0]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     var stdin_buffer: [8192]u8 = undefined;
@@ -710,7 +710,7 @@ fn runTrWithInput(
         stderr_writer,
     )) {
         .ok => |built| built,
-        .set1_invalid => return @intFromEnum(common.ExitCode.misuse),
+        .set1_invalid => return @intFromEnum(common.ExitCode.general_error),
         .oom => return @intFromEnum(common.ExitCode.general_error),
     };
     var set1: []u8 = set1_built.set1;
@@ -729,7 +729,7 @@ fn runTrWithInput(
             stderr_writer,
         )) {
             .ok => |s| s,
-            .set2_invalid => return @intFromEnum(common.ExitCode.misuse),
+            .set2_invalid => return @intFromEnum(common.ExitCode.general_error),
             .oom => return @intFromEnum(common.ExitCode.general_error),
         };
         set2_allocated = true;
@@ -1033,7 +1033,7 @@ test "tr --version shows version information" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "tr") != null);
 }
 
-test "tr with no arguments returns misuse" {
+test "tr with no arguments returns exit code 1" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
@@ -1045,11 +1045,11 @@ test "tr with no arguments returns misuse" {
         common.null_writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
-test "tr translate missing SET2 returns misuse" {
+test "tr translate missing SET2 returns exit code 1" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
@@ -1061,7 +1061,7 @@ test "tr translate missing SET2 returns misuse" {
         common.null_writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "tr -u flag is accepted and ignored" {
@@ -1086,7 +1086,7 @@ test "tr -u flag is accepted and ignored" {
     try testing.expectEqualStrings("hEllO", stdout_aw.writer.buffered());
 }
 
-test "tr unknown flag returns misuse" {
+test "tr unknown flag returns exit code 1" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
@@ -1098,7 +1098,7 @@ test "tr unknown flag returns misuse" {
         common.null_writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "tr parseSet literal characters" {
@@ -1488,7 +1488,7 @@ test "tr [c*] fill with other chars before repeat in SET2" {
     try testing.expectEqualStrings("yxxx", stdout_aw.writer.buffered());
 }
 
-test "tr extra operand returns misuse" {
+test "tr extra operand returns exit code 1" {
     // GNU: tr a b c -> "tr: extra operand 'c'" on stderr, exit 1
     // Use runTrWithInput to avoid stdin hang (filter utility)
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1512,7 +1512,7 @@ test "tr extra operand returns misuse" {
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
-test "tr multiple extra operands returns misuse" {
+test "tr multiple extra operands returns exit code 1" {
     // tr a b c d -> should error on 'c' (the first extra operand)
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();

@@ -172,8 +172,8 @@ test_printf() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # No arguments exits with code 2
-    test_command_exit_code "printf no args exits 2" 2 \
+    # No arguments exits with code 1
+    test_command_exit_code "printf no args exits 1" 1 \
         "$binary"
 
     # Regression test: write errors propagated (smoke test)

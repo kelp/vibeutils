@@ -58,7 +58,7 @@ pub fn runTac(
         args,
         "tac",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -79,7 +79,7 @@ pub fn runTac(
             "-r (--regex) is not supported",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     const separator = parsed.separator orelse "\n";
@@ -407,14 +407,14 @@ test "tac --version shows version information" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
-test "tac with unknown flag returns misuse" {
+test "tac with unknown flag returns exit code 1" {
     const io = testing.io;
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const found_unrecognized =
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null;
     try testing.expect(found_unrecognized);
@@ -427,7 +427,7 @@ test "tac -r returns error (unsupported)" {
 
     const args = [_][]const u8{"-r"};
     const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "not supported") != null);
 }
 

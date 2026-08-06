@@ -54,8 +54,8 @@ test_date() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "date invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "date invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
     echo -e "${CYAN}Testing format strings...${NC}"

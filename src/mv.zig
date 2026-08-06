@@ -1430,8 +1430,8 @@ pub fn main(init: std.process.Init) !void {
     common.utilityMain(init, run);
 }
 
-/// Validate the operand count. Returns the misuse exit code (after printing the
-/// matching diagnostic) when fewer than two operands are given, or null to let
+/// Validate the operand count. Returns the general_error exit code (after printing
+/// the matching diagnostic) when fewer than two operands are given, or null to let
 /// the caller proceed with at least a source and destination.
 fn run_validateOperandCount(
     allocator: std.mem.Allocator,
@@ -1447,7 +1447,7 @@ fn run_validateOperandCount(
             "missing file operand\nTry '{s} --help' for more information.",
             .{prog_name},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     if (files.len == 1) {
         common.printErrorWithProgram(
@@ -1457,7 +1457,7 @@ fn run_validateOperandCount(
             "missing destination file operand after '{s}'\nTry '{s} --help' for more information.",
             .{ files[0], prog_name },
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     return null;
 }
@@ -1478,7 +1478,7 @@ fn run(
         args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help

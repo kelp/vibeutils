@@ -379,7 +379,7 @@ test_head() {
     echo -e "${CYAN}Testing audit: --silent alias...${NC}"
 
     # --silent should be accepted as alias for --quiet/-q (GNU compat).
-    # BUG: --silent returns exit 2 (unrecognized option).
+    # BUG: --silent returns exit 1 (unrecognized option).
     local silent_file_a=$(create_temp_file $'File A line 1\nFile A line 2')
     local silent_file_b=$(create_temp_file $'File B line 1\nFile B line 2')
 
@@ -403,7 +403,7 @@ test_head() {
     echo -e "${CYAN}Testing audit: -n -NUM negative count...${NC}"
 
     # -n -3 means "all but the last 3 lines" (GNU semantics).
-    # BUG: currently exits 2 because negative values are rejected.
+    # BUG: currently exits 1 because negative values are rejected.
     local neg_file=$(create_temp_file $'Line 1\nLine 2\nLine 3\nLine 4\nLine 5')
 
     local neg_out neg_err neg_exit neg_cmd
