@@ -14,11 +14,12 @@ with the reason · 🔄 in flight
 | whoami | ✅ | ✅ | 3 code fixes, 5 RED tests, oracle repaired |
 | df | ✅ | ✅ | `--output` built as a feature; 6 dead helpers deleted |
 
-## Cross-cutting — needs a ruling before anyone touches them
+## Cross-cutting
 
-These surfaced in two independent units and are repo-wide. Fixing
-them per-utility would make the codebase less consistent, not
-more, so nothing has been changed.
+Findings that are repo-wide rather than owned by one utility.
+Fixing this class per-utility makes the codebase less consistent,
+not more, so each was resolved once or is still awaiting a ruling.
+Unmarked entries are open.
 
 - ✅ **Argument errors exited 2; every reference exits 1.**
   Resolved. POSIX 2024 mandates no number ("exit with an exit
@@ -40,15 +41,15 @@ more, so nothing has been changed.
   units.
 - **`src/common/user_group.zig:6`** — the `c_passwd` extern struct
   declares the glibc layout unconditionally.
-- **`free -c 3` is rejected; procps accepts it.** GNU `free -c 3`
-  without `-s` exits **0**; ours exits non-zero. The divergence is
-  that we error at all, not which code we use, so it outlives the
-  exit-code change. `src/free.zig` also carried a comment claiming
-  "GNU exits 2 (misuse)" for this case, which is simply wrong.
-- **`printf` with no operands prints the wrong diagnostic.** GNU
-  emits `printf: missing operand` plus the `Try 'printf --help'`
-  hint; we emit `printf: usage: printf FORMAT [ARGUMENT...]`. The
-  exit code is corrected to 1; the message text is not.
+- ✅ **`free -c N` was rejected without `-s`.** Fixed. procps
+  repeats N times with an implied one-second interval, paying the
+  interval only *between* reports, so `free -c 1` returns
+  immediately (measured: 0.001s versus 1.001s for `-c 2`).
+  Reports are separated by one blank line with no trailing blank.
+  Our help text documented the wrong constraint too.
+- ✅ **`printf` with no operands printed the wrong diagnostic.**
+  Fixed. Now emits `printf: missing operand` plus the
+  `Try 'printf --help' for more information.` hint, matching GNU.
 - ✅ **`scripts/tiger-check.sh` printed `new=0` for a value it had
   not computed.** Fixed. `NEW` is only meaningful in `--base` and
   `--staged` mode, which have a baseline; without one the script

@@ -176,6 +176,33 @@ test_printf() {
     test_command_exit_code "printf no args exits 1" 1 \
         "$binary"
 
+    # GNU coreutils diagnostic for no operands, verified on Ubuntu with
+    # `LC_ALL=C /usr/bin/printf`:
+    #   printf: missing operand
+    #   Try 'printf --help' for more information.
+    # GNU echoes argv[0]; we print the plain utility name, as uniq and
+    # whoami do.
+    local missing_err
+    missing_err=$("$binary" 2>&1 >/dev/null)
+    local expected_err
+    expected_err=$'printf: missing operand\nTry \'printf --help\' for more information.'
+    if [[ "$missing_err" == "$expected_err" ]]; then
+        print_test_result "printf no args prints GNU missing-operand text" "PASS"
+    else
+        print_test_result "printf no args prints GNU missing-operand text" "FAIL" \
+            "Expected '$expected_err', got '$missing_err'"
+    fi
+
+    # The diagnostic goes to stderr, leaving stdout empty.
+    local missing_out
+    missing_out=$("$binary" 2>/dev/null)
+    if [[ -z "$missing_out" ]]; then
+        print_test_result "printf no args writes nothing to stdout" "PASS"
+    else
+        print_test_result "printf no args writes nothing to stdout" "FAIL" \
+            "Expected empty stdout, got '$missing_out'"
+    fi
+
     # Regression test: write errors propagated (smoke test)
     # The actual write-error path is hard to exercise in shell, so verify
     # that escape sequences produce correct output end-to-end (the fix
