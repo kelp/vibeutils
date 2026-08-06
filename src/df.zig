@@ -127,7 +127,98 @@ const FsInfo = struct {
     used_inodes: u64,
     avail_inodes: u64,
     flags: u32,
+    /// The operand this entry was resolved from, verbatim, for the
+    /// --output=file column. Null when the entry came from the mount
+    /// table rather than a command-line path.
+    file: ?[]const u8 = null,
 };
+
+// ============================================================================
+// --output field selection
+// ============================================================================
+
+/// The twelve GNU df --output fields. The declaration order is GNU's
+/// canonical order, which bare --output expands to; an explicit list is
+/// rendered in the order the user wrote it instead.
+const OutputField = enum {
+    source,
+    fstype,
+    itotal,
+    iused,
+    iavail,
+    ipcent,
+    size,
+    used,
+    avail,
+    pcent,
+    file,
+    target,
+};
+
+const output_field_max: u32 = 12;
+
+/// Bare --output selects every field in canonical order.
+const output_all_fields = "source,fstype,itotal,iused,iavail,ipcent," ++
+    "size,used,avail,pcent,file,target";
+
+/// A parsed --output list: the selected fields in the user's order.
+/// Duplicates are rejected, so at most output_field_max entries fit.
+const OutputSelection = struct {
+    fields: [output_field_max]OutputField = undefined,
+    len: u32 = 0,
+
+    fn slice(self: *const OutputSelection) []const OutputField {
+        std.debug.assert(self.len <= output_field_max);
+        std.debug.assert(self.fields.len == output_field_max);
+        return self.fields[0..self.len];
+    }
+
+    fn has(self: *const OutputSelection, field: OutputField) bool {
+        std.debug.assert(self.len <= output_field_max);
+        std.debug.assert(self.fields.len == output_field_max);
+        for (self.fields[0..self.len]) |selected| {
+            if (selected == field) return true;
+        }
+        return false;
+    }
+};
+
+/// Why a --output list was rejected, carrying the offending field name so
+/// the caller can render GNU's message text.
+const OutputFieldError = struct {
+    kind: enum { unknown, duplicate },
+    name: []const u8,
+};
+
+/// Split a comma-separated --output list into `sel`. Returns null on
+/// success. An empty list yields the unknown-field error with an empty
+/// name, matching GNU, which has no special case for it.
+fn parseOutputFields(list: []const u8, sel: *OutputSelection) ?OutputFieldError {
+    std.debug.assert(sel.len == 0);
+    std.debug.assert(sel.fields.len == output_field_max);
+    var it = std.mem.splitScalar(u8, list, ',');
+    // Bounded by output_field_max + 1: names are distinct past the
+    // duplicate check, so the next repeat or unknown name returns.
+    while (it.next()) |name| {
+        const field = std.meta.stringToEnum(OutputField, name) orelse
+            return .{ .kind = .unknown, .name = name };
+        if (sel.has(field)) return .{ .kind = .duplicate, .name = name };
+        std.debug.assert(sel.len < output_field_max);
+        sel.fields[sel.len] = field;
+        sel.len += 1;
+    }
+    return null;
+}
+
+/// Numeric fields are right-aligned; name and path fields are not.
+fn outputFieldIsLeftAligned(field: OutputField) bool {
+    std.debug.assert(@intFromEnum(field) >= 0);
+    std.debug.assert(@intFromEnum(field) < output_field_max);
+    return switch (field) {
+        .source, .fstype, .file, .target => true,
+        else => false,
+    };
+}
 
 // ============================================================================
 // Argument parsing (manual, for complex options)
@@ -238,6 +329,7 @@ fn parseArgs_longOptionBool(arg: []const u8, opts: *DfOptions) bool {
     } else if (std.mem.eql(u8, arg, "--local")) {
         opts.local = true;
     } else if (std.mem.eql(u8, arg, "--portability")) {
+        // See the 'P' short-option arm for why this clears human_readable.
         opts.portability = true;
         opts.human_readable = false;
         opts.display.color = .off;
@@ -300,8 +392,8 @@ fn parseArgs_longOptionValued(
     } else if (std.mem.startsWith(u8, arg, "--output=")) {
         opts.output_fields = arg["--output=".len..];
     } else if (std.mem.eql(u8, arg, "--output")) {
-        // --output without = uses default field list
-        opts.output_fields = "source,fstype,size,used,avail,pcent,target";
+        // Bare --output means every field, not a curated subset.
+        opts.output_fields = output_all_fields;
     } else {
         return .{ .matched = false, .err = null };
     }
@@ -339,7 +431,11 @@ fn parseArgs_shortOptionSimple(
         'a' => opts.all = true,
         'h' => opts.human_readable = true,
         'H' => opts.si = true,
-        'i' => opts.inodes = true,
+        'i' => {
+            opts.inodes = true;
+            // BSD resolves -i/-I last-flag-wins, so a later -i undoes -I.
+            opts.suppress_inodes = false;
+        },
         'k' => {
             opts.block_1k = true;
             opts.human_readable = false;
@@ -351,6 +447,15 @@ fn parseArgs_shortOptionSimple(
             }
             opts.no_sync = true;
         },
+        // Clearing human_readable here is a deliberate divergence from GNU,
+        // not an oversight. GNU never lets -P turn human mode off, but GNU
+        // defaults to block mode, so its bare `df -P` is POSIX anyway. We
+        // default human_readable = true, so if -P left it set, bare `df -P`
+        // would print human-readable sizes and be useless to the POSIX
+        // consumers the flag exists for. The consequence is last-wins:
+        // `-h -P` yields block+POSIX (correct for us), while `-P -h` puts
+        // us back in human mode and must then use the DEFAULT header set,
+        // not the POSIX one. Do not "fix" the `-h -P` ordering toward GNU.
         'P' => {
             opts.portability = true;
             opts.human_readable = false;
@@ -424,8 +529,11 @@ fn parseArgs_shortOptionValued(
         },
         'I' => {
             if (comptime is_darwin) {
-                // macOS: -I is a boolean flag meaning "suppress inode counts"
+                // macOS: -I is a boolean flag meaning "suppress inode
+                // counts". BSD resolves -i/-I last-flag-wins, so it
+                // cancels any preceding -i outright.
                 opts.suppress_inodes = true;
+                opts.inodes = false;
                 return null;
             }
             // Linux/GNU: -I is an exclude-type filter requiring an argument
@@ -1250,6 +1358,14 @@ const ColumnWidths = struct {
 
 fn computeColumnWidths(filesystems: []const FsInfo, opts: DfOptions) ColumnWidths {
     var widths = ColumnWidths{};
+    // The struct defaults size the columns for the default header set, so
+    // the labels that vary with block mode ("Available", "1048576-blocks")
+    // have to widen them or the header row shifts out of alignment.
+    var label_buf: [32]u8 = undefined;
+    const labels = headerLabels(&label_buf, opts);
+    widths.size = @max(widths.size, labels.size.len);
+    widths.avail = @max(widths.avail, labels.avail.len);
+    widths.use_pct = @max(widths.use_pct, labels.pct.len);
 
     for (filesystems) |fs| {
         widths.filesystem = @max(widths.filesystem, fs.source.len);
@@ -1541,22 +1657,54 @@ fn applyTypeColor(s: anytype) !void {
 // Output formatting
 // ============================================================================
 
+/// The three header labels that vary with the resolved block-size mode.
+const HeaderLabels = struct {
+    size: []const u8,
+    avail: []const u8,
+    pct: []const u8,
+};
+
+/// Resolve the size, available and percent header labels. GNU keys all
+/// three on the RESOLVED display mode, not on the flags that requested
+/// it: "Avail"/"Size"/"Use%" belong to human mode, "Available" and the
+/// POSIX "Capacity"/"NNNN-blocks" spellings to block mode. Because -P
+/// only clears human mode (see the 'P' arm of the parser), a later -h
+/// or -H puts us back in human mode and must take the default set.
+fn headerLabels(buf: []u8, opts: DfOptions) HeaderLabels {
+    std.debug.assert(buf.len >= 32);
+    std.debug.assert(!opts.inodes);
+    const human = opts.human_readable or opts.si;
+    const size: []const u8 = blk: {
+        if (human) break :blk "Size";
+        // POSIX mode never abbreviates: it names the raw byte count.
+        if (opts.portability) {
+            const bs = opts.block_size orelse 1024;
+            break :blk std.fmt.bufPrint(buf, "{d}-blocks", .{bs}) catch "blocks";
+        }
+        if (opts.block_size) |bs| {
+            if (bs == 512) break :blk "512B-blocks";
+            if (bs == 1024) break :blk "1K-blocks";
+            if (bs == 1024 * 1024) break :blk "1M-blocks";
+            if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
+            break :blk std.fmt.bufPrint(buf, "{d}B-blocks", .{bs}) catch "blocks";
+        }
+        break :blk "1K-blocks";
+    };
+    // Every branch yields a non-empty label (literal or bufPrint result).
+    std.debug.assert(size.len > 0);
+    const posix_pct = opts.portability and !human;
+    return .{
+        .size = size,
+        .avail = if (human) "Avail" else "Available",
+        .pct = if (posix_pct) "Capacity" else "Use%",
+    };
+}
+
 fn printHeader(stdout: *std.Io.Writer, opts: DfOptions) !void {
-    if (opts.inodes) {
-        return printHeader_inodes(stdout, opts);
-    }
-
-    var size_label_buf: [32]u8 = undefined;
-    const size_label = printHeader_sizeLabel(&size_label_buf, opts);
-    // sizeLabel always returns a non-empty label (literal or bufPrint result).
-    std.debug.assert(size_label.len > 0);
-    const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
-
-    if (opts.display.icons == .on) {
-        try printHeader_emitIcons(stdout, opts, size_label, pct_label);
-    } else {
-        try printHeader_emitPlain(stdout, opts, size_label, pct_label);
-    }
+    // Live only through runDf_renderInodes, which gates on opts.inodes.
+    std.debug.assert(opts.inodes);
+    std.debug.assert(!opts.help);
+    return printHeader_inodes(stdout, opts);
 }
 
 fn printHeader_inodes(stdout: *std.Io.Writer, opts: DfOptions) !void {
@@ -1585,125 +1733,11 @@ fn printHeader_inodes(stdout: *std.Io.Writer, opts: DfOptions) !void {
     }
 }
 
-fn printHeader_sizeLabel(buf: []u8, opts: DfOptions) []const u8 {
-    std.debug.assert(buf.len >= 16);
-    std.debug.assert(!opts.inodes);
-    const size_label: []const u8 = blk: {
-        if (opts.human_readable or opts.si) {
-            break :blk "Size";
-        }
-        if (opts.block_size) |bs| {
-            if (bs == 512) break :blk "512B-blocks";
-            if (bs == 1024) break :blk "1K-blocks";
-            if (bs == 1024 * 1024) break :blk "1M-blocks";
-            if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
-            break :blk std.fmt.bufPrint(buf, "{d}B-blocks", .{bs}) catch "blocks";
-        }
-        if (opts.portability) break :blk "1024-blocks";
-        break :blk "1K-blocks";
-    };
-    std.debug.assert(size_label.len > 0);
-    return size_label;
-}
-
-fn printHeader_emitIcons(
-    stdout: *std.Io.Writer,
-    opts: DfOptions,
-    size_label: []const u8,
-    pct_label: []const u8,
-) !void {
-    std.debug.assert(size_label.len > 0);
-    std.debug.assert(opts.display.icons == .on);
-    if (opts.print_type) {
-        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
-            "Filesystem",
-            "Type",
-            size_label,
-            "Used",
-            "Available",
-            pct_label,
-            "Usage",
-            "Mounted on",
-        });
-    } else {
-        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
-            "Filesystem",
-            size_label,
-            "Used",
-            "Available",
-            pct_label,
-            "Usage",
-            "Mounted on",
-        });
-    }
-}
-
-fn printHeader_emitPlain(
-    stdout: *std.Io.Writer,
-    opts: DfOptions,
-    size_label: []const u8,
-    pct_label: []const u8,
-) !void {
-    std.debug.assert(size_label.len > 0);
-    std.debug.assert(opts.display.icons != .on);
-    if (opts.print_type) {
-        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            "Filesystem",
-            "Type",
-            size_label,
-            "Used",
-            "Available",
-            pct_label,
-            "Mounted on",
-        });
-    } else {
-        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            "Filesystem",
-            size_label,
-            "Used",
-            "Available",
-            pct_label,
-            "Mounted on",
-        });
-    }
-}
-
-fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, color_mode_int: u8) !void {
-    if (opts.inodes) {
-        return printFsRow_inodes(stdout, &fs, opts);
-    }
-
-    var total_buf: [32]u8 = undefined;
-    var used_buf: [32]u8 = undefined;
-    var avail_buf: [32]u8 = undefined;
-    var pct_buf: [16]u8 = undefined;
-
-    const total_str = formatSize(&total_buf, fs.total_blocks, fs.block_size, opts);
-    const used_str = formatSize(&used_buf, fs.used_blocks, fs.block_size, opts);
-    const avail_str = formatSize(&avail_buf, fs.avail_blocks, fs.block_size, opts);
-    // Use% is based on used / (used + avail) to match GNU df
-    const use_total = fs.used_blocks + fs.avail_blocks;
-    const pct_str = formatPercent(&pct_buf, fs.used_blocks, use_total);
-
-    if (opts.display.color == .off) {
-        return printFsRow_emitPlain(stdout, &fs, opts, total_str, used_str, avail_str, pct_str);
-    }
-
-    // Color and full modes: apply color to percent
-    const percent = calcUsagePercent(fs.used_blocks, use_total);
-    // calcUsagePercent clamps to 100; emitColored asserts the same bound.
-    std.debug.assert(percent <= 100);
-    try printFsRow_emitColored(
-        stdout,
-        color_mode_int,
-        &fs,
-        opts,
-        total_str,
-        used_str,
-        avail_str,
-        pct_str,
-        percent,
-    );
+fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions) !void {
+    // Live only through runDf_renderInodes, which gates on opts.inodes.
+    std.debug.assert(opts.inodes);
+    std.debug.assert(fs.source.len > 0);
+    return printFsRow_inodes(stdout, &fs, opts);
 }
 
 fn printFsRow_inodes(stdout: *std.Io.Writer, fs: *const FsInfo, opts: DfOptions) !void {
@@ -1730,86 +1764,6 @@ fn printFsRow_inodes(stdout: *std.Io.Writer, fs: *const FsInfo, opts: DfOptions)
             pct,
             fs.mount_point,
         });
-    }
-}
-
-fn printFsRow_emitPlain(
-    stdout: *std.Io.Writer,
-    fs: *const FsInfo,
-    opts: DfOptions,
-    total_str: []const u8,
-    used_str: []const u8,
-    avail_str: []const u8,
-    pct_str: []const u8,
-) !void {
-    std.debug.assert(opts.display.color == .off);
-    std.debug.assert(pct_str.len > 0);
-    // Plain mode: no color, no bar
-    if (opts.print_type) {
-        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            fs.source, fs.fstype, total_str, used_str, avail_str, pct_str, fs.mount_point,
-        });
-    } else {
-        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            fs.source, total_str, used_str, avail_str, pct_str, fs.mount_point,
-        });
-    }
-}
-
-fn printFsRow_emitColored(
-    stdout: *std.Io.Writer,
-    color_mode_int: u8,
-    fs: *const FsInfo,
-    opts: DfOptions,
-    total_str: []const u8,
-    used_str: []const u8,
-    avail_str: []const u8,
-    pct_str: []const u8,
-    percent: u8,
-) !void {
-    std.debug.assert(percent <= 100);
-    std.debug.assert(opts.display.color != .off);
-    // runDf_resolveColorMode only emits ColorMode tags 0..3 (none/basic/
-    // extended/truecolor), so the @enumFromInt below has a valid tag.
-    std.debug.assert(color_mode_int <= 3);
-    const S = common.style.Style(@TypeOf(stdout));
-    const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
-
-    if (opts.display.icons == .on) {
-        // Full mode: color + bar + truncated path
-        var bar_buf: [48]u8 = undefined;
-        const bar_str = formatUsageBar(&bar_buf, percent);
-        var path_buf: [64]u8 = undefined;
-        const mount_str = truncatePath(&path_buf, fs.mount_point, 20);
-
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
-                fs.source, fs.fstype, total_str, used_str, avail_str,
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
-                fs.source, total_str, used_str, avail_str,
-            });
-        }
-        try applyUsageColor(s, percent);
-        try stdout.print("{s:>5}", .{pct_str});
-        try s.reset();
-        try stdout.print(" {s:>17} {s}\n", .{ bar_str, mount_str });
-    } else {
-        // Color mode: color on percent, no bar, no path truncation
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
-                fs.source, fs.fstype, total_str, used_str, avail_str,
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
-                fs.source, total_str, used_str, avail_str,
-            });
-        }
-        try applyUsageColor(s, percent);
-        try stdout.print("{s:>5}", .{pct_str});
-        try s.reset();
-        try stdout.print(" {s}\n", .{fs.mount_point});
     }
 }
 
@@ -1845,68 +1799,11 @@ fn printTotal(
     stdout: *std.Io.Writer,
     filesystems: []const FsInfo,
     opts: DfOptions,
-    color_mode_int: u8,
 ) !void {
-    if (opts.inodes) {
-        return printTotal_inodes(stdout, filesystems, opts);
-    }
-
-    // Sum bytes across all filesystems
-    var sum_total_bytes: u64 = 0;
-    var sum_used_bytes: u64 = 0;
-    var sum_avail_bytes: u64 = 0;
-    printTotal_sumBytes(filesystems, &sum_total_bytes, &sum_used_bytes, &sum_avail_bytes);
-
-    // Convert sums back to display blocks
-    const display_block: u64 = if (opts.block_size) |bs| bs else 1024;
-
-    var total_buf: [32]u8 = undefined;
-    var used_buf: [32]u8 = undefined;
-    var avail_buf: [32]u8 = undefined;
-    var pct_buf: [16]u8 = undefined;
-
-    const total_str = printTotal_formatField(&total_buf, sum_total_bytes, display_block, opts);
-    const used_str = printTotal_formatField(&used_buf, sum_used_bytes, display_block, opts);
-    const avail_str = printTotal_formatField(&avail_buf, sum_avail_bytes, display_block, opts);
-    const sum_use_total = sum_used_bytes + sum_avail_bytes;
-    const pct_str = if (sum_use_total == 0)
-        "-"
-    else blk: {
-        const pct = @divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total);
-        break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
-    };
-
-    if (opts.display.color == .off) {
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                "total", "-", total_str, used_str, avail_str, pct_str, "-",
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                "total", total_str, used_str, avail_str, pct_str, "-",
-            });
-        }
-        return;
-    }
-
-    // Color and full modes: apply color to percent
-    const percent: u8 = if (sum_use_total == 0)
-        0
-    else
-        @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
-
-    // Both branches above yield <= 100 (explicit @min or the 0 branch).
-    std.debug.assert(percent <= 100);
-    try printTotal_emitColored(
-        stdout,
-        color_mode_int,
-        opts,
-        total_str,
-        used_str,
-        avail_str,
-        pct_str,
-        percent,
-    );
+    // Live only through runDf_renderInodes, which gates on opts.inodes.
+    std.debug.assert(opts.inodes);
+    std.debug.assert(filesystems.len > 0);
+    return printTotal_inodes(stdout, filesystems, opts);
 }
 
 fn printTotal_inodes(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions) !void {
@@ -1933,59 +1830,6 @@ fn printTotal_inodes(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: 
     }
 }
 
-fn printTotal_emitColored(
-    stdout: *std.Io.Writer,
-    color_mode_int: u8,
-    opts: DfOptions,
-    total_str: []const u8,
-    used_str: []const u8,
-    avail_str: []const u8,
-    pct_str: []const u8,
-    percent: u8,
-) !void {
-    std.debug.assert(percent <= 100);
-    std.debug.assert(pct_str.len > 0);
-    // runDf_resolveColorMode only emits ColorMode tags 0..3, so the
-    // @enumFromInt below has a valid tag.
-    std.debug.assert(color_mode_int <= 3);
-    const S = common.style.Style(@TypeOf(stdout));
-    const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
-
-    if (opts.display.icons == .on) {
-        var bar_buf: [48]u8 = undefined;
-        const bar_str = formatUsageBar(&bar_buf, percent);
-
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
-                "total", "-", total_str, used_str, avail_str,
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
-                "total", total_str, used_str, avail_str,
-            });
-        }
-        try applyUsageColor(s, percent);
-        try stdout.print("{s:>5}", .{pct_str});
-        try s.reset();
-        try stdout.print(" {s:>17} {s}\n", .{ bar_str, "-" });
-    } else {
-        // Color mode
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
-                "total", "-", total_str, used_str, avail_str,
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
-                "total", total_str, used_str, avail_str,
-            });
-        }
-        try applyUsageColor(s, percent);
-        try stdout.print("{s:>5}", .{pct_str});
-        try s.reset();
-        try stdout.print(" {s}\n", .{"-"});
-    }
-}
-
 // ============================================================================
 // Dynamic-width output formatting
 // ============================================================================
@@ -1997,21 +1841,11 @@ fn printHeaderDynamic(
     s: anytype,
 ) !void {
     var size_label_buf: [32]u8 = undefined;
-    const size_label: []const u8 = blk: {
-        if (opts.human_readable or opts.si) break :blk "Size";
-        if (opts.block_size) |bs| {
-            if (bs == 512) break :blk "512B-blocks";
-            if (bs == 1024) break :blk "1K-blocks";
-            if (bs == 1024 * 1024) break :blk "1M-blocks";
-            if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
-            break :blk std.fmt.bufPrint(&size_label_buf, "{d}B-blocks", .{bs}) catch "blocks";
-        }
-        if (opts.portability) break :blk "1024-blocks";
-        break :blk "1K-blocks";
-    };
-    // Every branch yields a non-empty label (literal or bufPrint result).
-    std.debug.assert(size_label.len > 0);
-    const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
+    const labels = headerLabels(&size_label_buf, opts);
+    // headerLabels asserts its own non-empty postcondition on the size
+    // label; the other two are always literals.
+    std.debug.assert(labels.avail.len > 0);
+    std.debug.assert(labels.pct.len > 0);
 
     // Icon column spacer (2 chars for icon + space)
     if (opts.display.icons == .on) {
@@ -2029,13 +1863,13 @@ fn printHeaderDynamic(
         try stdout.writeAll("  ");
     }
 
-    try padLeft(stdout, size_label, widths.size);
+    try padLeft(stdout, labels.size, widths.size);
     try stdout.writeAll("  ");
     try padLeft(stdout, "Used", widths.used);
     try stdout.writeAll("  ");
-    try padLeft(stdout, "Avail", widths.avail);
+    try padLeft(stdout, labels.avail, widths.avail);
     try stdout.writeAll("  ");
-    try padLeft(stdout, pct_label, widths.use_pct);
+    try padLeft(stdout, labels.pct, widths.use_pct);
 
     if (opts.display.icons == .on) {
         try stdout.writeAll("  ");
@@ -2408,6 +2242,11 @@ pub fn runDf(
         return code;
     }
 
+    var output_sel: OutputSelection = .{};
+    if (runDf_resolveOutput(allocator, opts, stderr, &output_sel)) |code| {
+        return code;
+    }
+
     const color_mode_int = runDf_resolveColorMode(allocator, opts, stdout);
     // resolveColorMode asserts and only returns ColorMode tags (true max 3),
     // so the @enumFromInt below has a valid tag.
@@ -2446,19 +2285,80 @@ pub fn runDf(
         return exit_code;
     }
 
-    // Inodes mode uses the old fixed-width rendering
-    if (opts.inodes) {
-        if (runDf_renderInodes(stdout, opts, color_mode_int, visible.items)) |override_code| {
-            return override_code;
-        }
-        return exit_code;
-    }
-
-    if (runDf_renderDynamic(allocator, stdout, opts, s, visible.items)) |override_code| {
+    if (runDf_render(allocator, stdout, opts, output_sel, s, visible.items)) |override_code| {
         return override_code;
     }
 
     return exit_code;
+}
+
+// Dispatch to the renderer for the resolved layout: fixed-width inode
+// columns, the user-selected --output columns, or the default
+// dynamic-width table. Returns an override exit code on a header write
+// failure, otherwise null so the caller keeps its collected exit code.
+fn runDf_render(
+    allocator: Allocator,
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    sel: OutputSelection,
+    s: anytype,
+    visible_items: []const FsInfo,
+) ?u8 {
+    std.debug.assert(!opts.help);
+    std.debug.assert(!opts.version);
+    // Inodes mode uses the old fixed-width rendering.
+    if (opts.inodes) return runDf_renderInodes(stdout, opts, visible_items);
+    if (opts.output_fields != null) {
+        return runDf_renderOutput(stdout, opts, sel, s, visible_items);
+    }
+    return runDf_renderDynamic(allocator, stdout, opts, s, visible_items);
+}
+
+// Validate --output and fill `sel` with the requested fields. Returns an
+// exit code when the option conflicts with -i/-P/-T or names a bad field,
+// otherwise null. Doing this in runDf rather than parseArgs keeps the
+// formatted message off the parser's static-string error channel.
+fn runDf_resolveOutput(
+    allocator: Allocator,
+    opts: DfOptions,
+    stderr: *std.Io.Writer,
+    sel: *OutputSelection,
+) ?u8 {
+    std.debug.assert(sel.len == 0);
+    std.debug.assert(!opts.help);
+    const list = opts.output_fields orelse return null;
+    // GNU rejects --output alongside the flags that pick a fixed layout.
+    const conflict: ?[]const u8 = blk: {
+        if (opts.inodes) break :blk "-i";
+        if (opts.portability) break :blk "-P";
+        if (opts.print_type) break :blk "-T";
+        break :blk null;
+    };
+    if (conflict) |flag| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "options {s} and --output are mutually exclusive",
+            .{flag},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+    if (parseOutputFields(list, sel)) |bad| {
+        const reason: []const u8 = switch (bad.kind) {
+            .unknown => "unknown",
+            .duplicate => "used more than once",
+        };
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "option --output: field '{s}' {s}",
+            .{ bad.name, reason },
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+    return null;
 }
 
 // Print help or version output when requested. Returns the success exit
@@ -2485,17 +2385,16 @@ fn runDf_handleHelpVersion(allocator: Allocator, opts: DfOptions, stdout: *std.I
 fn runDf_renderInodes(
     stdout: *std.Io.Writer,
     opts: DfOptions,
-    color_mode_int: u8,
     visible_items: []const FsInfo,
 ) ?u8 {
     std.debug.assert(opts.inodes);
-    std.debug.assert(color_mode_int <= 4);
+    std.debug.assert(!opts.help);
     printHeader(stdout, opts) catch return @intFromEnum(common.ExitCode.general_error);
     for (visible_items) |fs| {
-        printFsRow(stdout, fs, opts, color_mode_int) catch {};
+        printFsRow(stdout, fs, opts) catch {};
     }
     if (opts.total and visible_items.len > 0) {
-        printTotal(stdout, visible_items, opts, color_mode_int) catch {};
+        printTotal(stdout, visible_items, opts) catch {};
     }
     return null;
 }
@@ -2592,7 +2491,7 @@ fn runDf_collectFromPositionals(
     std.debug.assert(opts.positionals.len > 0);
     std.debug.assert(exit_code.* == @intFromEnum(common.ExitCode.success));
     for (opts.positionals) |path| {
-        const fs = getFilesystemForPath(io, allocator, path) catch {
+        var fs = getFilesystemForPath(io, allocator, path) catch {
             common.printErrorWithProgram(
                 allocator,
                 stderr,
@@ -2603,6 +2502,9 @@ fn runDf_collectFromPositionals(
             exit_code.* = @intFromEnum(common.ExitCode.general_error);
             continue;
         };
+        // --output=file reports the operand verbatim, not the resolved
+        // mount point, so keep it with the entry it produced.
+        fs.file = path;
         if (shouldIncludeFs(fs, opts)) {
             visible.append(allocator, fs) catch {};
         } else {
@@ -2691,6 +2593,314 @@ fn runDf_renderDynamic(
     return null;
 }
 
+// ============================================================================
+// --output rendering
+// ============================================================================
+
+/// Per-column display widths, indexed by position in the selection.
+const OutputWidths = [output_field_max]u32;
+
+/// Byte and inode sums backing the --total row under --output.
+const OutputTotals = struct {
+    size_bytes: u64 = 0,
+    used_bytes: u64 = 0,
+    avail_bytes: u64 = 0,
+    itotal: u64 = 0,
+    iused: u64 = 0,
+    iavail: u64 = 0,
+};
+
+fn outputSumTotals(filesystems: []const FsInfo) OutputTotals {
+    std.debug.assert(filesystems.len > 0);
+    var totals = OutputTotals{};
+    std.debug.assert(totals.itotal == 0);
+    printTotal_sumBytes(
+        filesystems,
+        &totals.size_bytes,
+        &totals.used_bytes,
+        &totals.avail_bytes,
+    );
+    for (filesystems) |fs| {
+        totals.itotal += fs.total_inodes;
+        totals.iused += fs.used_inodes;
+        totals.iavail += fs.avail_inodes;
+    }
+    return totals;
+}
+
+/// The header label for one field. The size, available and percent labels
+/// follow the resolved block-size mode, exactly as the default layout.
+fn outputHeaderText(field: OutputField, labels: HeaderLabels) []const u8 {
+    std.debug.assert(labels.size.len > 0);
+    std.debug.assert(labels.avail.len > 0);
+    return switch (field) {
+        .source => "Filesystem",
+        .fstype => "Type",
+        .itotal => "Inodes",
+        .iused => "IUsed",
+        .iavail => "IFree",
+        .ipcent => "IUse%",
+        .size => labels.size,
+        .used => "Used",
+        .avail => labels.avail,
+        .pcent => labels.pct,
+        .file => "File",
+        .target => "Mounted on",
+    };
+}
+
+/// One cell of a filesystem row. Numeric cells are formatted into buf;
+/// name and path cells borrow from fs.
+fn outputCellText(
+    buf: []u8,
+    field: OutputField,
+    fs: *const FsInfo,
+    opts: DfOptions,
+) []const u8 {
+    std.debug.assert(buf.len >= 32);
+    std.debug.assert(!opts.inodes);
+    return switch (field) {
+        .source => fs.source,
+        .fstype => fs.fstype,
+        .itotal => std.fmt.bufPrint(buf, "{d}", .{fs.total_inodes}) catch "?",
+        .iused => std.fmt.bufPrint(buf, "{d}", .{fs.used_inodes}) catch "?",
+        .iavail => std.fmt.bufPrint(buf, "{d}", .{fs.avail_inodes}) catch "?",
+        .ipcent => formatPercent(buf, fs.used_inodes, fs.total_inodes),
+        .size => formatSize(buf, fs.total_blocks, fs.block_size, opts),
+        .used => formatSize(buf, fs.used_blocks, fs.block_size, opts),
+        .avail => formatSize(buf, fs.avail_blocks, fs.block_size, opts),
+        .pcent => formatPercent(buf, fs.used_blocks, fs.used_blocks + fs.avail_blocks),
+        // No operand means the entry came from the mount table.
+        .file => fs.file orelse "-",
+        .target => fs.mount_point,
+    };
+}
+
+/// One cell of the --total row. Fields with no aggregate meaning print a
+/// dash, matching the default layout's total row.
+fn outputTotalCellText(
+    buf: []u8,
+    field: OutputField,
+    totals: OutputTotals,
+    opts: DfOptions,
+) []const u8 {
+    std.debug.assert(buf.len >= 32);
+    std.debug.assert(!opts.inodes);
+    const display_block: u64 = opts.block_size orelse 1024;
+    return switch (field) {
+        .source => "total",
+        .fstype, .file, .target => "-",
+        .itotal => std.fmt.bufPrint(buf, "{d}", .{totals.itotal}) catch "?",
+        .iused => std.fmt.bufPrint(buf, "{d}", .{totals.iused}) catch "?",
+        .iavail => std.fmt.bufPrint(buf, "{d}", .{totals.iavail}) catch "?",
+        .ipcent => formatPercent(buf, totals.iused, totals.itotal),
+        .size => printTotal_formatField(buf, totals.size_bytes, display_block, opts),
+        .used => printTotal_formatField(buf, totals.used_bytes, display_block, opts),
+        .avail => printTotal_formatField(buf, totals.avail_bytes, display_block, opts),
+        .pcent => formatPercent(
+            buf,
+            totals.used_bytes,
+            totals.used_bytes + totals.avail_bytes,
+        ),
+    };
+}
+
+/// Widen every selected column to fit its header, every row cell, and the
+/// total row when one is printed.
+fn outputWidths(
+    opts: DfOptions,
+    sel: OutputSelection,
+    labels: HeaderLabels,
+    filesystems: []const FsInfo,
+    totals: ?OutputTotals,
+) OutputWidths {
+    std.debug.assert(sel.len > 0);
+    std.debug.assert(sel.len <= output_field_max);
+    var widths = [_]u32{0} ** output_field_max;
+    var buf: [64]u8 = undefined;
+    for (sel.slice(), 0..) |field, idx| {
+        widths[idx] = @intCast(outputHeaderText(field, labels).len);
+    }
+    for (filesystems) |*fs| {
+        for (sel.slice(), 0..) |field, idx| {
+            const cell: u32 = @intCast(outputCellText(&buf, field, fs, opts).len);
+            widths[idx] = @max(widths[idx], cell);
+        }
+    }
+    if (totals) |sums| {
+        for (sel.slice(), 0..) |field, idx| {
+            const cell: u32 = @intCast(outputTotalCellText(&buf, field, sums, opts).len);
+            widths[idx] = @max(widths[idx], cell);
+        }
+    }
+    return widths;
+}
+
+/// Write one cell. The trailing column of a left-aligned field is written
+/// unpadded so no line carries trailing whitespace.
+fn outputEmitCell(
+    stdout: *std.Io.Writer,
+    text: []const u8,
+    width: u32,
+    field: OutputField,
+    last: bool,
+) !void {
+    std.debug.assert(width > 0);
+    std.debug.assert(width <= 4096);
+    if (!outputFieldIsLeftAligned(field)) {
+        return padLeft(stdout, text, width);
+    }
+    if (last) return stdout.writeAll(text);
+    return padRight(stdout, text, width);
+}
+
+/// Prefix the source column with the filesystem icon when icons are on.
+/// No other column gains a decoration: the user enumerated the fields.
+fn outputEmitIcon(
+    stdout: *std.Io.Writer,
+    s: anytype,
+    opts: DfOptions,
+    fs_class: FsClass,
+) !void {
+    std.debug.assert(!opts.inodes);
+    std.debug.assert(!opts.portability);
+    if (opts.display.icons != .on) return;
+    if (s.color_mode != .none) return printFsRowDynamic_emitIcon(stdout, s, fs_class);
+    try stdout.writeAll(getFsIcon(fs_class));
+    try stdout.writeAll(" ");
+}
+
+/// Set the color for one cell. Returns false for fields that carry no
+/// color of their own, so the caller can skip the matching reset rather
+/// than emit a bare one.
+fn outputApplyColor(
+    s: anytype,
+    field: OutputField,
+    fs: *const FsInfo,
+    fs_class: FsClass,
+) !bool {
+    std.debug.assert(s.color_mode != .none);
+    std.debug.assert(fs.source.len > 0);
+    switch (field) {
+        .source => try applySourceColor(s, fs_class),
+        .fstype => try applyTypeColor(s),
+        .target => try applyMountColor(s, fs_class),
+        .pcent => try applyUsageColor(
+            s,
+            calcUsagePercent(fs.used_blocks, fs.used_blocks + fs.avail_blocks),
+        ),
+        .ipcent => try applyUsageColor(s, calcUsagePercent(fs.used_inodes, fs.total_inodes)),
+        else => return false,
+    }
+    return true;
+}
+
+fn outputEmitHeader(
+    stdout: *std.Io.Writer,
+    s: anytype,
+    opts: DfOptions,
+    sel: OutputSelection,
+    widths: OutputWidths,
+    labels: HeaderLabels,
+) !void {
+    std.debug.assert(sel.len > 0);
+    std.debug.assert(labels.size.len > 0);
+    const fields = sel.slice();
+    if (s.color_mode != .none) try s.setBold();
+    for (fields, 0..) |field, idx| {
+        if (idx > 0) try stdout.writeAll("  ");
+        // Reserve the icon column so the header lines up with the rows.
+        if (field == .source and opts.display.icons == .on) try stdout.writeAll("  ");
+        const text = outputHeaderText(field, labels);
+        try outputEmitCell(stdout, text, widths[idx], field, idx + 1 == fields.len);
+    }
+    if (s.color_mode != .none) try s.reset();
+    try stdout.writeAll("\n");
+}
+
+fn outputEmitRow(
+    stdout: *std.Io.Writer,
+    s: anytype,
+    opts: DfOptions,
+    sel: OutputSelection,
+    widths: OutputWidths,
+    fs: *const FsInfo,
+) !void {
+    std.debug.assert(sel.len > 0);
+    std.debug.assert(fs.source.len > 0);
+    const fields = sel.slice();
+    const fs_class = classifyFs(fs.source, fs.fstype, fs.mount_point);
+    const colored = s.color_mode != .none;
+    for (fields, 0..) |field, idx| {
+        if (idx > 0) try stdout.writeAll("  ");
+        if (field == .source) try outputEmitIcon(stdout, s, opts, fs_class);
+        var buf: [64]u8 = undefined;
+        const text = outputCellText(&buf, field, fs, opts);
+        const painted = colored and try outputApplyColor(s, field, fs, fs_class);
+        try outputEmitCell(stdout, text, widths[idx], field, idx + 1 == fields.len);
+        if (painted) try s.reset();
+    }
+    try stdout.writeAll("\n");
+}
+
+fn outputEmitTotal(
+    stdout: *std.Io.Writer,
+    s: anytype,
+    opts: DfOptions,
+    sel: OutputSelection,
+    widths: OutputWidths,
+    totals: OutputTotals,
+) !void {
+    std.debug.assert(sel.len > 0);
+    std.debug.assert(!opts.inodes);
+    const fields = sel.slice();
+    const color_source = s.color_mode != .none;
+    for (fields, 0..) |field, idx| {
+        if (idx > 0) try stdout.writeAll("  ");
+        // The total row belongs to no filesystem, so it takes the icon
+        // spacer rather than an icon.
+        if (field == .source and opts.display.icons == .on) try stdout.writeAll("  ");
+        var buf: [64]u8 = undefined;
+        const text = outputTotalCellText(&buf, field, totals, opts);
+        const paint = color_source and field == .source;
+        if (paint) try applySourceColor(s, .local);
+        try outputEmitCell(stdout, text, widths[idx], field, idx + 1 == fields.len);
+        if (paint) try s.reset();
+    }
+    try stdout.writeAll("\n");
+}
+
+// Render the user-selected --output columns in the user's order.
+// --output controls WHICH columns appear; the style system still controls
+// HOW they render, so color and icons apply to the selected columns, but
+// no Usage column or bar is injected into a list the user enumerated.
+// Returns an override exit code when the header write fails.
+fn runDf_renderOutput(
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    sel: OutputSelection,
+    s: anytype,
+    visible_items: []const FsInfo,
+) ?u8 {
+    std.debug.assert(!opts.inodes);
+    std.debug.assert(sel.len > 0);
+    var label_buf: [32]u8 = undefined;
+    const labels = headerLabels(&label_buf, opts);
+    const want_total = opts.total and visible_items.len > 0;
+    const totals: ?OutputTotals = if (want_total) outputSumTotals(visible_items) else null;
+    const widths = outputWidths(opts, sel, labels, visible_items, totals);
+
+    outputEmitHeader(stdout, s, opts, sel, widths, labels) catch
+        return @intFromEnum(common.ExitCode.general_error);
+    for (visible_items) |*fs| {
+        outputEmitRow(stdout, s, opts, sel, widths, fs) catch {};
+    }
+    if (totals) |sums| {
+        outputEmitTotal(stdout, s, opts, sel, widths, sums) catch {};
+    }
+    return null;
+}
+
 pub fn main(init: std.process.Init) noreturn {
     common.utilityMain(init, runDf);
 }
@@ -2698,6 +2908,14 @@ pub fn main(init: std.process.Init) noreturn {
 // ============================================================================
 // Help and version
 // ============================================================================
+
+/// -I is a different option on each platform (see the parser): a boolean
+/// "suppress inode counts" on macOS, an exclude-type filter taking an
+/// argument elsewhere. The help must describe the one that is compiled in.
+const help_exclude_line = if (is_darwin)
+    "  -I                    suppress inode counts (cancels an earlier -i)\n"
+else
+    "  -I TYPE               exclude file systems of type TYPE\n";
 
 fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
@@ -2715,7 +2933,8 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
         \\  -h, --human-readable  print sizes in powers of 1024 (default)
         \\  -H, --si              print sizes in powers of 1000 (e.g., 1.1G)
         \\  -i, --inodes          list inode information instead of block usage
-        \\  -I TYPE               exclude file systems of type TYPE
+        \\
+    ++ help_exclude_line ++
         \\  -k                    like --block-size=1K (disables human-readable)
         \\  -l, --local           limit listing to local file systems
         \\  -m                    display in 1-megabyte blocks
@@ -3514,76 +3733,106 @@ test "groupDarwinVolumes - mixed devices" {
     try testing.expectEqual(@as(usize, 2), result.len);
 }
 
-test "printFsRow - plain mode has no ANSI" {
+// The block-mode renderers reached by production are the *Dynamic family:
+// runDf only calls printHeader/printFsRow/printTotal from
+// runDf_renderInodes, which asserts opts.inodes. These tests therefore
+// exercise the dynamic printers for block mode and the fixed-width
+// printers only in inode mode.
+
+/// Build a Style bound to a test writer, mirroring runDf's construction.
+fn testStyle(
+    writer: *std.Io.Writer,
+    mode: common.style.Style(*std.Io.Writer).ColorMode,
+) common.style.Style(*std.Io.Writer) {
+    return .{ .color_mode = mode, .writer = writer };
+}
+
+test "printFsRowDynamic - plain mode has no ANSI" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printFsRow(&aw.writer, fs, opts, 0);
+    const items = [_]FsInfo{fs};
+    const widths = computeColumnWidths(&items, opts);
+    try printFsRowDynamic(&aw.writer, fs, opts, widths, testStyle(&aw.writer, .none));
     // No ANSI escape sequences in plain mode
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b[") == null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "/dev/disk1s1") != null);
 }
 
-test "printFsRow - color mode applies ANSI" {
+test "printFsRowDynamic - color mode applies ANSI" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .off;
-    // Use basic color mode (1) so ANSI codes are emitted
-    try printFsRow(&aw.writer, fs, opts, 1);
+    const items = [_]FsInfo{fs};
+    const widths = computeColumnWidths(&items, opts);
+    try printFsRowDynamic(&aw.writer, fs, opts, widths, testStyle(&aw.writer, .basic));
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b[") != null);
-    // No bar in color mode
-    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "[") == null or
-        std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") == null);
+    // No usage bar without icons
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") == null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x91") == null);
 }
 
-test "printFsRow - full mode includes bar" {
+test "printFsRowDynamic - full mode includes bar" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .on;
-    try printFsRow(&aw.writer, fs, opts, 0);
-    // Full mode with color_mode_int=0 (none) still shows the bar
+    const items = [_]FsInfo{fs};
+    const widths = computeColumnWidths(&items, opts);
+    try printFsRowDynamic(&aw.writer, fs, opts, widths, testStyle(&aw.writer, .none));
+    // Icons on with color_mode none still shows the bar
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") != null or
         std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x91") != null);
 }
 
-test "printHeader - full mode shows Usage column" {
+test "printHeaderDynamic - full mode shows Usage column" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .on;
-    try printHeader(&aw.writer, opts);
+    try printHeaderDynamic(&aw.writer, opts, .{}, testStyle(&aw.writer, .none));
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage") != null);
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Size") != null);
 }
 
-test "printHeader - plain mode no Usage column" {
+test "printHeaderDynamic - plain mode no Usage column" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     var opts = DfOptions{};
     opts.display.icons = .off;
-    try printHeader(&aw.writer, opts);
+    try printHeaderDynamic(&aw.writer, opts, .{}, testStyle(&aw.writer, .none));
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage") == null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Mounted on") != null);
 }
 
-test "printHeader - color mode no Usage column" {
+test "printHeader - inode mode column labels" {
+    // printHeader is live only through runDf_renderInodes, so cover the
+    // inode branch here rather than the block branch.
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     var opts = DfOptions{};
-    opts.display.icons = .off;
+    opts.inodes = true;
     try printHeader(&aw.writer, opts);
-    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage") == null);
+    const out = aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "Inodes") != null);
+    try testing.expect(std.mem.find(u8, out, "IUsed") != null);
+    try testing.expect(std.mem.find(u8, out, "IFree") != null);
+    try testing.expect(std.mem.find(u8, out, "IUse%") != null);
+    // Block-mode labels must not appear in inode mode.
+    try testing.expect(std.mem.find(u8, out, "1K-blocks") == null);
+    try testing.expect(std.mem.find(u8, out, "Avail ") == null);
 }
 
-test "printTotal - plain mode has no ANSI" {
+test "printTotalDynamic - plain mode has no ANSI" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
@@ -3592,12 +3841,13 @@ test "printTotal - plain mode has no ANSI" {
     var opts = DfOptions{};
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printTotal(&aw.writer, &items, opts, 0);
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b[") == null);
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "total") != null);
 }
 
-test "printTotal - full mode includes bar" {
+test "printTotalDynamic - full mode includes bar" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
     const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
@@ -3605,7 +3855,8 @@ test "printTotal - full mode includes bar" {
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .on;
-    try printTotal(&aw.writer, &items, opts, 0);
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") != null or
         std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x91") != null);
 }
@@ -4120,13 +4371,10 @@ test "parseArgs - I flag without argument accepted on macOS" {
     try testing.expect(parsed.err == null);
 }
 
-test "runDf - I flag without argument succeeds on macOS" {
+test "runDf - I flag does not consume the next operand on macOS" {
     // On macOS, -I is a boolean (suppress inode counts), not a
-    // type-filter requiring an argument. This test verifies that
-    // -I does NOT consume the next argument as its value.
-    // Bug: our -I takes an argument, consuming "/" and leaving
-    // df with no paths. We pass two paths so even if the first
-    // is consumed, the second keeps df from hanging.
+    // type-filter requiring an argument, so it must not swallow "/".
+    // Two operands are passed; both must be reported.
     if (comptime !is_darwin) return error.SkipZigTest;
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4136,12 +4384,12 @@ test "runDf - I flag without argument succeeds on macOS" {
 
     const args = [_][]const u8{ "-I", "/", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    // With the bug: -I eats first "/", second "/" is used as path → exit 0
-    // When fixed: -I is boolean, both "/" are paths → exit 0
-    // Either way it won't hang. The real check: output should show
-    // the filesystem header (proving it ran), and when -I is fixed,
-    // the Inodes column should be absent.
     try testing.expectEqual(@as(u8, 0), result);
+    // A header plus one row per operand. Asserting only exit 0 would pass
+    // even when -I ate the first "/", which is the bug this guards.
+    const out = stdout_aw.writer.buffered();
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "\n"));
+    try testing.expect(std.mem.find(u8, out, "Inodes") == null);
 }
 
 // ============================================================================
@@ -4150,7 +4398,7 @@ test "runDf - I flag without argument succeeds on macOS" {
 // Current code emits: "1K-blocks", "Available", "Use%"
 // ============================================================================
 
-test "printHeader - POSIX mode uses 1024-blocks not 1K-blocks" {
+test "printHeaderDynamic - POSIX mode uses 1024-blocks not 1K-blocks" {
     // POSIX (df -P) requires the header column to read "1024-blocks",
     // not "1K-blocks". See IEEE Std 1003.1-2017 df specification.
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4160,12 +4408,13 @@ test "printHeader - POSIX mode uses 1024-blocks not 1K-blocks" {
     opts.human_readable = false;
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printHeader(&aw.writer, opts);
+    try printHeaderDynamic(&aw.writer, opts, .{}, testStyle(&aw.writer, .none));
     // POSIX mandates "1024-blocks"
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "1024-blocks") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "1K-blocks") == null);
 }
 
-test "printHeader - POSIX mode uses Capacity not Use%" {
+test "printHeaderDynamic - POSIX mode uses Capacity not Use%" {
     // POSIX requires the percentage column to be labeled "Capacity",
     // not "Use%". See IEEE Std 1003.1-2017 df specification.
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4175,12 +4424,25 @@ test "printHeader - POSIX mode uses Capacity not Use%" {
     opts.human_readable = false;
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printHeader(&aw.writer, opts);
+    try printHeaderDynamic(&aw.writer, opts, .{}, testStyle(&aw.writer, .none));
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Capacity") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Use%") == null);
 }
 
 test "runDf - P flag output has POSIX-compliant headers" {
-    // Full integration: df -P / should produce POSIX headers.
+    // Pin the WHOLE POSIX header set, not two of its five labels. The
+    // narrower version of this test passed while the live renderer emitted
+    // "Avail" for the third column, because "Available" was only ever
+    // produced by the unreachable printHeader_emitPlain.
+    //
+    // Verified against GNU df 9.5 (LC_ALL=C, Ubuntu):
+    //   df -P /              -> Filesystem 1024-blocks Used Available Capacity Mounted on
+    //   df --block-size=1M / -> Filesystem 1M-blocks Used Available Use% Mounted on
+    //   df -k -h /           -> Filesystem Size Used Avail Use% Mounted on
+    // Note the real GNU rule for this column: "Avail" belongs to HUMAN
+    // mode and "Available" to every BLOCK mode, POSIX or not. It is not
+    // keyed on portability, so the fix is `if (human_readable or si)
+    // "Avail" else "Available"`, not `if (portability)`.
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4190,10 +4452,90 @@ test "runDf - P flag output has POSIX-compliant headers" {
     const args = [_][]const u8{ "-P", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    // POSIX requires "1024-blocks", not "1K-blocks"
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "1024-blocks") != null);
-    // POSIX requires "Capacity", not "Use%"
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Capacity") != null);
+    // "Available" contains "Avail", so a substring search cannot tell the
+    // two apart; compare the header token by token.
+    try testExpectTokens(&.{
+        "Filesystem", "1024-blocks", "Used", "Available", "Capacity", "Mounted", "on",
+    }, testFirstLine(stdout_aw.writer.buffered()));
+}
+
+/// Run df with `args` and return the header line written to `out`.
+fn testHeaderFor(out: *std.Io.Writer.Allocating, args: []const []const u8) ![]const u8 {
+    std.debug.assert(args.len > 0);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const code = try runDf(testing.allocator, testing.io, args, &out.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), code);
+    return testFirstLine(out.writer.buffered());
+}
+
+test "runDf - Available label in non-POSIX block modes" {
+    // The third column is "Available" in every BLOCK mode and "Avail" only
+    // in HUMAN mode. It is NOT keyed on portability: a fix written as
+    // `if (opts.portability)` passes the -P test above and still leaves
+    // these two cases diverging. The only conditional that satisfies both
+    // this test and the human-mode one below is
+    // `if (opts.human_readable or opts.si) "Avail" else "Available"`.
+    // Verified against GNU df 9.5 (LC_ALL=C, Ubuntu):
+    //   df -k /              -> Filesystem 1K-blocks Used Available Use% ...
+    //   df --block-size=1M / -> Filesystem 1M-blocks Used Available Use% ...
+    //   df /       (GNU dflt)-> Filesystem 1K-blocks Used Available Use% ...
+    // "Available" contains "Avail", so these must be token comparisons.
+    var k_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer k_aw.deinit();
+    try testExpectTokens(&.{
+        "Filesystem", "1K-blocks", "Used", "Available", "Use%", "Mounted", "on",
+    }, try testHeaderFor(&k_aw, &.{ "-k", "/" }));
+
+    var bs_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer bs_aw.deinit();
+    try testExpectTokens(&.{
+        "Filesystem", "1M-blocks", "Used", "Available", "Use%", "Mounted", "on",
+    }, try testHeaderFor(&bs_aw, &.{ "--block-size=1M", "/" }));
+}
+
+test "runDf - Avail label in human modes" {
+    // The other half of the conditional described above, so an inverted
+    // fix cannot go green. Verified against GNU df 9.5 (LC_ALL=C):
+    //   df -h /    -> Filesystem Size Used Avail Use% Mounted on
+    //   df -k -h / -> Filesystem Size Used Avail Use% Mounted on
+    // The -k -h ordering matters: human mode wins last-flag-wins, so the
+    // label must follow the resolved mode, not the presence of -k.
+    var h_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer h_aw.deinit();
+    try testExpectTokens(&.{
+        "Filesystem", "Size", "Used", "Avail", "Use%", "Mounted", "on",
+    }, try testHeaderFor(&h_aw, &.{ "-h", "/" }));
+
+    var kh_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer kh_aw.deinit();
+    try testExpectTokens(&.{
+        "Filesystem", "Size", "Used", "Avail", "Use%", "Mounted", "on",
+    }, try testHeaderFor(&kh_aw, &.{ "-k", "-h", "/" }));
+}
+
+test "runDf - P with block-size uses the raw byte count label" {
+    // POSIX mode never abbreviates the block size. Verified against GNU
+    // df 9.5 (LC_ALL=C, Ubuntu):
+    //   df -P --block-size=512 /  -> 512-blocks
+    //   df -P --block-size=1K /   -> 1024-blocks
+    //   df -P --block-size=1M /   -> 1048576-blocks
+    //   df -P --block-size=1G /   -> 1073741824-blocks
+    //   df -P --block-size=2000 / -> 2000-blocks
+    // Outside POSIX mode GNU does abbreviate: 1M-blocks, 512B-blocks,
+    // 2kB-blocks. Ours applies the abbreviating map in both.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-P", "--block-size=1M", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testExpectTokens(&.{
+        "Filesystem", "1048576-blocks", "Used", "Available", "Capacity", "Mounted", "on",
+    }, testFirstLine(stdout_aw.writer.buffered()));
 }
 
 // ============================================================================
@@ -4225,4 +4567,653 @@ test "runDf - n flag returns misuse on Linux" {
     const args = [_][]const u8{"-n"};
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
+}
+
+// ============================================================================
+// Test support for output-shape assertions
+// ============================================================================
+
+/// Return the first line of `out` (the header row), without the newline.
+fn testFirstLine(out: []const u8) []const u8 {
+    const nl = std.mem.find(u8, out, "\n") orelse out.len;
+    return out[0..nl];
+}
+
+/// Return line `index` of `out` (0-based), without the newline.
+fn testLine(out: []const u8, index: u32) []const u8 {
+    var it = std.mem.splitScalar(u8, out, '\n');
+    var seen: u32 = 0;
+    while (it.next()) |line| : (seen += 1) {
+        if (seen == index) return line;
+        std.debug.assert(seen < 4096);
+    }
+    return "";
+}
+
+/// Assert that `line` splits on spaces into exactly `expected`. Column
+/// padding varies with the data, so compare tokens rather than bytes.
+fn testExpectTokens(expected: []const []const u8, line: []const u8) !void {
+    std.debug.assert(expected.len > 0);
+    var it = std.mem.tokenizeScalar(u8, line, ' ');
+    for (expected) |want| {
+        const got = it.next() orelse {
+            std.debug.print("missing token '{s}' in line '{s}'\n", .{ want, line });
+            return error.TestUnexpectedResult;
+        };
+        try testing.expectEqualStrings(want, got);
+    }
+    if (it.next()) |extra| {
+        std.debug.print("unexpected extra token '{s}' in line '{s}'\n", .{ extra, line });
+        return error.TestUnexpectedResult;
+    }
+}
+
+// ============================================================================
+// F1: macOS -I must suppress the inode columns
+//
+// BSD df on macOS resolves -i/-I last-flag-wins. Verified against
+// /bin/df on macOS 25.5.0 with LC_ALL=C:
+//   df -i -I /  ->  Filesystem 512-blocks Used Available Capacity Mounted on
+//   df -I -i /  ->  ... Capacity iused ifree %iused  Mounted on
+// Our layout is GNU-flavored (-i replaces the block columns), so -I
+// cancels a preceding -i and a following -i re-enables inode mode.
+// ============================================================================
+
+test "runDf - i then I omits the inode columns on macOS" {
+    if (comptime !is_darwin) return error.SkipZigTest;
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-i", "-I", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    // -I wins: no inode columns at all.
+    try testing.expect(std.mem.find(u8, header, "Inodes") == null);
+    try testing.expect(std.mem.find(u8, header, "IUsed") == null);
+    try testing.expect(std.mem.find(u8, header, "IFree") == null);
+    try testing.expect(std.mem.find(u8, header, "IUse%") == null);
+    // The normal block layout is rendered instead.
+    try testing.expect(std.mem.find(u8, header, "Filesystem") != null);
+    try testing.expect(std.mem.find(u8, header, "Mounted on") != null);
+    try testing.expect(std.mem.find(u8, header, "Used") != null);
+}
+
+test "runDf - I then i keeps the inode columns on macOS" {
+    if (comptime !is_darwin) return error.SkipZigTest;
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-I", "-i", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    // -i is last, so it wins.
+    try testing.expect(std.mem.find(u8, header, "Inodes") != null);
+    try testing.expect(std.mem.find(u8, header, "IUsed") != null);
+    try testing.expect(std.mem.find(u8, header, "IFree") != null);
+    try testing.expect(std.mem.find(u8, header, "IUse%") != null);
+}
+
+test "runDf - I alone renders block columns on macOS" {
+    if (comptime !is_darwin) return error.SkipZigTest;
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -I is boolean on macOS: it must not swallow the "/" operand.
+    const args = [_][]const u8{ "-I", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "Inodes") == null);
+    try testing.expect(std.mem.find(u8, out, "Mounted on") != null);
+    // Exactly one operand was given, so exactly one data row is printed.
+    // Had -I swallowed "/", df would fall back to the whole mount table.
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\n"));
+    const row = testLine(out, 1);
+    try testing.expectEqualStrings("/", row[row.len - 1 ..]);
+}
+
+// ============================================================================
+// F3: -h must override an earlier block-size flag
+//
+// human_readable defaults to true, so a bare `-h` assertion cannot tell a
+// working -h from a no-op. These orderings force -h to do real work.
+// Verified against GNU df 9.5 (LC_ALL=C, Ubuntu):
+//   df -k -h /              -> Filesystem Size Used Avail Use% Mounted on
+//   df -h -k /              -> Filesystem 1K-blocks Used Available Use% ...
+//   df -P -h /              -> Filesystem Size Used Avail Use% Mounted on
+//   df --block-size=1M -h / -> Filesystem Size Used Avail Use% Mounted on
+// ============================================================================
+
+test "runDf - h overrides an earlier -k" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-k", "-h", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, header, "Size") != null);
+    try testing.expect(std.mem.find(u8, header, "1K-blocks") == null);
+}
+
+test "runDf - k overrides an earlier -h" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-h", "-k", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, header, "1K-blocks") != null);
+    try testing.expect(std.mem.find(u8, header, "Size") == null);
+}
+
+test "runDf - h overrides an earlier -P block size" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-P", "-h", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, header, "Size") != null);
+    try testing.expect(std.mem.find(u8, header, "1024-blocks") == null);
+}
+
+test "runDf - h overrides an earlier --block-size" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--block-size=1M", "-h", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, header, "Size") != null);
+    try testing.expect(std.mem.find(u8, header, "1M-blocks") == null);
+}
+
+test "runDf - h renders sizes with a unit suffix" {
+    // Beyond the header label: the data row must carry human-readable
+    // magnitudes, not raw 1K block counts.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-k", "-h", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const row = testLine(stdout_aw.writer.buffered(), 1);
+    var it = std.mem.tokenizeScalar(u8, row, ' ');
+    _ = it.next() orelse return error.TestUnexpectedResult; // Filesystem
+    const size = it.next() orelse return error.TestUnexpectedResult;
+    // Human-readable sizes end in a unit letter (or are a bare "0").
+    const last = size[size.len - 1];
+    const is_unit = last == 'K' or last == 'M' or last == 'G' or
+        last == 'T' or last == 'P' or last == 'B';
+    try testing.expect(is_unit);
+}
+
+// ============================================================================
+// F2: --output=FIELD_LIST must select and order the columns
+//
+// Reference behavior captured from GNU coreutils df 9.5 on Ubuntu with
+// LC_ALL=C (see the report accompanying this change). Highlights:
+//   df --output /                -> all twelve fields, fixed order:
+//        Filesystem Type Inodes IUsed IFree IUse% 1K-blocks Used Avail
+//        Use% File Mounted on
+//   df --output=source,size /    -> Filesystem 1K-blocks
+//   df --output=target,pcent,source / -> Mounted on Use% Filesystem
+//   df --output=bogus /          -> "field 'bogus' unknown", exit failure
+//   df --output=source,source /  -> "field 'source' used more than once"
+//   df --output= /               -> "field '' unknown"
+//   df -i/-P/-T with --output    -> "mutually exclusive", exit failure
+//   df --output=file,target /tmp -> the File column shows the operand;
+//                                   with no operand it shows "-"
+// GNU exits 1 on these errors; vibeutils df uses ExitCode.misuse (2) for
+// every argument error, so these tests pin 2 for internal consistency.
+//
+// The size/used/avail columns render through the same block-size logic as
+// the default layout, so the size header follows -h/-k/--block-size.
+// ============================================================================
+
+test "runDf - output selects only the requested columns" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=source,size", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    // Default is human-readable, so the size label is "Size".
+    try testExpectTokens(&.{ "Filesystem", "Size" }, header);
+}
+
+test "runDf - output honors the requested field order" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=target,pcent,source", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testExpectTokens(&.{ "Mounted", "on", "Use%", "Filesystem" }, header);
+}
+
+test "runDf - bare output prints all twelve fields" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testExpectTokens(&.{
+        "Filesystem", "Type", "Inodes", "IUsed", "IFree", "IUse%",
+        "Size",       "Used", "Avail",  "Use%",  "File",  "Mounted",
+        "on",
+    }, header);
+}
+
+test "runDf - output inode field labels" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=itotal,iused,iavail,ipcent", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testExpectTokens(&.{ "Inodes", "IUsed", "IFree", "IUse%" }, header);
+}
+
+test "runDf - output size label follows -k" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-k", "--output=size", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testExpectTokens(&.{"1K-blocks"}, testFirstLine(stdout_aw.writer.buffered()));
+}
+
+test "runDf - output size label follows --block-size" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--block-size=1M", "--output=size,used", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testExpectTokens(&.{ "1M-blocks", "Used" }, testFirstLine(stdout_aw.writer.buffered()));
+}
+
+test "runDf - output file column shows the operand" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=file,target", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testExpectTokens(&.{ "File", "Mounted", "on" }, testFirstLine(out));
+    try testExpectTokens(&.{ "/", "/" }, testLine(out, 1));
+}
+
+test "runDf - output file column is a dash without an operand" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"--output=file"};
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testExpectTokens(&.{"File"}, testFirstLine(out));
+    try testExpectTokens(&.{"-"}, testLine(out, 1));
+}
+
+test "runDf - output with --total appends a total row" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=source,size,used", "--total", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testExpectTokens(&.{ "Filesystem", "Size", "Used" }, testFirstLine(out));
+    // Header, one filesystem, then the total row.
+    const total_row = testLine(out, 2);
+    var it = std.mem.tokenizeScalar(u8, total_row, ' ');
+    try testing.expectEqualStrings("total", it.next() orelse "");
+}
+
+test "runDf - output rejects an unknown field" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=bogus", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 2), result);
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "option --output: field 'bogus' unknown") != null);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+}
+
+test "runDf - output rejects a repeated field" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=source,source", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 2), result);
+    const err = stderr_aw.writer.buffered();
+    const want = "option --output: field 'source' used more than once";
+    try testing.expect(std.mem.find(u8, err, want) != null);
+}
+
+test "runDf - output rejects an empty field list" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 2), result);
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "option --output: field '' unknown") != null);
+}
+
+test "runDf - output is mutually exclusive with -i" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-i", "--output=source", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 2), result);
+    const err = stderr_aw.writer.buffered();
+    const want = "options -i and --output are mutually exclusive";
+    try testing.expect(std.mem.find(u8, err, want) != null);
+}
+
+test "runDf - output is mutually exclusive with -P" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-P", "--output=source", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 2), result);
+    const err = stderr_aw.writer.buffered();
+    const want = "options -P and --output are mutually exclusive";
+    try testing.expect(std.mem.find(u8, err, want) != null);
+}
+
+test "runDf - output is mutually exclusive with -T" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-T", "--output=source", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 2), result);
+    const err = stderr_aw.writer.buffered();
+    const want = "options -T and --output are mutually exclusive";
+    try testing.expect(std.mem.find(u8, err, want) != null);
+}
+
+// ============================================================================
+// --output controls WHICH columns appear; the style system controls HOW
+// they render. No Usage/bar column is injected into a user-enumerated
+// field list, but color and icons still apply to the selected columns,
+// gated on isTty() as everywhere else.
+// ============================================================================
+
+test "runDf - output injects no Usage column in icons mode" {
+    const io = testing.io;
+    // Force icons on through a pipe so the full/bar decoration would
+    // appear if --output did not suppress the extra column.
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+        .{ .key = "VIBEUTILS_ICONS", .value = "always" },
+    };
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=source,size", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    // Exactly the two requested columns: no uninvited thirteenth column.
+    try testing.expect(std.mem.find(u8, out, "Usage") == null);
+    // And no usage bar glyphs anywhere in the rows.
+    try testing.expect(std.mem.find(u8, out, "\xe2\x96\x88") == null);
+    try testing.expect(std.mem.find(u8, out, "\xe2\x96\x91") == null);
+    try testing.expect(std.mem.find(u8, out, "Mounted on") == null);
+}
+
+test "runDf - output keeps color on the selected columns" {
+    const io = testing.io;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+        .{ .key = "VIBEUTILS_COLOR", .value = "always" },
+    };
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=source,size", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    // Styling still applies to what was selected...
+    try testing.expect(std.mem.find(u8, out, "\x1b[") != null);
+    // ...but the column set is still exactly the requested one.
+    try testing.expect(std.mem.find(u8, out, "Mounted on") == null);
+    try testing.expect(std.mem.find(u8, out, "Use%") == null);
+}
+
+test "runDf - output emits no ANSI without a tty" {
+    const io = testing.io;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    // TERM advertises color, but stdout is an Allocating writer, so the
+    // isTty() gate must keep escapes out of the field-selected output.
+    const staged = [_]common.env.Override{
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+    };
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--output=source,size", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 0);
+    try testing.expect(std.mem.find(u8, out, "\x1b[") == null);
+}
+
+// ============================================================================
+// -P selects the POSIX header set only while output is in block mode.
+// Verified against GNU df 9.5 (LC_ALL=C, Ubuntu):
+//   df -P /               -> Filesystem 1024-blocks Used Available Capacity
+//   df -P -h /            -> Filesystem Size Used Avail Use% Mounted on
+//   df -P -H /            -> Filesystem Size Used Avail Use% Mounted on
+//   df -P -k /            -> Filesystem 1024-blocks Used Available Capacity
+// When a human-readable mode is active the whole default header set is
+// used; ours keeps the POSIX percent label because printHeaderDynamic
+// takes it from opts.portability independently of the block-size mode.
+// ============================================================================
+
+test "runDf - P then h uses the default header set" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-P", "-h", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, header, "Size") != null);
+    try testing.expect(std.mem.find(u8, header, "Use%") != null);
+    // POSIX labels belong to block mode only.
+    try testing.expect(std.mem.find(u8, header, "Capacity") == null);
+    try testing.expect(std.mem.find(u8, header, "1024-blocks") == null);
+}
+
+test "runDf - P then H uses the default header set" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-P", "-H", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const header = testFirstLine(stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, header, "Size") != null);
+    try testing.expect(std.mem.find(u8, header, "Capacity") == null);
+}
+
+// ============================================================================
+// The help text must describe -I as the running platform implements it:
+// a boolean "suppress inode counts" on macOS (src/df.zig parseArgs), an
+// exclude-type filter taking an argument on Linux.
+// ============================================================================
+
+/// Return the help line whose first non-space token is `opt`, or "".
+fn testHelpLineFor(help: []const u8, opt: []const u8) []const u8 {
+    std.debug.assert(opt.len > 0);
+    std.debug.assert(help.len > 0);
+    var it = std.mem.splitScalar(u8, help, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trimStart(u8, line, " ");
+        if (!std.mem.startsWith(u8, trimmed, opt)) continue;
+        if (trimmed.len == opt.len) return line;
+        if (trimmed[opt.len] == ' ') return line;
+    }
+    return "";
+}
+
+test "runDf - help documents I as a boolean on macOS" {
+    if (comptime !is_darwin) return error.SkipZigTest;
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"--help"};
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const line = testHelpLineFor(stdout_aw.writer.buffered(), "-I");
+    try testing.expect(line.len > 0);
+    // On macOS -I takes no argument, so the help must not advertise one.
+    try testing.expect(std.mem.find(u8, line, "TYPE") == null);
+    // It suppresses inode counts.
+    try testing.expect(std.mem.find(u8, line, "inode") != null);
+}
+
+test "runDf - help documents I as a type filter on Linux" {
+    if (comptime !is_linux) return error.SkipZigTest;
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"--help"};
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    const line = testHelpLineFor(stdout_aw.writer.buffered(), "-I");
+    try testing.expect(line.len > 0);
+    // On Linux -I requires a TYPE argument.
+    try testing.expect(std.mem.find(u8, line, "TYPE") != null);
 }
