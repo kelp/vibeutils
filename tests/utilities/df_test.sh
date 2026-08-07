@@ -47,14 +47,31 @@ test_df() {
 
     echo -e "${CYAN}Testing specific path...${NC}"
 
-    # df / should show root filesystem
+    # df / must report exactly the root filesystem: a header plus one
+    # row whose last field is the mount point "/". Matching a bare "/"
+    # anywhere in the output passes even when the whole mount table is
+    # printed, so assert the line count and the mount-point field.
     output=$("$binary" / 2>/dev/null)
     exit_code=$?
-    if [[ $exit_code -eq 0 && "$output" =~ "/" ]]; then
-        print_test_result "df / shows root filesystem" "PASS"
+    local line_count row_mount row_source header
+    line_count=$(echo "$output" | wc -l | tr -d ' ')
+    row_mount=$(echo "$output" | sed -n '2p' | awk '{print $NF}')
+    row_source=$(echo "$output" | sed -n '2p' | awk '{print $1}')
+    if [[ $exit_code -eq 0 && $line_count -eq 2 && "$row_mount" == "/" &&
+          -n "$row_source" ]]; then
+        print_test_result "df / shows only the root filesystem" "PASS"
     else
-        print_test_result "df / shows root filesystem" "FAIL" \
-            "Exit code: $exit_code"
+        print_test_result "df / shows only the root filesystem" "FAIL" \
+            "Exit code: $exit_code, lines: $line_count, mount: '$row_mount'"
+    fi
+
+    # The header must name the columns, not just contain a slash.
+    header=$(echo "$output" | head -1)
+    if [[ "$header" =~ Filesystem && "$header" =~ "Mounted on" ]]; then
+        print_test_result "df / header names Filesystem and Mounted on" "PASS"
+    else
+        print_test_result "df / header names Filesystem and Mounted on" "FAIL" \
+            "Header: $header"
     fi
 
     echo -e "${CYAN}Testing human-readable output...${NC}"
@@ -123,7 +140,6 @@ test_df() {
 
     output=$("$binary" -P / 2>/dev/null)
     exit_code=$?
-    local header
     header=$(echo "$output" | head -1)
 
     # POSIX mandates "1024-blocks", not "1K-blocks"
@@ -172,5 +188,58 @@ test_df() {
             print_test_result "df -I without arg succeeds on macOS" "FAIL" \
                 "Exit code: $exit_code (expected 0)"
         fi
+
+        # -I must actually suppress the inode columns: BSD df resolves
+        # -i/-I last-flag-wins (verified against /bin/df on macOS).
+        output=$("$binary" -i -I / 2>/dev/null)
+        exit_code=$?
+        header=$(echo "$output" | head -1)
+        if [[ $exit_code -eq 0 && ! "$header" =~ Inodes ]]; then
+            print_test_result "df -i -I omits the Inodes column" "PASS"
+        else
+            print_test_result "df -i -I omits the Inodes column" "FAIL" \
+                "Header: $header"
+        fi
+
+        output=$("$binary" -I -i / 2>/dev/null)
+        header=$(echo "$output" | head -1)
+        if [[ "$header" =~ Inodes ]]; then
+            print_test_result "df -I -i keeps the Inodes column" "PASS"
+        else
+            print_test_result "df -I -i keeps the Inodes column" "FAIL" \
+                "Header: $header"
+        fi
     fi
+
+    # ==================================================================
+    # --output=FIELD_LIST selects and orders columns (GNU df 9.5)
+    # ==================================================================
+    echo -e "${CYAN}Testing --output field selection...${NC}"
+
+    output=$("$binary" --output=source,size / 2>/dev/null)
+    exit_code=$?
+    header=$(echo "$output" | head -1)
+    if [[ $exit_code -eq 0 && "$header" == "Filesystem"*"Size" ]]; then
+        print_test_result "df --output=source,size prints only those columns" "PASS"
+    else
+        print_test_result "df --output=source,size prints only those columns" "FAIL" \
+            "Header: $header"
+    fi
+
+    output=$("$binary" --output=target,source / 2>/dev/null)
+    header=$(echo "$output" | head -1)
+    if [[ "$header" == "Mounted on"*"Filesystem" ]]; then
+        print_test_result "df --output honors field order" "PASS"
+    else
+        print_test_result "df --output honors field order" "FAIL" \
+            "Header: $header"
+    fi
+
+    # Unknown field is an argument error (exit 2 by vibeutils convention)
+    test_command_exit_code "df --output rejects unknown field" 2 \
+        "$binary" --output=bogus /
+
+    # -i and --output are mutually exclusive in GNU df
+    test_command_exit_code "df -i --output is rejected" 2 \
+        "$binary" -i --output=source /
 }

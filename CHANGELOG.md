@@ -63,6 +63,55 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`df --output=FIELD_LIST` selects columns instead of being ignored.**
+  The option parsed and set a field list that no renderer ever read, so
+  `df --output=source,size /` printed the ordinary table. It now renders
+  exactly the requested fields, in the order they were written, from the
+  twelve GNU names `source`, `fstype`, `itotal`, `iused`, `iavail`,
+  `ipcent`, `size`, `used`, `avail`, `pcent`, `file` and `target`. Bare
+  `--output` selects all twelve in GNU's canonical order rather than the
+  seven-field subset it used before. An unknown or repeated field is an
+  error, as is combining the option with `-i`, `-P` or `-T`. `-h`, `-k`
+  and `--block-size` still control how the size columns render, and
+  `--total` still appends a total row. Because the field list is chosen
+  explicitly, no usage-bar column is injected into it, though color and
+  icons still apply to the columns that were asked for.
+- **`df` labels the available-space column `Available` in block modes.**
+  The dynamic renderer hardcoded `Avail`, which is the human-readable
+  spelling. GNU uses `Available` in every block mode, POSIX or not, so
+  `df -P`, `df -k` and `df --block-size=1M` were all diverging; only
+  human-readable output was right. The label now follows the resolved
+  display mode.
+- **`df -P` applies the POSIX header set only in block mode.** The
+  `Capacity` label came from the presence of `-P` alone, so `df -P -h`
+  and `df -P -H` printed a POSIX percent label beside human-readable
+  sizes. A human-readable mode now takes the default header set, as in
+  GNU.
+- **`df -P --block-size=SIZE` names the raw byte count.** POSIX mode
+  never abbreviates the block-size label, so `-P --block-size=1M` now
+  reads `1048576-blocks` rather than `1M-blocks`. Outside POSIX mode
+  the abbreviated spellings are unchanged.
+- **`df -I` suppresses the inode columns on macOS.** The flag parsed
+  and set a field nothing read, so `df -i -I` still printed inode
+  columns. BSD resolves `-i`/`-I` last-flag-wins: `-I` now cancels a
+  preceding `-i`, and a following `-i` re-enables inode mode. The help
+  text is also platform-correct, describing `-I` as a boolean on macOS
+  and as an exclude-type filter taking a `TYPE` argument elsewhere.
+- **`whoami` prints the effective user, not the real one.** It looked
+  up the real uid via `getuid()`, so a set-user-ID invocation reported
+  the invoking user rather than the effective one. Its own help text
+  and GNU both define the output as the effective user ID, the same
+  identity `id -un` prints. It now resolves `geteuid()`. Only `whoami`
+  changed; the shared `getCurrentUserId()` helper keeps its real-uid
+  semantics for `chown`, `stat` and `id`.
+- **`whoami` appends GNU's hint line to the extra-operand error.**
+  An operand produced `whoami: extra operand 'x'` with no follow-up,
+  where GNU also prints `Try 'whoami --help' for more information.`
+- **`whoami` resolves `--help` and `--version` in command-line
+  order.** Both flags were parsed before either was acted on, and
+  help was always checked first, so `whoami --version --help` printed
+  the usage text. GNU acts on whichever flag appears first, so that
+  invocation now prints the version banner.
 - **`ls -x` lays out the BSD column grid instead of padding with
   spaces.** `-x` sized its columns as the widest entry plus two
   spaces and filled the gaps with spaces, while BSD gives `-x` and

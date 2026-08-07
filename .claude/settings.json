@@ -9,7 +9,6 @@
       "Bash(timeout:*)",
       "Bash(mandoc:*)",
       "Bash(fakeroot:*)",
-      "Bash(chmod:*)",
       "Bash(bash:*)",
       "Bash(/opt/homebrew/bin/bash:*)",
       "Bash(git branch:*)",
@@ -37,7 +36,30 @@
       "WebFetch(domain:man.openbsd.org)",
       "WebFetch(domain:www.gnu.org)"
     ],
-    "deny": []
+    "deny": [
+      "Bash(sudo:*)",
+      "Bash(rm -rf /*)",
+      "Bash(chmod -R * /)",
+      "Bash(chown -R * /)",
+      "Bash(mkfs:*)",
+      "Bash(diskutil:*)"
+    ]
+  },
+  "autoMode": {
+    "environment": [
+      "$defaults",
+      "This repository is a Zig reimplementation of GNU coreutils. The utilities under audit ARE chmod, chown, rm, mv, dd and friends, so agents routinely build and run real destructive binaries. Running ./zig-out/bin/<util> is ordinary here; WHERE it is pointed is the entire safety question.",
+      "Work happens in dedicated git worktrees: /Users/tcole/code/vibeutils-fix-<slug> for audit sweep units, and /Users/tcole/code/vibeutils/.claude/worktrees/<name> for session worktrees. The main checkout at /Users/tcole/code/vibeutils belongs to other sessions and is not this session's to modify.",
+      "An Ubuntu VM reachable via `orb -m ubuntu` is disposable and is the correct place for anything that must touch system paths.",
+      "A prior audit run invoked ./zig-out/bin/chmod -R --no-preserve-root 755 / on the host and was stopped only by a command timeout. That is the shape of command these rules exist to catch."
+    ],
+    "hard_deny": [
+      "$defaults",
+      "Any command that writes, deletes, moves, or changes permissions or ownership on a path outside the current worktree, the disposable Linux VM, or a temp directory the agent itself created. This covers /, /usr, /etc, /System, /Library, /Applications, /Volumes, $HOME and its dotfiles, and the main checkout at /Users/tcole/code/vibeutils. Reading outside the worktree is fine; writing is not.",
+      "Any recursive destructive operation whose target is /, ~, $HOME, a bare variable that could expand to one of those, a glob that could, or a relative path that resolves outside the worktree. This applies to the repository's own built binaries exactly as it applies to system ones: ./zig-out/bin/chmod, ./zig-out/bin/rm, ./zig-out/bin/chown and ./zig-out/bin/dd are real and destructive.",
+      "Overriding a safety failsafe so a destructive operation can proceed against a real path, such as passing --no-preserve-root, forcing past a refusal, or disabling a guard the program applied. Verifying a failsafe means observing its refusal, never overriding it.",
+      "Deleting caches, build output, temp files, or scratch directories the agent did not create, including ~/Library/Caches, ~/.cache, and wildcard sweeps of shared scratch directories. Freeing disk space is never the agent's call."
+    ]
   },
   "hooks": {
     "SessionStart": [

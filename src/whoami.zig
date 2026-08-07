@@ -8,6 +8,11 @@ const common = @import("common");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
+/// whoami reports the effective user, so it must not use the shared
+/// getCurrentUserId() helper, which returns the real uid. `src/id.zig`
+/// declares the same extern for `id -un`.
+extern "c" fn geteuid() std.c.uid_t;
+
 /// Command-line arguments for the whoami utility
 const WhoamiArgs = struct {
     /// Display help and exit
@@ -42,15 +47,19 @@ pub fn runWhoami(
     ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
-    // Handle help
-    if (parsed_args.help) {
-        try printHelp(allocator, stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
+    // GNU acts on whichever of --help and --version comes first, so when both
+    // are present the command-line order decides which one wins.
+    const show_version = if (parsed_args.help and parsed_args.version)
+        versionBeforeHelp(args)
+    else
+        parsed_args.version;
 
-    // Handle version
-    if (parsed_args.version) {
-        try printVersion(stdout_writer);
+    if (parsed_args.help or parsed_args.version) {
+        if (show_version) {
+            try printVersion(stdout_writer);
+        } else {
+            try printHelp(allocator, stdout_writer);
+        }
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -60,14 +69,14 @@ pub fn runWhoami(
             allocator,
             stderr_writer,
             "whoami",
-            "extra operand '{s}'",
+            "extra operand '{s}'\nTry 'whoami --help' for more information.",
             .{parsed_args.positionals[0]},
         );
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Look up the current user
-    const uid = common.user_group.getCurrentUserId();
+    // Look up the effective user, which is the identity whoami reports.
+    const uid: common.user_group.uid_t = @intCast(geteuid());
     const user_info = common.user_group.getUserById(uid, allocator) catch {
         common.printErrorWithProgram(
             allocator,
@@ -82,6 +91,28 @@ pub fn runWhoami(
 
     try stdout_writer.print("{s}\n", .{user_info.name});
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Report whether --version (or -V) appears before --help (or -h) in the raw
+/// arguments. Only the first of the two matters to GNU, and the parser records
+/// presence without order, so the decision needs the original argument list.
+fn versionBeforeHelp(args: []const []const u8) bool {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(args.len < 4096);
+
+    for (args) |arg| {
+        // Everything after the end-of-options marker is an operand.
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (std.mem.eql(u8, arg, "--help")) return false;
+        if (std.mem.eql(u8, arg, "--version")) return true;
+        if (arg.len < 2 or arg[0] != '-') continue;
+        // A short cluster such as -Vh decides on its first matching letter.
+        for (arg[1..]) |flag| {
+            if (flag == 'h') return false;
+            if (flag == 'V') return true;
+        }
+    }
+    return false;
 }
 
 pub fn main(init: std.process.Init) noreturn {
@@ -110,200 +141,266 @@ fn printVersion(writer: *std.Io.Writer) !void {
 // TESTS
 // ============================================================================
 
-test "whoami prints current username" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
+const StdoutCapture = common.test_utils.StdoutCapture;
+
+/// Run whoami over `args` with output captured, so every test shares one
+/// invocation shape and differs only in its assertions.
+fn testRunWhoami(capture: *StdoutCapture, args: []const []const u8) !u8 {
+    std.debug.assert(args.len < 16);
+    return runWhoami(
+        testing.allocator,
+        testing.io,
+        args,
+        capture.stdoutWriter(),
+        capture.stderrWriter(),
+    );
+}
+
+/// The exact stderr GNU coreutils 9.5 emits for an extra operand, hint line
+/// included. Verified with `LC_ALL=C /usr/bin/whoami extra` on Ubuntu.
+fn testExtraOperandMessage(operand: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        testing.allocator,
+        "whoami: extra operand '{s}'\nTry 'whoami --help' for more information.\n",
+        .{operand},
+    );
+}
+
+/// The exact stdout of `whoami --version`.
+fn testVersionOutput() ![]u8 {
+    return std.fmt.allocPrint(
+        testing.allocator,
+        "whoami ({s}) {s}\n",
+        .{ common.name, common.version },
+    );
+}
+
+/// The name of the effective user, formatted as whoami must print it.
+fn testEffectiveUserLine() ![]u8 {
+    const euid: common.user_group.uid_t = @intCast(geteuid());
+    const user_info = try common.user_group.getUserById(euid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+    std.debug.assert(user_info.name.len > 0);
+    return std.fmt.allocPrint(testing.allocator, "{s}\n", .{user_info.name});
+}
+
+test "whoami prints the name of the effective user ID" {
+    // NOTE: uid == euid in an ordinary test run, so this assertion cannot by
+    // itself distinguish getuid() from geteuid(). The setuid case is covered
+    // by the root-gated integration test in tests/utilities/whoami_test.sh.
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
-    // Should return success
     try testing.expectEqual(@as(u8, 0), result);
-
-    // Should print a non-empty username ending with newline
-    const out = stdout_aw.writer.buffered();
-    try testing.expect(out.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), out[out.len - 1]);
-
-    // Should not print anything to stderr
-    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+    const expected = try testEffectiveUserLine();
+    defer testing.allocator.free(expected);
+    try capture.expectStdout(expected);
+    try capture.expectStderrEmpty();
 }
 
 test "whoami help flag" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: whoami") != null);
-    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+    const out = try capture.getStdoutStripped();
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.startsWith(u8, out, "Usage: whoami [OPTION]...\n"));
+    try testing.expect(std.mem.find(u8, out, "Same as id -un.") != null);
+    // Help must not also print the version banner.
+    try testing.expect(std.mem.find(u8, out, "whoami (" ++ common.name ++ ")") == null);
+    try capture.expectStderrEmpty();
 }
 
 test "whoami short help flag" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: whoami") != null);
+    const out = try capture.getStdoutStripped();
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.startsWith(u8, out, "Usage: whoami [OPTION]...\n"));
+    try capture.expectStderrEmpty();
 }
 
 test "whoami version flag" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "whoami") != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
-    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+    const expected = try testVersionOutput();
+    defer testing.allocator.free(expected);
+    try capture.expectStdoutStripped(expected);
+    try capture.expectStderrEmpty();
 }
 
 test "whoami short version flag" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "whoami") != null);
+    const expected = try testVersionOutput();
+    defer testing.allocator.free(expected);
+    try capture.expectStdoutStripped(expected);
+    try capture.expectStderrEmpty();
+}
+
+test "whoami --version before --help prints version only" {
+    // GNU processes whichever of the two appears FIRST on the command line.
+    // Verified: `LC_ALL=C /usr/bin/whoami --version --help` on GNU coreutils
+    // 9.5 prints the version banner and no usage text.
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
+
+    const args = [_][]const u8{ "--version", "--help" };
+    const result = try testRunWhoami(&capture, &args);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = try capture.getStdoutStripped();
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.find(u8, out, "Usage: whoami") == null);
+    const expected = try testVersionOutput();
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, out);
+    try capture.expectStderrEmpty();
+}
+
+test "whoami --help before --version prints help only" {
+    // Verified: `LC_ALL=C /usr/bin/whoami --help --version` on GNU coreutils
+    // 9.5 prints the usage text and no version banner.
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
+
+    const args = [_][]const u8{ "--help", "--version" };
+    const result = try testRunWhoami(&capture, &args);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = try capture.getStdoutStripped();
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.startsWith(u8, out, "Usage: whoami [OPTION]...\n"));
+    try testing.expect(std.mem.find(u8, out, "whoami (" ++ common.name ++ ")") == null);
+    try capture.expectStderrEmpty();
 }
 
 test "whoami unknown flag returns misuse" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
-    const err_out = stderr_aw.writer.buffered();
-    try testing.expect(std.mem.find(u8, err_out, "whoami:") != null);
+    try capture.expectStdoutEmpty();
+    const err_out = try capture.getStderrStripped();
+    defer testing.allocator.free(err_out);
+    try testing.expect(std.mem.startsWith(u8, err_out, "whoami: "));
     try testing.expect(std.mem.find(u8, err_out, "unrecognized option") != null);
 }
 
 test "whoami unknown short flag returns misuse" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"-x"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
-    try testing.expect(stderr_aw.writer.buffered().len > 0);
+    try capture.expectStdoutEmpty();
+    const err_out = try capture.getStderrStripped();
+    defer testing.allocator.free(err_out);
+    try testing.expect(std.mem.startsWith(u8, err_out, "whoami: "));
+    try testing.expect(std.mem.find(u8, err_out, "unrecognized option") != null);
 }
 
-test "whoami extra arguments returns misuse" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
-    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stderr_aw.deinit();
+test "whoami extra operand reports the GNU message" {
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
     const args = [_][]const u8{"extra"};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        &stderr_aw.writer,
-    );
+    const result = try testRunWhoami(&capture, &args);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
+    try capture.expectStdoutEmpty();
+    const expected = try testExtraOperandMessage("extra");
+    defer testing.allocator.free(expected);
+    try capture.expectStderrStripped(expected);
 }
 
-test "whoami output matches current user" {
-    const io = testing.io;
-    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer stdout_aw.deinit();
+test "whoami dash operand reports the GNU message" {
+    // Verified: `LC_ALL=C /usr/bin/whoami -` on GNU coreutils 9.5 reports
+    // "extra operand '-'"; a lone dash is an operand, not a flag.
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
 
-    const args = [_][]const u8{};
-    const result = try runWhoami(
-        testing.allocator,
-        io,
-        &args,
-        &stdout_aw.writer,
-        common.null_writer,
-    );
-    try testing.expectEqual(@as(u8, 0), result);
+    const args = [_][]const u8{"-"};
+    const result = try testRunWhoami(&capture, &args);
 
-    // Verify output matches what user_group reports
-    const uid = common.user_group.getCurrentUserId();
-    const user_info = try common.user_group.getUserById(uid, testing.allocator);
-    defer testing.allocator.free(user_info.name);
-
-    // Output should be "username\n"
-    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{user_info.name});
+    try testing.expectEqual(@as(u8, 2), result);
+    try capture.expectStdoutEmpty();
+    const expected = try testExtraOperandMessage("-");
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
+    try capture.expectStderrStripped(expected);
+}
+
+test "whoami empty operand reports the GNU message" {
+    // Verified: `LC_ALL=C /usr/bin/whoami ""` on GNU coreutils 9.5 reports
+    // "extra operand ''".
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
+
+    const args = [_][]const u8{""};
+    const result = try testRunWhoami(&capture, &args);
+
+    try testing.expectEqual(@as(u8, 2), result);
+    try capture.expectStdoutEmpty();
+    const expected = try testExtraOperandMessage("");
+    defer testing.allocator.free(expected);
+    try capture.expectStderrStripped(expected);
+}
+
+test "whoami bare end-of-options marker succeeds" {
+    // Verified: `LC_ALL=C /usr/bin/whoami --` on GNU coreutils 9.5 prints the
+    // user name and exits 0; `--` is consumed, not treated as an operand.
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
+
+    const args = [_][]const u8{"--"};
+    const result = try testRunWhoami(&capture, &args);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const expected = try testEffectiveUserLine();
+    defer testing.allocator.free(expected);
+    try capture.expectStdout(expected);
+    try capture.expectStderrEmpty();
+}
+
+test "whoami operand after end-of-options marker reports the GNU message" {
+    // Verified: `LC_ALL=C /usr/bin/whoami -- extra` on GNU coreutils 9.5
+    // reports "extra operand 'extra'".
+    var capture = StdoutCapture.init(testing.allocator);
+    defer capture.deinit();
+
+    const args = [_][]const u8{ "--", "extra" };
+    const result = try testRunWhoami(&capture, &args);
+
+    try testing.expectEqual(@as(u8, 2), result);
+    try capture.expectStdoutEmpty();
+    const expected = try testExtraOperandMessage("extra");
+    defer testing.allocator.free(expected);
+    try capture.expectStderrStripped(expected);
 }
