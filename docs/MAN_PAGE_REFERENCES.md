@@ -35,3 +35,21 @@ More extensive feature set. Required for GNU compatibility.
 3. Add commonly used GNU extensions for compatibility
 4. Include OpenBSD security/safety features where applicable
 5. Document any intentional differences from POSIX/GNU/BSD
+
+## House Style for Our Man Pages
+
+Our pages live in `man/man1/` and use mdoc format. A
+skeleton is in
+`.claude/skills/new-util/references/template.md`.
+
+Section order, all required: NAME, SYNOPSIS,
+DESCRIPTION, EXIT STATUS, EXAMPLES, SEE ALSO, STANDARDS,
+AUTHORS.
+
+- **No HISTORY section.** This is a clean-room
+  implementation.
+- Validate with `mandoc -T lint man/man1/<utility>.1`.
+- Include two or three practical examples.
+- Document both the short (`-f`) and long (`--force`)
+  spelling of every flag.
+- Author line: `vibeutils implementation by Travis Cole`.

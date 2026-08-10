@@ -9,8 +9,8 @@
 # flake.nix, promotes the CHANGELOG, commits the bump, and pushes it
 # to main (which triggers the CI test + integration workflows). It
 # does NOT create or push the tag — that is scripts/release-tag.sh,
-# which waits for green CI on all runners first. See the "MANDATORY
-# release gate" in CLAUDE.md.
+# which waits for green CI on all runners first. See "Releases" in
+# CLAUDE.md.
 #
 # Usage: scripts/release.sh <version>
 # Example: scripts/release.sh 0.7.0
@@ -192,7 +192,7 @@ echo "Pushed version bump to main"
 # The tag is deliberately NOT created or pushed here. Pushing the tag
 # starts the irreversible build/publish pipeline, so it lives in a
 # separate command (just release-tag) that waits for green CI on all
-# runners first. See the "MANDATORY release gate" in CLAUDE.md.
+# runners first. See "Releases" in CLAUDE.md.
 echo ""
 echo "=============================================================="
 echo "Version bump for $VERSION is on main. The tag is NOT created"
