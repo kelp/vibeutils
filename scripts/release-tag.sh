@@ -2,7 +2,7 @@
 # Tag-push step of the vibeutils release flow.
 #
 # Run this AFTER `just release x.y.z` has landed the version bump on
-# main. It enforces the MANDATORY release gate (see CLAUDE.md): it
+# main. It enforces the two-gate release flow (see "Releases" in CLAUDE.md): it
 # waits for the test.yml and integration.yml workflows to pass on the
 # release commit on EVERY runner (macos-latest AND ubuntu-latest), then
 # creates and pushes the tag. Pushing the tag starts the irreversible
