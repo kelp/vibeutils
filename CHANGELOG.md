@@ -374,6 +374,18 @@
   `ancestors_and_visited` walker mode is deleted (#69).
 
 ### Infrastructure
+- **`CLAUDE.md` trimmed from 724 to 276 lines, with the test-first
+  discipline extracted into a `tdd` skill.** Applies Anthropic's
+  context-engineering guidance for Claude 5 models: the file now
+  carries the repo's gotchas and defers the rest through
+  progressive disclosure. The Zig 0.16 pitfall catalog, the release
+  gate prose, and the testing conventions were duplicates of the
+  `zig-patterns` skill, the release scripts, and
+  `docs/TESTING_STRATEGY.md` respectively; the man page house style
+  moved to `docs/MAN_PAGE_REFERENCES.md`. The mandatory four-agent
+  workflow was dropped as a guardrail written for older models —
+  the part worth keeping, that tests and implementation come from
+  separate agents, now lives in the new skill.
 - **`scripts/bootstrap.sh` installs the toolchain on a fresh clone.**
   One idempotent script that installs the Zig version pinned in
   `build.zig.zon` plus `just`, `mandoc` and `fakeroot`, then proves
