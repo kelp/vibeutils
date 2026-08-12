@@ -42,6 +42,23 @@ if (!HAVE_PROCESS) {
   log('bugfix-fleet: WARNING — cannot detect the host platform; assuming the macOS dev-box defaults.');
 }
 
+
+// The tdd-pipeline plugin supplies tailored test-writer, implementer and
+// code-reviewer agents. Where that plugin is not installed — a fresh agent
+// container, a CI runner — agent() throws "agent type not found" and takes the
+// whole run down with it. Pass `agent_ns: ""` to fall back to the default
+// workflow subagent: the separate-agents rule is enforced by distinct
+// invocations and by file-ownership scoping, not by the system prompt the
+// plugin happens to add. The default is unchanged, so a machine with the
+// plugin installed behaves exactly as before.
+//
+// Read the PARSED args (`a`), never the raw `args` global: the harness may hand
+// the script a JSON string, in which case `args.agent_ns` reads as undefined
+// and this would fall back to the plugin on the very hosts that cannot resolve
+// it — failing exactly where the fallback is needed.
+const AGENT_NS = a.agent_ns !== undefined ? a.agent_ns : 'tdd-pipeline:';
+const agentTypeFor = (role) => (AGENT_NS ? `${AGENT_NS}${role}` : undefined);
+
 // The checkout this fleet was dispatched from. Every worktree is its sibling,
 // and it is the one tree no worktree agent may touch.
 const MAIN_CHECKOUT =
@@ -490,6 +507,10 @@ function cfgFor(issue) {
   return {
     ...COMMON,
     ...c,
+    // Forward the namespace so a child tdd-bugfix run resolves its agents the
+    // same way this run did; without it the child re-defaults to the plugin
+    // and dies on a host where the plugin is not installed.
+    agent_ns: AGENT_NS,
     impl_files: c.impl_files.map(at),
     test_files: c.test_files.map(at),
     util_test_cmd: inWt(`zig build test -Dtest-util=${c.utility}`),
@@ -681,7 +702,7 @@ async function claudeFallbackReview(c, green) {
       label: `fallback-review:${c.utility}#${c.issue}`,
       phase: 'Codex review',
       model: 'opus',
-      agentType: 'tdd-pipeline:code-reviewer',
+      agentType: agentTypeFor('code-reviewer'),
       schema: CODEX_FINDINGS_SCHEMA,
     },
   );
@@ -775,7 +796,7 @@ async function claudeFallbackRebuttal(c, disputed) {
       label: `fallback-rebuttal:${c.utility}#${c.issue}`,
       phase: 'Adjudicate',
       model: 'opus',
-      agentType: 'tdd-pipeline:code-reviewer',
+      agentType: agentTypeFor('code-reviewer'),
       schema: REBUTTAL_SCHEMA,
     },
   );
@@ -825,7 +846,7 @@ async function respondToFindings(c, findings, roundLabel) {
       label: `respond:${c.utility}#${c.issue}:${roundLabel}`,
       phase: 'Adjudicate',
       model: 'opus',
-      agentType: 'tdd-pipeline:implementer',
+      agentType: agentTypeFor('implementer'),
       schema: RESOLUTION_SCHEMA,
     },
   );
@@ -860,7 +881,7 @@ async function routeTestChange(c, items) {
       label: `test-change:${c.utility}#${c.issue}`,
       phase: 'Adjudicate',
       model: 'opus',
-      agentType: 'tdd-pipeline:test-writer',
+      agentType: agentTypeFor('test-writer'),
       schema: RESOLUTION_SCHEMA,
     },
   );

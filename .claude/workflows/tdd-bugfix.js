@@ -76,6 +76,23 @@ function onSecondary(cmd) {
   return secondaryAvailable ? `${secondaryPrefix} ${cmd}` : cmd;
 }
 
+
+// The tdd-pipeline plugin supplies tailored test-writer, implementer and
+// code-reviewer agents. Where that plugin is not installed — a fresh agent
+// container, a CI runner — agent() throws "agent type not found" and takes the
+// whole run down with it. Pass `agent_ns: ""` to fall back to the default
+// workflow subagent: the separate-agents rule is enforced by distinct
+// invocations and by file-ownership scoping, not by the system prompt the
+// plugin happens to add. The default is unchanged, so a machine with the
+// plugin installed behaves exactly as before.
+//
+// Read the PARSED args (`a`), never the raw `args` global: the harness may hand
+// the script a JSON string, in which case `args.agent_ns` reads as undefined
+// and this would fall back to the plugin on the very hosts that cannot resolve
+// it — failing exactly where the fallback is needed.
+const AGENT_NS = a.agent_ns !== undefined ? a.agent_ns : 'tdd-pipeline:';
+const agentTypeFor = (role) => (AGENT_NS ? `${AGENT_NS}${role}` : undefined);
+
 // The main checkout is off-limits to every worktree agent. Naming a literal
 // path here made the rule vacuously satisfiable anywhere that path does not
 // exist, so the caller passes the real one.
@@ -422,7 +439,7 @@ async function routeTestChange(brief, instructions, hop, phaseName) {
       label: `test-writer:${a.utility}#adjudicate${hop}`,
       phase: phaseName,
       model: 'opus',
-      agentType: 'tdd-pipeline:test-writer',
+      agentType: agentTypeFor('test-writer'),
       schema: TESTFIX_SCHEMA,
     },
   );
@@ -433,7 +450,7 @@ async function runImplementer(promptText, label, phaseName, brief) {
     label,
     phase: phaseName,
     model: 'opus',
-    agentType: 'tdd-pipeline:implementer',
+    agentType: agentTypeFor('implementer'),
     schema: IMPLEMENT_SCHEMA,
   });
   let tests_changed = false;
@@ -466,7 +483,7 @@ async function runImplementer(promptText, label, phaseName, brief) {
         label: `${label}#aftertest${hop}`,
         phase: phaseName,
         model: 'opus',
-        agentType: 'tdd-pipeline:implementer',
+        agentType: agentTypeFor('implementer'),
         schema: IMPLEMENT_SCHEMA,
       },
     );
@@ -509,7 +526,7 @@ async function runRed() {
       '  - Do NOT commit. Return a short summary: each test added, where it lives, the behavior it guards,',
       '    and the exact failure message you observed (proof of red-for-the-right-reason).',
     ].join('\n'),
-    { label: `test-writer:${a.utility}#${a.issue}`, phase: 'Author tests', model: 'sonnet', agentType: 'tdd-pipeline:test-writer' },
+    { label: `test-writer:${a.utility}#${a.issue}`, phase: 'Author tests', model: 'sonnet', agentType: agentTypeFor('test-writer') },
   );
 
   phase('Review tests');
@@ -550,7 +567,7 @@ async function runRed() {
         'Apply every fix; the tests must still FAIL on current code for the right reason. Do NOT commit.',
         'Return a short summary.',
       ].join('\n'),
-      { label: `test-writer:${a.utility}#fix${round}`, phase: 'Review tests', model: 'sonnet', agentType: 'tdd-pipeline:test-writer' },
+      { label: `test-writer:${a.utility}#fix${round}`, phase: 'Review tests', model: 'sonnet', agentType: agentTypeFor('test-writer') },
     );
   }
   if (testReview.assessment !== 'APPROVED') {

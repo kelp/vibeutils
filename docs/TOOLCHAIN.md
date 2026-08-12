@@ -196,6 +196,20 @@ Other container differences:
 | `VIBEUTILS_WT_ROOT` | parent of the checkout | Where `.claude/workflows/bugfix-fleet.js` expects sibling worktrees. |
 | `VIBEUTILS_LINUX_PREFIX` | `orb -m ubuntu` on macOS, empty elsewhere | How the workflows reach a second platform. Empty means there is none, and those legs are reported as deferred to CI rather than as passing. |
 
+The TDD workflows take one further knob as a **workflow argument**, not an
+environment variable, since it is per-run rather than per-machine:
+
+| Argument | Default | What it does |
+| --- | --- | --- |
+| `agent_ns` | `tdd-pipeline:` | Namespace prefix for the test-writer, implementer and code-reviewer agent types. Pass `""` where the `tdd-pipeline` plugin is not installed, and the workflows fall back to the default subagent. |
+
+Without that fallback, `agent()` raises `agent type 'tdd-pipeline:test-writer'
+not found` and takes the entire run with it — the plugin ships those agents,
+and a fresh agent container does not have it. The separate-agents rule the
+`tdd` skill enforces survives the fallback intact: what makes the test-writer
+and the implementer independent is that they are distinct invocations with
+disjoint file ownership, not the system prompt the plugin adds.
+
 **Run two worktrees' integration suites at once with distinct
 `VIBEUTILS_TEST_USER` values.** The suite `cd`s to the test user's home
 directory and `tests/utilities/mkdir_test.sh` creates *relative*
