@@ -1,0 +1,40 @@
+name: Audit Pre-Pass
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions to run on Node 24 regardless of their action.yml-declared
+# runtime.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+# Deliberately a separate workflow from tiger-style.yml rather than a step
+# inside it. Two scanners sharing one job makes a red X ambiguous about
+# which gate failed, and this one carries a baseline that the Tiger Style
+# gate does not.
+jobs:
+  audit-check:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      # The scanner's own contract tests run FIRST. A scanner that has
+      # stopped working reports zero findings and exits 0, which is
+      # indistinguishable from a clean tree -- so the suite that proves it
+      # still detects a planted stub has to pass before its verdict on the
+      # repo means anything. Both steps are POSIX sh + awk over the working
+      # tree: no Zig, no just, no git history, so nothing is installed here.
+      - name: Self-test the audit scanner
+        run: bash tests/tools/audit-check_test.sh
+
+      - name: Stage-1 audit pre-pass (gates on NEW findings only)
+        run: sh scripts/audit-check.sh

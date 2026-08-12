@@ -1,0 +1,98 @@
+# audit-baseline.tsv -- accepted stage-1 audit findings.
+#
+# Format: <check>\t<key>\t<justification>, read by scripts/audit-check.sh.
+# Keys are line-independent, so a row keeps covering its finding when the
+# code around it moves. Every row needs a justification: the scanner exits
+# 2 on an empty one, because an unjustified baseline row cannot be told
+# apart from a silent suppression.
+#
+# This file is the pre-existing debt recorded when the scanner landed
+# (issue #133). Nothing here is "fine"; it is "known, and not fixed by the
+# change that added the gate". Rows tagged stage 2 are candidates for
+# docs/AUDIT_SWEEP.md's audit pass, which owns behaviour verdicts -- stage
+# 1 produces a candidate list, not verdicts. Delete a row when its finding
+# is fixed; the gate then keeps it fixed.
+#
+# To regenerate after a deliberate change:  scripts/audit-check.sh --update-baseline
+matrix-drift	docs/specs/sort-flags.md::--batch-size	Matrix claims Ours: yes for a flag sort validates and discards; resolve with the src/sort.zig::batch_size stub.
+matrix-drift	docs/specs/sort-flags.md::--compress-program	Matrix claims Ours: yes for a flag sort validates and discards; resolve with the src/sort.zig::compress_program stub.
+matrix-drift	docs/specs/sort-flags.md::--debug	Matrix claims Ours: yes for a flag sort parses and never acts on; resolve with the src/sort.zig::debug stub.
+matrix-drift	docs/specs/sort-flags.md::--parallel	Matrix claims Ours: yes for a flag sort validates and discards; resolve with the src/sort.zig::parallel stub.
+matrix-drift	docs/specs/sort-flags.md::--random-source	Matrix claims Ours: yes for a flag sort validates and discards; resolve with the src/sort.zig::random_source stub.
+parse-only-test	src/date.zig::no_set_date	The only assertion on -j is parsed.opts.no_set_date; nothing pins date`s output, which is why the stub above stayed green.
+parse-only-test	src/df.zig::no_sync	The only assertion on df -n is parsed.opts.no_sync; nothing pins df`s output for the flag.
+parse-only-test	src/df.zig::suppress_inodes	The only assertion on df -I is parsed.opts.suppress_inodes; nothing pins df`s output for the flag.
+stub-flag	src/chmod.zig::no_traverse_symlinks	ChmodOptions field set from the -H/-L/-P policy and never consulted by the walker; chmod symlink policy is a stage-2 GNU-parity question, not a mechanical fix.
+stub-flag	src/chown.zig::no_traverse_symlinks	ChownOptions field set from the -H/-L/-P policy and never consulted by the walker; same stage-2 question as the chmod field.
+stub-flag	src/date.zig::no_set_date	-j is accepted and ignored (BSD `do not set the date`). Either it becomes real or date-flags.md stops claiming it; both are behaviour verdicts stage 2 owes.
+stub-flag	src/df.zig::no_sync	df -n is accepted and ignored. AUDIT_SWEEP names this class; the fix is a df spec/behaviour decision, out of scope for the PR that adds the scanner.
+stub-flag	src/df.zig::suppress_inodes	df -I is accepted and ignored. Named in AUDIT_SWEEP as the finding this check exists to catch; left for stage 2 to settle implement-vs-decline.
+stub-flag	src/find.zig::has_action	FindConfig.has_action duplicates a local of the same name in parseExpression; the config copy is written once and never read. Dead field, safe to delete under a separate change.
+stub-flag	src/sort.zig::batch_size	--batch-size is a GNU external-merge tuning knob; our sort is single-pass in memory, so the value is validated and discarded.
+stub-flag	src/sort.zig::buffer_size	-S/--buffer-size is a GNU memory tuning knob; validated then discarded by an in-memory sort.
+stub-flag	src/sort.zig::compress_program	--compress-program only applies to spill files, which an in-memory sort never writes.
+stub-flag	src/sort.zig::debug	--debug (annotate the key used for each line) is parsed but unimplemented; implementing it is a feature, not a mechanical fix.
+stub-flag	src/sort.zig::parallel	--parallel is a GNU thread-count knob; our sort is single-threaded, so the value is validated and discarded.
+stub-flag	src/sort.zig::random_source	--random-source only feeds -R random hashing, which we do not implement.
+stub-flag	src/sort.zig::temp_dir	-T/--temporary-directory only applies to spill files, which an in-memory sort never writes.
+test-only-code	src/chmod.zig::chmod	Private wrapper exercised only by unit tests; runChmod calls the lower-level path directly. Consolidation is a refactor, not a defect fix.
+test-only-code	src/chown.zig::chownFile	Private wrapper exercised only by unit tests; the production path goes through the walker.
+test-only-code	src/df.zig::truncatePath	Path-truncation helper retained for the unit tests that pin its behaviour; no production caller since the column layout was reworked.
+test-only-code	src/ln.zig::createSingleLinkInDir	Test fixture helper declared above the test section.
+test-only-code	src/ln.zig::createTestFile	Test fixture helper declared above the test section.
+test-only-code	src/realpath.zig::resolveLogical	Logical (-L) resolution helper reachable only from unit tests; whether realpath -L should route through it is a stage-2 GNU-parity question.
+test-only-code	src/rm.zig::getDeviceId	Device-id helper used only by the one-file-system unit tests; the production path reads st_dev inline.
+test-only-code	src/sort.zig::parseHumanNumber	Human-suffix number parser exercised only by unit tests; -h comparison inlines its own scan.
+test-only-code	src/touch.zig::expectTimestampsEqual	Test assertion helper declared above the test section.
+test-only-code	src/whoami.zig::testEffectiveUserLine	Test assertion helper declared above the test section.
+test-only-code	src/whoami.zig::testExtraOperandMessage	Test assertion helper declared above the test section.
+test-only-code	src/whoami.zig::testRunWhoami	Test harness helper declared above the test section.
+test-only-code	src/whoami.zig::testVersionOutput	Test assertion helper declared above the test section.
+toothless-assert	tests/utilities/cat_test.sh::test_cat::peer-oracle:echo	The expectation is built with echo, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for cat::test_cat::peer-oracle:echo, and echo has its own suite.
+toothless-assert	tests/utilities/cp_test.sh::test_cp::peer-oracle:cat	The expectation is built with cat, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for cp::test_cp::peer-oracle:cat, and cat has its own suite.
+toothless-assert	tests/utilities/cp_test.sh::test_cp::peer-oracle:find	The expectation is built with find, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for cp::test_cp::peer-oracle:find, and find has its own suite.
+toothless-assert	tests/utilities/cp_test.sh::test_cp::peer-oracle:id	The expectation is built with id, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for cp::test_cp::peer-oracle:id, and id has its own suite.
+toothless-assert	tests/utilities/cp_test.sh::test_cp::vacuous-pattern:->	Pattern `->` is a deliberate shape assertion for cp::test_cp::vacuous-pattern:-> (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/cp_test.sh::test_cp::vacuous-pattern:^0([0-7]{3})$	Pattern `^0([0-7]{3})$` is a deliberate shape assertion for cp::test_cp::vacuous-pattern:^0([0-7]{3})$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/cp_test.sh::test_cp::vacuous-pattern:^[0-7]{3}$	Pattern `^[0-7]{3}$` is a deliberate shape assertion for cp::test_cp::vacuous-pattern:^[0-7]{3}$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/date_test.sh::test_date::vacuous-pattern:^[0-9]{4}$	Pattern `^[0-9]{4}$` is a deliberate shape assertion for date::test_date::vacuous-pattern:^[0-9]{4}$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/date_test.sh::test_date::vacuous-pattern:^[0-9]{4}-[0-9]{2}-[0-9]{2}$	Pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` is a deliberate shape assertion for date::test_date::vacuous-pattern:^[0-9]{4}-[0-9]{2}-[0-9]{2}$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/date_test.sh::test_date::vacuous-pattern:^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}	Pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}` is a deliberate shape assertion for date::test_date::vacuous-pattern:^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/date_test.sh::test_date::vacuous-pattern:^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [+-][0-9]{4}$	Pattern `^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [+-][0-9]{4}$` is a deliberate shape assertion for date::test_date::vacuous-pattern:^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [+-][0-9]{4}$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/du_test.sh::test_du::vacuous-pattern:^5	Pattern `^5` is a deliberate shape assertion for du::test_du::vacuous-pattern:^5 (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/grep_test.sh::test_grep::vacuous-pattern:$'\x1b[	Pattern `$'\x1b[` is a deliberate shape assertion for grep::test_grep::vacuous-pattern:$'\x1b[ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/head_test.sh::test_head::peer-oracle:printf	The expectation is built with printf, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for head::test_head::peer-oracle:printf, and printf has its own suite.
+toothless-assert	tests/utilities/id_test.sh::test_id::self-oracle:id	The expected value is produced by id itself, so the comparison holds whatever id prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+toothless-assert	tests/utilities/id_test.sh::test_id::vacuous-pattern:^[0-9]	Pattern `^[0-9]` is a deliberate shape assertion for id::test_id::vacuous-pattern:^[0-9] (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/id_test.sh::test_id::vacuous-pattern:^[0-9]+$	Pattern `^[0-9]+$` is a deliberate shape assertion for id::test_id::vacuous-pattern:^[0-9]+$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/id_test.sh::test_id::vacuous-pattern:id	Pattern `id` is a deliberate shape assertion for id::test_id::vacuous-pattern:id (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/ln_test.sh::get_inode::vacuous-pattern:^[0-9]+$	Pattern `^[0-9]+$` is a deliberate shape assertion for ln::get_inode::vacuous-pattern:^[0-9]+$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/ln_test.sh::get_inode_no_follow::vacuous-pattern:^[0-9]+$	Pattern `^[0-9]+$` is a deliberate shape assertion for ln::get_inode_no_follow::vacuous-pattern:^[0-9]+$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/ln_test.sh::test_ln::vacuous-pattern:->	Pattern `->` is a deliberate shape assertion for ln::test_ln::vacuous-pattern:-> (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/ln_test.sh::test_ln::vacuous-pattern:=>	Pattern `=>` is a deliberate shape assertion for ln::test_ln::vacuous-pattern:=> (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/ls_test.sh::test_ls::peer-oracle:basename	The expectation is built with basename, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for ls::test_ls::peer-oracle:basename, and basename has its own suite.
+toothless-assert	tests/utilities/ls_test.sh::test_ls::peer-oracle:env	The expectation is built with env, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for ls::test_ls::peer-oracle:env, and env has its own suite.
+toothless-assert	tests/utilities/ls_test.sh::test_ls::peer-oracle:printf	The expectation is built with printf, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for ls::test_ls::peer-oracle:printf, and printf has its own suite.
+toothless-assert	tests/utilities/ls_test.sh::test_ls::peer-oracle:stat	The expectation is built with stat, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for ls::test_ls::peer-oracle:stat, and stat has its own suite.
+toothless-assert	tests/utilities/mktemp_test.sh::test_mktemp::peer-oracle:basename	The expectation is built with basename, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for mktemp::test_mktemp::peer-oracle:basename, and basename has its own suite.
+toothless-assert	tests/utilities/mv_test.sh::test_mv::peer-oracle:basename	The expectation is built with basename, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for mv::test_mv::peer-oracle:basename, and basename has its own suite.
+toothless-assert	tests/utilities/mv_test.sh::test_mv::vacuous-pattern:^0([0-7]{3})$	Pattern `^0([0-7]{3})$` is a deliberate shape assertion for mv::test_mv::vacuous-pattern:^0([0-7]{3})$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/nl_test.sh::test_nl::peer-oracle:printf	The expectation is built with printf, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for nl::test_nl::peer-oracle:printf, and printf has its own suite.
+toothless-assert	tests/utilities/pwd_test.sh::test_pwd::self-oracle:pwd	The expected value is produced by pwd itself, so the comparison holds whatever pwd prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+toothless-assert	tests/utilities/pwd_test.sh::test_pwd::vacuous-pattern:/a/b/c/d/e/f/g/h/i/j	Pattern `/a/b/c/d/e/f/g/h/i/j` is a deliberate shape assertion for pwd::test_pwd::vacuous-pattern: (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/pwd_test.sh::test_pwd::vacuous-pattern:^/	Pattern `^/` is a deliberate shape assertion for pwd::test_pwd::vacuous-pattern:^ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/pwd_test.sh::test_pwd::vacuous-pattern:^/.*	Pattern `^/.*` is a deliberate shape assertion for pwd::test_pwd::vacuous-pattern:^ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/stat_test.sh::_test_stat_default_record_parity::self-oracle:stat	The expected value is produced by stat itself, so the comparison holds whatever stat prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+toothless-assert	tests/utilities/stat_test.sh::_test_stat_dev_parity::self-oracle:stat	The expected value is produced by stat itself, so the comparison holds whatever stat prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+toothless-assert	tests/utilities/stat_test.sh::_test_stat_dev_type_minor_gt255::self-oracle:stat	The expected value is produced by stat itself, so the comparison holds whatever stat prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+toothless-assert	tests/utilities/stat_test.sh::_test_stat_dev_type_null_parity::self-oracle:stat	The expected value is produced by stat itself, so the comparison holds whatever stat prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+toothless-assert	tests/utilities/stat_test.sh::_test_stat_verbose_mode::vacuous-pattern:[0-9]{4}	Pattern `[0-9]{4}` is a deliberate shape assertion for stat::_test_stat_verbose_mode::vacuous-pattern:[0-9]{4} (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/stat_test.sh::test_stat::vacuous-pattern:^[0-9]+$	Pattern `^[0-9]+$` is a deliberate shape assertion for stat::test_stat::vacuous-pattern:^[0-9]+$ (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/stat_test.sh::test_stat::vacuous-pattern:^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}	Pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}` is a deliberate shape assertion for stat::test_stat::vacuous-pattern:^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2} (format, not content); a literal expectation would pin values that vary per host or run.
+toothless-assert	tests/utilities/tail_test.sh::test_tail::peer-oracle:printf	The expectation is built with printf, another binary from this build (tests/integration.sh pins PATH to zig-out/bin). It is scaffolding rather than the oracle for tail::test_tail::peer-oracle:printf, and printf has its own suite.
+toothless-assert	tests/utilities/whoami_test.sh::whoami_test_setuid::self-oracle:whoami	The expected value is produced by whoami itself, so the comparison holds whatever whoami prints. A real defect; pinning it needs a reference value from a non-vibeutils source, which is stage-2 work.
+unscannable	docs/specs/false-flags.md::no-ours-column	false takes no options anywhere, so its spec is prose with no flag matrix; there is no Ours column to read and never will be.
+unscannable	src/false.zig::no-args-struct	false accepts no options, so it has no args struct to build a field table from.
+unscannable	src/printf.zig::no-args-struct	printf parses FORMAT positionally without ArgParser, so no args struct exists; a real coverage gap left for stage 2.
+unscannable	src/test.zig::no-args-struct	test/[ evaluates an expression rather than parsing options, so no args struct exists; a real coverage gap left for stage 2.
+unscannable	src/true.zig::no-args-struct	true accepts no options, so it has no args struct to build a field table from.

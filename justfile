@@ -266,6 +266,12 @@ tiger-check:
 test-audit-check:
     @bash tests/tools/audit-check_test.sh
 
+# Stage-1 audit pre-pass over every unit in build/utils.zig. A finding
+# already recorded in scripts/audit-baseline.tsv is BASELINED; anything
+# else is NEW and fails. Plain sh + awk, so it needs no Zig toolchain.
+audit-check:
+    @./scripts/audit-check.sh
+
 # Lint CHANGELOG structure: ## Unreleased present, released sections
 # byte-identical to their git tags, no conflict markers.
 lint-changelog:

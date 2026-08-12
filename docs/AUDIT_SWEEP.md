@@ -54,6 +54,66 @@ binary to itself. Neither needed a model.
 Run this in CI. A new stub flag should fail the build, not wait
 for the next audit.
 
+#### The script
+
+`scripts/audit-check.sh` implements the table above, plus a sixth
+check the table does not name. `just audit-check` runs it over the
+repo, `just test-audit-check` runs its contract tests, and
+`.github/workflows/audit.yml` runs both — self-tests first, because
+a scanner that has stopped working reports zero findings and exits
+0, which reads exactly like a clean tree. It is POSIX sh and awk
+over `build/utils.zig`, so it needs no Zig toolchain and no `just`.
+The whole sweep takes about three seconds.
+
+| Check | Example key |
+|---|---|
+| `stub-flag` | `src/df.zig::suppress_inodes` |
+| `matrix-drift` | `docs/specs/sort-flags.md::--parallel` |
+| `toothless-assert` | `tests/utilities/pwd_test.sh::test_pwd::self-oracle:pwd` |
+| `test-only-code` | `src/rm.zig::getDeviceId` |
+| `parse-only-test` | `src/df.zig::no_sync` |
+| `unscannable` | `src/printf.zig::no-args-struct` |
+
+**`unscannable` is the sixth check, and the one that makes the
+other five worth believing.** A unit whose args struct cannot be
+found, whose flag matrix has no `Ours` column, or whose test file is
+missing is reported and counted toward the gate, so a unit the
+scanner stops understanding fails the build instead of quietly
+leaving the scanned set. Reading "no findings" as "no defects" is
+only safe while `unscannable` is zero or explicitly baselined.
+
+**`parse-only-test` ships deliberately incomplete.** There is no
+reliable mechanical link from a shell test to the struct field it
+exercises, so the check implements only the tractable subset: a
+field asserted through `parsed.opts.<field>` in a Zig `test` block
+whose only other appearance is its parse-site write. A flag whose
+behavior nothing pins, but which is never asserted that way, is not
+reported. Read a clean `parse-only-test` as "no instances of the
+narrow pattern", never as "every flag has a behavioral test" — the
+general case is stage 2's. No other check depends on it.
+
+`toothless-assert` splits the oracle rule in two. A `$(...)` naming
+the utility **under test** is flagged wherever it appears: the
+comparison holds whatever that utility prints, which is the `whoami`
+defect above. A `$(...)` naming a **different** vibeutils binary is
+flagged only in oracle position (assigned to an `expected`-shaped
+name, or inside a comparison), because `tests/integration.sh` pins
+`PATH` to `zig-out/bin` and every `$(mktemp -d)` in the suite would
+otherwise bury the self-comparisons under a hundred rows of
+scaffolding.
+
+Accepted findings live in `scripts/audit-baseline.tsv` as
+`<check>` TAB `<key>` TAB `<justification>`. Keys name the
+construct, never a line number, so a row keeps covering its finding
+when the code around it moves; there is no inline suppression
+comment, because a line-local hatch would reintroduce exactly that
+fragility. An empty justification, a duplicate key, or an unknown
+check name is a hard error — an unjustified row cannot be told apart
+from a silent suppression. The exit code is the contract: 0 for no
+new findings, 1 for any, 2 for a usage error, an unreadable tree,
+zero units enumerated, or a bad baseline. Nothing parses the summary
+text.
+
 ### Stage 2 — one audit pass per lens per unit
 
 Only for what stage 1 cannot decide: GNU behavioral parity, and

@@ -422,6 +422,25 @@
   code-writing is unaffected — it rests on distinct invocations and
   disjoint file ownership, not on the plugin's system prompts. (#136
   follow-up)
+- **`scripts/audit-check.sh` gates the six mechanically detectable
+  defect classes on every push.** Stage 1 of `docs/AUDIT_SWEEP.md`
+  is now a script: flags parsed into the options struct and never
+  read, `docs/specs/<util>-flags.md` rows claiming `Ours: yes` for a
+  flag the parser does not have, shell assertions that cannot fail,
+  code reachable only from `test` blocks, and tests that assert
+  `parsed.opts.<field>` instead of behavior. It sweeps all 47 units
+  in about three seconds using only POSIX sh and awk, so the new
+  `audit` workflow installs neither Zig nor `just`, and it runs the
+  scanner's own contract tests first — a scanner that has broken
+  reports zero findings and exits 0, which reads exactly like a
+  clean tree. A sixth check, `unscannable`, reports and gates on any
+  unit the scanner cannot parse, so a unit never drops out of
+  coverage silently. Existing findings are recorded in
+  `scripts/audit-baseline.tsv`, keyed by construct rather than by
+  line number so a row keeps covering its finding when the code
+  around it moves, and every row must carry a justification: the
+  scanner exits 2 on an empty one, a duplicate key, or an unknown
+  check name. There is no inline suppression comment (#133).
 - **A Linux agent container is now a first-class development
   environment, not a degraded macOS dev box.** The tooling assumed
   OrbStack, a Docker daemon, `codex`, `gh` and a `/Users/tcole`
