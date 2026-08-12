@@ -85,9 +85,12 @@ function onSecondary(cmd) {
 // invocations and by file-ownership scoping, not by the system prompt the
 // plugin happens to add. The default is unchanged, so a machine with the
 // plugin installed behaves exactly as before.
-const AGENT_NS = (typeof args === 'object' && args && args.agent_ns !== undefined)
-  ? args.agent_ns
-  : 'tdd-pipeline:';
+//
+// Read the PARSED args (`a`), never the raw `args` global: the harness may hand
+// the script a JSON string, in which case `args.agent_ns` reads as undefined
+// and this would fall back to the plugin on the very hosts that cannot resolve
+// it — failing exactly where the fallback is needed.
+const AGENT_NS = a.agent_ns !== undefined ? a.agent_ns : 'tdd-pipeline:';
 const agentTypeFor = (role) => (AGENT_NS ? `${AGENT_NS}${role}` : undefined);
 
 // The main checkout is off-limits to every worktree agent. Naming a literal
