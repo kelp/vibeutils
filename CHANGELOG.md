@@ -410,6 +410,18 @@
   `ancestors_and_visited` walker mode is deleted (#69).
 
 ### Infrastructure
+
+- **The TDD workflows no longer hard-require the `tdd-pipeline`
+  plugin.** Their test-writer, implementer and code-reviewer agent
+  types were named as bare `tdd-pipeline:` literals, so on any host
+  without that plugin installed `agent()` raised `agent type not
+  found` and aborted the whole run at the first authoring stage. The
+  namespace is now an `agent_ns` workflow argument defaulting to the
+  plugin, so a machine that has it is unaffected; passing `""` falls
+  back to the default subagent. Separation of test-writing from
+  code-writing is unaffected — it rests on distinct invocations and
+  disjoint file ownership, not on the plugin's system prompts. (#136
+  follow-up)
 - **A Linux agent container is now a first-class development
   environment, not a degraded macOS dev box.** The tooling assumed
   OrbStack, a Docker daemon, `codex`, `gh` and a `/Users/tcole`

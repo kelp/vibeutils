@@ -276,6 +276,20 @@ function formatBriefing(b) {
   ].join('\n');
 }
 
+
+// The tdd-pipeline plugin supplies tailored test-writer, implementer and
+// code-reviewer agents. Where that plugin is not installed — a fresh agent
+// container, a CI runner — agent() throws "agent type not found" and takes the
+// whole run down with it. Pass `agent_ns: ""` to fall back to the default
+// workflow subagent: the separate-agents rule is enforced by distinct
+// invocations and by file-ownership scoping, not by the system prompt the
+// plugin happens to add. The default is unchanged, so a machine with the
+// plugin installed behaves exactly as before.
+const AGENT_NS = (typeof args === 'object' && args && args.agent_ns !== undefined)
+  ? args.agent_ns
+  : 'tdd-pipeline:';
+const agentTypeFor = (role) => (AGENT_NS ? `${AGENT_NS}${role}` : undefined);
+
 function taskHeader() {
   return [
     `Unit: ${a.utility}`,
@@ -336,7 +350,7 @@ async function routeTestChange(brief, instructions, hop, phaseName) {
       label: `test-writer:${a.utility}#adjudicate${hop}`,
       phase: phaseName,
       model: 'opus',
-      agentType: 'tdd-pipeline:test-writer',
+      agentType: agentTypeFor('test-writer'),
       schema: TESTFIX_SCHEMA,
     },
   );
@@ -347,7 +361,7 @@ async function runImplementer(promptText, label, phaseName, brief) {
     label,
     phase: phaseName,
     model: 'opus',
-    agentType: 'tdd-pipeline:implementer',
+    agentType: agentTypeFor('implementer'),
     schema: IMPLEMENT_SCHEMA,
   });
   let tests_changed = false;
@@ -379,7 +393,7 @@ async function runImplementer(promptText, label, phaseName, brief) {
         label: `${label}#aftertest${hop}`,
         phase: phaseName,
         model: 'opus',
-        agentType: 'tdd-pipeline:implementer',
+        agentType: agentTypeFor('implementer'),
         schema: IMPLEMENT_SCHEMA,
       },
     );
@@ -420,7 +434,7 @@ async function runRed() {
       '  - Do NOT commit. Return a short summary of the tests you added, where they live, and which',
       '    behavior each one guards.',
     ].join('\n'),
-    { label: `test-writer:${a.utility}`, phase: 'Author tests', model: 'opus', agentType: 'tdd-pipeline:test-writer' },
+    { label: `test-writer:${a.utility}`, phase: 'Author tests', model: 'opus', agentType: agentTypeFor('test-writer') },
   );
 
   phase('Review tests');
@@ -460,7 +474,7 @@ async function runRed() {
         '',
         'Apply every fix; keep the tests passing on current code. Do NOT commit. Return a short summary.',
       ].join('\n'),
-      { label: `test-writer:${a.utility}#fix${round}`, phase: 'Review tests', model: 'opus', agentType: 'tdd-pipeline:test-writer' },
+      { label: `test-writer:${a.utility}#fix${round}`, phase: 'Review tests', model: 'opus', agentType: agentTypeFor('test-writer') },
     );
   }
   if (testReview.assessment !== 'APPROVED') {
@@ -525,7 +539,7 @@ async function runRed() {
         'Strengthen the tests so a broken implementation would fail them; keep them green on current code.',
         'Do NOT commit. Return a short summary.',
       ].join('\n'),
-      { label: `test-writer:${a.utility}#teethfix${teethFix}`, phase: 'Prove teeth', model: 'opus', agentType: 'tdd-pipeline:test-writer' },
+      { label: `test-writer:${a.utility}#teethfix${teethFix}`, phase: 'Prove teeth', model: 'opus', agentType: agentTypeFor('test-writer') },
     );
   }
 
