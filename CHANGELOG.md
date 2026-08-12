@@ -88,6 +88,15 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`df --block-size=N` abbreviates the header label like GNU.** Only
+  512, 1024, 1M and 1G were spelled out; every other size fell back to
+  the raw byte count, so `--block-size=2000` printed `2000B-blocks`
+  where GNU prints `2kB-blocks`. The label now follows GNU's rule: the
+  base is decided by racing the 1000 and 1024 divisibility chains (a
+  tie goes to 1000, so `--block-size=1024000` is `1.1MB-blocks`, not
+  `1000K-blocks`) and the mantissa is rounded up, never to nearest, so
+  `--block-size=1023` is `1.1kB-blocks`. POSIX mode (`-P`) still names
+  the raw byte count and never abbreviates (#132).
 - **`free -c N` no longer requires `-s`.** It rejected a bare count with
   `free: -c requires -s option` (exit 1). procps accepts it: `-c N`
   repeats N times with an implied one-second interval, paid only
