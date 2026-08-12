@@ -259,6 +259,13 @@ lint-actions: (_require "actionlint")
 tiger-check:
     @./scripts/tiger-check.sh
 
+# Contract tests for scripts/audit-check.sh. Needs no Zig build: every
+# case points --root at a fixture tree under tests/fixtures/audit. Lives in
+# tests/tools/, which test_runner.sh does not glob, so it must be invoked
+# here and from CI explicitly.
+test-audit-check:
+    @bash tests/tools/audit-check_test.sh
+
 # Lint CHANGELOG structure: ## Unreleased present, released sections
 # byte-identical to their git tags, no conflict markers.
 lint-changelog:
