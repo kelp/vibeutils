@@ -1099,11 +1099,17 @@ test "parseOrExit: MissingValue prints prog-name and message" {
     try testing.expectError(error.ParseFailed, result);
     const output = w.buffered();
     try testing.expect(std.mem.find(u8, output, "myutil") != null);
-    try testing.expect(std.mem.find(u8, output, "option requires an argument") != null);
+    // Narrowed needle: the pinned GNU long-form message interposes the
+    // quoted flag name between "option" and "requires an argument"
+    // ("option '--output' requires an argument"), so the longer
+    // contiguous substring "option requires an argument" no longer
+    // matches. The exact format is pinned separately at the test below,
+    // "missing value on a long flag names it without '=value', with hint".
+    try testing.expect(std.mem.find(u8, output, "requires an argument") != null);
     try testing.expect(output[output.len - 1] == '\n');
 }
 
-test "parseOrExit: InvalidValue prints prog-name and message" {
+test "parseOrExit: InvalidValue prints prog-name, 'invalid', and the quoted flag name" {
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     // --count with non-integer value
@@ -1112,28 +1118,39 @@ test "parseOrExit: InvalidValue prints prog-name and message" {
     try testing.expectError(error.ParseFailed, result);
     const output = w.buffered();
     try testing.expect(std.mem.find(u8, output, "myutil") != null);
-    try testing.expect(std.mem.find(u8, output, "invalid option value") != null);
+    try testing.expect(std.mem.find(u8, output, "invalid") != null);
+    // The offending flag name must be named and quoted, per the issue.
+    try testing.expect(std.mem.find(u8, output, "'--count'") != null);
     try testing.expect(output[output.len - 1] == '\n');
 }
 
-test "parseOrExit: invalid enum value also returns InvalidValue message" {
+test "parseOrExit: invalid enum value also names and quotes the flag" {
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{"--mode=turbo"};
     const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", &w);
     try testing.expectError(error.ParseFailed, result);
     const output = w.buffered();
-    try testing.expect(std.mem.find(u8, output, "invalid option value") != null);
+    try testing.expect(std.mem.find(u8, output, "invalid") != null);
+    try testing.expect(std.mem.find(u8, output, "'--mode'") != null);
+    try testing.expect(output[output.len - 1] == '\n');
 }
 
-test "parseOrExit: error message format is 'prog: message\\n'" {
+test "parseOrExit: unknown long flag quotes the flag and adds the GNU hint line" {
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{"--zzz"};
-    _ = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w) catch {};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
     const output = w.buffered();
-    // Exact format check: "testprog: unrecognized option\n"
-    try testing.expectEqualStrings("testprog: unrecognized option\n", output);
+    // Exact format check, pinned from GNU coreutils 9.4 (LC_ALL=C):
+    //   testprog: unrecognized option '--zzz'
+    //   Try 'testprog --help' for more information.
+    try testing.expectEqualStrings(
+        "testprog: unrecognized option '--zzz'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        output,
+    );
 }
 
 test "parseOrExit: no output on success" {
@@ -1142,4 +1159,121 @@ test "parseOrExit: no output on success" {
     const args = [_][]const u8{};
     _ = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", &w);
     try testing.expectEqual(@as(usize, 0), w.buffered().len);
+}
+
+// ============================================================================
+// GNU-parity diagnostic tests (issue #130) — pinned from GNU coreutils 9.4,
+// LC_ALL=C, on this host: `whoami --invalid-flag`, `whoami -Z`, `head --lines`,
+// `head -n`, `uniq --count=3`. Five distinct GNU formats; not every error gets
+// the "Try '<prog> --help>' for more information." hint (bad values don't).
+// These assert exact pinned output and must FAIL on the current
+// bare-error-set implementation (single generic line, no flag text, no
+// hint), then pass once parseOrExit threads a Diagnostic through parse().
+// ============================================================================
+
+test "parseOrExit: unknown long flag quotes the FULL typed token including '=value'" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"--zzz=1"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: unrecognized option '--zzz=1'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+test "parseOrExit: unknown short flag uses bare-char 'invalid option --' wording" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"-Z"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: invalid option -- 'Z'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+test "parseOrExit: unknown short flag mid-cluster reports the OFFENDING char" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // 'h' is a valid boolean flag on BasicArgs (help); 'Z' is not. The
+    // diagnostic must name 'Z', not 'h' (the cluster's first character),
+    // proving it tracks the exact byte that failed.
+    const args = [_][]const u8{"-hZ"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: invalid option -- 'Z'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+test "parseOrExit: missing value on a long flag names it without '=value', with hint" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"--output"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: option '--output' requires an argument\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+test "parseOrExit: missing value on a short flag uses 'requires an argument --' wording" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"-o"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: option requires an argument -- 'o'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+test "parseOrExit: bool flag given a value strips '=value' from the quoted flag name" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"--help=1"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w);
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: option '--help' doesn't allow an argument\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+test "parseOrExit: prog_name is echoed exactly twice (error line and hint line)" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const distinctive_prog = "distinctiveprogname130";
+    const args = [_][]const u8{"--zzz"};
+    const result = ArgParser.parseOrExit(
+        BasicArgs,
+        testing.allocator,
+        &args,
+        distinctive_prog,
+        &w,
+    );
+    try testing.expectError(error.ParseFailed, result);
+    const output = w.buffered();
+
+    var occurrences: u32 = 0;
+    var search_start: usize = 0; // tiger:allow:usize-arch slice index into output
+    while (std.mem.findPos(u8, output, search_start, distinctive_prog)) |pos| {
+        std.debug.assert(pos >= search_start);
+        occurrences += 1;
+        search_start = pos + distinctive_prog.len;
+        std.debug.assert(search_start <= output.len);
+    }
+    try testing.expectEqual(@as(u32, 2), occurrences);
 }
