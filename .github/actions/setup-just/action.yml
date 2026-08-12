@@ -1,0 +1,89 @@
+name: Setup just
+description: >
+  Install the just command runner, tolerating transient GitHub release
+  outages. Wraps extractions/setup-just with a direct-download fallback.
+
+# WHY THIS EXISTS
+#
+# extractions/setup-just resolves and downloads a casey/just release on
+# every job. When api.github.com or the release CDN has a bad spell that
+# step fails the job outright, having contributed nothing to the build:
+# three such failures landed across two PRs inside forty minutes, all of
+# them `socket hang up` or `HTTP 503`, on jobs whose actual work was
+# fine. The action does retry internally — the observed failures came
+# after its own two retries — so a longer retry is not the answer on its
+# own; a second, independent way of getting the binary is.
+#
+# So: try the action, and if it fails, download the tarball straight from
+# the release with curl's own retry. Only if BOTH routes fail does the
+# job fail, and then the failure is real rather than weather.
+#
+# Every workflow calls this rather than the action directly, so there is
+# one place to change when the upstream flake stops (or gets worse).
+
+inputs:
+  version:
+    description: just version to install in the fallback path.
+    required: false
+    default: "1.42.4"
+
+runs:
+  using: composite
+  steps:
+    # The happy path, unchanged from what every workflow used before.
+    # continue-on-error keeps a flaky download from failing the job here;
+    # the verify step below is what actually decides.
+    - name: Install just (release action)
+      id: action
+      continue-on-error: true
+      uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+    - name: Install just (direct download fallback)
+      if: steps.action.outcome == 'failure'
+      shell: bash
+      env:
+        JUST_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        echo "::warning::extractions/setup-just failed; falling back to a direct download."
+
+        case "$(uname -s)" in
+          Linux)  os=unknown-linux-musl ;;
+          Darwin) os=apple-darwin ;;
+          *) echo "setup-just: unsupported OS $(uname -s)" >&2; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64|amd64)  arch=x86_64 ;;
+          arm64|aarch64) arch=aarch64 ;;
+          *) echo "setup-just: unsupported arch $(uname -m)" >&2; exit 1 ;;
+        esac
+
+        asset="just-${JUST_VERSION}-${arch}-${os}.tar.gz"
+        url="https://github.com/casey/just/releases/download/${JUST_VERSION}/${asset}"
+        dest="${RUNNER_TEMP}/just-install"
+        mkdir -p "$dest"
+
+        # --retry-all-errors is what covers the failure mode that brought
+        # us here: curl retries a 503 or a dropped connection by default
+        # only for a subset of errors without it.
+        curl --fail --location --silent --show-error \
+             --retry 6 --retry-delay 5 --retry-all-errors \
+             --output "${dest}/${asset}" "$url"
+
+        tar -xzf "${dest}/${asset}" -C "$dest" just
+        install -m 0755 "${dest}/just" "${dest}/just.bin"
+        mv "${dest}/just.bin" "${dest}/just"
+        echo "$dest" >> "$GITHUB_PATH"
+
+    # Neither route is trusted until just actually runs. A step that
+    # "succeeded" without producing a usable binary is the failure mode
+    # this whole file exists to avoid reporting as a pass.
+    - name: Verify just is usable
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v just >/dev/null 2>&1; then
+          echo "setup-just: just is not on PATH after both install routes" >&2
+          exit 1
+        fi
+        just --version

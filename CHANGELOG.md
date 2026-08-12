@@ -420,6 +420,18 @@
 
 ### Infrastructure
 
+- **CI no longer fails when the `just` release download has a bad
+  spell.** `extractions/setup-just` fetches a casey/just release on
+  every job, and three `socket hang up` / `HTTP 503` failures landed
+  across two PRs inside forty minutes, each failing a job whose real
+  work was fine. Every workflow now goes through
+  `.github/actions/setup-just`, which tries that action and, only if
+  it fails, downloads the tarball directly with curl's own retry. A
+  final step runs `just --version`, so neither route is trusted until
+  the binary actually works — an install step that succeeds without
+  producing a usable binary is the failure this is meant to catch,
+  not reproduce. (#132/#133 CI follow-up)
+
 - **The TDD workflows no longer hard-require the `tdd-pipeline`
   plugin.** Their test-writer, implementer and code-reviewer agent
   types were named as bare `tdd-pipeline:` literals, so on any host
