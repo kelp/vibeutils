@@ -42,6 +42,35 @@ pub const ArgParser = struct {
         OutOfMemory,
     };
 
+    /// Structured detail about the argument that failed, so a caller can name
+    /// the offending flag instead of printing a generic line. Filled in only on
+    /// the failing paths; a successful parse leaves it `.none`.
+    ///
+    /// `flag` is BORROWED, never copied and never allocated: it is a sub-slice
+    /// of the offending `args[i]` token, ready to be quoted verbatim (leading
+    /// dashes included), or — when a bad value arrived through a short flag,
+    /// where argv holds no long name — a comptime-static long-flag string. A
+    /// Diagnostic is therefore valid only while `args` is alive, which holds
+    /// for every caller: argv outlives the parse.
+    pub const Diagnostic = struct {
+        /// Which of GNU's distinct option-error messages applies. `none` means
+        /// the failing path recorded no detail and the printer must fall back
+        /// to a generic message.
+        pub const Kind = enum {
+            none,
+            unknown_long,
+            unknown_short,
+            missing_value_long,
+            missing_value_short,
+            unexpected_value_long,
+            invalid_value,
+        };
+
+        kind: Kind = .none,
+        flag: []const u8 = "",
+        short: u8 = 0,
+    };
+
     const ValueUsage = enum {
         Unknown,
         NoValue,
@@ -55,6 +84,31 @@ pub const ArgParser = struct {
         allocator: std.mem.Allocator,
         args: []const []const u8,
     ) ParseError!T {
+        std.debug.assert(args.len <= std.math.maxInt(u32));
+
+        // Callers that need only the error set still have to give the
+        // diagnostic somewhere to live; a stack slot costs nothing.
+        var discarded: Diagnostic = .{};
+        const result = try parseWithDiagnostic(T, allocator, args, &discarded);
+        std.debug.assert(discarded.kind == .none);
+        return result;
+    }
+
+    /// Like `parse`, but records which flag failed in `diag` for a caller that
+    /// wants to name it. See `Diagnostic`: the payload BORROWS `args`, so it
+    /// must not outlive the argv slice passed in here.
+    pub fn parseWithDiagnostic(
+        comptime T: type,
+        allocator: std.mem.Allocator,
+        args: []const []const u8,
+        diag: *Diagnostic,
+    ) ParseError!T {
+        std.debug.assert(args.len <= std.math.maxInt(u32));
+        // Start from a clean diagnostic: detail left over from an earlier parse
+        // must never be attributed to this one.
+        diag.* = .{};
+        std.debug.assert(diag.kind == .none);
+
         var result: T = .{};
         var positionals = try std.ArrayList([]const u8).initCapacity(allocator, 0);
         defer positionals.deinit(allocator);
@@ -81,9 +135,11 @@ pub const ArgParser = struct {
             if (arg.len > 1 and arg[0] == '-') {
                 if (arg.len > 2 and arg[1] == '-') {
                     // Long flag: --flag or --flag=value
-                    const used = try parse_handleLongFlag(T, &result, arg, args, i);
+                    const used = try parse_handleLongFlag(T, &result, arg, args, i, diag);
                     switch (used) {
                         .Unknown => {
+                            std.debug.assert(diag.kind == .unknown_long);
+                            std.debug.assert(diag.flag.len > 2);
                             return ParseError.UnknownFlag;
                         },
                         .ValueUsed => i += 1, // Skip next arg as it was used as value
@@ -91,9 +147,11 @@ pub const ArgParser = struct {
                     }
                 } else {
                     // Short flag(s): -f or -abc or -o value or -o=value
-                    const used = try parse_handleShortCluster(T, &result, arg, args, i);
+                    const used = try parse_handleShortCluster(T, &result, arg, args, i, diag);
                     switch (used) {
                         .Unknown => {
+                            std.debug.assert(diag.kind == .unknown_short);
+                            std.debug.assert(diag.short != 0);
                             return ParseError.UnknownFlag;
                         },
                         .ValueUsed => i += 1, // Skip next arg as it was used as value
@@ -132,12 +190,17 @@ pub const ArgParser = struct {
     /// NOT mutate `i`; the caller's switch advances the index. The `=value` form
     /// maps its UnknownFlag to `.Unknown` so the caller's single switch handles
     /// both forms uniformly.
+    ///
+    /// This is the only frame holding the whole argv token, so it is where the
+    /// unrecognized-option diagnostic is recorded: GNU quotes the FULL token
+    /// there (`--zzz=1`), unlike the name-only wording of the other messages.
     fn parse_handleLongFlag(
         comptime T: type,
         result: *T,
         arg: []const u8,
         args: []const []const u8,
         i: usize, // tiger:allow:usize-arch slice index into args
+        diag: *Diagnostic,
     ) ParseError!ValueUsage {
         std.debug.assert(arg.len > 2);
         std.debug.assert(arg[0] == '-');
@@ -153,15 +216,38 @@ pub const ArgParser = struct {
             const flag_name = flag_content[0..eq_pos];
             const flag_value = flag_content[eq_pos + 1 ..];
             const next_arg: ?[]const u8 = null;
-            const used = try parseLongFlagWithValue(T, result, flag_name, flag_value, next_arg, i);
+            const used = try parseLongFlagWithValue(
+                T,
+                result,
+                flag_name,
+                flag_value,
+                next_arg,
+                i,
+                arg,
+                diag,
+            );
             if (used == .Unknown) {
+                diag.* = .{ .kind = .unknown_long, .flag = arg };
                 return .Unknown;
             }
             return .NoValue;
         } else {
             // Check if next arg is the value
             const next_arg = if (i + 1 < args.len) args[i + 1] else null;
-            return try parseLongFlagWithValue(T, result, flag_content, null, next_arg, i);
+            const used = try parseLongFlagWithValue(
+                T,
+                result,
+                flag_content,
+                null,
+                next_arg,
+                i,
+                arg,
+                diag,
+            );
+            if (used == .Unknown) {
+                diag.* = .{ .kind = .unknown_long, .flag = arg };
+            }
+            return used;
         }
     }
 
@@ -175,6 +261,7 @@ pub const ArgParser = struct {
         arg: []const u8,
         args: []const []const u8,
         i: usize, // tiger:allow:usize-arch slice index into args
+        diag: *Diagnostic,
     ) ParseError!ValueUsage {
         std.debug.assert(arg.len > 1);
         std.debug.assert(arg[0] == '-');
@@ -188,14 +275,23 @@ pub const ArgParser = struct {
             const flag_value = arg[2 + eq_pos ..];
             const next_arg: ?[]const u8 = null;
 
-            const used = try parseShortFlagWithValue(T, result, flag_char, flag_value, next_arg, i);
+            const used = try parseShortFlagWithValue(
+                T,
+                result,
+                flag_char,
+                flag_value,
+                next_arg,
+                i,
+                diag,
+            );
             if (used == .Unknown) {
+                diag.* = .{ .kind = .unknown_short, .short = flag_char };
                 return .Unknown;
             }
             return .NoValue;
         } else {
             // Combined flags or single flag with optional value
-            return try parse_handleShortCluster_combined(T, result, arg, args, i);
+            return try parse_handleShortCluster_combined(T, result, arg, args, i, diag);
         }
     }
 
@@ -204,12 +300,16 @@ pub const ArgParser = struct {
     /// boolean flags (or value-taking flags that swallow the remainder); only the
     /// last char may consume the next arg. Split out of parse_handleShortCluster
     /// to keep that function under the 70-line limit ("push fors down").
+    ///
+    /// The diagnostic names the character that actually failed, which is not
+    /// necessarily the first one: `-hZ` must report `Z`.
     fn parse_handleShortCluster_combined(
         comptime T: type,
         result: *T,
         arg: []const u8,
         args: []const []const u8,
         i: usize, // tiger:allow:usize-arch slice index into args
+        diag: *Diagnostic,
     ) ParseError!ValueUsage {
         std.debug.assert(arg.len > 1);
         std.debug.assert(arg[0] == '-');
@@ -233,9 +333,11 @@ pub const ArgParser = struct {
                     remaining,
                     next_arg,
                     i,
+                    diag,
                 );
                 switch (used) {
                     .Unknown => {
+                        diag.* = .{ .kind = .unknown_short, .short = flag_char };
                         return .Unknown;
                     },
                     .ValueUsed => {
@@ -256,9 +358,11 @@ pub const ArgParser = struct {
                         remaining,
                         null,
                         i,
+                        diag,
                     );
                     switch (used) {
                         .Unknown => {
+                            diag.* = .{ .kind = .unknown_short, .short = flag_char };
                             return .Unknown;
                         },
                         .NoValue, .ValueUsed => {
@@ -321,6 +425,9 @@ pub const ArgParser = struct {
         return false;
     }
 
+    /// `token` is the whole argv word this flag came from (`--count=x`), used
+    /// only to carve the printable name out of it; `flag_name` is still the
+    /// bare typed name (`count`) that field matching needs.
     fn parseLongFlagWithValue(
         comptime T: type,
         obj: *T,
@@ -328,7 +435,16 @@ pub const ArgParser = struct {
         provided_value: ?[]const u8,
         next_arg: ?[]const u8,
         position: usize, // tiger:allow:usize-arch positional argument index
+        token: []const u8,
+        diag: *Diagnostic,
     ) !ValueUsage {
+        std.debug.assert(token.len >= 2 + flag_name.len);
+        std.debug.assert(token[0] == '-');
+
+        // GNU quotes the name with its dashes and without any `=value` in the
+        // "requires an argument" / "doesn't allow an argument" wordings.
+        const name_token = token[0 .. 2 + flag_name.len];
+
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             // Check if field name or converted name matches
@@ -342,6 +458,7 @@ pub const ArgParser = struct {
                 if (field.type == bool) {
                     // Boolean flag
                     if (provided_value != null) {
+                        diag.* = .{ .kind = .unexpected_value_long, .flag = name_token };
                         return ParseError.TooManyValues;
                     }
                     @field(obj, field.name) = true;
@@ -349,6 +466,7 @@ pub const ArgParser = struct {
                 } else if (field_type_info == .optional) {
                     // Optional field - parse based on child type
                     const value_str = provided_value orelse next_arg orelse {
+                        diag.* = .{ .kind = .missing_value_long, .flag = name_token };
                         return ParseError.MissingValue;
                     };
 
@@ -356,8 +474,9 @@ pub const ArgParser = struct {
                         field_type_info.optional.child,
                         &@field(obj, field.name),
                         value_str,
-                        flag_name,
+                        name_token,
                         position,
+                        diag,
                     );
                     return if (provided_value != null) .NoValue else .ValueUsed;
                 }
@@ -373,7 +492,12 @@ pub const ArgParser = struct {
         provided_value: ?[]const u8,
         next_arg: ?[]const u8,
         position: usize, // tiger:allow:usize-arch positional argument index
+        diag: *Diagnostic,
     ) !ValueUsage {
+        std.debug.assert(flag_char != 0);
+        // At most one value source: an attached value rules out the next arg.
+        std.debug.assert(provided_value == null or next_arg == null);
+
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
             // Check metadata first, then default
@@ -388,7 +512,8 @@ pub const ArgParser = struct {
                 // Check field type
                 const field_type_info = @typeInfo(field.type);
                 if (field.type == bool) {
-                    // Boolean flag
+                    // No GNU wording is pinned for `-h=value`, so leave the
+                    // diagnostic empty and let the printer fall back.
                     if (provided_value != null) {
                         return ParseError.TooManyValues;
                     }
@@ -397,15 +522,20 @@ pub const ArgParser = struct {
                 } else if (field_type_info == .optional) {
                     // Optional field - parse based on child type
                     const value_str = provided_value orelse next_arg orelse {
+                        diag.* = .{ .kind = .missing_value_short, .short = flag_char };
                         return ParseError.MissingValue;
                     };
 
+                    // argv carries no long name when the value arrived through
+                    // a short flag, so name the canonical long form instead.
+                    const flag_display = comptime "--" ++ getLongFlag(field.name);
                     try parseValue(
                         field_type_info.optional.child,
                         &@field(obj, field.name),
                         value_str,
-                        field.name,
+                        flag_display,
                         position,
+                        diag,
                     );
                     return if (provided_value != null) .NoValue else .ValueUsed;
                 }
@@ -483,16 +613,23 @@ pub const ArgParser = struct {
         }
     }
 
-    /// Parse a value string into the appropriate type
+    /// Parse a value string into the appropriate type.
+    ///
+    /// `flag_name` is the flag as a diagnostic should quote it, dashes included
+    /// ("--count"): only the caller knows whether the user typed the long or
+    /// the short form, so it hands down the printable spelling.
     fn parseValue(
         comptime T: type,
         dest: *?T,
         value_str: []const u8,
         flag_name: []const u8,
         position: usize, // tiger:allow:usize-arch positional argument index
+        diag: *Diagnostic,
     ) !void {
-        _ = flag_name;
         _ = position;
+        std.debug.assert(flag_name.len > 2);
+        std.debug.assert(std.mem.startsWith(u8, flag_name, "--"));
+
         const type_info = @typeInfo(T);
 
         if (type_info == .pointer and type_info.pointer.child == u8) {
@@ -501,16 +638,19 @@ pub const ArgParser = struct {
         } else if (type_info == .int) {
             // Integer types
             dest.* = std.fmt.parseInt(T, value_str, 10) catch {
+                diag.* = .{ .kind = .invalid_value, .flag = flag_name };
                 return ParseError.InvalidValue;
             };
         } else if (type_info == .float) {
             // Float types
             dest.* = std.fmt.parseFloat(T, value_str) catch {
+                diag.* = .{ .kind = .invalid_value, .flag = flag_name };
                 return ParseError.InvalidValue;
             };
         } else if (type_info == .@"enum") {
             // Enum types
             dest.* = std.meta.stringToEnum(T, value_str) orelse {
+                diag.* = .{ .kind = .invalid_value, .flag = flag_name };
                 return ParseError.InvalidValue;
             };
         } else {
@@ -522,7 +662,9 @@ pub const ArgParser = struct {
     ///
     /// On success, returns the parsed `T`.
     /// On `UnknownFlag`, `MissingValue`, `InvalidValue`, or `TooManyValues`,
-    /// prints `"{prog_name}: <message>\n"` and returns `error.ParseFailed`.
+    /// prints GNU coreutils' wording for that specific failure — naming the
+    /// offending flag, and followed by the "Try '<prog> --help'" hint for
+    /// everything but a bad value — and returns `error.ParseFailed`.
     /// `OutOfMemory` propagates unwrapped.
     ///
     /// Typical usage inside a `runX` function:
@@ -541,17 +683,98 @@ pub const ArgParser = struct {
         prog_name: []const u8,
         stderr_writer: anytype,
     ) error{ ParseFailed, OutOfMemory }!T {
-        return ArgParser.parse(T, allocator, args) catch |err| {
-            const msg: []const u8 = switch (err) {
-                error.UnknownFlag => "unrecognized option",
-                error.MissingValue => "option requires an argument",
-                error.InvalidValue => "invalid option value",
-                error.TooManyValues => "option does not take an argument",
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-            stderr_writer.print("{s}: {s}\n", .{ prog_name, msg }) catch {};
+        std.debug.assert(prog_name.len > 0);
+        std.debug.assert(args.len <= std.math.maxInt(u32));
+
+        var diag: Diagnostic = .{};
+        return ArgParser.parseWithDiagnostic(T, allocator, args, &diag) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            parseOrExit_printDiagnostic(stderr_writer, prog_name, err, diag);
             return error.ParseFailed;
         };
+    }
+
+    /// Print GNU coreutils' wording for `diag`, followed by the standard hint
+    /// line where GNU emits one.
+    ///
+    /// GNU has five distinct option-error messages rather than one, differing
+    /// in wording and in what they quote: an unrecognized long option echoes
+    /// the full typed token, the "requires"/"doesn't allow" forms name the
+    /// option only, and short forms quote a bare character. A bad option value
+    /// gets no hint line — GNU's `head -n abc` prints its complaint alone.
+    fn parseOrExit_printDiagnostic(
+        stderr_writer: anytype,
+        prog_name: []const u8,
+        err: ParseError,
+        diag: Diagnostic,
+    ) void {
+        std.debug.assert(prog_name.len > 0);
+        std.debug.assert(err != error.OutOfMemory);
+
+        var hint_wanted = true;
+        switch (diag.kind) {
+            .none => {
+                hint_wanted = false;
+                parseOrExit_printGeneric(stderr_writer, prog_name, err);
+            },
+            .unknown_long => stderr_writer.print(
+                "{s}: unrecognized option '{s}'\n",
+                .{ prog_name, diag.flag },
+            ) catch {},
+            .unknown_short => stderr_writer.print(
+                "{s}: invalid option -- '{c}'\n",
+                .{ prog_name, diag.short },
+            ) catch {},
+            .missing_value_long => stderr_writer.print(
+                "{s}: option '{s}' requires an argument\n",
+                .{ prog_name, diag.flag },
+            ) catch {},
+            .missing_value_short => stderr_writer.print(
+                "{s}: option requires an argument -- '{c}'\n",
+                .{ prog_name, diag.short },
+            ) catch {},
+            .unexpected_value_long => stderr_writer.print(
+                "{s}: option '{s}' doesn't allow an argument\n",
+                .{ prog_name, diag.flag },
+            ) catch {},
+            .invalid_value => {
+                hint_wanted = false;
+                stderr_writer.print(
+                    "{s}: invalid value for option '{s}'\n",
+                    .{ prog_name, diag.flag },
+                ) catch {};
+            },
+        }
+
+        if (hint_wanted) {
+            stderr_writer.print(
+                "Try '{s} --help' for more information.\n",
+                .{prog_name},
+            ) catch {};
+        }
+    }
+
+    /// Wording for a failure that carried no structured detail — today only a
+    /// boolean short flag handed a value (`-h=1`), which GNU's getopt never
+    /// produces, so there is no reference wording to match. Kept byte-identical
+    /// to the pre-diagnostic messages so no path regresses below what it printed
+    /// before.
+    fn parseOrExit_printGeneric(
+        stderr_writer: anytype,
+        prog_name: []const u8,
+        err: ParseError,
+    ) void {
+        std.debug.assert(prog_name.len > 0);
+        std.debug.assert(err != error.OutOfMemory);
+
+        const msg: []const u8 = switch (err) {
+            error.UnknownFlag => "unrecognized option",
+            error.MissingValue => "option requires an argument",
+            error.InvalidValue => "invalid option value",
+            error.TooManyValues => "option does not take an argument",
+            error.OutOfMemory => unreachable,
+        };
+        stderr_writer.print("{s}: {s}\n", .{ prog_name, msg }) catch {};
     }
 };
 
@@ -1276,4 +1499,16 @@ test "parseOrExit: prog_name is echoed exactly twice (error line and hint line)"
         std.debug.assert(search_start <= output.len);
     }
     try testing.expectEqual(@as(u32, 2), occurrences);
+}
+
+test "parseWithDiagnostic: unknown-long payload BORROWS argv, it does not copy it" {
+    const args = [_][]const u8{"--zzz"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(BasicArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.unknown_long, diag.kind);
+    // Pointer equality, not string equality: the diagnostic must alias the
+    // caller's argv token so nothing is allocated and nothing must be freed.
+    try testing.expectEqual(args[0].ptr, diag.flag.ptr);
+    try testing.expectEqual(args[0].len, diag.flag.len);
 }

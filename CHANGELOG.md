@@ -88,6 +88,19 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+
+- **Option errors name the offending flag and carry GNU's hint
+  line.** `argparse` collapsed every parse failure into one static
+  string, so `whoami --invalid-flag` said only `unrecognized option`
+  with no indication of which flag was wrong. It now matches GNU's
+  five distinct formats, which differ by more than wording: an
+  unrecognized long option quotes the full typed token, while
+  "requires an argument" quotes the name with `=value` stripped, and
+  short options use a bare character (`invalid option -- 'x'`).
+  `-hZ` reports `Z` rather than the first character of the cluster.
+  The flag text is a borrowed slice of argv, so naming it costs no
+  allocation, and `parse`'s signature is unchanged. Shared by the 27
+  utilities that parse through it (#130).
 - **`df --block-size=N` abbreviates the header label like GNU.** Only
   512, 1024, 1M and 1G were spelled out; every other size fell back to
   the raw byte count, so `--block-size=2000` printed `2000B-blocks`

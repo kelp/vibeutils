@@ -321,10 +321,14 @@ test "whoami unknown short flag returns exit code 1" {
 
     try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
-    const err_out = try capture.getStderrStripped();
-    defer testing.allocator.free(err_out);
-    try testing.expect(std.mem.startsWith(u8, err_out, "whoami: "));
-    try testing.expect(std.mem.find(u8, err_out, "unrecognized option") != null);
+    // GNU words short flags differently from long ones: `--zzz` yields
+    // "unrecognized option '--zzz'", but a short flag yields
+    // "invalid option -- 'x'". Verified with `LC_ALL=C /usr/bin/whoami -x`
+    // on GNU coreutils 9.5, which also exits 1.
+    try capture.expectStderrStripped(
+        "whoami: invalid option -- 'x'\n" ++
+            "Try 'whoami --help' for more information.\n",
+    );
 }
 
 test "whoami extra operand reports the GNU message" {
