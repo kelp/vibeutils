@@ -33,6 +33,6 @@ jobs:
       - name: Install bash 4+ (macOS)
         if: runner.os == 'macOS'
         run: brew install bash
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4
+      - uses: ./.github/actions/setup-just
       - name: Run integration tests
         run: just it

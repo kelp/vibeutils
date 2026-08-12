@@ -28,7 +28,7 @@ jobs:
           # its git tag (`git show vX.Y.Z:CHANGELOG.md`), which needs
           # full tag history — the default shallow checkout has none.
           fetch-depth: 0
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4
+      - uses: ./.github/actions/setup-just
       # Catches the class of bug where a PR merges cleanly (no textual
       # conflict) but lands unreleased entries inside an already-tagged
       # section, or drops the "## Unreleased" heading entirely. Git's
