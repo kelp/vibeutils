@@ -410,6 +410,34 @@
   `ancestors_and_visited` walker mode is deleted (#69).
 
 ### Infrastructure
+- **A Linux agent container is now a first-class development
+  environment, not a degraded macOS dev box.** The tooling assumed
+  OrbStack, a Docker daemon, `codex`, `gh` and a `/Users/tcole`
+  worktree layout, and three of those assumptions were silently
+  wrong rather than merely unportable. The workflow pipelines had a
+  red-phase gate that required a macOS leg and a final gate that
+  ANDed five platform legs, so nothing could ever go green where
+  there is only one platform; the secondary-platform legs are now
+  nullable and an unreachable platform reports as deferred to CI
+  instead of as a pass. The `codex` review gate no longer reports
+  not-ready forever when `codex` is absent — an independent Claude
+  reviewer runs under a distinct agent type and which reviewer ran
+  is logged, because "unavailable" must not read as "approved".
+  Most costly of all, the pipelines invoked `tests/integration.sh`
+  directly, bypassing the `scripts/run-integration.sh` demotion to
+  an unprivileged user; as uid 0 that produces roughly two dozen
+  phantom permission-denied failures across `cat`, `chmod`,
+  `chown`, `grep`, `ls`, `rm` and `stat`. Worktree roots and the
+  Linux command prefix are now environment-driven with
+  platform-conditional defaults, so the macOS dev box behaves
+  exactly as before. Alongside: `just platform` reports what this
+  host actually has, Docker and `actionlint` recipes fail with an
+  accurate message instead of telling a container to start a daemon
+  it cannot start, `scripts/bootstrap.sh` distinguishes
+  "not installed by design" (`n/a`) from `MISSING`, a Linux release
+  run says plainly that macOS validation is deferred to CI, and
+  `VIBEUTILS_TEST_USER` is documented for running two worktrees'
+  integration suites concurrently.
 - **`CLAUDE.md` trimmed from 724 to 276 lines, with the test-first
   discipline extracted into a `tdd` skill.** Applies Anthropic's
   context-engineering guidance for Claude 5 models: the file now

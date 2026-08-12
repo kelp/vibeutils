@@ -10,6 +10,74 @@ docker_compose := `command -v docker-compose 2>/dev/null || echo "docker compose
 default:
     @just --list
 
+# --- Environment guards ---
+
+# Fail with an accurate message when an optional tool is unavailable, instead
+# of a raw "command not found" or advice that cannot be followed. A Linux agent
+# container has no Docker daemon and cannot start one, so telling it to "start
+# Docker" sends an agent chasing a problem it cannot solve. Recipes depend on
+# this rather than each rolling their own check.
+_require tool:
+    #!/usr/bin/env bash
+    set -eu
+    case "{{tool}}" in
+        docker)
+            if ! command -v docker >/dev/null 2>&1; then
+                echo "just: docker is not installed, so this recipe is unavailable here." >&2
+                echo "      Agent containers have no nested Docker. CI covers the Linux distro matrix." >&2
+                exit 1
+            fi
+            if ! docker info >/dev/null 2>&1; then
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    echo "just: the Docker daemon is not running. Start Docker (or OrbStack) and retry." >&2
+                else
+                    echo "just: the Docker daemon is not reachable. Inside an agent container Docker cannot" >&2
+                    echo "      be started at all, so this recipe is unavailable here — not merely stopped." >&2
+                    echo "      CI covers the Linux distro matrix; run 'zig build test' and 'just it' natively." >&2
+                fi
+                exit 1
+            fi
+            ;;
+        *)
+            if ! command -v "{{tool}}" >/dev/null 2>&1; then
+                echo "just: {{tool}} is not installed, so this recipe is unavailable here." >&2
+                echo "      scripts/bootstrap.sh does not install it by design; CI runs this check." >&2
+                exit 1
+            fi
+            ;;
+    esac
+
+# Report the host platform and which optional tools — and therefore which
+# recipes — are actually available here.
+platform:
+    #!/usr/bin/env bash
+    set -eu
+    echo "platform:  $(uname -s) $(uname -m)"
+    echo "uid:       $(id -u)$([ "$(id -u)" -eq 0 ] && echo '  (root — integration tests demote via scripts/run-integration.sh)' || echo '')"
+    echo ""
+    echo "Optional tools:"
+    report() {
+        if command -v "$1" >/dev/null 2>&1; then
+            printf '  %-11s present    %s\n' "$1" "$(command -v "$1")"
+        else
+            printf '  %-11s absent     %s\n' "$1" "$2"
+        fi
+    }
+    report fakeroot  "'just test-privileged' unavailable"
+    report mandoc    "'just lint-man*' unavailable"
+    report hexdump   "some 'just it' tests fail (apt: bsdextrautils)"
+    report kcov      "'just coverage' unavailable; CI runs coverage"
+    report actionlint "'just lint-actions' unavailable; CI lints workflows"
+    report gh        "'just release-tag' unavailable"
+    report orb       "no second platform from here; CI covers macOS"
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        printf '  %-11s present    daemon reachable\n' docker
+    else
+        printf '  %-11s absent     %s\n' docker "'just test-linux*' and 'just docker-*' unavailable; CI covers the distro matrix"
+    fi
+    echo ""
+    echo "Everything not listed above works here. See docs/TOOLCHAIN.md for the full matrix."
+
 # --- Core ---
 
 # Build all utilities (debug mode)
@@ -181,7 +249,7 @@ lint-man-verbose:
     @./scripts/lint-man-pages.sh --verbose
 
 # Lint GitHub Actions workflows
-lint-actions:
+lint-actions: (_require "actionlint")
     @echo "Linting GitHub Actions workflows..."
     @actionlint .github/workflows/*.yml
 
@@ -226,42 +294,42 @@ docs-open: docs-html
 # --- Docker / Linux Testing ---
 
 # Run tests in Ubuntu 24.04 container
-test-linux:
+test-linux: (_require "docker")
     @echo "Running tests in Ubuntu 24.04 container..."
     @scripts/test-linux.sh
 
 # Run tests on all Linux distributions
-test-linux-all:
+test-linux-all: (_require "docker")
     @echo "Running tests on all Linux distributions..."
     @scripts/test-linux.sh --all
 
 # Run privileged tests in Ubuntu 24.04 container
-test-linux-privileged:
+test-linux-privileged: (_require "docker")
     @echo "Running privileged tests in Ubuntu 24.04 container..."
     @scripts/test-linux.sh --privileged
 
 # Run coverage tests in Ubuntu 24.04 container
-test-linux-coverage:
+test-linux-coverage: (_require "docker")
     @echo "Running coverage tests in Ubuntu 24.04 container..."
     @scripts/test-linux.sh --coverage
 
 # Build Docker test images
-docker-build:
+docker-build: (_require "docker")
     @echo "Building Docker test images..."
     @scripts/test-linux.sh --build-only
 
 # Open interactive shell in Ubuntu 24.04 container
-docker-shell:
+docker-shell: (_require "docker")
     @echo "Starting interactive shell in Ubuntu 24.04 container..."
     @scripts/test-linux.sh --shell
 
 # Open interactive shell in Debian 12 container
-docker-shell-debian:
+docker-shell-debian: (_require "docker")
     @echo "Starting interactive shell in Debian 12 container..."
     @scripts/test-linux.sh --shell --distro debian-12
 
 # Clean Docker test containers and volumes
-docker-clean:
+docker-clean: (_require "docker")
     @echo "Cleaning Docker test containers and volumes..."
     @{{docker_compose}} -f docker/docker-compose.test.yml down -v
     @docker rmi vibeutils-test:ubuntu-24.04 vibeutils-test:ubuntu-latest vibeutils-test:debian-12 vibeutils-test:alpine 2>/dev/null || true

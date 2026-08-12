@@ -1,6 +1,11 @@
 #!/bin/bash
-# test-linux.sh - Run vibeutils tests in Linux containers from macOS
-# This script provides an easy way to test on different Linux distributions
+# test-linux.sh - Run vibeutils tests in Linux containers via Docker
+# This script provides an easy way to test on different Linux distributions.
+#
+# It is a macOS dev-box tool in practice: it needs a reachable Docker daemon.
+# A Linux agent container has no nested Docker and cannot start one, so this
+# script is unavailable there — run the suites natively and let CI cover the
+# distro matrix.
 
 set -e
 
@@ -32,7 +37,8 @@ show_help() {
     cat << EOF
 Usage: $0 [OPTIONS] [COMMAND]
 
-Run vibeutils tests in Linux containers from macOS.
+Run vibeutils tests in Linux containers via Docker (needs a running daemon).
+Unavailable inside an agent container, where CI covers the distro matrix.
 
 OPTIONS:
     -d, --distro DISTRO      Linux distribution to use (default: ubuntu-24.04)
@@ -246,9 +252,23 @@ test_single_distro() {
 main() {
     log_info "vibeutils Linux test runner"
     
-    # Check if Docker is running
+    # Check if Docker is usable. "Start Docker" is only actionable advice on a
+    # dev machine; inside an agent container there is no daemon to start, and
+    # sending an agent to look for one wastes a turn on an unsolvable problem.
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "docker is not installed, so this script cannot run here."
+        log_error "CI covers the Linux distro matrix; run 'zig build test' and 'just it' natively."
+        exit 1
+    fi
     if ! docker info >/dev/null 2>&1; then
-        log_error "Docker is not running. Please start Docker and try again."
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            log_error "Docker is not running. Please start Docker and try again."
+        else
+            log_error "The Docker daemon is not reachable."
+            log_error "Inside an agent container Docker cannot be started at all, so this script is"
+            log_error "unavailable here — not merely stopped. CI covers the Linux distro matrix;"
+            log_error "run 'zig build test' and 'just it' natively instead."
+        fi
         exit 1
     fi
     

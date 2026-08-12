@@ -7,7 +7,7 @@ export const meta = {
   phases: [
     { title: 'Red fan-out', detail: 'one tdd-bugfix red pipeline per issue, concurrent (child workflows)' },
     { title: 'Green fan-out', detail: 'one tdd-bugfix green pipeline per issue, concurrent (child workflows)' },
-    { title: 'Codex review', detail: 'headless `codex exec` review of each worktree diff (sonnet runner)' },
+    { title: 'Independent review', detail: 'headless `codex exec` review of each worktree diff, or a distinct Claude reviewer agent where codex is absent' },
     { title: 'Adjudicate', detail: 'implementer responds, bounded rebuttal rounds, Fable judge on deadlock' },
   ],
 };
@@ -21,7 +21,54 @@ const phaseArg = a.phase || 'red';
 // hearing the implementer's reasoning, which is where most noise dies.
 const CODEX_ROUNDS_MAX = 2;
 
-const WT_ROOT = '/Users/tcole/code';
+// ---------------------------------------------------------------------------
+// Host detection
+//
+// This fleet used to hardcode one developer's macOS layout: worktrees under
+// /Users/tcole/code, and a Linux VM behind `orb -m ubuntu`. Neither exists in
+// a Linux agent container, where the fleet is now expected to run too. Both
+// are derived from the host instead, with the defaults chosen so the macOS dev
+// box resolves to exactly what was hardcoded before.
+//
+// The `typeof process` guards keep this working if the workflow runtime ever
+// evaluates without a Node global. When the platform is genuinely undetectable
+// we fall back to the historical macOS defaults and say so loudly: silently
+// dropping the Linux leg is the failure mode this change exists to prevent.
+// ---------------------------------------------------------------------------
+const HAVE_PROCESS = typeof process !== 'undefined' && !!process.platform;
+const ENV = (HAVE_PROCESS && process.env) || {};
+const IS_DARWIN = HAVE_PROCESS ? process.platform === 'darwin' : true;
+if (!HAVE_PROCESS) {
+  log('bugfix-fleet: WARNING — cannot detect the host platform; assuming the macOS dev-box defaults.');
+}
+
+// The checkout this fleet was dispatched from. Every worktree is its sibling,
+// and it is the one tree no worktree agent may touch.
+const MAIN_CHECKOUT =
+  ENV.VIBEUTILS_MAIN_CHECKOUT ||
+  (HAVE_PROCESS && process.cwd ? process.cwd() : '') ||
+  '/Users/tcole/code/vibeutils';
+
+// Parent of the checkout: on the dev box that is /Users/tcole/code, byte for
+// byte what this used to be.
+const WT_ROOT = ENV.VIBEUTILS_WT_ROOT || MAIN_CHECKOUT.replace(/\/+[^/]+\/*$/, '') || '/';
+
+// How to reach the SECONDARY platform: `orb -m ubuntu` on macOS, nothing at
+// all in a Linux container where the second platform is CI's business. An
+// empty string is a meaningful value, so only an undefined override falls
+// through to the default.
+const LINUX_PREFIX =
+  ENV.VIBEUTILS_LINUX_PREFIX !== undefined
+    ? ENV.VIBEUTILS_LINUX_PREFIX.trim()
+    : IS_DARWIN
+      ? 'orb -m ubuntu'
+      : '';
+const SECONDARY_AVAILABLE = LINUX_PREFIX.length > 0;
+
+log(
+  `bugfix-fleet: host=${HAVE_PROCESS ? process.platform : 'unknown'} main_checkout=${MAIN_CHECKOUT} ` +
+    `wt_root=${WT_ROOT} secondary=${LINUX_PREFIX || 'NONE (deferred to CI)'}`,
+);
 
 // ---------------------------------------------------------------------------
 // Shared per-issue configuration
@@ -31,11 +78,16 @@ const WT_ROOT = '/Users/tcole/code';
 // spends a turn re-running `gh issue view` (see the fleet-efficiency rules).
 // ---------------------------------------------------------------------------
 const COMMON = {
-  linux_prefix: 'orb -m ubuntu',
+  linux_prefix: LINUX_PREFIX,
+  main_checkout: MAIN_CHECKOUT,
   test_cmd: 'zig build test',
   privileged_test_cmd: 'just test-privileged',
   fmt_cmd: 'zig build fmt-check',
-  full_it_cmd: 'bash tests/integration.sh',
+  // Never `bash tests/integration.sh`. Only the wrapper drops from uid 0 to an
+  // unprivileged user, and as root roughly two dozen permission-denied tests
+  // across cat/chmod/chown/grep/ls/rm/stat fail for reasons that have nothing
+  // to do with the fix under test.
+  full_it_cmd: 'scripts/run-integration.sh',
 };
 
 const ISSUES = {
@@ -441,7 +493,7 @@ function cfgFor(issue) {
     impl_files: c.impl_files.map(at),
     test_files: c.test_files.map(at),
     util_test_cmd: inWt(`zig build test -Dtest-util=${c.utility}`),
-    it_cmd: inWt(`bash tests/integration.sh ${c.utility}`),
+    it_cmd: inWt(`scripts/run-integration.sh ${c.utility}`),
     test_cmd: inWt(COMMON.test_cmd),
     privileged_test_cmd: inWt(COMMON.privileged_test_cmd),
     fmt_cmd: inWt(COMMON.fmt_cmd),
@@ -460,18 +512,109 @@ function wtPreamble(c) {
     'READ THIS TWICE — it is the single easiest way to ruin this run:',
     'This harness RESETS the shell working directory to the repo root after EVERY Bash call. A bare',
     '`cd` does NOT carry over to your next command. So EVERY shell command you run must be',
-    `self-contained and start with \`cd ${c.workdir} && \`. orb preserves that cwd inside the VM,`,
-    'so the same prefix covers the Linux commands.',
+    `self-contained and start with \`cd ${c.workdir} && \`.`,
+    SECONDARY_AVAILABLE
+      ? 'The VM launcher preserves that cwd inside the VM, so the same prefix covers both platforms.'
+      : 'There is no secondary-platform launcher on this host, so every command runs natively.',
     'For Read/Edit/Write, always use ABSOLUTE paths beginning with the working directory above.',
-    'Never read, edit, build, or run anything under /Users/tcole/code/vibeutils itself.',
+    `Never read, edit, build, or run anything under the main checkout at ${MAIN_CHECKOUT} itself.`,
     '',
     `Issue: #${c.issue} (${c.utility})`,
   ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
-// Codex review layer
+// Independent review layer
+//
+// The point of this stage is that a reviewer which did NOT write the fix looks
+// at it. Codex is the preferred reviewer because it is a different model
+// family entirely. It is simply absent in an agent container, and the old code
+// turned that absence into `codex_ok: false`, which `ready` ANDed — so every
+// issue reported not-ready forever with nothing wrong with it.
+//
+// The gate is not removed. When Codex is missing the review still happens, run
+// by a Claude subagent under an agentType distinct from the implementer's so
+// it is at least a different context with a different brief. Which reviewer
+// ran is recorded and logged, because "reviewed by the fallback" and
+// "reviewed by Codex" are not the same claim — and neither is ever allowed to
+// mean "review skipped".
 // ---------------------------------------------------------------------------
+
+// Probed once per fleet run. The PROMISE is memoized, not the result: issues
+// adjudicate concurrently, so caching only the resolved value would let every
+// issue in the wave dispatch its own probe before the first one returned.
+let codexProbe = null;
+function codexAvailable() {
+  if (codexProbe === null) codexProbe = probeCodex();
+  return codexProbe;
+}
+
+async function probeCodex() {
+  const probe = await agent(
+    [
+      '## YOUR TASK (probe only — one command, no edits)',
+      'Run exactly: `command -v codex || echo NOT_FOUND`',
+      'Report whether the codex CLI is installed on this host. Do not install anything, do not read any',
+      'files, and do not do anything else.',
+    ].join('\n'),
+    {
+      label: 'probe:codex',
+      phase: 'Codex review',
+      model: 'haiku',
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['available', 'detail'],
+        properties: {
+          available: { type: 'boolean', description: 'true iff `command -v codex` resolved to a path' },
+          detail: { type: 'string', description: 'the resolved path, or the not-found output' },
+        },
+      },
+    },
+  );
+  const available = !!(probe && probe.available);
+  log(
+    available
+      ? `bugfix-fleet: REVIEWER = codex (${(probe && probe.detail) || 'found'}).`
+      : 'bugfix-fleet: REVIEWER = Claude fallback subagent — codex is NOT installed on this host. ' +
+          'The independent-review gate still applies; it is simply being run by a different reviewer.',
+  );
+  return available;
+}
+
+// The review brief itself, shared by both reviewers so they are held to the
+// same standard and the same output shape.
+function reviewRequestBody(c, green) {
+  const spec = (green && green.briefing && green.briefing.gnu_behavior) || c.expected_behavior;
+  return [
+    `You are reviewing a bug fix in the vibeutils repository (a Zig implementation of GNU coreutils).`,
+    `Issue #${c.issue}, utility \`${c.utility}\`.`,
+    '',
+    'Inspect the change yourself: run `git diff main...HEAD` and `git diff` and read the surrounding',
+    'code. Do not rely on this summary alone.',
+    '',
+    `THE BUG THAT WAS FIXED:\n${c.bug_summary}`,
+    '',
+    `THE SPECIFICATION THE FIX MUST MEET (pinned reference behavior):\n${spec}`,
+    '',
+    'Review for, in priority order:',
+    '  1. Correctness against that specification, including edge cases the tests may not cover.',
+    '  2. Whether any test was weakened, deleted, or made tautological to get to green.',
+    '  3. Breakage on adjacent code paths that share the changed function.',
+    '  4. Zig 0.16 correctness: every blocking API takes an `io` parameter, std.fs moved to std.Io,',
+    '     buffered writers must be flushed, `writerStreaming` not `writer` for stdout/stderr.',
+    '  5. Memory: allocations freed, arena vs testing.allocator used appropriately.',
+    '',
+    'Do NOT report style preferences, naming opinions, or speculative refactors. Report only things',
+    'that are wrong or would break.',
+    '',
+    'Output ONLY a JSON array, nothing else:',
+    '[{"id":"C1","severity":"CRITICAL|IMPORTANT|SUGGESTION","location":"file:line",',
+    '  "claim":"what is wrong","evidence":"the code or behavior you cite"}]',
+    'Return [] if the change is clean.',
+  ].join('\n');
+}
+
 function codexInstructions(promptFile) {
   return [
     'Invoke Codex as an INDEPENDENT reviewer. Run exactly:',
@@ -489,7 +632,6 @@ function codexInstructions(promptFile) {
 
 async function codexReview(c, green) {
   const promptFile = `/tmp/codex-review-${c.issue}.md`;
-  const spec = (green && green.briefing && green.briefing.gnu_behavior) || c.expected_behavior;
   return await agent(
     [
       wtPreamble(c),
@@ -500,31 +642,7 @@ async function codexReview(c, green) {
       codexInstructions(promptFile),
       '',
       `--- BEGIN review request to write to ${promptFile} ---`,
-      `You are reviewing a bug fix in the vibeutils repository (a Zig implementation of GNU coreutils).`,
-      `Issue #${c.issue}, utility \`${c.utility}\`.`,
-      '',
-      'Inspect the change yourself: run `git diff main...HEAD` and `git diff` and read the surrounding',
-      'code. Do not rely on this summary alone.',
-      '',
-      `THE BUG THAT WAS FIXED:\n${c.bug_summary}`,
-      '',
-      `THE SPECIFICATION THE FIX MUST MEET (pinned reference behavior):\n${spec}`,
-      '',
-      'Review for, in priority order:',
-      '  1. Correctness against that specification, including edge cases the tests may not cover.',
-      '  2. Whether any test was weakened, deleted, or made tautological to get to green.',
-      '  3. Breakage on adjacent code paths that share the changed function.',
-      '  4. Zig 0.16 correctness: every blocking API takes an `io` parameter, std.fs moved to std.Io,',
-      '     buffered writers must be flushed, `writerStreaming` not `writer` for stdout/stderr.',
-      '  5. Memory: allocations freed, arena vs testing.allocator used appropriately.',
-      '',
-      'Do NOT report style preferences, naming opinions, or speculative refactors. Report only things',
-      'that are wrong or would break.',
-      '',
-      'Output ONLY a JSON array, nothing else:',
-      '[{"id":"C1","severity":"CRITICAL|IMPORTANT|SUGGESTION","location":"file:line",',
-      '  "claim":"what is wrong","evidence":"the code or behavior you cite"}]',
-      'Return [] if the change is clean.',
+      reviewRequestBody(c, green),
       `--- END review request ---`,
     ].join('\n'),
     {
@@ -534,6 +652,47 @@ async function codexReview(c, green) {
       schema: CODEX_FINDINGS_SCHEMA,
     },
   );
+}
+
+// Fallback reviewer for hosts without codex. Deliberately dispatched under
+// `tdd-pipeline:code-reviewer`, NOT the implementer's agentType: a reviewer
+// carrying the implementer's brief would just re-argue its own fix.
+async function claudeFallbackReview(c, green) {
+  const review = await agent(
+    [
+      wtPreamble(c),
+      '',
+      '## YOUR TASK (independent reviewer — FALLBACK for an absent Codex)',
+      'The Codex CLI is not installed on this host, so you are standing in as the independent reviewer.',
+      'You did NOT write this fix and you must not defend it. Read the code and judge it on its merits;',
+      'if it is clean, say so with an empty findings list — but do not wave anything through because it',
+      'looks plausible. Your verdict is the review of record for this change and will be logged as',
+      'having come from the fallback reviewer, not from Codex.',
+      'You may NOT edit any file. Report findings only.',
+      '',
+      reviewRequestBody(c, green),
+      '',
+      'Return your findings in the required schema. Set invoked_ok=true when you completed the review',
+      '(that is the "a review actually happened" flag, and for you it should be true unless you were',
+      'unable to read the diff at all), and put a one-line note in raw_excerpt recording that this was',
+      'the Claude fallback reviewer rather than Codex.',
+    ].join('\n'),
+    {
+      label: `fallback-review:${c.utility}#${c.issue}`,
+      phase: 'Codex review',
+      model: 'opus',
+      agentType: 'tdd-pipeline:code-reviewer',
+      schema: CODEX_FINDINGS_SCHEMA,
+    },
+  );
+  return review;
+}
+
+// Routes to whichever independent reviewer this host actually has.
+async function independentReview(c, green) {
+  const haveCodex = await codexAvailable();
+  const review = haveCodex ? await codexReview(c, green) : await claudeFallbackReview(c, green);
+  return { review, reviewer: haveCodex ? 'codex' : 'claude-fallback' };
 }
 
 async function codexRebuttal(c, disputed) {
@@ -580,6 +739,52 @@ async function codexRebuttal(c, disputed) {
   );
 }
 
+// The rebuttal half of the fallback path: same bounded withdraw-or-reaffirm
+// contract, same reviewer agentType, so the rounds logic below is identical
+// whichever reviewer this host has.
+function rebuttalItems(disputed) {
+  return disputed
+    .map(
+      (d) =>
+        `### Finding ${d.id} (${d.severity}) at ${d.location}\n` +
+        `Your claim: ${d.claim}\n` +
+        `Your evidence: ${d.evidence}\n` +
+        `The implementer DISPUTES this and replies: ${d.dispute}`,
+    )
+    .join('\n\n');
+}
+
+async function claudeFallbackRebuttal(c, disputed) {
+  return await agent(
+    [
+      wtPreamble(c),
+      '',
+      '## YOUR TASK (independent reviewer — rebuttal round, FALLBACK for an absent Codex)',
+      `Continuing YOUR OWN review of vibeutils issue #${c.issue} (${c.utility}).`,
+      'The code has changed since your review. Re-read it: run `git diff main...HEAD` and `git diff`.',
+      '',
+      'For each finding below, the implementer disagreed with you. Consider their reasoning against the',
+      'ACTUAL current code, then decide. Withdraw if they are right or if the code no longer has the',
+      'problem. Reaffirm only if you have checked the current code and the problem is genuinely still',
+      'there. Being talked out of a correct finding is as bad as holding a wrong one.',
+      'You may NOT edit any file.',
+      '',
+      rebuttalItems(disputed),
+    ].join('\n'),
+    {
+      label: `fallback-rebuttal:${c.utility}#${c.issue}`,
+      phase: 'Adjudicate',
+      model: 'opus',
+      agentType: 'tdd-pipeline:code-reviewer',
+      schema: REBUTTAL_SCHEMA,
+    },
+  );
+}
+
+async function independentRebuttal(c, disputed) {
+  return (await codexAvailable()) ? await codexRebuttal(c, disputed) : await claudeFallbackRebuttal(c, disputed);
+}
+
 async function respondToFindings(c, findings, roundLabel) {
   const items = findings
     .map(
@@ -593,7 +798,8 @@ async function respondToFindings(c, findings, roundLabel) {
       wtPreamble(c),
       '',
       '## YOUR TASK (implementer — respond to an independent review)',
-      'An independent reviewer (Codex, a different model) reviewed your fix. Treat it as a competent',
+      'An INDEPENDENT reviewer — Codex where it is installed, otherwise a separate Claude reviewer',
+      'agent that did not write this fix — reviewed your work. Treat it as a competent',
       'peer who cannot see your reasoning: it is often right, and sometimes confidently wrong.',
       '',
       `Implementation files you may edit: ${c.impl_files.join(', ')}`,
@@ -730,17 +936,17 @@ async function postGate(c, why) {
 
 // One issue's full post-green adjudication. Bounded at every step.
 async function adjudicate(c, green) {
-  const review = await codexReview(c, green);
+  const { review, reviewer } = await independentReview(c, green);
   if (!review || !review.invoked_ok) {
-    log(`#${c.issue}: codex review did not run cleanly — surfacing, not silently skipping.`);
-    return { codex_ok: false, findings: [], deadlocks: [], verdicts: [], post_gate: null };
+    log(`#${c.issue}: ${reviewer} review did not run cleanly — surfacing, not silently skipping.`);
+    return { codex_ok: false, reviewer, findings: [], deadlocks: [], verdicts: [], post_gate: null };
   }
   let open = (review.findings || []).filter((f) => f.severity !== 'SUGGESTION');
   const dropped = (review.findings || []).length - open.length;
-  if (dropped > 0) log(`#${c.issue}: ${dropped} SUGGESTION-severity codex finding(s) logged but not gated on.`);
+  if (dropped > 0) log(`#${c.issue}: ${dropped} SUGGESTION-severity ${reviewer} finding(s) logged but not gated on.`);
   if (open.length === 0) {
-    log(`#${c.issue}: codex review clean.`);
-    return { codex_ok: true, findings: review.findings || [], deadlocks: [], verdicts: [], post_gate: null };
+    log(`#${c.issue}: ${reviewer} review clean.`);
+    return { codex_ok: true, reviewer, findings: review.findings || [], deadlocks: [], verdicts: [], post_gate: null };
   }
 
   let changed = false;
@@ -765,11 +971,11 @@ async function adjudicate(c, green) {
       break;
     }
     if (round === CODEX_ROUNDS_MAX) {
-      deadlocks = disputed.map((d) => ({ ...d, reaffirm: '(final round — not re-put to codex)' }));
+      deadlocks = disputed.map((d) => ({ ...d, reaffirm: `(final round — not re-put to ${reviewer})` }));
       break;
     }
 
-    const reb = await codexRebuttal(c, disputed);
+    const reb = await independentRebuttal(c, disputed);
     const stance = new Map(((reb && reb.verdicts) || []).map((v) => [v.id, v]));
     const stillLive = disputed.filter((d) => {
       const s = stance.get(d.id);
@@ -821,6 +1027,7 @@ async function adjudicate(c, green) {
   const gate = changed ? await postGate(c, 'adjudication applied changes') : null;
   return {
     codex_ok: true,
+    reviewer,
     findings: review.findings || [],
     deadlocks,
     verdicts,
@@ -874,7 +1081,7 @@ const greens = await parallel(
     if (!green) return null;
     // Sequential within the issue: the review needs the finished diff. Across
     // issues these chains run concurrently. runGreen does not return the
-    // briefing, so re-attach the one the red phase produced — the Codex
+    // briefing, so re-attach the one the red phase produced — the independent
     // reviewer and the judge both need its pinned GNU behavior as the spec.
     const adj = await adjudicate(c, {
       ...green,
@@ -888,17 +1095,26 @@ const ok = greens.filter(Boolean);
 for (const g of ok) {
   log(
     `#${g.issue} (${g.utility}) green: pipeline=${g.ready_to_commit_green} ` +
-      `codex_findings=${(g.adjudication.findings || []).length} ` +
+      `reviewer=${g.adjudication.reviewer || 'unknown'} ` +
+      `findings=${(g.adjudication.findings || []).length} ` +
       `deadlocks=${(g.adjudication.deadlocks || []).length}`,
   );
 }
 return {
   phase: 'green',
   issues: wave,
+  // The review gate is unchanged in strength: `review_ok` is still ANDed into
+  // `ready`. What changed is that an absent codex now selects a different
+  // reviewer instead of failing the gate forever — and `reviewer` records
+  // which one actually ran, so "not reviewed by Codex" is never mistaken for
+  // "not reviewed".
+  reviewer: (ok[0] && ok[0].adjudication && ok[0].adjudication.reviewer) || 'unknown',
+  secondary_platform: LINUX_PREFIX || 'unavailable on this host; macOS deferred to CI',
   per_issue: Object.fromEntries(ok.map((g) => [g.issue, g])),
   commit_plan: ok.map((g) => ({
     issue: g.issue,
     workdir: ISSUES[g.issue].workdir,
+    reviewer: g.adjudication.reviewer || 'unknown',
     ready:
       g.ready_to_commit_green &&
       g.adjudication.codex_ok &&

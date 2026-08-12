@@ -29,6 +29,19 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+# The whole point of this script is waiting on CI, which it does through the
+# GitHub CLI. Without `gh` there is nothing to wait on, so fail here rather
+# than after the branch, tree and tag checks have all passed and the reader
+# believes the release is under way. `gh` is not installed in agent containers
+# by design (see docs/TOOLCHAIN.md); releases are cut from a dev machine.
+if ! command -v gh >/dev/null 2>&1; then
+    echo "Error: gh (GitHub CLI) not found, and this script cannot verify CI"
+    echo "without it. Pushing a release tag is irreversible, so it is never"
+    echo "done unverified."
+    echo "Cut the release from a machine with gh installed and authenticated."
+    exit 1
+fi
+
 # Must be on main branch
 BRANCH=$(git branch --show-current)
 if [ "$BRANCH" != "main" ]; then
