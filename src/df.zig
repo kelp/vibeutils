@@ -4539,6 +4539,116 @@ test "runDf - P with block-size uses the raw byte count label" {
 }
 
 // ============================================================================
+// Issue #132: non-POSIX --block-size labels must follow GNU's
+// divisibility-race abbreviation, not a hardcoded 512/1024/1M/1G literal
+// map with a "{d}B-blocks" fallback.
+//
+// GNU picks the base (1000 vs 1024) by racing repeated division: whichever
+// base keeps dividing the byte count evenly longer wins; a tie goes to
+// 1000. It then scales by that base, rounding UP (never nearest), with a
+// single decimal digit while the scaled mantissa is below 10.
+//
+// Every row below was verified against real GNU coreutils 9.4
+// (LC_ALL=C, native Linux host):
+//   for n in 512 999 1000 1023 1024 1500 1536 2000 2048 9950 10001 \
+//            65536 123456 1000000 1024000 1025024 1048576 \
+//            1048576000 1073741824 1 999999999 1099511627776 \
+//            1152921504606846976; do
+//     LC_ALL=C /usr/bin/df --block-size=$n / | head -1
+//   done
+// ============================================================================
+
+test "headerLabels - GNU divisibility-race block-size abbreviations" {
+    const Case = struct { bs: u64, want: []const u8 };
+    const cases = [_]Case{
+        // Regression guards: literal cases the old hardcoded map already
+        // rendered correctly. Must keep passing after the fix.
+        .{ .bs = 512, .want = "512B-blocks" },
+        .{ .bs = 999, .want = "999B-blocks" },
+        .{ .bs = 1024, .want = "1K-blocks" },
+        .{ .bs = 1024 * 1024, .want = "1M-blocks" },
+        .{ .bs = 1024 * 1024 * 1024, .want = "1G-blocks" },
+        // New cases the buggy fallback got wrong (rendered "NB-blocks"
+        // on the raw byte count instead of abbreviating).
+        .{ .bs = 1000, .want = "1kB-blocks" },
+        .{ .bs = 2000, .want = "2kB-blocks" },
+        .{ .bs = 2048, .want = "2K-blocks" },
+        .{ .bs = 65536, .want = "64K-blocks" },
+        .{ .bs = 1500, .want = "1.5kB-blocks" },
+        .{ .bs = 1023, .want = "1.1kB-blocks" }, // ceiling, not nearest (1.0 would be wrong)
+        .{ .bs = 1536, .want = "1.6kB-blocks" }, // ceiling, not nearest (1.5 would be wrong)
+        .{ .bs = 9950, .want = "10kB-blocks" }, // tenths carry into the integer part
+        .{ .bs = 10001, .want = "11kB-blocks" }, // Q>=10: integer ceiling, no decimal
+        .{ .bs = 123456, .want = "124kB-blocks" },
+        .{ .bs = 1000000, .want = "1MB-blocks" },
+        // TIE CASE: exactly 1000K. The divisibility race ties (both bases
+        // divide out evenly the same number of times), and a tie goes to
+        // base 1000 -- so this is 1.1MB, NOT 1000K. A naive "is it a
+        // multiple of 1024" rule gets this backwards.
+        .{ .bs = 1024000, .want = "1.1MB-blocks" },
+        // ANTI-TIE: exactly 1000M, but base 1024 wins outright here, and
+        // a 4-digit base-1024 mantissa (1000) is legal.
+        .{ .bs = 1048576000, .want = "1000M-blocks" },
+        .{ .bs = 1025024, .want = "1001K-blocks" }, // 4-digit base-1024 mantissa
+        .{ .bs = 999999999, .want = "1GB-blocks" }, // integer ceiling carries into next exponent
+        .{ .bs = 1099511627776, .want = "1T-blocks" },
+        .{ .bs = 1152921504606846976, .want = "1E-blocks" }, // max base-1024 unit
+        .{ .bs = 1, .want = "1B-blocks" },
+    };
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.portability = false;
+    for (cases) |case| {
+        opts.block_size = case.bs;
+        var buf: [32]u8 = undefined;
+        const labels = headerLabels(&buf, opts);
+        testing.expectEqualStrings(case.want, labels.size) catch |err| {
+            std.debug.print(
+                "block_size={d}: expected '{s}', got '{s}'\n",
+                .{ case.bs, case.want, labels.size },
+            );
+            return err;
+        };
+    }
+}
+
+test "runDf - block-size tie and anti-tie cases against GNU's divisibility race" {
+    // Both of these pin the direction of GNU's base-selection race at the
+    // CLI level, not just against the headerLabels helper.
+    //   df --block-size=1024000 /    -> 1.1MB-blocks (tie -> base 1000 wins)
+    //   df --block-size=1048576000 / -> 1000M-blocks  (base 1024 wins outright)
+    var tie_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer tie_aw.deinit();
+    try testExpectTokens(&.{
+        "Filesystem", "1.1MB-blocks", "Used", "Available", "Use%", "Mounted", "on",
+    }, try testHeaderFor(&tie_aw, &.{ "--block-size=1024000", "/" }));
+
+    var anti_tie_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer anti_tie_aw.deinit();
+    try testExpectTokens(&.{
+        "Filesystem", "1000M-blocks", "Used", "Available", "Use%", "Mounted", "on",
+    }, try testHeaderFor(&anti_tie_aw, &.{ "--block-size=1048576000", "/" }));
+}
+
+test "runDf - block-size=0 is rejected with exit code 1" {
+    // Consistency with PR #134: an invalid --block-size must reject at
+    // parse time with a nonzero exit and the fixed error text, not fall
+    // through to headerLabels formatting.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--block-size=0", "/" };
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(
+        std.mem.find(u8, stderr_aw.writer.buffered(), "invalid --block-size argument") != null,
+    );
+}
+
+// ============================================================================
 // F21: df -n is a stub (should be rejected on Linux)
 // GNU df does not have -n. On Linux, it should be rejected as an
 // unrecognized option (exit code 2), not silently accepted.

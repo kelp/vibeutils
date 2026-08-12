@@ -242,4 +242,84 @@ test_df() {
     # -i and --output are mutually exclusive in GNU df
     test_command_exit_code "df -i --output is rejected" 1 \
         "$binary" -i --output=source /
+
+    # ==================================================================
+    # Issue #132: non-POSIX --block-size labels must follow GNU's
+    # divisibility-race abbreviation (base 1000 vs 1024, ceiling
+    # rounding), not the old hardcoded 512/1024/1M/1G map with a
+    # "{d}B-blocks" fallback for everything else.
+    #
+    # Every expected value below was verified against real GNU
+    # coreutils 9.4 (LC_ALL=C, native Linux host):
+    #   LC_ALL=C /usr/bin/df --block-size=$n / | head -1
+    # ==================================================================
+    echo -e "${CYAN}Testing --block-size header label abbreviation (issue #132)...${NC}"
+
+    # bs_cases: "block-size-arg:expected-label" pairs.
+    local bs_cases=(
+        "512:512B-blocks"     # regression guard (already correct today)
+        "999:999B-blocks"     # regression guard
+        "1024:1K-blocks"      # regression guard
+        "1000:1kB-blocks"     # was 1000B-blocks
+        "2000:2kB-blocks"     # was 2000B-blocks
+        "2048:2K-blocks"      # was 2048B-blocks
+        "65536:64K-blocks"    # was 65536B-blocks
+        "1500:1.5kB-blocks"   # non-integer mantissa
+        "1023:1.1kB-blocks"   # ceiling rounding, not nearest (1.0 would be wrong)
+        "1536:1.6kB-blocks"   # ceiling rounding, not nearest (1.5 would be wrong)
+        "9950:10kB-blocks"    # tenths carry into the integer part
+        "10001:11kB-blocks"   # integer ceiling once mantissa >= 10
+        "123456:124kB-blocks" # integer ceiling
+        "1000000:1MB-blocks"
+        # TIE CASE: exactly 1000K, but the divisibility race ties and a
+        # tie goes to base 1000 -- NOT 1000K. A naive "exact multiple of
+        # 1024" rule gets this backwards.
+        "1024000:1.1MB-blocks"
+        # ANTI-TIE: exactly 1000M, base 1024 wins outright; a 4-digit
+        # base-1024 mantissa (1000) is legal here.
+        "1048576000:1000M-blocks"
+        "1025024:1001K-blocks"       # 4-digit base-1024 mantissa
+        "999999999:1GB-blocks"       # integer ceiling carries into next exponent
+        "1073741824:1G-blocks"
+        "1099511627776:1T-blocks"
+        "1152921504606846976:1E-blocks" # max base-1024 unit
+        "1:1B-blocks"
+    )
+
+    local bs_case bs_arg bs_expected
+    for bs_case in "${bs_cases[@]}"; do
+        bs_arg="${bs_case%%:*}"
+        bs_expected="${bs_case#*:}"
+        output=$("$binary" --block-size="$bs_arg" / 2>/dev/null)
+        header=$(echo "$output" | head -1)
+        if [[ "$header" == *"$bs_expected"* ]]; then
+            print_test_result "df --block-size=$bs_arg -> $bs_expected" "PASS"
+        else
+            print_test_result "df --block-size=$bs_arg -> $bs_expected" "FAIL" \
+                "Header: $header"
+        fi
+    done
+
+    # POSIX mode must stay unabbreviated even for a value that would
+    # otherwise abbreviate outside -P.
+    output=$("$binary" -P --block-size=2000 / 2>/dev/null)
+    header=$(echo "$output" | head -1)
+    if [[ "$header" == *"2000-blocks"* ]]; then
+        print_test_result "df -P --block-size=2000 stays unabbreviated" "PASS"
+    else
+        print_test_result "df -P --block-size=2000 stays unabbreviated" "FAIL" \
+            "Header: $header"
+    fi
+
+    # --block-size=0 is invalid: reject with exit 1 and a stderr message
+    # (consistency with PR #134).
+    local bs0_stdout bs0_stderr bs0_exit bs0_cmd
+    run_command bs0_cmd bs0_stdout bs0_stderr bs0_exit \
+        "$binary" --block-size=0 /
+    if [[ $bs0_exit -eq 1 && "$bs0_stderr" == *"invalid --block-size argument"* ]]; then
+        print_test_result "df --block-size=0 rejected with exit 1" "PASS"
+    else
+        print_test_result "df --block-size=0 rejected with exit 1" "FAIL" \
+            "Exit: $bs0_exit, stderr: $bs0_stderr"
+    fi
 }
