@@ -106,7 +106,7 @@ fn runEnv_parseError(
                 "unrecognized option\nTry 'env --help' for more information.",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.internal_error);
         },
         error.MissingValue => {
             common.printErrorWithProgram(
@@ -116,7 +116,7 @@ fn runEnv_parseError(
                 "option requires an argument\nTry 'env --help' for more information.",
                 .{},
             );
-            return @intFromEnum(common.ExitCode.misuse);
+            return @intFromEnum(common.ExitCode.internal_error);
         },
         error.OutOfMemory => {
             common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
@@ -1226,7 +1226,7 @@ test "env runEnv: unknown flag" {
         &stdout_aw.writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqual(@as(u8, 125), exit_code);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
     );

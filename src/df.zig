@@ -2234,7 +2234,7 @@ pub fn runDf(
 
     if (parsed.err) |msg| {
         common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     defer allocator.free(opts.positionals);
 
@@ -2342,7 +2342,7 @@ fn runDf_resolveOutput(
             "options {s} and --output are mutually exclusive",
             .{flag},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     if (parseOutputFields(list, sel)) |bad| {
         const reason: []const u8 = switch (bad.kind) {
@@ -2356,7 +2356,7 @@ fn runDf_resolveOutput(
             "option --output: field '{s}' {s}",
             .{ bad.name, reason },
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     return null;
 }
@@ -3373,7 +3373,7 @@ test "runDf - version flag" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "df") != null);
 }
 
-test "runDf - unknown flag returns misuse" {
+test "runDf - unknown flag returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -3382,7 +3382,7 @@ test "runDf - unknown flag returns misuse" {
 
     const args = [_][]const u8{"--invalid"};
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "df:") != null);
 }
 
@@ -4554,9 +4554,9 @@ test "parseArgs - n flag rejected on Linux" {
     try testing.expect(parsed.err != null);
 }
 
-test "runDf - n flag returns misuse on Linux" {
+test "runDf - n flag returns exit code 1 on Linux" {
     // On Linux, -n is not a valid GNU df flag and should exit with
-    // misuse (exit code 2).
+    // a usage error (exit code 1).
     if (comptime !is_linux) return error.SkipZigTest;
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4566,7 +4566,7 @@ test "runDf - n flag returns misuse on Linux" {
 
     const args = [_][]const u8{"-n"};
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 // ============================================================================
@@ -4794,8 +4794,8 @@ test "runDf - h renders sizes with a unit suffix" {
 //   df -i/-P/-T with --output    -> "mutually exclusive", exit failure
 //   df --output=file,target /tmp -> the File column shows the operand;
 //                                   with no operand it shows "-"
-// GNU exits 1 on these errors; vibeutils df uses ExitCode.misuse (2) for
-// every argument error, so these tests pin 2 for internal consistency.
+// GNU exits 1 on these errors and vibeutils df matches it, so these tests
+// pin 1.
 //
 // The size/used/avail columns render through the same block-size logic as
 // the default layout, so the size header follows -h/-k/--block-size.
@@ -4945,7 +4945,7 @@ test "runDf - output rejects an unknown field" {
 
     const args = [_][]const u8{ "--output=bogus", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const err = stderr_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, err, "option --output: field 'bogus' unknown") != null);
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
@@ -4960,7 +4960,7 @@ test "runDf - output rejects a repeated field" {
 
     const args = [_][]const u8{ "--output=source,source", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const err = stderr_aw.writer.buffered();
     const want = "option --output: field 'source' used more than once";
     try testing.expect(std.mem.find(u8, err, want) != null);
@@ -4975,7 +4975,7 @@ test "runDf - output rejects an empty field list" {
 
     const args = [_][]const u8{ "--output=", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const err = stderr_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, err, "option --output: field '' unknown") != null);
 }
@@ -4989,7 +4989,7 @@ test "runDf - output is mutually exclusive with -i" {
 
     const args = [_][]const u8{ "-i", "--output=source", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const err = stderr_aw.writer.buffered();
     const want = "options -i and --output are mutually exclusive";
     try testing.expect(std.mem.find(u8, err, want) != null);
@@ -5004,7 +5004,7 @@ test "runDf - output is mutually exclusive with -P" {
 
     const args = [_][]const u8{ "-P", "--output=source", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const err = stderr_aw.writer.buffered();
     const want = "options -P and --output are mutually exclusive";
     try testing.expect(std.mem.find(u8, err, want) != null);
@@ -5019,7 +5019,7 @@ test "runDf - output is mutually exclusive with -T" {
 
     const args = [_][]const u8{ "-T", "--output=source", "/" };
     const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     const err = stderr_aw.writer.buffered();
     const want = "options -T and --output are mutually exclusive";
     try testing.expect(std.mem.find(u8, err, want) != null);

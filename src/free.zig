@@ -316,7 +316,7 @@ const FreeArgs = struct {
             .desc = "Continuous display every N seconds",
             .value_name = "N",
         },
-        .count = .{ .short = 'c', .desc = "Display N times (used with -s)", .value_name = "N" },
+        .count = .{ .short = 'c', .desc = "Repeat printing N times, then exit", .value_name = "N" },
         .help = .{ .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
     };
@@ -495,7 +495,8 @@ fn runFree_parseArgs(
     stderr_writer: *std.Io.Writer,
 ) !ParseResult {
     // Sanity on the exit-code constants this helper maps onto.
-    std.debug.assert(@intFromEnum(common.ExitCode.misuse) != @intFromEnum(common.ExitCode.success));
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) !=
+        @intFromEnum(common.ExitCode.success));
     std.debug.assert(prog_name.len != 0);
 
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
@@ -508,7 +509,10 @@ fn runFree_parseArgs(
                     "unrecognized option",
                     .{},
                 );
-                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
             error.MissingValue => {
                 common.printErrorWithProgram(
@@ -518,7 +522,10 @@ fn runFree_parseArgs(
                     "option requires an argument",
                     .{},
                 );
-                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(
@@ -528,7 +535,10 @@ fn runFree_parseArgs(
                     "invalid option value",
                     .{},
                 );
-                return ParseResult{ .parsed = null, .code = @intFromEnum(common.ExitCode.misuse) };
+                return ParseResult{
+                    .parsed = null,
+                    .code = @intFromEnum(common.ExitCode.general_error),
+                };
             },
             else => {
                 common.printErrorWithProgram(
@@ -626,7 +636,7 @@ fn runFree_handleEarlyExit(
             "extra operand '{s}'",
             .{parsed.positionals[0]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return null;
@@ -656,20 +666,26 @@ pub fn runFree(
     const show_total = parsed.total;
     const wide = parsed.wide;
 
-    const repeat_count = parsed.count orelse 0;
-    const interval = parsed.seconds orelse 0;
-
-    // Per GNU free: -c requires -s
-    if (parsed.count != null and parsed.seconds == null) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "-c requires -s option",
-            .{},
-        );
-        return @intFromEnum(common.ExitCode.misuse);
+    // A zero count is rejected, matching procps, so that the repeat_count == 0
+    // sentinel below can keep meaning "no -c given, loop unbounded".
+    if (parsed.count) |count| {
+        if (count == 0) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "failed to parse count argument: '0': Numerical result out of range",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.general_error);
+        }
     }
+
+    const repeat_count = parsed.count orelse 0;
+    // procps accepts a bare -c: the count carries an implied one-second
+    // interval, paid only between reports, so -c 1 returns immediately.
+    const interval = parsed.seconds orelse
+        if (parsed.count != null) @as(u32, 1) else 0;
 
     // No continuous mode requested, display once
     if (interval == 0) {
@@ -746,7 +762,7 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) void {
         \\  -t, --total     display a line showing column totals
         \\  -w, --wide      wide output
         \\  -s N, --seconds=N   continuously display every N seconds
-        \\  -c N, --count=N     display N times (used with -s)
+        \\  -c N, --count=N     repeat printing N times, then exit
         \\      --help      display this help and exit
         \\  -V, --version   output version information and exit
         \\
@@ -985,7 +1001,7 @@ test "runFree version flag" {
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
-test "runFree unknown flag returns misuse" {
+test "runFree unknown flag returns exit code 1" {
     const io = testing.io;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -996,12 +1012,12 @@ test "runFree unknown flag returns misuse" {
     const args = [_][]const u8{"--invalid"};
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "free:") != null);
 }
 
-test "runFree extra arguments returns misuse" {
+test "runFree extra arguments returns exit code 1" {
     const io = testing.io;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1012,7 +1028,7 @@ test "runFree extra arguments returns misuse" {
     const args = [_][]const u8{"extra"};
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
@@ -1254,11 +1270,11 @@ test "audit: free -w wide mode should show nonzero buffers" {
     try testing.expect(values[4] > 0);
 }
 
-// IMPORTANT: -c without -s should error (GNU rejects it)
-// GNU free: "free: -c requires -s option"
-// Currently: -c without -s silently displays once.
-// Expected: error exit code 2 with message about -s requirement.
-test "audit: free -c without -s should error" {
+// procps `free -c N` does NOT require -s: it repeats N times with an
+// implied one-second interval. Verified on Ubuntu with procps-ng 4.0.4,
+// `LC_ALL=C /usr/bin/free -c 3`: three reports separated by a blank line,
+// exit 0, two seconds of wall clock (N-1 sleeps).
+test "free -c N without -s repeats N times with an implied 1s interval" {
     const io = testing.io;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1266,13 +1282,72 @@ test "audit: free -c without -s should error" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const args = [_][]const u8{ "-c", "3" };
+    // Two repeats costs one second of sleep; three would cost two.
+    const args = [_][]const u8{ "-c", "2" };
+    const start = std.Io.Timestamp.now(io, .awake);
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const elapsed_ns = start.untilNow(io, .awake).nanoseconds;
 
-    // GNU exits 2 (misuse) when -c is given without -s
-    try testing.expectEqual(@as(u8, 2), result);
-    // stderr should mention -s requirement
-    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-s") != null);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+
+    const output = stdout_aw.writer.buffered();
+    // Exactly two reports, each with its own Mem: and Swap: row.
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "Mem:"));
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "Swap:"));
+    // procps separates reports with one blank line and emits no trailing one.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, "\n\n"));
+    try testing.expect(!std.mem.endsWith(u8, output, "\n\n"));
+    try testing.expect(std.mem.endsWith(u8, output, "\n"));
+    // The implied interval is one second, so two reports must span at
+    // least one sleep. Without it the whole run takes microseconds.
+    try testing.expect(elapsed_ns >= 900 * std.time.ns_per_ms);
+}
+
+// procps prints the single report immediately for -c 1 and exits without
+// sleeping: `time /usr/bin/free -c 1` measured 0.001s real, versus 1.001s
+// for -c 2. The interval is only paid BETWEEN reports.
+test "free -c 1 prints one report and exits without sleeping" {
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-c", "1" };
+    const start = std.Io.Timestamp.now(io, .awake);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
+    const elapsed_ns = start.untilNow(io, .awake).nanoseconds;
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+
+    const output = stdout_aw.writer.buffered();
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, "Mem:"));
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, output, "\n\n"));
+    // A trailing sleep would push this past a second; allow generous slack
+    // for a loaded CI runner but stay far below the one-second interval.
+    try testing.expect(elapsed_ns < 500 * std.time.ns_per_ms);
+}
+
+// The help text must not repeat the retired "-c requires -s" constraint.
+// procps documents the flag as " -c N, --count N  repeat printing N times,
+// then exit" with no mention of -s.
+test "free --help does not tie -c to -s" {
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{"--help"};
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const help = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, help, "--count") != null);
+    try testing.expect(std.mem.find(u8, help, "used with -s") == null);
+    try testing.expect(std.mem.find(u8, help, "requires -s") == null);
 }
 
 // IMPORTANT: -s short flag is hijacked by the si bool field
@@ -1290,7 +1365,7 @@ test "audit: free -s should set seconds not si" {
 
     // free -s 1 -c 1 should run continuous mode (1 second, 1 count)
     // and succeed. With the bug, -s sets si=true, "1" becomes a
-    // positional, and we get "extra operand '1'" (exit 2).
+    // positional, and we get "extra operand '1'" (exit 1).
     const args = [_][]const u8{ "-s", "1", "-c", "1" };
     const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 

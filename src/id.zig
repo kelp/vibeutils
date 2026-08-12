@@ -122,7 +122,7 @@ pub fn runId(
         args,
         "id",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed.positionals);
 
     // Handle help
@@ -158,10 +158,10 @@ pub fn runId(
             "extra operand '{s}'",
             .{parsed.positionals[1]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
-    // Validate flag combinations; bail out early with a misuse code if invalid.
+    // Validate flag combinations; bail out early with an error code if invalid.
     if (try runId_checkFlagCombos(allocator, &parsed, stderr_writer)) |code| return code;
 
     const ctx = RunIdContext{
@@ -230,8 +230,9 @@ fn runId_dispatch(
     );
 }
 
-/// Validate flag combinations for runId. Returns a misuse exit code to bail out
-/// with, or null when the combination is valid and execution should continue.
+/// Validate flag combinations for runId. Returns the general_error exit code to
+/// bail out with, or null when the combination is valid and execution should
+/// continue.
 fn runId_checkFlagCombos(
     allocator: Allocator,
     parsed: *const IdArgs,
@@ -249,7 +250,7 @@ fn runId_checkFlagCombos(
             "cannot print only names in default format",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     if (parsed.real and !parsed.user and !parsed.group and !show_groups) {
         common.printErrorWithProgram(
@@ -259,7 +260,7 @@ fn runId_checkFlagCombos(
             "cannot print only real IDs in default format",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // GNU id: -z requires a format flag (-u, -g, or -G).
@@ -271,7 +272,7 @@ fn runId_checkFlagCombos(
             "option --zero not permitted in default format",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Mutually exclusive: -u, -g, -G.
@@ -288,7 +289,7 @@ fn runId_checkFlagCombos(
             "cannot print 'only' of more than one choice",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // -p is mutually exclusive with -u, -g, -G.
@@ -300,7 +301,7 @@ fn runId_checkFlagCombos(
             "cannot print 'only' of more than one choice",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return null;
@@ -1277,7 +1278,7 @@ test "id short version flag" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "id") != null);
 }
 
-test "id unknown flag returns misuse" {
+test "id unknown flag returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1287,12 +1288,12 @@ test "id unknown flag returns misuse" {
     const args = [_][]const u8{"--invalid"};
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "id:") != null);
 }
 
-test "id -n without -u/-g/-G returns misuse" {
+test "id -n without -u/-g/-G returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1302,13 +1303,13 @@ test "id -n without -u/-g/-G returns misuse" {
     const args = [_][]const u8{"-n"};
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only names") != null,
     );
 }
 
-test "id -r without -u/-g/-G returns misuse" {
+test "id -r without -u/-g/-G returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1318,7 +1319,7 @@ test "id -r without -u/-g/-G returns misuse" {
     const args = [_][]const u8{"-r"};
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only real IDs") != null,
     );
@@ -1334,11 +1335,11 @@ test "id mutually exclusive -u and -g" {
     const args = [_][]const u8{ "-u", "-g" };
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print") != null);
 }
 
-test "id extra operand returns misuse" {
+test "id extra operand returns exit code 1" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1348,7 +1349,7 @@ test "id extra operand returns misuse" {
     const args = [_][]const u8{ "user1", "user2" };
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
@@ -1456,7 +1457,7 @@ test "id -p is mutually exclusive with -u -g -G" {
     const args = [_][]const u8{ "-p", "-u" };
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "id -p does not contain uid= format" {
@@ -1516,7 +1517,7 @@ test "id -a with -n is rejected (GNU: -a is no-op, -n alone is invalid)" {
     const args = [_][]const u8{ "-a", "-n" };
     const result = try runId(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     // -a is no-op, -n without -u/-g/-G is an error
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
@@ -1783,10 +1784,10 @@ test "id default format with named user includes all groups (superset)" {
 // Audit finding tests (IMPORTANT) — wave 5
 // ============================================================================
 
-test "id -z alone without format flag should exit 2 (GNU rejects)" {
+test "id -z alone without format flag should exit 1 (GNU rejects)" {
     // GNU id: "id: cannot print only names or real IDs in default format"
     // vibeutils currently accepts -z alone and outputs default format with NUL.
-    // GNU rejects -z without -u/-g/-G, exiting 2.
+    // GNU rejects -z without -u/-g/-G, exiting 1.
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1796,8 +1797,8 @@ test "id -z alone without format flag should exit 2 (GNU rejects)" {
     const args = [_][]const u8{"-z"};
     const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    // GNU behavior: -z alone is an error (exit 2)
-    try testing.expectEqual(@as(u8, 2), result);
+    // GNU behavior: -z alone is an error (exit 1)
+    try testing.expectEqual(@as(u8, 1), result);
     // stderr should contain a diagnostic message
     try testing.expect(stderr_aw.writer.buffered().len > 0);
 }

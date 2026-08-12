@@ -342,10 +342,10 @@ test_ln() {
     fi
 
     # No arguments
-    test_command_exit_code "ln no arguments" 2 "$binary"
+    test_command_exit_code "ln no arguments" 1 "$binary"
 
     # Invalid flag
-    test_command_exit_code "ln invalid flag" 2 \
+    test_command_exit_code "ln invalid flag" 1 \
         "$binary" --invalid-flag 2>/dev/null
 
     # Multiple targets to non-directory destination
@@ -717,13 +717,13 @@ test_ln() {
         print_test_result "ln --backup=simple no error trace" "PASS"
     fi
 
-    # Should exit cleanly: 0 (success) or 2 (usage error), but NOT 1 from
-    # an unhandled error propagation
-    if [[ $f66_exit -eq 0 || $f66_exit -eq 2 ]]; then
+    # Should exit cleanly: 0 (success) or 1 (usage error). The stderr
+    # trace check above is what catches unhandled error propagation.
+    if [[ $f66_exit -eq 0 || $f66_exit -eq 1 ]]; then
         print_test_result "ln --backup=simple clean exit" "PASS"
     else
         print_test_result "ln --backup=simple clean exit" "FAIL" \
-            "Expected exit 0 or 2, got $f66_exit (stderr: $f66_err)"
+            "Expected exit 0 or 1, got $f66_exit (stderr: $f66_err)"
     fi
 
     # F66: same with --backup=numbered
@@ -745,11 +745,11 @@ test_ln() {
         print_test_result "ln --backup=numbered no error trace" "PASS"
     fi
 
-    if [[ $f66n_exit -eq 0 || $f66n_exit -eq 2 ]]; then
+    if [[ $f66n_exit -eq 0 || $f66n_exit -eq 1 ]]; then
         print_test_result "ln --backup=numbered clean exit" "PASS"
     else
         print_test_result "ln --backup=numbered clean exit" "FAIL" \
-            "Expected exit 0 or 2, got $f66n_exit (stderr: $f66n_err)"
+            "Expected exit 0 or 1, got $f66n_exit (stderr: $f66n_err)"
     fi
 
     # ================================================================

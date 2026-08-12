@@ -92,7 +92,7 @@ pub fn runReadlink(
         args,
         "readlink",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed.positionals);
 
     // Handle help
@@ -110,7 +110,7 @@ pub fn runReadlink(
     // Validate: need at least one operand
     if (parsed.positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "readlink", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // The empty-operand case returned above, so the loop below always has work.
@@ -812,7 +812,7 @@ test "readlink missing operand" {
         &stdout_aw.writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
@@ -869,7 +869,7 @@ test "readlink unknown flag" {
         &stdout_aw.writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
     );

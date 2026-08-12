@@ -139,7 +139,7 @@ pub fn runRm(
         args,
         "rm",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help flag
@@ -158,7 +158,7 @@ pub fn runRm(
     if (files.len == 0) {
         if (parsed_args.force) return @intFromEnum(common.ExitCode.success);
         common.printErrorWithProgram(allocator, stderr_writer, "rm", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // -W: undelete is not supported on Linux. Print error and

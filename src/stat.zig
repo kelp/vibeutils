@@ -1810,7 +1810,7 @@ fn checkBsdConflicts_gnuSelector(
         "can't use format '{c}' with {s}",
         .{ bsdModeChar(opts.bsd_mode), selector },
     );
-    return @intFromEnum(common.ExitCode.misuse);
+    return @intFromEnum(common.ExitCode.general_error);
 }
 
 // ============================================================================
@@ -1837,7 +1837,7 @@ pub fn runStat(
             "{s}\nTry 'stat --help' for more information.",
             .{err_msg},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     if (opts.help) {
@@ -1865,7 +1865,7 @@ pub fn runStat(
             "missing operand\nTry 'stat --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return runStat_operands(allocator, &opts, stdout_writer, stderr_writer);
@@ -2198,7 +2198,7 @@ test "stat -V shows version" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "stat") != null);
 }
 
-test "stat missing operand returns misuse" {
+test "stat missing operand returns exit code 1" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2213,11 +2213,11 @@ test "stat missing operand returns misuse" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
-test "stat unknown flag returns misuse" {
+test "stat unknown flag returns exit code 1" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2232,7 +2232,7 @@ test "stat unknown flag returns misuse" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
     );
@@ -4390,7 +4390,7 @@ test "stat -q does not suppress argument parsing errors" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), missing_value_result);
+    try testing.expectEqual(@as(u8, 1), missing_value_result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "requires an argument") != null,
     );
@@ -4409,7 +4409,7 @@ test "stat -q does not suppress argument parsing errors" {
         &unknown_stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), unknown_result);
+    try testing.expectEqual(@as(u8, 1), unknown_result);
     try testing.expect(
         std.mem.find(u8, unknown_stderr_aw.writer.buffered(), "unrecognized option") != null,
     );
@@ -5464,8 +5464,8 @@ test "stat display modes accept -n, -q and -L without conflict" {
 
 // ---------------------------------------------------------------------------
 // Cross-interface conflicts. Combining a BSD display mode with a GNU output
-// selector is undefined by any spec, so vibeutils diagnoses it as misuse
-// (exit 2) rather than silently picking one of the two.
+// selector is undefined by any spec, so vibeutils diagnoses it as a usage
+// error (exit 1) rather than silently picking one of the two.
 // ---------------------------------------------------------------------------
 
 test "stat rejects a BSD display mode combined with -c or --printf" {
@@ -5481,7 +5481,7 @@ test "stat rejects a BSD display mode combined with -c or --printf" {
     var c_err: std.Io.Writer.Allocating = .init(testing.allocator);
     defer c_err.deinit();
     const c_args = [_][]const u8{ "-r", "-c", "%s", path };
-    try testing.expectEqual(@as(u8, 2), try testStatBoth(&c_args, &c_out, &c_err));
+    try testing.expectEqual(@as(u8, 1), try testStatBoth(&c_args, &c_out, &c_err));
     try testing.expect(
         std.mem.find(u8, c_err.writer.buffered(), "can't use format 'r' with -c") != null,
     );
@@ -5491,7 +5491,7 @@ test "stat rejects a BSD display mode combined with -c or --printf" {
     var p_err: std.Io.Writer.Allocating = .init(testing.allocator);
     defer p_err.deinit();
     const p_args = [_][]const u8{ "-l", "--printf=%s", path };
-    try testing.expectEqual(@as(u8, 2), try testStatBoth(&p_args, &p_out, &p_err));
+    try testing.expectEqual(@as(u8, 1), try testStatBoth(&p_args, &p_out, &p_err));
     try testing.expect(
         std.mem.find(u8, p_err.writer.buffered(), "can't use format 'l' with --printf") != null,
     );
@@ -5510,7 +5510,7 @@ test "stat rejects a BSD display mode combined with -t or -f" {
     var t_err: std.Io.Writer.Allocating = .init(testing.allocator);
     defer t_err.deinit();
     const t_args = [_][]const u8{ "-s", "-t", path };
-    try testing.expectEqual(@as(u8, 2), try testStatBoth(&t_args, &t_out, &t_err));
+    try testing.expectEqual(@as(u8, 1), try testStatBoth(&t_args, &t_out, &t_err));
     try testing.expect(
         std.mem.find(u8, t_err.writer.buffered(), "can't use format 's' with -t") != null,
     );
@@ -5520,7 +5520,7 @@ test "stat rejects a BSD display mode combined with -t or -f" {
     var f_err: std.Io.Writer.Allocating = .init(testing.allocator);
     defer f_err.deinit();
     const f_args = [_][]const u8{ "-x", "-f", path };
-    try testing.expectEqual(@as(u8, 2), try testStatBoth(&f_args, &f_out, &f_err));
+    try testing.expectEqual(@as(u8, 1), try testStatBoth(&f_args, &f_out, &f_err));
     try testing.expect(
         std.mem.find(u8, f_err.writer.buffered(), "can't use format 'x' with -f") != null,
     );

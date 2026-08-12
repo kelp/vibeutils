@@ -84,7 +84,7 @@ fn run(
         args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -121,7 +121,7 @@ fn run(
             "missing file operand\nTry '{s} --help' for more information.",
             .{prog_name},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Process files - continue even if one fails (GNU touch behavior)

@@ -44,7 +44,7 @@ pub fn runWhoami(
         args,
         "whoami",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // GNU acts on whichever of --help and --version comes first, so when both
@@ -72,7 +72,7 @@ pub fn runWhoami(
             "extra operand '{s}'\nTry 'whoami --help' for more information.",
             .{parsed_args.positionals[0]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Look up the effective user, which is the identity whoami reports.
@@ -297,14 +297,14 @@ test "whoami --help before --version prints help only" {
     try capture.expectStderrEmpty();
 }
 
-test "whoami unknown flag returns misuse" {
+test "whoami unknown flag returns exit code 1" {
     var capture = StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     const args = [_][]const u8{"--invalid"};
     const result = try testRunWhoami(&capture, &args);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
     const err_out = try capture.getStderrStripped();
     defer testing.allocator.free(err_out);
@@ -312,14 +312,14 @@ test "whoami unknown flag returns misuse" {
     try testing.expect(std.mem.find(u8, err_out, "unrecognized option") != null);
 }
 
-test "whoami unknown short flag returns misuse" {
+test "whoami unknown short flag returns exit code 1" {
     var capture = StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     const args = [_][]const u8{"-x"};
     const result = try testRunWhoami(&capture, &args);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
     const err_out = try capture.getStderrStripped();
     defer testing.allocator.free(err_out);
@@ -334,7 +334,7 @@ test "whoami extra operand reports the GNU message" {
     const args = [_][]const u8{"extra"};
     const result = try testRunWhoami(&capture, &args);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
     const expected = try testExtraOperandMessage("extra");
     defer testing.allocator.free(expected);
@@ -350,7 +350,7 @@ test "whoami dash operand reports the GNU message" {
     const args = [_][]const u8{"-"};
     const result = try testRunWhoami(&capture, &args);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
     const expected = try testExtraOperandMessage("-");
     defer testing.allocator.free(expected);
@@ -366,7 +366,7 @@ test "whoami empty operand reports the GNU message" {
     const args = [_][]const u8{""};
     const result = try testRunWhoami(&capture, &args);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
     const expected = try testExtraOperandMessage("");
     defer testing.allocator.free(expected);
@@ -398,7 +398,7 @@ test "whoami operand after end-of-options marker reports the GNU message" {
     const args = [_][]const u8{ "--", "extra" };
     const result = try testRunWhoami(&capture, &args);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try capture.expectStdoutEmpty();
     const expected = try testExtraOperandMessage("extra");
     defer testing.allocator.free(expected);

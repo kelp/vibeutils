@@ -117,14 +117,37 @@ pub const Error = error{
     OutputError,
 };
 
-/// Standard exit codes following POSIX conventions
+/// Standard exit codes.
+///
+/// POSIX 2024 mandates no specific number for failure: a utility must "exit
+/// with an exit status that indicates an error occurred." So the numbers here
+/// follow GNU coreutils, our primary behavioral reference, cross-checked
+/// against macOS and OpenBSD.
+///
+/// There is deliberately no code 2 for argument or usage errors. "Exit 2 means
+/// misuse" is a bash convention for shell builtins; coreutils has no such
+/// concept, and GNU, macOS, and OpenBSD all exit 1 for an unrecognized flag,
+/// a missing operand, or a bad option value. Do not reintroduce it.
 pub const ExitCode = enum(u8) {
-    /// Successful termination
+    /// Successful termination.
     success = 0,
-    /// General errors (catch-all for miscellaneous errors)
+    /// The catch-all failure code: argument errors, usage errors, and
+    /// operational failures alike. Correct for every utility except the few
+    /// listed under `serious_error` and `internal_error`.
     general_error = 1,
-    /// Misuse of shell builtins (missing arguments, etc.)
-    misuse = 2,
+    /// A second failure tier, used only where a utility already reserves 1 for
+    /// a non-error outcome or for an ordinary failure it must distinguish:
+    ///   - `grep`: 1 means "no lines matched", so errors must use 2.
+    ///   - `test` / `[`: 1 means "expression is false", so errors use 2.
+    ///   - `ls`: GNU splits "minor trouble" (1) from "serious trouble" (2),
+    ///     which includes command-line usage errors.
+    ///   - `sort`: GNU exits 2 on any error, and 1 only for `-c` order checks.
+    serious_error = 2,
+    /// The utility itself failed, as distinct from the command it ran. Used by
+    /// `env` and `timeout`, which reserve 126 (command found but not
+    /// executable) and 127 (command not found) for the child, and so need a
+    /// third code for their own argument and setup errors.
+    internal_error = 125,
 };
 
 /// Null writer for suppressing output (commonly used in tests).

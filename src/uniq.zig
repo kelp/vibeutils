@@ -112,7 +112,7 @@ fn runUniq_preprocessAllRepeated(
                         "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
                     .{method_str},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             if (method_out.* == .off) {
                 common.printErrorWithProgram(
@@ -123,7 +123,7 @@ fn runUniq_preprocessAllRepeated(
                         "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             }
             cleaned_args.appendAssumeCapacity("--all-repeated");
         } else if (std.mem.startsWith(u8, arg, "-D=")) {
@@ -137,7 +137,7 @@ fn runUniq_preprocessAllRepeated(
                         "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
                     .{method_str},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             if (method_out.* == .off) {
                 common.printErrorWithProgram(
@@ -148,7 +148,7 @@ fn runUniq_preprocessAllRepeated(
                         "\n  - 'none'\n  - 'prepend'\n  - 'separate'",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             }
             cleaned_args.appendAssumeCapacity("-D");
         } else {
@@ -302,7 +302,7 @@ pub fn runUniq(
         cleaned_args.items,
         "uniq",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Set the all_repeated_method from pre-processing.
@@ -327,7 +327,7 @@ pub fn runUniq(
             "extra operand '{s}'\nTry 'uniq --help' for more information.",
             .{parsed_args.positionals[2]},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     std.debug.assert(parsed_args.positionals.len <= 2);
 
@@ -670,14 +670,14 @@ test "uniq --version shows version information" {
     try testing.expect(std.mem.find(u8, out, common.version) != null);
 }
 
-test "uniq with unknown flag returns misuse" {
+test "uniq with unknown flag returns exit code 1" {
     const io = testing.io;
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runUniq(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
 }
 
 test "uniq getCompareSlice no options" {
@@ -985,14 +985,14 @@ test "uniq input without final newline" {
     try testing.expectEqualStrings("aaa\nbbb\n", stdout_aw.writer.buffered());
 }
 
-test "uniq extra operand returns misuse" {
+test "uniq extra operand returns exit code 1" {
     const io = testing.io;
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "input", "output", "extra" };
     const result = try runUniq(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 

@@ -14,17 +14,24 @@ with the reason · 🔄 in flight
 | whoami | ✅ | ✅ | 3 code fixes, 5 RED tests, oracle repaired |
 | df | ✅ | ✅ | `--output` built as a feature; 6 dead helpers deleted |
 
-## Cross-cutting — needs a ruling before anyone touches them
+## Cross-cutting
 
-These surfaced in two independent units and are repo-wide. Fixing
-them per-utility would make the codebase less consistent, not
-more, so nothing has been changed.
+Findings that are repo-wide rather than owned by one utility.
+Fixing this class per-utility makes the codebase less consistent,
+not more, so each was resolved once or is still awaiting a ruling.
+Unmarked entries are open.
 
-- **Argument errors exit 2; GNU exits 1.** Verified against GNU
-  coreutils 9.5 for both `whoami` and `df`. All 26 `parseOrExit`
-  call sites in `src/` share our convention, and df's own tests
-  and `tests/utilities/df_test.sh` pin 2. This is one decision
-  across 26 utilities.
+- ✅ **Argument errors exited 2; every reference exits 1.**
+  Resolved. POSIX 2024 mandates no number ("exit with an exit
+  status that indicates an error occurred"); OpenBSD source uses
+  `exit(1)` throughout with only `usr.bin/sort/sort.c:967` at 2;
+  GNU and macOS measured per-utility. `misuse = 2` was both
+  mis-valued and misnamed — "misuse of shell builtins" is bash's
+  convention and coreutils has no such concept. Replaced by
+  `general_error = 1`, `serious_error = 2` (ls, sort, grep,
+  test/`[`, which reserve 1 for a non-error outcome) and
+  `internal_error = 125` (env, timeout, which reserve 126/127 for
+  the child command). 38 utilities changed behavior.
 - **`src/common/argparse.zig:548` drops the offending flag name.**
   We print `whoami: unrecognized option`; GNU prints
   `whoami: unrecognized option '--invalid-flag'` plus the hint
@@ -34,13 +41,36 @@ more, so nothing has been changed.
   units.
 - **`src/common/user_group.zig:6`** — the `c_passwd` extern struct
   declares the glibc layout unconditionally.
-- **`scripts/tiger-check.sh` misclassifies violations as
-  pre-existing.** The NEW/PRE split keys on the function's
-  *declaration* line, so growing a body past the 70-line limit
-  without touching the signature reports as `PRE` and passes a
-  gate that keys on `new=0`. Caught live: `runDf` grew from under
-  70 to 77 lines and was reported `PRE`. Any gate trusting
-  `new=0` under-reports.
+- ✅ **`free -c N` was rejected without `-s`.** Fixed. procps
+  repeats N times with an implied one-second interval, paying the
+  interval only *between* reports, so `free -c 1` returns
+  immediately (measured: 0.001s versus 1.001s for `-c 2`).
+  Reports are separated by one blank line with no trailing blank.
+  Our help text documented the wrong constraint too.
+- ✅ **`printf` with no operands printed the wrong diagnostic.**
+  Fixed. Now emits `printf: missing operand` plus the
+  `Try 'printf --help' for more information.` hint, matching GNU.
+- ✅ **`scripts/tiger-check.sh` printed `new=0` for a value it had
+  not computed.** Fixed. `NEW` is only meaningful in `--base` and
+  `--staged` mode, which have a baseline; without one the script
+  printed 0 anyway. Its *exit code* was always correct — verified
+  by injecting a 110-column line, which produced
+  `SUMMARY total=1 new=0` and exit 1 — but two readers in a row,
+  an agent and me, read the summary text and concluded the gate
+  had passed. The non-diff modes now print `new=n/a`. An
+  uncomputed value must not render as a reassuring one.
+- **`scripts/tiger-check.sh` also misclassifies violations in
+  `--base`/`--staged` mode.** A separate bug: the NEW/PRE split
+  keys on a function's *declaration* line, so growing a body past
+  the 70-line limit without touching the signature reports as
+  `PRE`. Caught live: `runDf` grew from under 70 to 77 lines and
+  was reported `PRE`.
+- **`zig-out/bin` is shared between the macOS host and the
+  OrbStack VM.** A background `zig build` in either environment
+  rewrites the binaries a concurrent `tests/integration.sh` run is
+  executing, producing failures that do not reproduce. Observed
+  twice, on `mkdir` both times. Never run a build concurrently
+  with the integration suite.
 
 ## whoami
 

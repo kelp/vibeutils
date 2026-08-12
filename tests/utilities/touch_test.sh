@@ -511,8 +511,8 @@ test_touch() {
 
     echo -e "${CYAN}Testing Error Conditions & Edge Cases...${NC}"
 
-    # Test with no arguments (exit code 2 = misuse/argument error)
-    test_command_exit_code "touch no arguments" 2 "$binary" 2>/dev/null
+    # Test with no arguments (exit code 1 = argument error)
+    test_command_exit_code "touch no arguments" 1 "$binary" 2>/dev/null
 
     # Test with non-existent directory
     test_command_exit_code "touch non-existent directory" 1 "$binary" "/nonexistent_dir_$$/file.txt" 2>/dev/null
@@ -558,9 +558,9 @@ test_touch() {
     local special_file="$TEMP_DIR/special!@#\$%^&*()file.txt"
     test_command_succeeds "touch special characters" "$binary" "$special_file"
 
-    # Test invalid flags (exit code 2 = misuse/argument error)
-    test_command_exit_code "touch invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
-    test_command_exit_code "touch unknown short flag" 2 "$binary" -z 2>/dev/null
+    # Test invalid flags (exit code 1 = argument error)
+    test_command_exit_code "touch invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "touch unknown short flag" 1 "$binary" -z 2>/dev/null
 
     # Test -f flag (should be ignored - GNU compatibility)
     local f_file="$TEMP_DIR/f_test.txt"

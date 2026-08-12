@@ -121,12 +121,12 @@ test_stat() {
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
-    # Invalid flag exits with code 2
-    test_command_exit_code "stat invalid flag exits 2" 2 \
+    # Invalid flag exits with code 1
+    test_command_exit_code "stat invalid flag exits 1" 1 \
         "$binary" --invalid-flag
 
-    # Missing operand exits with code 2
-    test_command_exit_code "stat missing operand exits 2" 2 \
+    # Missing operand exits with code 1
+    test_command_exit_code "stat missing operand exits 1" 1 \
         "$binary"
 
     # Nonexistent file exits with code 1
@@ -488,7 +488,7 @@ newlines=$n_def_on_lines"
     # -q must not silence usage errors, only per-file access failures.
     local qu_cmd qu_out qu_err qu_exit
     run_command qu_cmd qu_out qu_err qu_exit "$binary" -q -c
-    if [[ "$qu_exit" -eq 2 && "$qu_err" == *"requires an argument"* ]]; then
+    if [[ "$qu_exit" -eq 1 && "$qu_err" == *"requires an argument"* ]]; then
         print_test_result "stat -q does not silence usage errors" "PASS"
     else
         print_test_result "stat -q does not silence usage errors" "FAIL" \
@@ -918,7 +918,7 @@ _test_stat_mode_conflicts() {
         fi
     done
 
-    # A display mode plus a GNU output selector is misuse (exit 2), never a
+    # A display mode plus a GNU output selector is a usage error (exit 1), never a
     # silent win for one of the two.
     local combo
     for combo in "-r:-c:%s:r:-c" "-l:--printf=%s::l:--printf" "-s:-t::s:-t" "-x:-f::x:-f"; do
@@ -929,10 +929,10 @@ _test_stat_mode_conflicts() {
         else
             run_command x_cmd x_out x_err x_exit "$binary" "$dmode" "$sel" "$f"
         fi
-        if [[ "$x_exit" -eq 2 && "$x_err" == *"can't use format '$dc' with $sname"* ]]; then
-            print_test_result "stat $dmode $sel is misuse (exit 2)" "PASS"
+        if [[ "$x_exit" -eq 1 && "$x_err" == *"can't use format '$dc' with $sname"* ]]; then
+            print_test_result "stat $dmode $sel is a usage error (exit 1)" "PASS"
         else
-            print_test_result "stat $dmode $sel is misuse (exit 2)" "FAIL" \
+            print_test_result "stat $dmode $sel is a usage error (exit 1)" "FAIL" \
                 "exit=$x_exit stderr='$x_err'"
         fi
     done

@@ -172,7 +172,7 @@ pub fn runTail(
         expanded_args,
         "tail",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
     assert(parsed_args.positionals.len <= expanded_args.len);
 
@@ -332,7 +332,7 @@ fn runTail_buildBlockOption(
         stderr_writer,
         "blocks",
         blocks_str,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     if (options_out.from_beginning_bytes) {
         // +N blocks means start at block N (1-indexed), skip (N-1)*512 bytes
         // processInputByBytesFromBeginning uses skip = byte_count - 1
@@ -366,7 +366,7 @@ fn runTail_buildOptions(
             stderr_writer,
             "lines",
             lines_str,
-        ) catch return @intFromEnum(common.ExitCode.misuse);
+        ) catch return @intFromEnum(common.ExitCode.general_error);
     } else if (parsed_args.reverse) {
         options_out.line_count = null; // -r without -n: show all lines
     } else {
@@ -383,7 +383,7 @@ fn runTail_buildOptions(
             stderr_writer,
             "bytes",
             bytes_str,
-        ) catch return @intFromEnum(common.ExitCode.misuse);
+        ) catch return @intFromEnum(common.ExitCode.general_error);
         options_out.line_count = null; // byte mode overrides line mode
     }
 
@@ -407,7 +407,7 @@ fn runTail_buildOptions(
             "option used in invalid context -- r",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Byte/block mode and line mode are mutually exclusive at exit: every
@@ -2283,7 +2283,7 @@ test "tail with invalid line count" {
         common.null_writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "invalid number of lines") != null,
     );
@@ -2301,7 +2301,7 @@ test "tail with invalid byte count" {
         common.null_writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "invalid number of bytes") != null,
     );
@@ -2569,7 +2569,7 @@ test "tail: -f and -r are mutually exclusive" {
         common.null_writer,
         &stderr_aw.writer,
     );
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "option used in invalid context") != null,
     );

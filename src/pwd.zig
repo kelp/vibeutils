@@ -47,7 +47,7 @@ pub fn runPwd(
                     "unrecognized option",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(
@@ -57,7 +57,7 @@ pub fn runPwd(
                     "option requires an argument",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(
@@ -67,7 +67,7 @@ pub fn runPwd(
                     "invalid option value",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
@@ -447,7 +447,7 @@ test "runPwd with invalid flag" {
     const args = [_][]const u8{"--invalid"};
     const result = try runPwd(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 
     const err_out = stderr_aw.writer.buffered();

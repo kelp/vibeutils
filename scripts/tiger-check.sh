@@ -587,10 +587,14 @@ RAW_TOTAL=$(wc -l < "$OUT_FILE" | tr -d ' ')
 [ -n "$RAW_TOTAL" ] || RAW_TOTAL=0
 TOTAL=$(awk -F'\t' '$1!="usize-arch"{c++} END{print c+0}' "$OUT_FILE")
 
+# Only the diff modes have a baseline to call a violation new against. The
+# other modes must report "n/a" rather than 0: printing new=0 for an
+# uncomputed value reads as "nothing new" and has already been mistaken for
+# a passing gate on a tree that this script was correctly exiting 1 on.
 if [ "$MODE" = base ] || [ "$MODE" = staged ]; then
     NEW=$(awk -F'\t' '$3=="NEW" && $1!="usize-arch"{c++} END{print c+0}' "$OUT_FILE")
 else
-    NEW=0
+    NEW="n/a"
 fi
 
 # Print sorted violations (including informational usize-arch) then the summary.

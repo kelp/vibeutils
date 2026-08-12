@@ -48,7 +48,7 @@ pub fn runTee(
         args,
         "tee",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -557,7 +557,7 @@ test "tee with unknown flag should return error" {
 
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runTee(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
     );

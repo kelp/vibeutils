@@ -174,7 +174,7 @@ fn run(
         args,
         prog_name,
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -222,7 +222,7 @@ fn run(
             "missing file operand",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     const exit_code = try createLinks(allocator, io, files, options, stdout_writer, stderr_writer);
@@ -387,7 +387,7 @@ fn createLinks(
             "missing destination file operand after '{s}'",
             .{files[0]},
         );
-        return common.ExitCode.misuse;
+        return common.ExitCode.general_error;
     }
 
     return common.ExitCode.success;
@@ -1947,10 +1947,10 @@ test "ln: --backup=simple does not panic with TooManyValues" {
         &stderr_aw.writer,
     );
 
-    // Should succeed (GNU behavior) or at least give a clean error (exit 2).
+    // Should succeed (GNU behavior) or at least give a clean error (exit 1).
     // Must NOT propagate TooManyValues error (which would be a panic/stack trace).
     // For now, test that it returns a clean exit code, not an error propagation.
-    try testing.expect(exit_code == 0 or exit_code == 2);
+    try testing.expect(exit_code == 0 or exit_code == 1);
 }
 
 // F66: ln --backup=numbered should also not panic
@@ -1987,5 +1987,5 @@ test "ln: --backup=numbered does not panic" {
         &stderr_aw.writer,
     );
 
-    try testing.expect(exit_code == 0 or exit_code == 2);
+    try testing.expect(exit_code == 0 or exit_code == 1);
 }

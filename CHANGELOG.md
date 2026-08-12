@@ -12,7 +12,7 @@
   modes are mutually exclusive — a second one is an error (exit 1),
   as is `-F` with anything but `-l` — and combining any of them with
   the GNU output selectors `-c`, `--printf`, `-t` or `-f` is
-  diagnosed as misuse (exit 2) rather than silently picking one.
+  diagnosed as an error (exit 1) rather than silently picking one.
   Because BSD `-f FORMAT` is declined, these are fixed renderings of
   the FreeBSD preset formats, not a general format engine (#93).
 - **`stat` gained the BSD `-n` and `-q` flags.** `-n` suppresses the
@@ -26,6 +26,31 @@
   BSD defines none (#93).
 
 ### Changed
+- **Argument and usage errors now exit 1, not 2, across 38
+  utilities.** This is a user-visible behavior change: any script
+  that tests for exit status 2 from a bad flag, a missing operand,
+  or a bad option value must be updated. The old value came from
+  `ExitCode.misuse`, which encoded bash's "misuse of shell
+  builtins" convention. coreutils has no such concept: POSIX 2024
+  mandates no particular number, OpenBSD exits 1 everywhere (its
+  one exception is `sort`), and GNU and macOS were measured
+  per-utility and exit 1. `basename`, `cat`, `chmod`, `chown`,
+  `cp`, `cut`, `date`, `dd`, `df`, `dirname`, `du`, `free`,
+  `head`, `id`, `ln`, `mkdir`, `mktemp`, `mv`, `nl`, `printf`,
+  `pwd`, `readlink`, `realpath`, `rm`, `rmdir`, `seq`, `sleep`,
+  `stat`, `tac`, `tail`, `tee`, `touch`, `tr`, `uniq`, `wc`,
+  `whoami` and `yes` all move from 2 to 1.
+
+  Two groups keep a different code, because they need one.
+  `grep`, `ls`, `sort`, and `test`/`[` still exit **2**: each
+  already reserves 1 for a non-error outcome (no lines matched, a
+  false expression, minor trouble), so their errors need a second
+  tier. `env` and `timeout` now exit **125** for their own
+  argument errors, which distinguishes a failure of the utility
+  itself from the 126 and 127 they report for the command they
+  run. The `ExitCode.misuse` name is gone; the enum is now
+  `success`, `general_error`, `serious_error`, and
+  `internal_error`.
 - **`ls` reserves the git-status column only when something has a
   status.** The 3-column indicator was reserved for every entry
   whenever git status was active, so a repository with no changes
@@ -63,6 +88,17 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+- **`free -c N` no longer requires `-s`.** It rejected a bare count with
+  `free: -c requires -s option` (exit 1). procps accepts it: `-c N`
+  repeats N times with an implied one-second interval, paid only
+  between reports, so `free -c 1` prints once and returns immediately.
+  `-s N -c M` is unchanged. The help text and man page no longer tie
+  `-c` to `-s`.
+- **`printf` with no operands reports `missing operand`.** It printed
+  `printf: usage: printf FORMAT [ARGUMENT...]`; it now matches GNU with
+  `printf: missing operand` followed by the
+  `Try 'printf --help' for more information.` hint. The exit status
+  stays 1.
 - **`df --output=FIELD_LIST` selects columns instead of being ignored.**
   The option parsed and set a field list that no renderer ever read, so
   `df --output=source,size /` printed the ordinary table. It now renders

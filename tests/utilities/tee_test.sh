@@ -181,8 +181,8 @@ test_tee() {
     echo -e "${CYAN}Testing error conditions...${NC}"
     
     # Invalid flags
-    test_command_exit_code "tee invalid flag -x" 2 "$binary" -x 2>/dev/null
-    test_command_exit_code "tee invalid long flag" 2 "$binary" --invalid 2>/dev/null
+    test_command_exit_code "tee invalid flag -x" 1 "$binary" -x 2>/dev/null
+    test_command_exit_code "tee invalid long flag" 1 "$binary" --invalid 2>/dev/null
     
     # Read-only directory (permission test)
     local readonly_dir="$TEMP_DIR/readonly"

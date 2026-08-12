@@ -362,7 +362,7 @@ pub fn runCut(
         args,
         "cut",
         stderr_writer,
-    ) catch return @intFromEnum(common.ExitCode.misuse);
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -395,7 +395,7 @@ pub fn runCut(
             "invalid range: '{s}'",
             .{list_str},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(ranges);
 
@@ -584,7 +584,7 @@ fn runCut_resolveMode(
                 "Try 'cut --help' for more information.",
             .{},
         );
-        return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+        return .{ .exit = @intFromEnum(common.ExitCode.general_error) };
     }
 
     if (mode_count > 1) {
@@ -596,7 +596,7 @@ fn runCut_resolveMode(
                 "Try 'cut --help' for more information.",
             .{},
         );
-        return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+        return .{ .exit = @intFromEnum(common.ExitCode.general_error) };
     }
 
     assert(mode_count == 1);
@@ -610,7 +610,8 @@ fn runCut_resolveMode(
 }
 
 /// Validate flags that are only valid with field mode (-s, -d, -w) and the
-/// -w/-d mutual exclusivity. Returns a misuse exit code, or null on success.
+/// -w/-d mutual exclusivity. Returns the general_error exit code, or null on
+/// success.
 fn runCut_validateFlags(
     allocator: Allocator,
     stderr_writer: *std.Io.Writer,
@@ -633,7 +634,7 @@ fn runCut_validateFlags(
                 "Try 'cut --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // -d is only valid with -f
@@ -646,7 +647,7 @@ fn runCut_validateFlags(
                 "Try 'cut --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // -w is only valid with -f
@@ -659,7 +660,7 @@ fn runCut_validateFlags(
                 "Try 'cut --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // -w and -d are mutually exclusive
@@ -672,7 +673,7 @@ fn runCut_validateFlags(
                 "Try 'cut --help' for more information.",
             .{},
         );
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     return null;
@@ -718,7 +719,7 @@ fn runCut_resolveDelimiters(
                 "the delimiter must be a single character",
                 .{},
             );
-            return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+            return .{ .exit = @intFromEnum(common.ExitCode.general_error) };
         }
         if (d.len > 1) {
             common.printErrorWithProgram(
@@ -728,7 +729,7 @@ fn runCut_resolveDelimiters(
                 "the delimiter must be a single character",
                 .{},
             );
-            return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+            return .{ .exit = @intFromEnum(common.ExitCode.general_error) };
         }
         break :blk d[0];
     } else '\t';
@@ -1109,7 +1110,7 @@ test "cut no mode specified returns error" {
 
     const args = [_][]const u8{};
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "you must specify") != null);
 }
 
@@ -1120,7 +1121,7 @@ test "cut multiple modes returns error" {
 
     const args = [_][]const u8{ "-b", "1", "-f", "1" };
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "only one type") != null);
 }
 
@@ -1131,7 +1132,7 @@ test "cut -s without -f returns error" {
 
     const args = [_][]const u8{ "-b", "1", "-s" };
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "suppressing") != null);
 }
 
@@ -1142,7 +1143,7 @@ test "cut -d without -f returns error" {
 
     const args = [_][]const u8{ "-b", "1", "-d", ":" };
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "input delimiter") != null);
 }
 
@@ -1153,7 +1154,7 @@ test "cut unknown flag returns error" {
 
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
     );
@@ -1648,7 +1649,7 @@ test "cut: -w and -d are mutually exclusive" {
 
     const args = [_][]const u8{ "-w", "-f", "1", "-d", ":" };
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-w and -d") != null);
 }
 
@@ -1659,7 +1660,7 @@ test "cut: -w without -f returns error" {
 
     const args = [_][]const u8{ "-w", "-b", "1" };
     const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(
         std.mem.find(u8, stderr_aw.writer.buffered(), "-w may only be used with -f") != null,
     );

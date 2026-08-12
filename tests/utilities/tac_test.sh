@@ -77,8 +77,8 @@ test_tac() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Invalid flag
-    test_command_exit_code "tac invalid flag -x" 2 "$binary" -x 2>/dev/null
-    test_command_exit_code "tac invalid long flag" 2 "$binary" --invalid 2>/dev/null
+    test_command_exit_code "tac invalid flag -x" 1 "$binary" -x 2>/dev/null
+    test_command_exit_code "tac invalid long flag" 1 "$binary" --invalid 2>/dev/null
 
     # Non-existent file
     test_command_exit_code "tac nonexistent file" 1 "$binary" /nonexistent/file.txt 2>/dev/null
@@ -96,7 +96,7 @@ test_tac() {
     fi
 
     # Regex flag unsupported
-    test_command_exit_code "tac -r unsupported" 2 "$binary" -r 2>/dev/null
+    test_command_exit_code "tac -r unsupported" 1 "$binary" -r 2>/dev/null
 
     echo -e "${CYAN}Testing edge cases...${NC}"
 

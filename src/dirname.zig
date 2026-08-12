@@ -46,7 +46,7 @@ pub fn runDirname(
                     "unrecognized option",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(
@@ -56,7 +56,7 @@ pub fn runDirname(
                     "option missing required argument",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(
@@ -66,7 +66,7 @@ pub fn runDirname(
                     "invalid option value",
                     .{},
                 );
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
@@ -85,12 +85,12 @@ pub fn runDirname(
 
     if (parsed_args.positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "dirname", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     const separator: u8 = if (parsed_args.zero) '\x00' else '\n';
 
-    // Empty positionals already returned ExitCode.misuse above, so the
+    // Empty positionals already returned ExitCode.general_error above, so the
     // loop never runs on an empty slice.
     std.debug.assert(parsed_args.positionals.len > 0);
 
@@ -328,7 +328,7 @@ test "dirname: missing operand error" {
         &stderr_aw.writer,
     );
 
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
