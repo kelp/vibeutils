@@ -66,6 +66,11 @@ resolve_bin_dir() {
         printf '%s\n' "$VIBEUTILS_BIN_DIR"
         return
     fi
+    # The redirect here binds to `[`, not to `if` — `if` is a keyword, and the
+    # list it introduces is the simple command `[ ... ] 2>/dev/null`. It reads
+    # as though it were misplaced and has been "fixed" more than once; it is
+    # correct as written and silences `[` on the exotic cases (a dangling
+    # symlink, an unreadable parent). A missing directory is simply false.
     if [ -w /usr/local/bin ] 2>/dev/null; then
         printf '%s\n' /usr/local/bin
         return
@@ -401,9 +406,22 @@ tool_line() {
     local label="$1" cmd="$2" note="$3" path
     path=$(command -v "$cmd" 2>/dev/null || true)
     if [ -n "$path" ]; then
-        printf 'bootstrap: %-9s present   %s\n' "$label" "$path"
+        printf 'bootstrap: %-10s present   %s\n' "$label" "$path"
     else
-        printf 'bootstrap: %-9s MISSING   %s\n' "$label" "$note"
+        printf 'bootstrap: %-10s MISSING   %s\n' "$label" "$note"
+    fi
+}
+
+# Third state, for tools this script deliberately never installs. Reporting
+# them as MISSING reads as breakage, and an agent starting a session burns a
+# turn trying to install something that is absent by design and covered by CI.
+optional_tool_line() {
+    local label="$1" cmd="$2" note="$3" path
+    path=$(command -v "$cmd" 2>/dev/null || true)
+    if [ -n "$path" ]; then
+        printf 'bootstrap: %-10s present   %s\n' "$label" "$path"
+    else
+        printf 'bootstrap: %-10s n/a       not installed by design — %s\n' "$label" "$note"
     fi
 }
 
@@ -411,25 +429,41 @@ summary() {
     local zig_path resolved
     zig_path=$(command -v zig || true)
     resolved=$(readlink -f "$zig_path" 2>/dev/null || printf '%s' "$zig_path")
-    printf 'bootstrap: %-9s %-9s %s -> %s\n' \
+    printf 'bootstrap: %-10s %-10s %s -> %s\n' \
         zig "$(zig version 2>/dev/null || echo unknown)" "$zig_path" "$resolved"
 
     if command -v just >/dev/null 2>&1; then
-        printf 'bootstrap: %-9s %-9s %s\n' \
+        printf 'bootstrap: %-10s %-10s %s\n' \
             just "$(just --version 2>/dev/null | awk '{print $2}')" "$(command -v just)"
     else
-        printf 'bootstrap: %-9s MISSING   use "zig build test" and "./scripts/run-integration.sh"\n' just
+        printf 'bootstrap: %-10s MISSING   use "zig build test" and "./scripts/run-integration.sh"\n' just
     fi
 
+    # Installed by this script, so absence really is a problem.
     tool_line fakeroot fakeroot "'just test-privileged' unavailable"
     tool_line mandoc mandoc "'just lint-man' unavailable"
     tool_line hexdump hexdump "some 'just it' tests will fail (apt: bsdextrautils)"
-    tool_line kcov kcov "'just coverage' unavailable; coverage runs in CI"
-    tool_line gh gh "'just release-tag' unavailable; releases run from a dev machine"
+
+    # Never installed by this script. Absent is the expected state here.
+    optional_tool_line kcov kcov "'just coverage' unavailable; coverage runs in CI"
+    optional_tool_line gh gh "'just release-tag' unavailable; releases are cut from a dev machine"
+    optional_tool_line actionlint actionlint "'just lint-actions' unavailable; CI lints the workflows"
+
+    # The docker BINARY being present means nothing on its own: agent
+    # containers ship the client with no reachable daemon, and reporting that
+    # as "present" sends an agent down a road that dead-ends.
+    local docker_note="'just test-linux*' and 'just docker-*' unavailable; CI covers the distro matrix"
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        printf 'bootstrap: %-10s present   %s (daemon reachable)\n' docker "$(command -v docker)"
+    elif command -v docker >/dev/null 2>&1; then
+        printf 'bootstrap: %-10s n/a       client present but no daemon — %s\n' docker "$docker_note"
+    else
+        printf 'bootstrap: %-10s n/a       not installed by design — %s\n' docker "$docker_note"
+    fi
 
     local hooks
     hooks=$(git -C "$PROJECT_ROOT" config --get core.hooksPath 2>/dev/null || echo unset)
-    printf 'bootstrap: %-9s core.hooksPath=%s\n' hooks "$hooks"
+    printf 'bootstrap: %-10s core.hooksPath=%s\n' hooks "$hooks"
 
     local warning
     for warning in ${warnings+"${warnings[@]}"}; do

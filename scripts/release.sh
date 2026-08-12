@@ -119,16 +119,27 @@ if [ "$(uname -s)" = "Darwin" ]; then
         exit 1
     fi
     # The orb VM has zig but not the `just` task runner, so invoke the
-    # underlying steps directly. `just it` is `zig build` + integration.sh;
-    # integration.sh requires bash 4+ (the VM ships 5.2) and finds the repo
-    # via BASH_SOURCE, so the working directory does not matter.
+    # underlying steps directly. `just it` is `zig build` + run-integration.sh,
+    # and it is run-integration.sh rather than tests/integration.sh because
+    # only the wrapper drops privileges when the caller is root; both require
+    # bash 4+ (the VM ships 5.2) and find the repo via BASH_SOURCE.
     echo "Running unit tests on Linux (orb -m ubuntu)..."
     orb -m ubuntu zig build test
     echo "  Linux unit tests passed"
     echo "Running integration tests on Linux (orb -m ubuntu)..."
     orb -m ubuntu zig build
-    orb -m ubuntu bash tests/integration.sh
+    orb -m ubuntu bash scripts/run-integration.sh
     echo "  Linux integration tests passed"
+    echo ""
+else
+    # The gate above is one-directional: a macOS host can reach Linux, a Linux
+    # host cannot reach macOS. Skipping it silently made a Linux release look
+    # like it had cleared both platforms locally, which it had not — so say so.
+    echo "Host is $(uname -s), not Darwin: the local Linux-validation gate does"
+    echo "not apply (the suites above already ran on Linux natively)."
+    echo "macOS validation CANNOT be run from here and is deferred to CI."
+    echo "Gate 2 ('just release-tag') waits for macos-latest to go green before"
+    echo "the tag is pushed, so macOS is still covered — just not locally."
     echo ""
 fi
 

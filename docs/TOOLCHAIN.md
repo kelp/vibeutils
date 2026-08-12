@@ -95,15 +95,28 @@ a custom `core.hooksPath` it is left alone.
 
 None of these block development. Each gates exactly one thing.
 
-| Tool | Needed by | If missing |
-| --- | --- | --- |
-| `fakeroot` | `just test-privileged`, `just test-privileged-local` | Privileged tests cannot run |
-| `mandoc` | `just lint-man*`, the man-page PostToolUse hook | Man-page lint silently no-ops |
-| `hexdump` (apt: `bsdextrautils`) | `just it` — the `pwd` and `dirname` suites | Those tests fail on a bare `hexdump: command not found` |
-| `kcov` | `just coverage` | Use CI, or `just test-linux-coverage` |
-| `actionlint` | `just lint-actions` | Rely on CI |
-| Docker daemon | `just test-linux*`, `just docker-shell*` | Rely on CI |
-| `gh` | `just release-tag` | Releases cannot be cut from a container |
+The `Bootstrap` column says whether `scripts/bootstrap.sh` installs the
+tool. `yes` means an absence is a real gap worth fixing, and the
+bootstrap summary prints it as `MISSING`. `no` means the tool is absent
+**by design** — nothing here will ever install it, CI covers what it
+gates — and the summary prints `n/a`, not `MISSING`, so an agent reading
+the startup output does not burn a turn chasing a non-problem.
+
+| Tool | Bootstrap | Needed by | If missing |
+| --- | --- | --- | --- |
+| `fakeroot` | yes | `just test-privileged`, `just test-privileged-local` | Privileged tests cannot run |
+| `mandoc` | yes | `just lint-man*`, the man-page PostToolUse hook | Man-page lint silently no-ops |
+| `hexdump` (apt: `bsdextrautils`) | yes | `just it` — the `pwd` and `dirname` suites | Those tests fail on a bare `hexdump: command not found` |
+| `kcov` | no (`n/a`) | `just coverage` | Use CI, or `just test-linux-coverage` |
+| `actionlint` | no (`n/a`) | `just lint-actions` | Rely on CI |
+| Docker daemon | no (`n/a`) | `just test-linux*`, `just docker-shell*` | Rely on CI |
+| `gh` | no (`n/a`) | `just release-tag` | Releases cannot be cut from a container |
+| `orb` (OrbStack) | no (`n/a`) | `orb -m ubuntu …` on the macOS dev box | You are already on Linux; CI covers macOS |
+
+`just platform` prints this table as it actually stands on the host you
+are on, including whether the Docker *daemon* is reachable rather than
+just whether the client binary exists. Recipes that need an absent tool
+now fail with that explanation instead of a raw `command not found`.
 
 `scripts/bootstrap.sh` installs `fakeroot`, `mandoc` and `bsdextrautils`
 via apt when it is running as root (so: containers and CI images, never
@@ -151,6 +164,15 @@ Other container differences:
     `chown`, `grep`, `ls`, `rm`, `stat` and others fail for a reason that
     has nothing to do with the code. Set `VIBEUTILS_NO_DEMOTE=1` to run as
     root anyway.
+
+    > **Never run `bash tests/integration.sh` directly.** It is the suite,
+    > not the entry point, and it does no privilege dropping of its own. As
+    > uid 0 it produces roughly two dozen spurious failures that look
+    > exactly like real bugs in `cat`, `chmod`, `chown`, `grep`, `ls`, `rm`
+    > and `stat` — agents have chased those phantoms more than once. Always
+    > go through `just it`, `just it-util <util>`, or
+    > `scripts/run-integration.sh <util>`, all of which demote first.
+
   - **Unit tests**: privilege-dependent tests guard on
     `std.c.geteuid() == 0` and skip. See `src/common/walker.zig` and
     `src/common/file_ops.zig` for the pattern; add the same guard to any
@@ -165,6 +187,29 @@ Other container differences:
   for, so a signing failure here is a real problem to report, not something
   to sit out.
 
+### Environment variables
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `VIBEUTILS_TEST_USER` | `vibedev` | The unprivileged user `scripts/run-integration.sh` demotes to, created on demand with `useradd`. |
+| `VIBEUTILS_NO_DEMOTE` | unset | Run the integration suite as root anyway. Expect the permission-denied tests to fail. |
+| `VIBEUTILS_WT_ROOT` | parent of the checkout | Where `.claude/workflows/bugfix-fleet.js` expects sibling worktrees. |
+| `VIBEUTILS_LINUX_PREFIX` | `orb -m ubuntu` on macOS, empty elsewhere | How the workflows reach a second platform. Empty means there is none, and those legs are reported as deferred to CI rather than as passing. |
+
+**Run two worktrees' integration suites at once with distinct
+`VIBEUTILS_TEST_USER` values.** The suite `cd`s to the test user's home
+directory and `tests/utilities/mkdir_test.sh` creates *relative*
+directories (`combo`, `dir1`, `parent`, `tree`) there, so two concurrent
+runs sharing `vibedev` overwrite each other's fixtures and produce
+failures that reproduce nowhere. A different user gives a different
+`$HOME`; the temp root is already keyed by uid, so `$TMPDIR` separates
+for free:
+
+```
+VIBEUTILS_TEST_USER=vibedev-a just it   # in worktree A
+VIBEUTILS_TEST_USER=vibedev-b just it   # in worktree B, concurrently
+```
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -173,6 +218,9 @@ Other container differences:
 | `just: command not found` | `scripts/bootstrap.sh`, or skip it: `zig build test` and `./scripts/run-integration.sh` do the same work |
 | Wrong Zig version | `scripts/bootstrap.sh --check` reports it; delete `/opt/vibeutils-toolchain` and re-run to force a reinstall |
 | Bootstrap failed and named every source | Point `VIBEUTILS_ZIG_URL` at a reachable tarball or `VIBEUTILS_ZIG_BIN` at an existing binary |
+| Two dozen "permission denied" integration failures | You ran `tests/integration.sh` directly as root. Use `just it` / `scripts/run-integration.sh`, which demote first |
+| Integration failures only when another worktree is testing | Both runs shared the `vibedev` home directory. Give each a distinct `VIBEUTILS_TEST_USER` |
+| `kcov`/`gh`/`actionlint`/`docker` reported by bootstrap | If it says `n/a` they are absent by design and nothing is wrong. `just platform` confirms what this host has |
 | Commit aborted right after files were reformatted | Working as designed — the pre-commit hook runs `zig build fmt`, then aborts so you can review. Re-commit. |
 | `just coverage` says kcov is missing | Expected; coverage runs in CI |
 | Integration tests fail to start | They need bash 4.0+; macOS ships 3.2 |

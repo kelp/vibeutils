@@ -1,19 +1,19 @@
 export const meta = {
   name: 'tdd-bugfix',
   description:
-    'Classic red-green TDD pipeline for one bug fix. Phase "red": scout the bug site, pin the reference (GNU) behavior on the Linux VM, write FAILING tests, review them to APPROVED, verify RED for the right reason on macOS AND Linux. Phase "green": implement the minimal fix, then loop scoped verify + Tiger check + code review until green, ending with the full suites on both platforms. Commits are done by the orchestrator in the main loop (signing policy), not here.',
+    'Classic red-green TDD pipeline for one bug fix. Phase "red": scout the bug site, pin the reference (GNU) behavior on the nearest GNU host, write FAILING tests, review them to APPROVED, verify RED for the right reason natively and, when a second platform is reachable, there too. Phase "green": implement the minimal fix, then loop scoped verify + Tiger check + code review until green, ending with the full suites on every platform this host can reach. Commits are done by the orchestrator in the main loop (signing policy), not here.',
   whenToUse:
     'Fixing a behavior bug in a vibeutils utility where a natural failing test exists (GNU-parity divergences, wrong output, wrong exit code). Dispatch twice per bug: phase:"red", commit the tests, phase:"green", commit the fix. For behavior-preserving refactors use tdd-pipeline instead.',
   phases: [
-    { title: 'Scout', detail: 'distill bug site + pin GNU behavior on orb ubuntu (sonnet)' },
+    { title: 'Scout', detail: 'distill bug site + pin GNU behavior on the nearest GNU host (sonnet)' },
     { title: 'Author tests', detail: 'write FAILING tests asserting pinned behavior (opus, tdd-pipeline:test-writer)' },
     { title: 'Review tests', detail: 'loop test-reviewer until APPROVED (opus)' },
-    { title: 'Red check', detail: 'red for the RIGHT reason, macOS + Linux; rest of suite green (sonnet)' },
+    { title: 'Red check', detail: 'red for the RIGHT reason, native + secondary when reachable; rest of suite green (sonnet)' },
     { title: 'Implement', detail: 'minimal fix, scoped quiet checks (opus, tdd-pipeline:implementer)' },
     { title: 'Verify gate', detail: 'SCOPED: util unit + util integration + lint (haiku)' },
     { title: 'Tiger check', detail: 'scan for NEW Tiger Style violations, triage dual-use, fix (haiku/sonnet)' },
     { title: 'Code review', detail: 'loop code-reviewer until APPROVED (opus)' },
-    { title: 'Final verify', detail: 'ONCE: full unit + privileged + integration on macOS AND Linux (haiku)' },
+    { title: 'Final verify', detail: 'ONCE: full unit + privileged + integration natively, plus the secondary platform when reachable (haiku)' },
   ],
 };
 
@@ -24,10 +24,16 @@ export const meta = {
 //   utility, issue, bug_summary, expected_behavior,
 //   impl_files[],   // implementation code the implementer may edit
 //   test_files[],   // files the test-writer may edit (embedded test blocks + integration .sh)
-//   gnu_pin_cmds[], // shell commands to run on the Linux VM to pin GNU behavior
+//   gnu_pin_cmds[], // shell commands run against GNU coreutils to pin reference behavior
+//                   // (prefixed with linux_prefix when one is set, run locally otherwise)
 //   behaviors[],    // behaviors the tests must cover
 //   test_cmd, privileged_test_cmd, util_test_cmd, it_cmd, fmt_cmd, full_it_cmd,
-//   linux_prefix,   // e.g. "orb -m ubuntu" — how to run a command on the Linux VM
+//   linux_prefix,   // e.g. "orb -m ubuntu" — how to reach the SECONDARY platform.
+//                   // Empty/absent means there is no second platform here (a Linux
+//                   // agent container); those legs are then deferred to CI, never
+//                   // silently marked as passing.
+//   main_checkout,  // OPTIONAL absolute path to the main checkout, so the
+//                   // "stay out of it" rule names a path that actually exists.
 //   workdir,        // OPTIONAL absolute path to a git worktree; every agent cds
 //                   // there first so parallel runs never share a checkout.
 //                   // Omit for the ordinary single-checkout case (no-op).
@@ -49,10 +55,35 @@ const phaseArg = a.phase || 'red';
 // earlier run of this pipeline relied on that and silently wrote all three
 // issues' tests into the main checkout instead of their worktrees. Every shell
 // command must be self-contained: `cd <workdir> && <command>`. Within a single
-// call the cd holds, and `orb -m ubuntu` carries that cwd into the VM.
+// call the cd holds, and a VM launcher like `orb -m ubuntu` carries that cwd
+// into the VM.
 //
 // Empty string when unset, so behavior is unchanged for single-checkout callers.
 const cdPrefix = a.workdir ? `cd ${a.workdir} && ` : '';
+
+// The SECONDARY platform is whatever OS this host is not. It is reachable only
+// when the caller hands us a launcher: `orb -m ubuntu` on the macOS dev box,
+// nothing at all inside a Linux agent container. An absent launcher is not a
+// failure — it means that leg is deferred to CI — but it must never be
+// reported as a pass, so every gate below treats "unavailable" as its own
+// third state.
+const secondaryPrefix = (a.linux_prefix || '').trim();
+const secondaryAvailable = secondaryPrefix.length > 0;
+
+// Collapses the empty case, so an unavailable secondary can never leave a
+// stray leading space and turn `zig build test` into ` zig build test`.
+function onSecondary(cmd) {
+  return secondaryAvailable ? `${secondaryPrefix} ${cmd}` : cmd;
+}
+
+// The main checkout is off-limits to every worktree agent. Naming a literal
+// path here made the rule vacuously satisfiable anywhere that path does not
+// exist, so the caller passes the real one.
+const mainCheckout = a.main_checkout || '';
+const mainCheckoutRule = mainCheckout
+  ? `Never read, edit, build, or run anything under the main checkout at ${mainCheckout} itself.`
+  : 'Never read, edit, build, or run anything under the main checkout this worktree was created from.';
+
 const cwdPin = a.workdir
   ? [
       `WORKING DIRECTORY: ${a.workdir}`,
@@ -64,14 +95,18 @@ const cwdPin = a.workdir
       '`cd` does NOT carry over to your next command. So EVERY shell command you run must be',
       `self-contained and start with \`cd ${a.workdir} && \`. For example:`,
       `  cd ${a.workdir} && zig build test -Dtest-util=${a.utility}`,
-      `  cd ${a.workdir} && orb -m ubuntu zig build test -Dtest-util=${a.utility}`,
-      `  cd ${a.workdir} && bash tests/integration.sh ${a.utility}`,
-      'orb preserves the host cwd inside the VM, so the same prefix covers the Linux commands.',
+      ...(secondaryAvailable
+        ? [`  cd ${a.workdir} && ${onSecondary(`zig build test -Dtest-util=${a.utility}`)}`]
+        : []),
+      `  cd ${a.workdir} && scripts/run-integration.sh ${a.utility}`,
+      secondaryAvailable
+        ? 'The VM launcher preserves that cwd inside the VM, so the same prefix covers both platforms.'
+        : 'There is no secondary-platform launcher on this host, so every command runs natively.',
       '',
       'For Read/Edit/Write, always use ABSOLUTE paths beginning with the working directory above.',
       'Any bare or repo-relative path you hand to a file tool will resolve against the MAIN checkout',
       'and corrupt another agent\'s work.',
-      'Never read, edit, build, or run anything under /Users/tcole/code/vibeutils itself.',
+      mainCheckoutRule,
     ].join('\n')
   : '';
 
@@ -138,9 +173,9 @@ const REVIEW_SCHEMA = {
 const REDCHECK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['red_macos', 'right_reason', 'rest_green', 'red_linux', 'summary', 'output_excerpt'],
+  required: ['red_native', 'right_reason', 'rest_green', 'red_secondary', 'summary', 'output_excerpt'],
   properties: {
-    red_macos: { type: 'boolean', description: 'the new tests FAIL on current code on macOS' },
+    red_native: { type: 'boolean', description: 'the new tests FAIL on current code on THIS host' },
     right_reason: {
       type: 'boolean',
       description:
@@ -150,7 +185,11 @@ const REDCHECK_SCHEMA = {
       type: 'boolean',
       description: 'every pre-existing test still passes; the ONLY failures are the newly added tests',
     },
-    red_linux: { type: 'boolean', description: 'the new tests also FAIL on the Linux VM' },
+    red_secondary: {
+      type: ['boolean', 'null'],
+      description:
+        'the new tests also FAIL on the secondary platform; null when no secondary platform is reachable from this host (deferred to CI). Never report false for "could not run" — that is what null is for.',
+    },
     summary: { type: 'string' },
     output_excerpt: { type: 'string', description: 'the failing assertions verbatim (short)' },
   },
@@ -169,18 +208,26 @@ const VERIFY_GATE_SCHEMA = {
   },
 };
 
+// The three native legs are always run. The two secondary-platform legs are
+// nullable: null means "no secondary platform reachable from this host", which
+// the conjunction below skips rather than counts as a pass.
 const FINAL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['unit_pass', 'privileged_pass', 'integration_pass', 'linux_unit_pass', 'linux_integration_pass', 'summary', 'output_excerpt'],
+  required: ['unit_pass', 'privileged_pass', 'integration_pass', 'secondary_unit_pass', 'secondary_integration_pass', 'summary', 'output_excerpt'],
   properties: {
-    unit_pass: { type: 'boolean', description: 'true if the FULL unit suite (test_cmd) passes on macOS' },
-    privileged_pass: { type: 'boolean', description: 'true if the FULL privileged suite passes on macOS' },
-    integration_pass: { type: 'boolean', description: 'true if the FULL integration suite (full_it_cmd) passes on macOS' },
-    linux_unit_pass: { type: 'boolean', description: 'true if the full unit suite passes on the Linux VM' },
-    linux_integration_pass: {
-      type: 'boolean',
-      description: 'true if the scoped integration suite for this utility passes on the Linux VM',
+    unit_pass: { type: 'boolean', description: 'true if the FULL unit suite (test_cmd) passes on THIS host' },
+    privileged_pass: { type: 'boolean', description: 'true if the FULL privileged suite passes on THIS host' },
+    integration_pass: { type: 'boolean', description: 'true if the FULL integration suite (full_it_cmd) passes on THIS host' },
+    secondary_unit_pass: {
+      type: ['boolean', 'null'],
+      description:
+        'true if the full unit suite passes on the secondary platform; null when no secondary platform is reachable from this host. Never report false for "could not run".',
+    },
+    secondary_integration_pass: {
+      type: ['boolean', 'null'],
+      description:
+        'true if the scoped integration suite for this utility passes on the secondary platform; null when no secondary platform is reachable from this host.',
     },
     summary: { type: 'string' },
     output_excerpt: { type: 'string' },
@@ -330,9 +377,13 @@ async function scoutBriefing() {
       'Do all of the following:',
       `1. Read the bug site in ${(a.impl_files || []).join(', ')} and distill it (file:line, code excerpts,`,
       '   how the buggy path is reached).',
-      `2. Pin the reference behavior: run each of these commands on the Linux VM and record verbatim`,
-      '   output and exit codes (also record the GNU coreutils version with --version):',
-      ...(a.gnu_pin_cmds || []).map((c) => `     ${a.linux_prefix} ${c}`),
+      secondaryAvailable
+        ? '2. Pin the reference behavior: run each of these commands on the Linux VM and record verbatim'
+        : '2. Pin the reference behavior against the GNU coreutils on THIS host (you are already on Linux,',
+      secondaryAvailable
+        ? '   output and exit codes (also record the GNU coreutils version with --version):'
+        : '   so there is no VM to reach). Record verbatim output and exit codes, and the GNU version:',
+      ...(a.gnu_pin_cmds || []).map((c) => `     ${onSecondary(c)}`),
       '   If a command cannot reproduce the scenario, say so explicitly rather than inventing output.',
       `3. Distill test conventions from ${(a.test_files || []).join(', ')}: where embedded unit tests live,`,
       '   an excerpt of a nearby test to copy the style of, the integration helpers',
@@ -506,7 +557,8 @@ async function runRed() {
     log(`WARNING: test review hit the ${REVIEW_ROUND_MAX}-round backstop without APPROVED — surfacing for human review.`);
   }
 
-  // Red check: prove the red is real, for the right reason, on both platforms.
+  // Red check: prove the red is real, for the right reason, on the native
+  // platform, and on the secondary platform when one is reachable at all.
   phase('Red check');
   const redCheck = await agent(
     [
@@ -515,20 +567,41 @@ async function runRed() {
       '',
       'Verify the newly added tests are RED for the RIGHT reason. Run each step EXACTLY as given and',
       'report facts only; do NOT edit anything.',
-      `1. macOS scoped unit: \`${a.util_test_cmd}\` — confirm the ONLY failures are the newly added tests`,
+      `1. Native scoped unit: \`${a.util_test_cmd}\` — confirm the ONLY failures are the newly added tests`,
       '   and each failure message is the intended assertion (the bug), not a compile error or crash.',
-      `2. macOS scoped integration: \`${a.it_cmd}\` — same standard (new cases fail, old cases pass).`,
-      '3. Linux — run these EXACTLY as written, including the cd prefix (orb carries the cwd into the VM):',
-      `   \`${cdPrefix}${a.linux_prefix} zig build\` then the scoped unit and integration equivalents:`,
-      `   \`${cdPrefix}${a.linux_prefix} zig build test -Dtest-util=${a.utility}\` and`,
-      `   \`${cdPrefix}${a.linux_prefix} bash tests/integration.sh ${a.utility}\` — confirm the same red.`,
-      '   (The VM has zig but not just.)',
-      'Pipe verbose output through `tail`. red_macos/red_linux = new tests fail there; right_reason = the',
-      'failure is the intended assertion mismatch; rest_green = everything else passes.',
+      `2. Native scoped integration: \`${a.it_cmd}\` — same standard (new cases fail, old cases pass).`,
+      ...(secondaryAvailable
+        ? [
+            '3. Secondary platform — run these EXACTLY as written, including the cd prefix (the VM launcher',
+            '   carries the cwd into the VM):',
+            `   \`${cdPrefix}${onSecondary('zig build')}\` then the scoped unit and integration equivalents:`,
+            `   \`${cdPrefix}${onSecondary(`zig build test -Dtest-util=${a.utility}`)}\` and`,
+            `   \`${cdPrefix}${onSecondary(`scripts/run-integration.sh ${a.utility}`)}\` — confirm the same red.`,
+            '   (The VM has zig but not just, so call the script rather than `just it-util`.)',
+            '   Set red_secondary to whether the new tests fail there.',
+          ]
+        : [
+            '3. There is NO secondary platform reachable from this host — you are already on the only one',
+            '   available, and there is no VM launcher. Do NOT try to invent one, and do NOT run the',
+            '   native commands twice to fill the field. Set red_secondary to null and say in the summary',
+            '   that the secondary platform is unavailable and deferred to CI. Reporting false there would',
+            '   mean "the tests passed when they should have failed", which is not what happened.',
+          ]),
+      'Pipe verbose output through `tail`. red_native/red_secondary = new tests fail there; right_reason =',
+      'the failure is the intended assertion mismatch; rest_green = everything else passes.',
+      'NOTE: run the integration suite through `scripts/run-integration.sh`, never `tests/integration.sh`',
+      'directly. Only the wrapper drops from root to an unprivileged user, and as root roughly two dozen',
+      'permission-denied tests fail for reasons that have nothing to do with this bug.',
     ].join('\n'),
     { label: `red-check:${a.utility}#${a.issue}`, phase: 'Red check', model: 'sonnet', schema: REDCHECK_SCHEMA },
   );
-  log(`red check: macos=${redCheck.red_macos} reason=${redCheck.right_reason} rest=${redCheck.rest_green} linux=${redCheck.red_linux}`);
+  const redSecondaryOk = secondaryAvailable ? !!(redCheck && redCheck.red_secondary) : true;
+  log(
+    `red check: native=${redCheck && redCheck.red_native} reason=${redCheck && redCheck.right_reason} ` +
+      `rest=${redCheck && redCheck.rest_green} secondary=${
+        secondaryAvailable ? redCheck && redCheck.red_secondary : 'UNAVAILABLE (deferred to CI)'
+      }`,
+  );
 
   return {
     phase: 'red',
@@ -538,9 +611,11 @@ async function runRed() {
     test_summary: testNote,
     test_review: testReview,
     red_check: redCheck,
+    secondary_platform_available: secondaryAvailable,
     ready_to_commit_red:
       testReview.assessment === 'APPROVED' &&
-      !!(redCheck && redCheck.red_macos && redCheck.right_reason && redCheck.rest_green && redCheck.red_linux),
+      !!(redCheck && redCheck.red_native && redCheck.right_reason && redCheck.rest_green) &&
+      redSecondaryOk,
   };
 }
 
@@ -756,29 +831,64 @@ async function runGreen() {
   phase('Final verify');
   const finalCheck = await agent(
     [
-      '## YOUR TASK (final verify — FULL suite on BOTH platforms, run and report only)',
+      '## YOUR TASK (final verify — FULL suite, run and report only)',
       ...(cwdPin ? [cwdPin, ''] : []),
       'Run all suites EXACTLY as given, including the cd prefix (this is the once-only authoritative',
-      'gate). orb carries the cwd into the VM, so the same prefix covers the Linux commands:',
-      `  - macOS full unit:        "${cdPrefix}${a.test_cmd}"`,
-      `  - macOS full privileged:  "${cdPrefix}${a.privileged_test_cmd}"`,
-      `  - macOS full integration: "${cdPrefix}${fullItCmd}"`,
-      `  - Linux full unit:        "${cdPrefix}${a.linux_prefix} zig build test"`,
-      `  - Linux scoped integration: "${cdPrefix}${a.linux_prefix} zig build" then "${cdPrefix}${a.linux_prefix} bash tests/integration.sh ${a.utility}"`,
+      'gate):',
+      `  - native full unit:        "${cdPrefix}${a.test_cmd}"`,
+      `  - native full privileged:  "${cdPrefix}${a.privileged_test_cmd}"`,
+      `  - native full integration: "${cdPrefix}${fullItCmd}"`,
+      ...(secondaryAvailable
+        ? [
+            'The VM launcher carries the cwd into the VM, so the same prefix covers the secondary platform:',
+            `  - secondary full unit:        "${cdPrefix}${onSecondary('zig build test')}"`,
+            `  - secondary scoped integration: "${cdPrefix}${onSecondary('zig build')}" then "${cdPrefix}${onSecondary(`scripts/run-integration.sh ${a.utility}`)}"`,
+          ]
+        : [
+            'There is NO secondary platform reachable from this host and no VM launcher to reach one with.',
+            'Do NOT invent one and do NOT re-run the native commands to fill those fields: set',
+            'secondary_unit_pass and secondary_integration_pass to null, and state in the summary that the',
+            'secondary platform is unavailable here and macOS is deferred to CI. A leg that could not run',
+            'is not a leg that passed.',
+          ]),
       'Pipe verbose output through `tail`. Report facts only: unit_pass, privileged_pass,',
-      'integration_pass, linux_unit_pass, linux_integration_pass. The full runs cover the whole suite so',
-      'a shared/common change that broke another utility is caught.',
+      'integration_pass, secondary_unit_pass, secondary_integration_pass. The full runs cover the whole',
+      'suite so a shared/common change that broke another utility is caught.',
+      'Always drive the integration suite through `scripts/run-integration.sh` (or `just it` /',
+      '`just it-util`), never `tests/integration.sh` directly: only the wrapper drops from root to an',
+      'unprivileged user, and as root the permission-denied tests fail spuriously.',
     ].join('\n'),
     { label: `final-verify:${a.utility}#${a.issue}`, phase: 'Final verify', model: 'haiku', schema: FINAL_SCHEMA },
   );
+  // A null leg means "this platform could not be reached from here", which is
+  // skipped rather than counted. Anything else — including false — is a
+  // failure, so an agent that reports false for an unrunnable leg still blocks
+  // the commit instead of sneaking past it.
+  const legPasses = (leg) => leg === null || leg === undefined || leg === true;
   const finalAllPass =
     !!finalCheck &&
     finalCheck.unit_pass &&
     finalCheck.privileged_pass &&
     finalCheck.integration_pass &&
-    finalCheck.linux_unit_pass &&
-    finalCheck.linux_integration_pass;
-  log(`final verify: unit=${finalCheck && finalCheck.unit_pass} priv=${finalCheck && finalCheck.privileged_pass} it=${finalCheck && finalCheck.integration_pass} linux_unit=${finalCheck && finalCheck.linux_unit_pass} linux_it=${finalCheck && finalCheck.linux_integration_pass}`);
+    legPasses(finalCheck.secondary_unit_pass) &&
+    legPasses(finalCheck.secondary_integration_pass);
+  const secondaryLegsSkipped =
+    !!finalCheck &&
+    (finalCheck.secondary_unit_pass === null || finalCheck.secondary_unit_pass === undefined) &&
+    (finalCheck.secondary_integration_pass === null || finalCheck.secondary_integration_pass === undefined);
+  // Never let an unrun leg read as a pass in the record the orchestrator sees.
+  const finalSummary = !finalCheck
+    ? '(final verify produced no result)'
+    : secondaryLegsSkipped
+      ? `${finalCheck.summary || ''}\nSECONDARY PLATFORM UNAVAILABLE on this host; macOS deferred to CI. Those legs were NOT run and are NOT a pass.`.trim()
+      : finalCheck.summary || '';
+  const secondaryLabel = (leg) => (leg === null || leg === undefined ? 'UNAVAILABLE (deferred to CI)' : leg);
+  log(
+    `final verify: unit=${finalCheck && finalCheck.unit_pass} priv=${finalCheck && finalCheck.privileged_pass} ` +
+      `it=${finalCheck && finalCheck.integration_pass} ` +
+      `secondary_unit=${finalCheck && secondaryLabel(finalCheck.secondary_unit_pass)} ` +
+      `secondary_it=${finalCheck && secondaryLabel(finalCheck.secondary_integration_pass)}`,
+  );
 
   return {
     phase: 'green',
@@ -789,7 +899,9 @@ async function runGreen() {
     verify_gate: verify,
     tiger_check: tiger,
     code_review: codeReview,
-    final_verify: finalCheck,
+    final_verify: finalCheck ? { ...finalCheck, summary: finalSummary } : finalCheck,
+    secondary_platform_available: secondaryAvailable,
+    secondary_platform_skipped: secondaryLegsSkipped,
     final_all_pass: finalAllPass,
     ready_to_commit_green:
       !!(verify && verify.unit_pass && verify.integration_pass && verify.lint_clean) &&
