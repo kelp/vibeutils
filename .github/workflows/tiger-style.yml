@@ -24,6 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: ./.github/actions/setup-just
+      # The scanner's own contract tests run FIRST. A scanner that has
+      # stopped working reports zero violations and exits 0, which is
+      # indistinguishable from a clean tree -- so the suite that proves it
+      # still classifies a grown function body as NEW has to pass before its
+      # verdict on the repo means anything. It needs bash, awk and git only:
+      # its fixtures are throwaway repos it creates in a temp dir, never this
+      # checkout, so the default shallow clone stays fine.
+      - name: Self-test the Tiger Style scanner
+        run: bash tests/tools/tiger-check_test.sh
+
       # Tree-wide gate, not a diff against the base. The Tiger Style
       # migration brought every gating rule to zero, so the whole tree
       # must stay clean. This is strictly stronger than `--base`: it also
