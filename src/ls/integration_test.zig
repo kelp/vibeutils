@@ -1,5 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
+const common = @import("common");
 const test_utils = @import("test_utils.zig");
 const types = @import("types.zig");
 const formatter = @import("formatter.zig");
@@ -1452,6 +1453,1967 @@ test "blocks: -l -s right-aligns counts in a field sized to the widest count" {
     try std.testing.expectEqualStrings("16 -", line_b[0..4]);
 }
 
+// ============================================================================
+// Issue #124: -l nlink/owner/group/size column widths
+//
+// writeNlinkColored/writeOwnerColored/writeGroupColored/writeSizeColored
+// currently hardcode their field widths (3/8/8/5-or-8) instead of sizing
+// each column to the widest value actually present in the section, the way
+// max_time_width and block_prefix_width already do a few lines above in
+// printEntries_longFormat. Every test below asserts the pinned GNU
+// coreutils 9.4 behavior (LC_ALL=C TZ=UTC, verified on this host) and is
+// expected to fail against the current hardcoded-width code.
+//
+// uid 0 resolves to "root" via a real getpwuid lookup on every platform
+// vibeutils targets (POSIX guarantees uid 0 is root), so it is used
+// wherever a stable, portable owner *name* is needed. gid 0 is NOT
+// portable the same way: getgrgid(0) resolves to "root" on Linux but to
+// "wheel" on macOS -- this repo's CI runs `zig build test` on macos-26,
+// and this is exactly the macOS failure class CLAUDE.md calls out. Tests
+// below that use `.gid = 0` as a group-column filler therefore resolve
+// the real name via `groupName` at test time and build their expected
+// field with `padField`, rather than hardcoding the Linux-only literal
+// "root" -- so the WIDTH/alignment arithmetic each test actually pins is
+// unaffected while the rendered TEXT adapts to whatever the host's gid 0
+// really resolves to. Tests that need two genuinely different-width
+// values (to prove dynamic sizing, not just correct rendering of a single
+// width) use -n numeric ids instead, since arbitrary uid/gid numbers are
+// fully controllable without depending on real system accounts. The one
+// scenario that specifically needs a real long *name* (not a number) --
+// two names of different lengths in one section -- is covered separately
+// in ls_test.sh against the real "systemd-network" (15 chars) account
+// pinned in the issue.
+// ============================================================================
+
+/// Issue #124 test helper: the owner name uid `uid` really renders as on
+/// this host -- a resolved account name, or uid's own decimal string when
+/// the lookup fails. This is the same lookup (and the same numeric
+/// fallback) the formatter measures its column width with, so deriving an
+/// expectation from it is correct on any host by construction rather than
+/// correct on Linux by luck. Cannot fail: getUserName's only error comes
+/// from bufPrint, and 16 bytes hold every u32 (10 digits).
+fn userName(uid: u32, buf: []u8) []const u8 {
+    std.debug.assert(buf.len >= 16);
+    const name = common.file.getUserName(uid, buf) catch unreachable;
+    std.debug.assert(name.len > 0);
+    return name;
+}
+
+/// Issue #124 test helper: the group name gid `gid` really renders as on
+/// this host -- gid 0 is "root" on Linux but "wheel" on macOS, and an
+/// unmapped gid renders as its own digits (see the block comment above).
+/// Resolving it at test time keeps every test below correct on both
+/// platforms instead of hardcoding the Linux-only literal. Cannot fail for
+/// the same reason userName cannot.
+fn groupName(gid: u32, buf: []u8) []const u8 {
+    std.debug.assert(buf.len >= 16);
+    const name = common.file.getGroupName(gid, buf) catch unreachable;
+    std.debug.assert(name.len > 0);
+    return name;
+}
+
+/// Issue #124 test helper: builds a field exactly the way the real
+/// write-helpers do -- `name` padded to `width` on the correct side (left
+/// for name mode, right for `-n` numeric mode), plus exactly one trailing
+/// separator space -- so tests can assert against a runtime-resolved name
+/// (e.g. `groupName`) instead of only a comptime string literal.
+fn padField(buf: []u8, name: []const u8, width: usize, right_align: bool) []const u8 {
+    std.debug.assert(width >= name.len);
+    std.debug.assert(buf.len > width);
+    if (right_align) {
+        const pad = width - name.len;
+        @memset(buf[0..pad], ' ');
+        @memcpy(buf[pad .. pad + name.len], name);
+    } else {
+        @memcpy(buf[0..name.len], name);
+        @memset(buf[name.len..width], ' ');
+    }
+    buf[width] = ' ';
+    return buf[0 .. width + 1];
+}
+
+test "printEntries: fixture uids 424242 and 123456789 do not resolve to real accounts" {
+    // Several tests below use these two uids/gids specifically because they
+    // are expected to be unresolvable via getpwuid/getgrgid, so
+    // common.file.getUserName/getGroupName fall back to rendering the
+    // uid/gid as a decimal string -- giving controllable, genuinely
+    // different-width NAME-mode values without depending on any real
+    // /etc/passwd or /etc/group entry. If a host's NSS configuration (e.g.
+    // a very full nss-systemd dynamic range, or a real local account/group
+    // at one of these ids) resolved either id to an actual name, every test
+    // depending on this fallback would fail with a confusing width mismatch
+    // instead of a clear cause. This guard fails fast with that explicit
+    // cause instead. Both getUserName and getGroupName are checked because
+    // tests below use these values as both uid (owner) and gid (group).
+    var buf: [32]u8 = undefined;
+    const name_424242 = try common.file.getUserName(424242, &buf);
+    try testing.expectEqualStrings("424242", name_424242);
+
+    var buf2: [32]u8 = undefined;
+    const name_123456789 = try common.file.getUserName(123456789, &buf2);
+    try testing.expectEqualStrings("123456789", name_123456789);
+
+    var buf3: [32]u8 = undefined;
+    const group_424242 = try common.file.getGroupName(424242, &buf3);
+    try testing.expectEqualStrings("424242", group_424242);
+
+    var buf4: [32]u8 = undefined;
+    const group_123456789 = try common.file.getGroupName(123456789, &buf4);
+    try testing.expectEqualStrings("123456789", group_123456789);
+
+    // uid 500 is used below (alongside uid 0 == "root") specifically
+    // *because* its unresolved fallback name ("500", 3 chars) has fewer
+    // digits than "root" has letters (4) -- the one combination that can
+    // distinguish "column width measured from the rendered name" from a
+    // buggy "column width measured from the uid's decimal digit count"
+    // (which would coincide with the name width for every OTHER fixture
+    // uid in this file, since an unresolved name always equals its own
+    // digit string). Guarded the same way as 424242/123456789 above.
+    var buf5: [32]u8 = undefined;
+    const name_500 = try common.file.getUserName(500, &buf5);
+    try testing.expectEqualStrings("500", name_500);
+}
+
+test "printEntries: fixture uid 0 resolves to root; fixture gid 0 does not assume a name" {
+    // uid 0 is used everywhere below as a stable, portable owner name; this
+    // guards that POSIX assumption explicitly instead of letting a
+    // violation surface as a confusing width mismatch. Unlike the guard
+    // above, gid 0 is NOT asserted to be any particular string -- that is
+    // exactly the assumption that is false on macOS (gid 0 is "wheel", not
+    // "root") and would also break in a minimal container with no
+    // /etc/group. Every test below resolves gid 0's name via
+    // `groupName` at test time instead of assuming it; this guard only
+    // confirms the lookup succeeds and returns *something* non-empty, not
+    // a specific string, and confirms uid 0's name specifically is "root"
+    // since every test's OWNER field literal depends on that being true.
+    var uid_buf: [32]u8 = undefined;
+    const uid0_name = try common.file.getUserName(0, &uid_buf);
+    try testing.expectEqualStrings("root", uid0_name);
+
+    var gid_buf: [32]u8 = undefined;
+    const gid0_name = groupName(0, &gid_buf);
+    try testing.expect(gid0_name.len > 0);
+}
+
+test "printEntries: -l nlink and size columns widen to the widest value in a section" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Mirrors GNU coreutils 9.4 `ls -ld /run/systemd/netif /etc/hostname
+    // /usr` (LC_ALL=C TZ=UTC): nlink 1/5/12 widens to a right-aligned
+    // two-column field, and size 3/4096/4096 widens to a right-aligned
+    // four-column field. Owner and group are pinned to uid/gid 0 ("root")
+    // on every entry so this test isolates nlink/size sizing; this is also
+    // the REGRESSION GUARD case for the "total N" header and the 10-char
+    // permission string, both of which must stay byte-identical to today.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 3,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+            .blocks = 8,
+        } },
+        .{ .name = "b", .kind = .directory, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o755,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .directory,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 5,
+            .blocks = 8,
+        } },
+        .{ .name = "c", .kind = .directory, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o755,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .directory,
+            .inode = 3,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 12,
+            .blocks = 8,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const PERM_DIR = "drwxr-xr-x";
+    const NLINK_1 = "  1 "; // right-aligned to width 2 ("12" is the widest)
+    const NLINK_5 = "  5 ";
+    const NLINK_12 = " 12 ";
+    // left-aligned to width 4 (only value); uid 0 is portably "root".
+    const OWNER_ROOT = "root ";
+    const SIZE_3 = "   3 "; // right-aligned to width 4 ("4096" is widest)
+    const SIZE_4096 = "4096 ";
+
+    // gid 0's name is "root" on Linux but "wheel" on macOS; resolved at
+    // test time (see groupName's comment above) so this test's real
+    // point -- nlink/size widening -- holds on both platforms.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 24\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_3 ++ "{s} a\n" ++
+        PERM_DIR ++ NLINK_5 ++ OWNER_ROOT ++ "{s}" ++ SIZE_4096 ++ "{s} b\n" ++
+        PERM_DIR ++ NLINK_12 ++ OWNER_ROOT ++ "{s}" ++ SIZE_4096 ++ "{s} c\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -lh size field widens to the widest rendered string, not a hardcoded width" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Mirrors GNU `ls -ldh /run/systemd/netif /etc/hostname`: human-readable
+    // renders "3" and "4.0K", the widest of which is 4 columns -- not the
+    // hardcoded 5 that writeSizeColored's human_readable branch uses today.
+    // Both entries share nlink 1 (width 1) and uid/gid 0 ("root", width 4)
+    // so only the size column's width is under test here.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 3,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .human_readable = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 "; // width 1: both entries have nlink 1
+    const OWNER_ROOT = "root ";
+    const SIZE_3H = "   3 "; // right-aligned to width 4 ("4.0K" is widest)
+    const SIZE_4096H = "4.0K ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_3H ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_4096H ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -ln right-aligns numeric ids to the widest value (flips vs name alignment)" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Mirrors GNU `ls -ldn /run/systemd/netif /etc/hostname`: uid/gid 0 and
+    // 998 widen to a RIGHT-aligned three-column field under -n, the
+    // opposite alignment from the name case above. writeOwnerColored and
+    // writeGroupColored today always left-align regardless of -n.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "x", .kind = .file, .stat = common.file.FileInfo{
+            .size = 3,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "y", .kind = .directory, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o755,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .directory,
+            .inode = 2,
+            .uid = 998,
+            .gid = 998,
+            .nlink = 5,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .numeric_ids = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const PERM_DIR = "drwxr-xr-x";
+    const NLINK_1 = " 1 "; // width 1: nlinks are 1 and 5
+    const NLINK_5 = " 5 ";
+    const ID_0 = "  0 "; // right-aligned to width 3 ("998" is widest)
+    const ID_998 = "998 ";
+    const SIZE_3 = "   3 ";
+    const SIZE_4096 = "4096 ";
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ ID_0 ++ ID_0 ++ SIZE_3 ++ "{s} x\n" ++
+        PERM_DIR ++ NLINK_5 ++ ID_998 ++ ID_998 ++ SIZE_4096 ++ "{s} y\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ time_str, time_str });
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -lo (omit_group) keeps the owner column at the full section width" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // -o (omit_group, matching GNU's -o) drops the group field entirely,
+    // but the owner field must still be sized to the widest owner value in
+    // the section, not shrink to fit each entry's own value. Numeric ids
+    // (uid 7 and 12345) give two fully controllable, genuinely
+    // different-width values without depending on real system accounts.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "p", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 7,
+            .gid = 1,
+            .nlink = 1,
+        } },
+        .{ .name = "q", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 12345,
+            .gid = 1,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .numeric_ids = true, .omit_group = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 "; // width 1
+    const OWNER_7 = "    7 "; // right-aligned to width 5 ("12345" is widest)
+    const OWNER_12345 = "12345 ";
+    const SIZE_0 = "0 "; // width 1; no group column follows
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_7 ++ SIZE_0 ++ "{s} p\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_12345 ++ SIZE_0 ++ "{s} q\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ time_str, time_str });
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -lo (omit_group) keeps owner column at section width in name mode" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Both -lo tests above only proved "omit + keep full width" under -n
+    // (right-aligned), the pinned GNU -ldo reference is NAME mode
+    // (left-aligned, no -n). This closes that gap: an implementation that
+    // widens the surviving numeric column correctly but takes the
+    // omitted column's width by mistake in name mode would still pass
+    // the -n variant while failing here. uid 0 ("root", 4 chars) and an
+    // unresolvable uid ("424242", 6 chars, via getUserName's decimal
+    // fallback) give two genuinely different name-mode widths.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "p", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 1,
+            .nlink = 1,
+        } },
+        .{ .name = "q", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 424242,
+            .gid = 1,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .omit_group = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 "; // width 1
+    // Left-aligned to width 6 ("424242" is widest): "root" pads with 2
+    // trailing spaces, "424242" needs none.
+    const OWNER_ROOT = "root   ";
+    const OWNER_424242 = "424242 ";
+    const SIZE_0 = "0 "; // width 1; no group column follows
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ SIZE_0 ++ "{s} p\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_424242 ++ SIZE_0 ++ "{s} q\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ time_str, time_str });
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -lg (omit_owner) keeps the group column at the full section width" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Symmetric to the -o test above: -g (omit_owner, matching GNU's -g)
+    // drops the owner field, and the surviving group field must still be
+    // sized to the widest group value in the section.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "p", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 1,
+            .gid = 7,
+            .nlink = 1,
+        } },
+        .{ .name = "q", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 1,
+            .gid = 12345,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .numeric_ids = true, .omit_owner = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 "; // width 1
+    const GROUP_7 = "    7 "; // right-aligned to width 5 ("12345" is widest)
+    const GROUP_12345 = "12345 ";
+    const SIZE_0 = "0 "; // width 1; no owner column precedes it
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ GROUP_7 ++ SIZE_0 ++ "{s} p\n" ++
+        PERM_FILE ++ NLINK_1 ++ GROUP_12345 ++ SIZE_0 ++ "{s} q\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ time_str, time_str });
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -lg (omit_owner) keeps group column at section width in name mode" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Symmetric to the -lo name-mode test above: the pinned GNU -ldg
+    // reference is also NAME mode (left-aligned, no -n), and the two -lg
+    // tests so far only proved "omit + keep full width" under -n
+    // (right-aligned). The issue explicitly notes -o and -g looked
+    // byte-identical in the pinned GNU output purely by fixture
+    // coincidence (owner name == group name on both files), so the two
+    // flags deserve symmetric coverage; an implementation that takes the
+    // omitted column's width by mistake specifically on the GROUP side in
+    // name mode would still pass every other test while failing here.
+    // gid 0 ("root" on Linux, "wheel" on macOS) and an unresolvable gid
+    // ("424242", 6 chars) give two genuinely different name-mode widths.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "p", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 1,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "q", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 1,
+            .gid = 424242,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .omit_owner = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 "; // width 1
+    const SIZE_0 = "0 "; // width 1; no owner column precedes it
+    // Left-aligned to width 6 ("424242" is widest) on every platform: gid
+    // 0's name is "root" (Linux) or "wheel" (macOS), both shorter than 6;
+    // resolved at test time (see groupName's comment above).
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, 6, false);
+    const GROUP_424242 = "424242 ";
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ "{s}" ++ SIZE_0 ++ "{s} p\n" ++
+        PERM_FILE ++ NLINK_1 ++ GROUP_424242 ++ SIZE_0 ++ "{s} q\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l all-minimal section has no filler whitespace anywhere" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // A single entry with nlink 1, owner/group "root" and size 0: every
+    // field is already exactly its own section-wide width, so the correct
+    // output has exactly one separating space between fields and none of
+    // today's hardcoded filler. This is the literal example from issue
+    // #124: "-rw-r--r-- 1 root root 0 <date> a".
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    // gid 0's name is "root" on Linux but "wheel" on macOS; resolved at
+    // test time (see groupName's comment above) instead of hardcoding
+    // the issue's Linux-only literal, so this test's real point -- no
+    // filler whitespace anywhere -- holds on both platforms.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+
+    const fmt = "total 0\n" ++ "-rw-r--r-- 1 root {s} 0 {s} a\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ group0, time_str });
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -ls block-size prefix width is independent of nlink/owner/group/size widths" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Mirrors GNU `ls -lds /run/systemd/netif /etc/hostname`: the -s block
+    // prefix is sized to the widest block count in the section (its own,
+    // pre-existing computation via blockPrefixWidth) while nlink/owner/
+    // group/size size to their own widest values independently. A fix that
+    // accidentally couples the two would misalign one or the other here.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "m", .kind = .file, .stat = common.file.FileInfo{
+            .size = 3,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+            .blocks = 1,
+        } },
+        .{ .name = "n", .kind = .directory, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o755,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .directory,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 12,
+            .blocks = 20,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .show_blocks = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const BLOCK_1 = " 1 "; // right-aligned to width 2 ("20" is widest)
+    const BLOCK_20 = "20 ";
+    const PERM_FILE = "-rw-r--r--";
+    const PERM_DIR = "drwxr-xr-x";
+    const NLINK_1 = "  1 "; // width 2 ("12" is widest)
+    const NLINK_12 = " 12 ";
+    const OWNER_ROOT = "root ";
+    const SIZE_3 = "   3 "; // width 4 ("4096" is widest)
+    const SIZE_4096 = "4096 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 21\n" ++
+        BLOCK_1 ++ PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++
+        SIZE_3 ++ "{s} m\n" ++
+        BLOCK_20 ++ PERM_DIR ++ NLINK_12 ++ OWNER_ROOT ++ "{s}" ++
+        SIZE_4096 ++ "{s} n\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l all-null-stat section collapses every fallback column to width one" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Direct, single-entry version of the constant `long_format_null_stat_prefix`
+    // used above -- a fresh assertion of the exact literal quoted in issue
+    // #124 ("---------- ? ? ? ? ??? ?? ??:?? name"), independent of the
+    // shared multi-entry fixture those tests use.
+    var entries = [_]types.Entry{
+        .{ .name = "z", .kind = .file },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    try testing.expectEqualStrings(
+        "total 0\n" ++ "---------- ? ? ? ? ??? ?? ??:?? z\n",
+        buf.writer.buffered(),
+    );
+}
+
+// ----------------------------------------------------------------------
+// Issue #124 follow-up (2nd review round): every "?" fallback test above
+// only ever exercises an ALL-null-stat section, where the correct column
+// width happens to be 1 for every field. That degenerate case cannot
+// distinguish a real fix from an implementation that just hardcodes the
+// fallback writes to width 1 (e.g. `writeAll(" ? ")` at formatter.zig's
+// null-stat branches) -- such a stub would pass every test above while
+// still misaligning the real-world case the fallbacks exist for: one
+// entry whose lstat failed sitting next to siblings that stat'd fine
+// (entry_collector leaves `.stat = null` only for the failed entry). These
+// two tests mix a real-stat entry with a null-stat entry in the same
+// section so the fallbacks must pad out to the *stat-derived* section
+// width, not their own degenerate width of 1.
+// ----------------------------------------------------------------------
+
+test "printEntries: mixed section pads null-stat fallbacks to the stat-derived widths (names)" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Entry "a" has a real stat (nlink 12, uid/gid 0 -> "root", size 4096);
+    // entry "b" has `.stat = null`. The section's nlink/owner/group/size
+    // widths are driven entirely by "a" (2/4/4/4), so "b"'s "?" fallbacks
+    // must pad to those widths, not collapse to width 1 the way an
+    // all-null section's fallbacks correctly do.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 12,
+            .blocks = 8,
+        } },
+        .{ .name = "b", .kind = .file },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const PERM_NULL = "----------";
+    const NLINK_A = " 12 "; // right-aligned to width 2 (only "a" has a real nlink)
+    const NLINK_NULL = "  ? "; // "?" right-aligned to the same width-2 column
+    const OWNER_A = "root "; // left-aligned to width 4 ("root" is widest)
+    const OWNER_NULL = "?    "; // "?" left-aligned to the same width-4 column
+    const SIZE_A = "4096 "; // right-aligned to width 4 (only "a" has a real size)
+    const SIZE_NULL = "   ? "; // "?" right-aligned to the same width-4 column
+    const DATE_NULL = "??? ?? ??:?? "; // unaffected by this bug, its own fallback
+
+    // "a"'s group is gid 0, whose name is "root" on Linux but "wheel" on
+    // macOS; resolved at test time (see groupName's comment above) so
+    // the width this test pins holds on both platforms. The null-stat "?"
+    // fallback pads to that same resolved width.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_A = padField(&group_field_buf, group0, group0.len, false);
+    var group_null_field_buf: [32]u8 = undefined;
+    const GROUP_NULL = padField(&group_null_field_buf, "?", group0.len, false);
+
+    const fmt = "total 8\n" ++
+        PERM_FILE ++ NLINK_A ++ OWNER_A ++ "{s}" ++ SIZE_A ++ "{s} a\n" ++
+        PERM_NULL ++ NLINK_NULL ++ OWNER_NULL ++ "{s}" ++ SIZE_NULL ++
+        DATE_NULL ++ "b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_A, time_str, GROUP_NULL },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -ln mixed section right-aligns null-stat id/size fallbacks (flips vs names)" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Same shape as the name-mode mixed-section test above, but under -n:
+    // uid/gid 998 (3 digits) is the widest owner/group value in the
+    // section, so both the real "998" and the null-stat "?" fallback must
+    // be RIGHT-aligned to width 3 -- proving the alignment flip applies to
+    // the fallback too, not just to real numeric ids.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 4096,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 998,
+            .gid = 998,
+            .nlink = 5,
+            .blocks = 8,
+        } },
+        .{ .name = "b", .kind = .file },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .numeric_ids = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const PERM_NULL = "----------";
+    const NLINK_A = " 5 "; // right-aligned to width 1 (only "a" has a real nlink)
+    const NLINK_NULL = " ? "; // "?" right-aligned to the same width-1 column
+    const OWNER_GROUP_A = "998 "; // right-aligned to width 3 ("998" is widest, under -n)
+    const OWNER_GROUP_NULL = "  ? "; // "?" right-aligned to the same width-3 column
+    const SIZE_A = "4096 "; // right-aligned to width 4 (only "a" has a real size)
+    const SIZE_NULL = "   ? "; // "?" right-aligned to the same width-4 column
+    const DATE_NULL = "??? ?? ??:?? "; // unaffected by this bug, its own fallback
+
+    const fmt = "total 8\n" ++
+        PERM_FILE ++ NLINK_A ++ OWNER_GROUP_A ++ OWNER_GROUP_A ++ SIZE_A ++ "{s} a\n" ++
+        PERM_NULL ++ NLINK_NULL ++ OWNER_GROUP_NULL ++ OWNER_GROUP_NULL ++ SIZE_NULL ++
+        DATE_NULL ++ "b\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{time_str});
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+// ----------------------------------------------------------------------
+// Issue #124 follow-up (review round): every test above only ever SHRINKS
+// a column relative to the old hardcoded width (3/8/8/5-or-8), so an
+// implementation that caps rather than maximizes (e.g. @min(8, widest))
+// would pass all of them while leaving the reported defect -- a value
+// wider than the old hardcode -- unfixed. These tests use values that
+// exceed each old hardcode, and separately isolate name (left-align) from
+// numeric (right-align) owner/group rendering, which the tests above never
+// did (every non-numeric case used uid 0 on every entry).
+// ----------------------------------------------------------------------
+
+test "printEntries: -l nlink column widens past the old hardcoded 3-column width" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // nlink 1234 (4 digits) exceeds the old hardcoded width-3 format spec;
+    // owner/group (uid/gid 0 on every entry) and size (0 on every entry)
+    // are held fixed so only nlink sizing is under test.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1234,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = "    1 "; // right-aligned to width 4 ("1234" is widest)
+    const NLINK_1234 = " 1234 ";
+    const OWNER_ROOT = "root ";
+    const SIZE_0 = "0 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1234 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l plain size column widens past the old hardcoded 8-column width" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // A 9-digit size (123456789) exceeds the old hardcoded width-8 format
+    // spec used by writeSizeColored's non-human-readable branch.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 3,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 123456789,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const OWNER_ROOT = "root ";
+    const SIZE_3 = "        3 "; // right-aligned to width 9 ("123456789" is widest)
+    const SIZE_BIG = "123456789 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_3 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_BIG ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l owner/group names left-align, proven with two different-width real values" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Every non-numeric-mode test above pins uid/gid 0 on EVERY entry, so
+    // "root" is simultaneously the only value and the widest -- padding
+    // direction is unobservable. Here uid 0 ("root", 4 chars) sits next to
+    // an unresolvable uid, which common.file.getUserName/getGroupName fall
+    // back to rendering as its decimal string ("424242", 6 chars) rather
+    // than failing -- giving two genuinely different-width NAME-mode
+    // values without depending on any real /etc/passwd entry or on -n.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 424242,
+            .gid = 424242,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Left-aligned to width 6 ("424242" is widest): "root" pads with 2
+    // trailing spaces, "424242" needs none. Right-alignment would instead
+    // pad on the LEFT of "root" -- that's the direction this test pins.
+    // "root" is uid 0's owner name, portably stable on every platform.
+    const OWNER_ROOT = "root   ";
+    const OWNER_424242 = "424242 ";
+
+    // gid 0's group name is "root" on Linux but "wheel" on macOS; either
+    // way its length (4 or 5) is still shorter than "424242" (6), so the
+    // column's width stays 6 regardless of platform -- resolved at test
+    // time (see groupName's comment above) so only the padding amount
+    // for the group-0 entry, not the width itself, varies by platform.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, 6, false);
+    const GROUP_424242 = "424242 ";
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_424242 ++ GROUP_424242 ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l owner/group names (no -n) widen past the old hardcoded 8 columns" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Combines the previous two tests: NAME-mode (left-aligned, no -n) with
+    // a rendered width (9, via the unresolvable-uid decimal fallback) wider
+    // than the old hardcoded 8. An implementation that only widens the
+    // NUMERIC (-n) path, or that caps name width at 8, fails this.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 123456789,
+            .gid = 123456789,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Left-aligned to width 9 ("123456789" is widest, > the old hardcoded
+    // 8) regardless of whether uid/gid 0's names are "root"/"root" (Linux)
+    // or "root"/"wheel" (macOS) -- both are shorter than 9.
+    const OWNER_ROOT = "root      ";
+    const OWNER_BIG = "123456789 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, 9, false);
+    const GROUP_BIG = "123456789 ";
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_BIG ++ GROUP_BIG ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l owner/group name-mode widens to a genuinely long rendered name" {
+    // The pinned GNU scenario in issue #124 needs a real 15-char account
+    // name ("systemd-network") in the same section as "root"; that
+    // specific pairing is only reproducible against a real filesystem and
+    // is covered in ls_test.sh (gated on that account existing). uid/gid
+    // are u32 (see common.file.FileInfo), so the unresolved-id decimal
+    // fallback this file uses everywhere else for a controllable
+    // different-width name can reach at most 10 digits
+    // ("4294967295" == u32 max) -- short of 15, but still a genuinely
+    // long rendered name, wider than any width this test file has
+    // exercised elsewhere, and it runs deterministically on every host
+    // (Linux or macOS, with or without a systemd-network account), unlike
+    // the shell-level fixture.
+    //
+    // Which of those two ids actually resolves is NOT portable, so no
+    // width is hardcoded here: both columns are sized from the names
+    // userName/groupName really return on this host. Linux resolves
+    // neither maxInt(u32) id and renders "4294967295" in both columns;
+    // macOS resolves gid -1 to the real group "nogroup" (7 chars) while
+    // leaving the uid unresolved, which is exactly what made a hardcoded
+    // width-10 group column fail there.
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = std.math.maxInt(u32),
+            .gid = std.math.maxInt(u32),
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+
+    const big_id = std.math.maxInt(u32);
+    var owner0_buf: [32]u8 = undefined;
+    var owner_big_buf: [32]u8 = undefined;
+    const owner0 = userName(0, &owner0_buf);
+    const owner_big = userName(big_id, &owner_big_buf);
+    var group0_buf: [32]u8 = undefined;
+    var group_big_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group0_buf);
+    const group_big = groupName(big_id, &group_big_buf);
+
+    // Each column is exactly as wide as the widest name it must hold. Both
+    // long names are genuinely longer than the short ones -- that widening
+    // is the entire point of this test, and a fixture that failed to
+    // produce it would silently assert nothing -- so it is asserted rather
+    // than assumed. It holds on every host: uid 0 and gid 0 are the
+    // shortest ids there are ("root" 4, "wheel" 5), while maxInt(u32)
+    // renders either its own 10 digits or a real long-tail account name
+    // ("nogroup", 7, on macOS).
+    try testing.expect(owner_big.len > owner0.len);
+    try testing.expect(group_big.len > group0.len);
+    const owner_width = @max(owner0.len, owner_big.len);
+    const group_width = @max(group0.len, group_big.len);
+
+    // Neither width may coincide with the 8 columns the pre-#124 code
+    // hardcoded, or this test could pass against that very regression.
+    // Linux gives 10 and 10, macOS 10 and 7.
+    try testing.expect(owner_width != 8);
+    try testing.expect(group_width != 8);
+
+    var owner0_field_buf: [32]u8 = undefined;
+    var owner_big_field_buf: [32]u8 = undefined;
+    var group0_field_buf: [32]u8 = undefined;
+    var group_big_field_buf: [32]u8 = undefined;
+    const OWNER_ROOT = padField(&owner0_field_buf, owner0, owner_width, false);
+    const OWNER_BIG = padField(&owner_big_field_buf, owner_big, owner_width, false);
+    const GROUP_ROOT = padField(&group0_field_buf, group0, group_width, false);
+    const GROUP_BIG = padField(&group_big_field_buf, group_big, group_width, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ "{s}{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ "{s}{s}" ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ OWNER_ROOT, GROUP_ROOT, time_str, OWNER_BIG, GROUP_BIG, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l owner/group name-mode width comes from the rendered name, not the uid" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Every other name-mode width test above pairs uid 0 ("root", 4 chars)
+    // with an UNRESOLVED uid, whose fallback name is always its own decimal
+    // digit string -- so "widest rendered name" and "widest uid digit
+    // count" always happen to agree there (the bigger number's digit
+    // string is also the longer name). That leaves a real gap: an
+    // implementation that measures column width off stat.uid's decimal
+    // length instead of the actually-printed name would still pass every
+    // one of those tests.
+    //
+    // This test breaks that coincidence deliberately: uid 500 renders as
+    // "500" (name width 3, digit width 3 -- ordinary), but uid 0 renders
+    // as "root" (name width 4, digit width only 1). So:
+    //   - correct (name-width) hypothesis: max(len("500"), len("root")) = 4
+    //   - buggy (digit-width) hypothesis:   max(len("500"), len("0"))    = 3
+    // A digit-width implementation would render "500" fully packed at
+    // width 3, one column narrower than the correct width-4 field. Group
+    // is pinned to gid 0 ("root") on both entries so only the owner column
+    // is under test.
+    //
+    // uid 500 does not resolve, so it prints as a BARE NUMBER, and GNU's
+    // format_user_or_group right-aligns those -- it keys the alignment on
+    // what it printed, not on -n. Verified against GNU coreutils on this
+    // host with a fixture chowned to the unmapped uid 500 (LC_ALL=C):
+    //   -rw-r--r-- 1 root root 0 ... a
+    //   -rw-r--r-- 1  500  500 0 ... b
+    // So the expected owner field for uid 500 is " 500", right-aligned in
+    // the name-derived width-4 column, next to the LEFT-aligned "root" in
+    // that same column.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 500,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Width 4 comes from "root" (rendered length), NOT from "500" by digit
+    // count. "root" is a resolved name and left-aligns; "500" is a bare
+    // number and right-aligns, so its one pad column lands in FRONT.
+    const OWNER_500 = " 500 ";
+    const OWNER_ROOT = "root ";
+    // Group is gid 0 on both entries, so its own width is just its own
+    // resolved length regardless; this isolates the owner column as the
+    // only variable under test. Resolved at test time (see
+    // groupName's comment above) since gid 0's name is "root" on
+    // Linux but "wheel" on macOS.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_500 ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l right-aligns a bare numeric id beside a left-aligned name in one column" {
+    // GNU's format_user_or_group picks the alignment from WHAT IT PRINTED,
+    // not from -n: a resolved name left-aligns, a bare numeric id
+    // right-aligns, and both happen inside the same section column. The
+    // -n tests elsewhere in this file cannot see the difference, because
+    // -n makes every value numeric; the name-mode tests cannot either,
+    // because their unresolved ids happen to be the widest value and so
+    // fill the column exactly, leaving no pad to place on either side.
+    //
+    // Here three entries make the pad visible on both rules at once. In
+    // the owner column: "root" (resolved, 4) left-aligned, "123456789"
+    // (unresolved, 9, the width) exact, and "500" (unresolved, 3)
+    // right-aligned with six leading spaces. The group column repeats it
+    // with gid 424242 so both columns are pinned independently. Verified
+    // against GNU coreutils on this host with fixtures chowned to the
+    // unmapped ids (LC_ALL=C), which prints e.g.
+    //   -rw-r--r-- 1 root            root            0 ... a
+    //   -rw-r--r-- 1             500             500 0 ... b
+    // A regression that keys alignment on options.numeric_ids alone
+    // renders "500      " and "424242   " instead.
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 500,
+            .gid = 424242,
+            .nlink = 1,
+        } },
+        .{ .name = "c", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 3,
+            .uid = 123456789,
+            .gid = 123456789,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Both columns are 9 wide ("123456789"). gid 0's name is "root" on
+    // Linux and "wheel" on macOS, so the group field for entry "a" is
+    // built from the resolved name; either way it is shorter than 9 and
+    // left-aligned, while every numeric field right-aligns.
+    const OWNER_ROOT = "root      ";
+    const OWNER_500 = "      500 ";
+    const OWNER_BIG = "123456789 ";
+    const GROUP_424242 = "   424242 ";
+    const GROUP_BIG = "123456789 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, 9, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_500 ++ GROUP_424242 ++ SIZE_0 ++ "{s} b\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_BIG ++ GROUP_BIG ++ SIZE_0 ++ "{s} c\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, time_str, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l owner and group columns size independently, not to a shared max" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // Every other test in this block sets uid == gid on every entry (or
+    // omits one column entirely), so an implementation that computes ONE
+    // shared width = @max(widest owner, widest group) and reuses it for
+    // BOTH columns passes every one of them while still diverging from
+    // GNU. Verified against real GNU ls on this host: `ls -ld
+    // /var/log/journal /etc/hostname` gives owner column 4 wide ("root")
+    // and group column 15 wide ("systemd-journal"), sized independently.
+    //
+    // Here owner is uid 0 ("root", 4 chars) on BOTH entries -- so the
+    // owner column's correct width is 4 regardless of what the group
+    // column does -- while group is gid 0 ("root", 4 chars) on one entry
+    // and gid 424242 ("424242", 6 chars, via the unresolved-id fallback)
+    // on the other, so the group column's correct width is 6. A
+    // shared-width implementation would widen the owner column to 6 as
+    // well ("root  " instead of "root "), which this test catches.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 424242,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Owner is "root" on every entry: correct width is 4 regardless of
+    // the group column's width, so it never grows a trailing pad byte.
+    const OWNER_ROOT = "root ";
+    // Group left-aligns to width 6 ("424242" is widest in the group
+    // column specifically) on every platform: gid 0's name is "root"
+    // (Linux) or "wheel" (macOS), both shorter than 6, resolved at test
+    // time (see groupName's comment above) since only the padding
+    // amount for the group-0 entry -- not the width itself -- varies.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, 6, false);
+    const GROUP_424242 = "424242 ";
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ GROUP_424242 ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -ln numeric owner/group ids widen past the old hardcoded 8 columns" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // -n right-aligns; 4000000000 (10 digits, the largest value that fits
+    // in the u32 uid/gid field) exceeds the old hardcoded 8. Pairs with a
+    // single-digit uid/gid to prove right-alignment, not just width.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 5,
+            .gid = 5,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 4_000_000_000,
+            .gid = 4_000_000_000,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .numeric_ids = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Right-aligned to width 10 ("4000000000" is widest, > the old hardcoded 8).
+    const ID_5 = "         5 ";
+    const ID_BIG = "4000000000 ";
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ ID_5 ++ ID_5 ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ ID_BIG ++ ID_BIG ++ SIZE_0 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ time_str, time_str });
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: --thousands size column widens to the widest grouped rendered string" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // The vibeutils-only --thousands extension renders sizes with comma
+    // grouping ("1,234,567" instead of "1234567"); the section width must
+    // come from that RENDERED string, not the raw byte count, or a fix
+    // that widens off stat.size instead of the display string misaligns
+    // this column while passing the plain/-h branches.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 3,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 1234567,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .thousands_grouping = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const OWNER_ROOT = "root ";
+    // Right-aligned to width 9 ("1,234,567" is widest).
+    const SIZE_3 = "        3 ";
+    const SIZE_GROUPED = "1,234,567 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_3 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_GROUPED ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -k size column widens to the widest rendered kilobyte string" {
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    // The -k (kilobytes) branch renders a different string than plain or
+    // -h ("2" for a 1025-byte file, rounded up) -- the section width must
+    // come from that rendered string too.
+    //
+    // NOTE: in GNU ls, -k affects only -s and the summary total, not the
+    // -l size column itself (vibeutils applies it to the size column too,
+    // a pre-existing divergence from GNU predating issue #124). This test
+    // characterizes width behavior under vibeutils' existing -k semantics;
+    // it is not a GNU-parity assertion, and a later GNU-parity fix to -k's
+    // scope should not be read as regressing this issue-#124 test.
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 1,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 1025,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true, .kilobytes = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const OWNER_ROOT = "root ";
+    // Right-aligned to width 1: "1" byte and "1025" bytes round up to the
+    // 1K blocks "1" and "2" respectively -- both single digits, so this is
+    // the negative-space companion to the growth tests above (a section
+    // whose rendered strings stay narrow must NOT reserve the old
+    // hardcoded 8 columns).
+    const KB_1 = "1 ";
+    const KB_2 = "2 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ KB_1 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ KB_2 ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: successive sections each recompute their own column widths independently" {
+    // Every test above uses a single printEntries call, i.e. a single
+    // section, so none of them prove the widths are SECTION-scoped rather
+    // than global/carried across calls. A section boundary is one
+    // printEntries_longFormat invocation (one directory's contents, or the
+    // grouped list of non-directory operands); ls's real multi-directory
+    // output is exactly a sequence of such calls into the same stream, one
+    // per directory argument. Calling printEntries twice into the same
+    // buffer here mirrors that: section A (nlink 1, size 0) must stay
+    // width 1 and must NOT widen just because section B (nlink 100, size
+    // 123456), printed right after it into the same writer, needs more
+    // columns.
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries_a = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+    };
+    var entries_b = [_]types.Entry{
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 123456,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 100,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries_a, &buf.writer, options, style);
+    _ = try formatter.printEntries(testing.allocator, &entries_b, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    // Section A: the only entry has nlink 1 and size 0, so both fields
+    // must stay width 1 -- NOT width 3 (nlink) or width 6 (size) to
+    // accommodate section B's values, which have not been seen yet.
+    const NLINK_A = " 1 ";
+    const SIZE_A = "0 ";
+    // Section B: its own single entry sets its own width (3 for nlink
+    // "100", 6 for size "123456") -- NOT widened further by section A.
+    const NLINK_B = " 100 ";
+    const SIZE_B = "123456 ";
+    const OWNER_ROOT = "root ";
+
+    // Both sections' single entry has gid 0, whose name is "root" on
+    // Linux but "wheel" on macOS; resolved at test time (see
+    // groupName's comment above) so the widths this test pins hold on
+    // both platforms. Each section recomputes independently, but since
+    // both sections' only value is the same gid 0, the resolved field is
+    // identical in both.
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
+
+    // Neither entry sets `.blocks` (defaults to 0), so both sections'
+    // "total" lines are 0 regardless of `.size` -- unrelated to what this
+    // test is checking, just keeping it consistent with the other tests'
+    // "total 0\n" convention above.
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_A ++ OWNER_ROOT ++ "{s}" ++ SIZE_A ++ "{s} a\n" ++
+        "total 0\n" ++
+        PERM_FILE ++ NLINK_B ++ OWNER_ROOT ++ "{s}" ++ SIZE_B ++ "{s} b\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
 test "columnar: -C width arithmetic uses getDisplayWidth (git prefix)" {
     var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buf_aw.deinit();
@@ -1871,15 +3833,27 @@ test "printEntries: an untracked-only section still reserves the git column" {
 // for an Entry with `.stat = null` (the default): permissions, link count,
 // owner, group, size, and date all fall back to their "unknown" literals
 // (formatter.zig:450, 458, 564, 565, 590, 485). Concatenating them gives a
-// fully deterministic 55-byte prefix that precedes the name column,
-// independent of the host's real uid/gid/mtime -- letting these -l tests
-// pin an exact byte string instead of only a length/substring comparison.
+// fully deterministic prefix that precedes the name column, independent of
+// the host's real uid/gid/mtime -- letting these -l tests pin an exact byte
+// string instead of only a length/substring comparison.
+//
+// Per issue #124, nlink/owner/group/size must size to the widest value
+// actually present in the section rather than to a hardcoded width. In a
+// section where every entry has `.stat = null`, "?" is the only value ever
+// rendered in each of those four columns, so each collapses to width 1: a
+// single "? " apiece for owner/group/size. nlink additionally keeps a
+// leading separator space (" ? "), matching writeNlinkColored's own
+// leading-space contract (see its unit test in formatter.zig) -- this is
+// NOT the same mechanism as writeDateColored, which only pads a TRAILING
+// space and never a leading one; nlink is simply the one field whose
+// helper owns both sides of its own field. The date fallback is untouched
+// by this bug and keeps its own width.
 const long_format_null_stat_prefix =
     "----------" ++ // permissions fallback
-    "   ? " ++ // link-count fallback
-    "?        " ++ // owner fallback
-    "?        " ++ // group fallback
-    "       ? " ++ // size fallback
+    " ? " ++ // link-count fallback, width 1
+    "? " ++ // owner fallback, width 1
+    "? " ++ // group fallback, width 1
+    "? " ++ // size fallback, width 1
     "??? ?? ??:?? "; // date fallback
 
 test "printEntries: long format (-l) all-clean git section drops the reserved column" {
