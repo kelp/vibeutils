@@ -364,8 +364,24 @@ pub fn formatTime(mtime_ns: i128, buf: []u8) ![]const u8 {
     }
 }
 
-/// Get username from uid (returns uid as string if lookup fails)
-pub fn getUserName(uid: u32, buf: []u8) ![]const u8 {
+/// The text a uid or gid renders as, plus whether it came from the name
+/// database. Callers that align the value need that distinction and cannot
+/// recover it from `name`: the numeric fallback and an account genuinely
+/// named "12345" produce byte-identical strings, so only the lookup itself
+/// knows which of the two it returned. Both forms live in the caller's
+/// buffer.
+pub const NameLookup = struct {
+    name: []const u8,
+    resolved: bool,
+};
+
+/// Look up a username, falling back to the uid's own digits. `resolved` is
+/// false for that fallback, which is also taken when a real name is too long
+/// for `buf` — a truncated name would be a wrong name, but the digits are
+/// always correct.
+pub fn lookupUserName(uid: u32, buf: []u8) !NameLookup {
+    // A u32 needs ten digits, and the fallback below must always fit.
+    std.debug.assert(buf.len >= 10);
     if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
         const c_uid = @as(std.c.uid_t, @intCast(uid));
         const pw_ptr = std.c.getpwuid(c_uid);
@@ -375,17 +391,21 @@ pub fn getUserName(uid: u32, buf: []u8) ![]const u8 {
                 const name = std.mem.span(name_ptr);
                 if (name.len < buf.len) {
                     @memcpy(buf[0..name.len], name);
-                    return buf[0..name.len];
+                    return .{ .name = buf[0..name.len], .resolved = true };
                 }
             }
         }
     }
     // Fallback to uid as string
-    return std.fmt.bufPrint(buf, "{d}", .{uid});
+    const digits = try std.fmt.bufPrint(buf, "{d}", .{uid});
+    std.debug.assert(digits.len > 0);
+    return .{ .name = digits, .resolved = false };
 }
 
-/// Get group name from gid (returns gid as string if lookup fails)
-pub fn getGroupName(gid: u32, buf: []u8) ![]const u8 {
+/// Look up a group name, falling back to the gid's own digits, exactly as
+/// lookupUserName does for a uid.
+pub fn lookupGroupName(gid: u32, buf: []u8) !NameLookup {
+    std.debug.assert(buf.len >= 10);
     if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
         const c_gid = @as(std.c.gid_t, @intCast(gid));
         const gr_ptr = getgrgid(c_gid);
@@ -395,13 +415,35 @@ pub fn getGroupName(gid: u32, buf: []u8) ![]const u8 {
                 const name = std.mem.span(name_ptr);
                 if (name.len < buf.len) {
                     @memcpy(buf[0..name.len], name);
-                    return buf[0..name.len];
+                    return .{ .name = buf[0..name.len], .resolved = true };
                 }
             }
         }
     }
     // Fallback to gid as string
-    return std.fmt.bufPrint(buf, "{d}", .{gid});
+    const digits = try std.fmt.bufPrint(buf, "{d}", .{gid});
+    std.debug.assert(digits.len > 0);
+    return .{ .name = digits, .resolved = false };
+}
+
+/// Get username from uid (returns uid as string if lookup fails). Callers
+/// that must tell those two cases apart want lookupUserName instead.
+pub fn getUserName(uid: u32, buf: []u8) ![]const u8 {
+    std.debug.assert(buf.len >= 10);
+    const lookup = try lookupUserName(uid, buf);
+    std.debug.assert(lookup.name.len > 0);
+    std.debug.assert(lookup.name.len <= buf.len);
+    return lookup.name;
+}
+
+/// Get group name from gid (returns gid as string if lookup fails). Callers
+/// that must tell those two cases apart want lookupGroupName instead.
+pub fn getGroupName(gid: u32, buf: []u8) ![]const u8 {
+    std.debug.assert(buf.len >= 10);
+    const lookup = try lookupGroupName(gid, buf);
+    std.debug.assert(lookup.name.len > 0);
+    std.debug.assert(lookup.name.len <= buf.len);
+    return lookup.name;
 }
 
 // Tests

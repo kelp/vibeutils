@@ -117,9 +117,9 @@ fn writeNlinkColored(
     }
 }
 
-/// Write a single owner/group column with color. GNU left-aligns owner and
-/// group as names but right-aligns them as numbers under -n, so the direction
-/// travels with the flag rather than being fixed here.
+/// Write a single owner/group column with color. GNU left-aligns a resolved
+/// name and right-aligns a bare numeric id, so the direction travels with the
+/// individual value rather than being fixed here or read off a flag.
 fn writeOwnerColored(
     style: anytype,
     writer: anytype,
@@ -165,11 +165,16 @@ fn writeGroupColored(
     }
 }
 
-/// Write user and group names with distinct colors.
+/// Write user and group names with distinct colors, both justified the same
+/// way -- the case where the two values are of the same kind (both resolved
+/// names, or both bare numbers under -n).
 /// Truecolor: warm wheat for user, soft lavender for group.
 /// 16-color: yellow for user, cyan for group.
 /// Owner and group are sized independently, so dropping one column with -o or
-/// -g leaves the survivor at its own section width.
+/// -g leaves the survivor at its own section width. A long-format entry whose
+/// owner resolves while its group does not needs the two directions to differ,
+/// so printLongFormatEntryAligned_ownerGroup drives the two column writers
+/// itself instead of going through here.
 fn writeUserGroupColored(
     style: anytype,
     writer: anytype,
@@ -501,14 +506,20 @@ fn nlinkString(entry: Entry, buf: []u8) []const u8 {
 }
 
 /// Owner and group as one entry renders them, sharing the caller's buffers.
+/// Each value also carries whether it is a bare numeric id rather than a
+/// resolved name, because that -- not the -n flag -- is what decides its
+/// alignment, and one column can hold both kinds at once.
 const OwnerGroupStrings = struct {
     owner: []const u8,
     group: []const u8,
+    owner_numeric: bool,
+    group_numeric: bool,
 };
 
 /// Owner and group exactly as they will be printed, or "?" when the entry
-/// could not be stat'ed. getUserName falls back to the numeric id when the
-/// lookup fails, so the rendered width is only knowable by calling it.
+/// could not be stat'ed. The name lookup falls back to the numeric id when
+/// the id has no account, so both the rendered width and whether the value is
+/// a name at all are only knowable by calling it.
 fn ownerGroupStrings(
     entry: Entry,
     options: LsOptions,
@@ -517,18 +528,31 @@ fn ownerGroupStrings(
 ) !OwnerGroupStrings {
     std.debug.assert(owner_buf.len >= 16);
     std.debug.assert(group_buf.len >= 16);
-    const stat = entry.stat orelse return .{ .owner = "?", .group = "?" };
+    // An entry with no stat has no id to look up, so its "?" placeholder
+    // follows the mode the listing asked for instead of a lookup result.
+    const stat = entry.stat orelse return .{
+        .owner = "?",
+        .group = "?",
+        .owner_numeric = options.numeric_ids,
+        .group_numeric = options.numeric_ids,
+    };
     if (options.numeric_ids) {
         return .{
             .owner = std.fmt.bufPrint(owner_buf, "{d}", .{stat.uid}) catch "?",
             .group = std.fmt.bufPrint(group_buf, "{d}", .{stat.gid}) catch "?",
+            .owner_numeric = true,
+            .group_numeric = true,
         };
     }
-    // getUserName copies the name out of libc's static buffer before
-    // getGroupName can reuse it, so the two calls cannot alias.
+    // lookupUserName copies the name out of libc's static buffer before
+    // lookupGroupName can reuse it, so the two calls cannot alias.
+    const owner = try common.file.lookupUserName(stat.uid, owner_buf);
+    const group = try common.file.lookupGroupName(stat.gid, group_buf);
     return .{
-        .owner = try common.file.getUserName(stat.uid, owner_buf),
-        .group = try common.file.getGroupName(stat.gid, group_buf),
+        .owner = owner.name,
+        .group = group.name,
+        .owner_numeric = !owner.resolved,
+        .group_numeric = !group.resolved,
     };
 }
 
@@ -650,6 +674,13 @@ fn printLongFormatEntryAligned_symlinkTarget(
 /// Write the user/group columns of a long-format entry, each padded to its
 /// own section width. The "?" an unstattable entry renders goes through the
 /// same padding as a real name so it lands in the same columns.
+///
+/// GNU's format_user_or_group picks each value's alignment from what it
+/// printed rather than from -n: a resolved name left-aligns and a bare
+/// numeric id right-aligns, so a column holding one of each -- an owner
+/// whose account exists beside one whose does not -- justifies them in
+/// opposite directions. Under -n every value is numeric, which is why the
+/// flag looks like the rule until an id fails to resolve without it.
 fn printLongFormatEntryAligned_ownerGroup(
     style: anytype,
     writer: anytype,
@@ -662,17 +693,14 @@ fn printLongFormatEntryAligned_ownerGroup(
     var owner_buf: [32]u8 = undefined;
     var group_buf: [32]u8 = undefined;
     const names = try ownerGroupStrings(entry, options, &owner_buf, &group_buf);
-    try writeUserGroupColored(
-        style,
-        writer,
-        names.owner,
-        names.group,
-        options.omit_owner,
-        options.omit_group,
-        widths.owner,
-        widths.group,
-        options.numeric_ids,
-    );
+    std.debug.assert(names.owner.len > 0);
+    std.debug.assert(names.group.len > 0);
+    if (!options.omit_owner) {
+        try writeOwnerColored(style, writer, names.owner, widths.owner, names.owner_numeric);
+    }
+    if (!options.omit_group) {
+        try writeGroupColored(style, writer, names.group, widths.group, names.group_numeric);
+    }
 }
 
 /// Write the size column of a long-format entry, right-aligned in the section
