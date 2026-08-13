@@ -1179,14 +1179,31 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
     return std.fmt.bufPrint(buf, "{d}", .{value}) catch "?";
 }
 
-/// Calculate usage percentage as 0-100 with ceiling (matching GNU df).
+/// Calculate usage percentage as 0-100 with ceiling, matching GNU df's integer
+/// path in coreutils src/df.c: `u100 / nonroot_total + (u100 % nonroot_total
+/// != 0)`. `used * 100` overflows u64 above 184467440737095516 (~164 PiB), and
+/// the old `+ total - 1` term wrapped earlier still. GNU guards that same bound
+/// and degrades to double, so u128 is not merely a simpler way to reach GNU's
+/// answer: above 164 PiB it is a deliberately better one. Sampling both across
+/// the range, GNU's double path prints 101% for a filesystem that is exactly
+/// full, and floors a fraction it cannot represent, in either direction by at
+/// most one. We are exact everywhere, so our digit can differ from GNU's above
+/// that bound (issue #144).
 fn calcUsagePercent(used: u64, total: u64) u8 {
     if (total == 0) return 0;
-    const pct = @divTrunc(used * 100 + total - 1, total);
-    // Clamp to 100: used may exceed total on root-reserved filesystems, so the
-    // raw percentage is tolerated and the result is capped, never panics.
+    const scaled: u128 = @as(u128, used) * 100;
+    const denominator: u128 = total;
+    const pct = @divTrunc(scaled, denominator) +
+        @intFromBool(@rem(scaled, denominator) != 0);
+    // Callers pass used = f_blocks - f_bfree and total = used + avail, so used
+    // cannot exceed total and the clamp is dead weight for them. It is kept
+    // because the exported contract is a percentage, and a caller that does
+    // pass used > total -- a summed total that wrapped, say -- must get 100
+    // rather than a value @intCast cannot hold.
     const result: u8 = @intCast(@min(pct, 100));
-    std.debug.assert(result <= 100);
+    // Rounding up means any nonzero usage occupies at least one percent;
+    // a @divTrunc regression would report 0% for a nearly-empty filesystem.
+    std.debug.assert((result == 0) == (used == 0));
     return result;
 }
 
@@ -2192,15 +2209,15 @@ fn printTotalDynamic(
     const used_str = printTotal_formatField(&used_buf, sum_used_bytes, display_block, opts);
     const avail_str = printTotal_formatField(&avail_buf, sum_avail_bytes, display_block, opts);
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
-    const pct_str: []const u8 = if (sum_use_total == 0) "-" else blk: {
-        const pct = @divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total);
-        break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
-    };
-    const percent: u8 = if (sum_use_total == 0) 0 else @intCast(
-        @min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100),
-    );
-    // Both branches above yield <= 100 (explicit @min or the 0 branch).
+    // The percentage is shared with the per-filesystem rows rather than
+    // recomputed here, so the overflow-safe arithmetic lives in one place.
+    const percent = calcUsagePercent(sum_used_bytes, sum_use_total);
+    const pct_str = formatPercent(&pct_buf, sum_used_bytes, sum_use_total);
+    // Asserted here rather than left to the emit helpers: the colored total
+    // path only re-checks this when it actually draws a usage bar, so in
+    // colored non-bar mode nothing downstream would catch a bad value.
     std.debug.assert(percent <= 100);
+    std.debug.assert((pct_str.len == 1) == (sum_use_total == 0));
 
     if (s.color_mode == .none) {
         return printTotalDynamic_emitPlain(
@@ -3693,6 +3710,92 @@ test "calcUsagePercent - ceiling rounding" {
     try testing.expectEqual(@as(u8, 1), calcUsagePercent(1, 100));
 }
 
+// Issue #144: `used * 100` overflows u64 above 184467440737095516 (~164 PiB),
+// and the `+ total - 1` term wraps earlier still, so a Debug or ReleaseSafe
+// build aborts rather than printing a percentage. Every vector below is either
+// exact or a half-integer fraction, so its ceiling follows from the arithmetic
+// alone and does not depend on GNU's unpinnable double-precision fallback.
+test "calcUsagePercent - above the u64 multiply threshold (issue #144)" {
+    // 2e17 of 4e17 bytes: the product alone is 2e19, well past u64max.
+    try testing.expectEqual(@as(u8, 50), calcUsagePercent(
+        200_000_000_000_000_000,
+        400_000_000_000_000_000,
+    ));
+    // A completely full filesystem at the widest operands u64 can express.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(
+        std.math.maxInt(u64),
+        std.math.maxInt(u64),
+    ));
+    // Just under half of u64max, i.e. 49.99...%, which ceils to 50.
+    try testing.expectEqual(@as(u8, 50), calcUsagePercent(
+        9_223_372_036_854_775_807,
+        std.math.maxInt(u64),
+    ));
+}
+
+test "calcUsagePercent - ceiling survives the widened multiply (issue #144)" {
+    // 202e15 of 400e15 is exactly 50.5%. A floor implementation answers 50, as
+    // does `used / (total / 100)`, so this one vector rejects both rewrites.
+    try testing.expectEqual(@as(u8, 51), calcUsagePercent(
+        202_000_000_000_000_000,
+        400_000_000_000_000_000,
+    ));
+    // One byte of 2e17 is still in use, so the ceiling must report 1%, not 0%.
+    try testing.expectEqual(@as(u8, 1), calcUsagePercent(1, 200_000_000_000_000_000));
+}
+
+test "calcUsagePercent - the exact u64 overflow boundary (issue #144)" {
+    // At used == total this is the largest value the naive expression survives.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(
+        182_641_030_432_767_837,
+        182_641_030_432_767_837,
+    ));
+    // One more wraps `used * 100 + total - 1`: the first value that panics.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(
+        182_641_030_432_767_838,
+        182_641_030_432_767_838,
+    ));
+    // u64max / 100, the nominal multiply bound GNU guards. The product fits
+    // here, yet `+ total - 1` overflows anyway, so the bound is not the whole
+    // story and a fix that only widens the product is still wrong.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(
+        184_467_440_737_095_516,
+        184_467_440_737_095_516,
+    ));
+}
+
+test "calcUsagePercent - ordinary operands keep ceiling semantics (issue #144)" {
+    // These pass today and must survive the widening. They are exactly what a
+    // `used / (total / 100)` restructure breaks: it answers 0, 99 and 33.
+    try testing.expectEqual(@as(u8, 1), calcUsagePercent(1, 1000));
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(199, 200));
+    try testing.expectEqual(@as(u8, 34), calcUsagePercent(1_000_000_000, 3_000_000_000));
+}
+
+// `df` proper cannot reach used > total: callers pass used = f_blocks -|
+// f_bfree and total = used + avail, so the clamp is unreachable from the
+// utility. It is still part of the helper's exported contract -- the return
+// type promises a percentage -- so pin it directly. Vectors stay well clear of
+// the separate aggregate-overflow case tracked as issue #158.
+test "calcUsagePercent - clamps to 100 when used exceeds total" {
+    // Twice the total is 200%, which fits u8, so an unclamped implementation
+    // silently returns 200 instead of trapping.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(200, 100));
+    // One block past full: the smallest overshoot a wrapped total can produce.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(101, 100));
+    // Exactly u8max unclamped -- the last overshoot that still fits the return
+    // type, and so the last one an unclamped @intCast would let through.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(255, 100));
+}
+
+test "calcUsagePercent - clamps values that do not fit the u8 return" {
+    // Ten times the total is 1000%, which no u8 can hold; without the clamp the
+    // narrowing @intCast is illegal behavior rather than a wrong number.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(1_000, 100));
+    // The widest overshoot u64 operands can express: ~1.8e16 percent.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(std.math.maxInt(u64), 1_000));
+}
+
 test "formatUsageBar - 0 percent" {
     var buf: [48]u8 = undefined;
     const result = formatUsageBar(&buf, 0);
@@ -3952,6 +4055,50 @@ test "printFsRowDynamic - full mode includes bar" {
     // Icons on with color_mode none still shows the bar
     try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") != null or
         std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x91") != null);
+}
+
+// Issue #144: the --total row computes its own use percentage inline instead of
+// calling calcUsagePercent, so it overflows independently. A fix applied only
+// to the shared helper leaves these two tests red.
+test "printTotalDynamic - percent above the overflow threshold (issue #144)" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // 97656250000000 blocks x 4096 = 4e17 bytes, and makeFsInfo halves used and
+    // avail, so the summed row is 2e17 used of a 4e17 use-total. That clears
+    // the multiply bound while leaving the byte sums far below u64max, so a
+    // panic here can only come from the percentage, not from the summation.
+    const fs = makeFsInfo("/dev/disk1s1", "/", 97_656_250_000_000, 4096);
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    const items = [_]FsInfo{fs};
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
+    const row = aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, row, "total") != null);
+    // The percent column holds the only "%" in the row, so the token is exact.
+    try testing.expect(std.mem.find(u8, row, "50%") != null);
+}
+
+test "printTotalDynamic - percent ceils above the threshold (issue #144)" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    var fs = makeFsInfo("/dev/disk1s1", "/", 97_656_250_000_000, 4096);
+    // 202e15 used of a 400e15 use-total is exactly 50.5%, so the ceiling is 51
+    // and both a floor rewrite and an unfixed inline expression give 50.
+    fs.used_blocks = 49_316_406_250_000;
+    fs.avail_blocks = 48_339_843_750_000;
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    const items = [_]FsInfo{fs};
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
+    const row = aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, row, "51%") != null);
+    try testing.expect(std.mem.find(u8, row, "50%") == null);
 }
 
 test "printHeaderDynamic - full mode shows Usage column" {
@@ -5229,6 +5376,25 @@ test "runDf - output with --total appends a total row" {
     const total_row = testLine(out, 2);
     var it = std.mem.tokenizeScalar(u8, total_row, ' ');
     try testing.expectEqualStrings("total", it.next() orelse "");
+}
+
+// Issue #144: --output=pcent --total is the third byte-magnitude entry point
+// into the percentage arithmetic, reached via formatPercent.
+test "outputTotalCellText - pcent above the overflow threshold (issue #144)" {
+    var buf: [64]u8 = undefined;
+    const opts = DfOptions{};
+    // 2e17 used of a 4e17 use-total: past the multiply bound, exactly 50%.
+    const half = OutputTotals{
+        .used_bytes = 200_000_000_000_000_000,
+        .avail_bytes = 200_000_000_000_000_000,
+    };
+    try testing.expectEqualStrings("50%", outputTotalCellText(&buf, .pcent, half, opts));
+    // 50.5% of the same use-total, so the ceiling is 51 and a floor gives 50.
+    const ceils = OutputTotals{
+        .used_bytes = 202_000_000_000_000_000,
+        .avail_bytes = 198_000_000_000_000_000,
+    };
+    try testing.expectEqualStrings("51%", outputTotalCellText(&buf, .pcent, ceils, opts));
 }
 
 test "runDf - output rejects an unknown field" {
