@@ -506,6 +506,156 @@ test_grep() {
         test_command_output "grep Linux native \\\\B non-boundary" "foo" bash -c "printf 'foo\nf-o\n' | '$binary' --color=never 'f\Bo'"
     fi
 
+    echo -e "${CYAN}Testing issue #151: -- must not consume PATTERNS...${NC}"
+
+    # Pinned against GNU grep 3.11 (LC_ALL=C, stdin </dev/null). GNU's rule:
+    # `--` is plain end-of-options, and the first *remaining* operand becomes
+    # PATTERNS iff neither -e nor -f supplied a pattern source -- decided after
+    # the whole argument scan, not left-to-right during it.
+    local ddash_dir
+    ddash_dir=$(create_temp_dir)
+    printf 'a\nb\n-v\n--\nfoo\n' > "$ddash_dir/g.txt"
+    printf 'a\n' > "$ddash_dir/pat.txt"
+    : > "$ddash_dir/empty.txt"
+    printf 'a\nzz\n' > "$ddash_dir/-dash.txt"
+    local dgrep="cd '$ddash_dir' && LC_ALL=C '$binary' --color=never"
+
+    # Core: `--` ends option parsing but leaves the pattern slot open.
+    test_command_output "grep -- pattern file" "a" bash -c "$dgrep -- a g.txt </dev/null"
+    test_command_output "grep -- -v file (flag-shaped pattern)" "-v" bash -c "$dgrep -- -v g.txt </dev/null"
+    test_command_output "grep -- -- file (separator-shaped pattern)" "--" bash -c "$dgrep -- -- g.txt </dev/null"
+    test_command_output "grep -n -- pattern file" "1:a" bash -c "$dgrep -n -- a g.txt </dev/null"
+    test_command_output "grep -v -- pattern file" $'b\n-v\n--\nfoo' bash -c "$dgrep -v -- a g.txt </dev/null"
+    test_command_output "grep -c -- pattern file" "1" bash -c "$dgrep -c -- a g.txt </dev/null"
+    test_command_output "grep -i -- pattern file" "a" bash -c "$dgrep -i -- A g.txt </dev/null"
+    test_command_exit_code "grep -- nomatch file exits 1" 1 bash -c "$dgrep -- zzzzz g.txt </dev/null"
+
+    # `--` with no file operand at all: grep reads stdin. No `cd` here -- the
+    # pipe must feed grep itself, not a leading `cd` in the pipeline.
+    local sgrep="LC_ALL=C '$binary' --color=never"
+    test_command_output "grep -- pattern reads stdin" "a" bash -c "printf 'a\nb\n' | $sgrep -- a"
+    test_command_exit_code "grep -- pattern stdin no match exits 1" 1 bash -c "printf 'b\n' | $sgrep -- a"
+
+    # Two file operands after `--`: filename prefixes appear.
+    test_command_output "grep -- pattern two files prefixes names" $'g.txt:a\ng.txt:a' bash -c "$dgrep -- a g.txt g.txt </dev/null"
+
+    # A genuinely dash-named file, the operand `--` exists to protect.
+    test_command_output "grep -- pattern -dash.txt" "a" bash -c "$dgrep -- a -dash.txt </dev/null"
+
+    # Bare `grep --` has no pattern source and no operand: exit 2.
+    test_command_exit_code "grep -- alone exits 2" 2 bash -c "$dgrep -- </dev/null 2>/dev/null"
+
+    # Recursive walk after `--`. Order is filesystem-dependent, so assert the
+    # set of hits rather than a fixed sequence.
+    local rdir="$ddash_dir/rwalk"
+    mkdir -p "$rdir"
+    printf 'a\n' > "$rdir/one.txt"
+    printf 'a\n' > "$rdir/two.txt"
+    run_command cmd out err exit_code bash -c "cd '$rdir' && LC_ALL=C '$binary' --color=never -r -- a . </dev/null"
+    if [[ "$exit_code" -eq 0 && "$out" =~ "./one.txt:a" && "$out" =~ "./two.txt:a" ]]; then
+        print_test_result "grep -r -- pattern dir" "PASS"
+    else
+        print_test_result "grep -r -- pattern dir" "FAIL" "exit=$exit_code out=$out"
+    fi
+
+    # After `--` every remaining operand is ordinary: the second -v is a file.
+    # stdout and stderr must be compared separately -- GNU flushes stderr
+    # eagerly while vibeutils buffers stdout to exit, so a merged 2>&1 capture
+    # interleaves differently for identical content.
+    run_command cmd out err exit_code bash -c "$dgrep -- -v -v g.txt </dev/null"
+    if [[ "$exit_code" -eq 2 && "$out" == "g.txt:-v" && "$err" == "grep: -v: No such file or directory" ]]; then
+        print_test_result "grep -- -v -v file: second -v is a file operand" "PASS"
+    else
+        print_test_result "grep -- -v -v file: second -v is a file operand" "FAIL" "exit=$exit_code out=$out err=$err"
+    fi
+
+    echo -e "${CYAN}Testing issue #151: the pattern slot is decided after the scan...${NC}"
+
+    # -e/-f supply the pattern source, so a *leading* operand stays a file.
+    test_command_output "grep file -e pattern (operand before -e is a file)" "a" bash -c "$dgrep g.txt -e a </dev/null"
+
+    run_command cmd out err exit_code bash -c "$dgrep foo -e a g.txt </dev/null"
+    if [[ "$exit_code" -eq 2 && "$out" == "g.txt:a" && "$err" == "grep: foo: No such file or directory" ]]; then
+        print_test_result "grep missingfile -e pattern file reports the missing operand" "PASS"
+    else
+        print_test_result "grep missingfile -e pattern file reports the missing operand" "FAIL" "exit=$exit_code out=$out err=$err"
+    fi
+
+    # An empty -f file is a legal, empty pattern set: the operand stays a file.
+    # GNU exits 1 without opening any operand unless -v or -L is in play.
+    run_command cmd out err exit_code bash -c "$dgrep -f empty.txt g.txt </dev/null"
+    if [[ "$exit_code" -eq 1 && -z "$out" ]]; then
+        print_test_result "grep -f empty file: empty pattern set exits 1" "PASS"
+    else
+        print_test_result "grep -f empty file: empty pattern set exits 1" "FAIL" "exit=$exit_code out=$out"
+    fi
+
+    run_command cmd out err exit_code bash -c "$dgrep -f empty.txt -- g.txt </dev/null"
+    if [[ "$exit_code" -eq 1 && -z "$out" ]]; then
+        print_test_result "grep -f empty -- file: empty pattern set exits 1" "PASS"
+    else
+        print_test_result "grep -f empty -- file: empty pattern set exits 1" "FAIL" "exit=$exit_code out=$out"
+    fi
+
+    run_command cmd out err exit_code bash -c "$dgrep -c -f empty.txt g.txt </dev/null"
+    if [[ "$exit_code" -eq 1 && -z "$out" ]]; then
+        print_test_result "grep -c -f empty file prints nothing, not 0" "PASS"
+    else
+        print_test_result "grep -c -f empty file prints nothing, not 0" "FAIL" "exit=$exit_code out=$out"
+    fi
+
+    run_command cmd out err exit_code bash -c "$dgrep -f empty.txt nosuchfile </dev/null"
+    if [[ "$exit_code" -eq 1 && -z "$out" && -z "$err" ]]; then
+        print_test_result "grep -f empty nosuchfile is silent and exits 1" "PASS"
+    else
+        print_test_result "grep -f empty nosuchfile is silent and exits 1" "FAIL" "exit=$exit_code out=$out err=$err"
+    fi
+
+    # -v and -L take the normal path and do open the operands.
+    test_command_output "grep -v -f empty file prints every line" $'a\nb\n-v\n--\nfoo' bash -c "$dgrep -v -f empty.txt g.txt </dev/null"
+    test_command_output "grep -cv -f empty file counts every line" "5" bash -c "$dgrep -cv -f empty.txt g.txt </dev/null"
+
+    run_command cmd out err exit_code bash -c "$dgrep -L -f empty.txt g.txt </dev/null"
+    if [[ "$exit_code" -eq 1 && "$out" == "g.txt" ]]; then
+        print_test_result "grep -L -f empty file names the file and exits 1" "PASS"
+    else
+        print_test_result "grep -L -f empty file names the file and exits 1" "FAIL" "exit=$exit_code out=$out"
+    fi
+
+    echo -e "${CYAN}Testing issue #151: empty operand and -- regression guards...${NC}"
+
+    # An empty file-path operand is legal. A naive assert(path.len > 0) panics.
+    run_command cmd out err exit_code bash -c "$dgrep a '' </dev/null"
+    if [[ "$exit_code" -eq 2 && "$err" == "grep: : No such file or directory" ]]; then
+        print_test_result "grep pattern '' reports ENOENT on the empty path" "PASS"
+    else
+        print_test_result "grep pattern '' reports ENOENT on the empty path" "FAIL" "exit=$exit_code err=$err"
+    fi
+
+    run_command cmd out err exit_code bash -c "$dgrep -- a '' </dev/null"
+    if [[ "$exit_code" -eq 2 && "$err" == "grep: : No such file or directory" ]]; then
+        print_test_result "grep -- pattern '' reports ENOENT on the empty path" "PASS"
+    else
+        print_test_result "grep -- pattern '' reports ENOENT on the empty path" "FAIL" "exit=$exit_code err=$err"
+    fi
+
+    # Guards: shapes that already work must keep working after the fix.
+    test_command_output "grep guard -e pattern -- file" "a" bash -c "$dgrep -e a -- g.txt </dev/null"
+    test_command_output "grep guard -f patfile -- file" "a" bash -c "$dgrep -f pat.txt -- g.txt </dev/null"
+    test_command_output "grep guard pattern -- file" "a" bash -c "$dgrep a -- g.txt </dev/null"
+    test_command_output "grep guard pattern file --" "a" bash -c "$dgrep a g.txt -- </dev/null"
+    test_command_output "grep guard pattern file" "a" bash -c "$dgrep a g.txt </dev/null"
+    test_command_output "grep guard -e pattern file" "a" bash -c "$dgrep -e a g.txt </dev/null"
+
+    run_command cmd out err exit_code bash -c "$dgrep a -- g.txt -n </dev/null"
+    if [[ "$exit_code" -eq 2 && "$out" == "g.txt:a" && "$err" == "grep: -n: No such file or directory" ]]; then
+        print_test_result "grep guard pattern -- file -n treats -n as a file" "PASS"
+    else
+        print_test_result "grep guard pattern -- file -n treats -n as a file" "FAIL" "exit=$exit_code out=$out err=$err"
+    fi
+
+    rm -rf "$ddash_dir"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}grep tests completed${NC}"

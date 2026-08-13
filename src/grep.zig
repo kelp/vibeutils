@@ -5147,3 +5147,230 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     const reported = std.mem.count(u8, stderr_w.buffered(), "EntryLimitExceeded");
     try testing.expectEqual(@as(usize, 1), reported);
 }
+
+// =============================================================
+// Issue #151: `--` must not consume the PATTERNS slot
+// =============================================================
+//
+// Pinned against GNU grep 3.11 (`/usr/bin/grep`, LC_ALL=C, stdin
+// </dev/null). GNU's rule: `--` is plain end-of-options, and the
+// first *remaining* operand becomes PATTERNS iff neither -e nor
+// -f supplied a pattern source -- a decision made after the whole
+// argument scan, not left-to-right during it.
+
+/// Fixture for the issue #151 tests. Every line is also a plausible
+/// option spelling or separator, so a pattern taken from the wrong
+/// operand slot changes the output instead of passing by accident.
+const ddash_fixture = "a\nb\n-v\n--\nfoo\n";
+
+test "parseArgs -- leaves the next operand as the pattern" {
+    const args = [_][]const u8{ "--", "a", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs -- -v takes -v as the pattern, not as a flag or file" {
+    const args = [_][]const u8{ "--", "-v", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("-v", opts.patterns.items[0]);
+    try testing.expect(!opts.invert_match);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs -- -- takes the second -- as the pattern" {
+    const args = [_][]const u8{ "--", "--", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("--", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs -- with several operands fills pattern then files in order" {
+    const args = [_][]const u8{ "--", "a", "f1.txt", "f2.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 2), opts.files.items.len);
+    try testing.expectEqualStrings("f1.txt", opts.files.items[0]);
+    try testing.expectEqualStrings("f2.txt", opts.files.items[1]);
+}
+
+test "parseArgs bare -- yields no pattern and no files" {
+    const args = [_][]const u8{"--"};
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), opts.patterns.items.len);
+    try testing.expectEqual(@as(usize, 0), opts.files.items.len);
+}
+
+test "parseArgs operand before -e is a file, not the pattern" {
+    // GNU decides the pattern slot after the scan: -e supplied the
+    // pattern source, so the leading operand stays a file operand.
+    const args = [_][]const u8{ "f.txt", "-e", "a" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs operands before -e keep their order as files" {
+    const args = [_][]const u8{ "foo", "-e", "a", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 2), opts.files.items.len);
+    try testing.expectEqualStrings("foo", opts.files.items[0]);
+    try testing.expectEqualStrings("f.txt", opts.files.items[1]);
+}
+
+test "parseArgs guard: -e pattern -- file still splits correctly" {
+    const args = [_][]const u8{ "-e", "a", "--", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs guard: pattern -- file still splits correctly" {
+    const args = [_][]const u8{ "a", "--", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs guard: trailing -- adds no operand" {
+    const args = [_][]const u8{ "a", "f.txt", "--" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "runGrep -- pattern file prints the matching line" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep -- -v file matches the literal -v line" {
+    // The motivating case from issue #151: a pattern that looks like
+    // a flag. `--` must make it a pattern, not enable invert-match.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "-v" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("-v\n", result.output);
+}
+
+test "runGrep -- -- file matches the literal -- line" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "--" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("--\n", result.output);
+}
+
+test "runGrep -n -- pattern file numbers the line" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-n", "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("1:a\n", result.output);
+}
+
+test "runGrep -v -- pattern file inverts against the right pattern" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-v", "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("b\n-v\n--\nfoo\n", result.output);
+}
+
+test "runGrep -c -- pattern file counts one match" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-c", "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("1\n", result.output);
+}
+
+test "runGrep -i -- pattern file folds case" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-i", "--", "A" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep -- nomatch file exits 1 with no output" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "zzzzz" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -- with an empty file operand exits 2 without panicking" {
+    // GNU: `grep a ""` is legal and reports ENOENT on the empty path.
+    // An `assert(file_path.len > 0)` anywhere on this path would trap.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--color=never", "--", "a", "" };
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_aw.writer.buffered(), "No such file") != null);
+}
+
+test "runGrep guard: -e pattern -- file still matches" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-e", "a", "--" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep guard: pattern -- file still matches" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "a", "--" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep guard: pattern file without -- still matches" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{"a"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
