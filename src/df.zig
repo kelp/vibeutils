@@ -1134,6 +1134,24 @@ fn formatWithCommas(buf: []u8, value: u64) []const u8 {
     return buf[0..out_len];
 }
 
+/// Round `numerator` up to the next multiple of `denominator` without
+/// overflowing. The naive `(n + d - 1) / d` wraps whenever n is within d of
+/// u64max, which df reaches for any --block-size near the top of the range
+/// (issue #138). Saturating that addition is wrong in the other direction:
+/// it clamps silently and reports one block short, so the remainder is
+/// inspected instead of widening or clamping.
+fn ceilDiv(numerator: u64, denominator: u64) u64 {
+    // Every caller's divisor is a display block size, and parseBlockSize
+    // rejects zero at parse time, so a zero divisor cannot reach here.
+    std.debug.assert(denominator > 0);
+    const quotient = @divTrunc(numerator, denominator);
+    const result = quotient + @intFromBool(@rem(numerator, denominator) != 0);
+    // Rounding up can only yield zero for an empty numerator: any nonzero
+    // byte count occupies at least one block, however large the block is.
+    std.debug.assert((result == 0) == (numerator == 0));
+    return result;
+}
+
 fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []const u8 {
     const bytes = blocks * fs_block_size;
 
@@ -1152,7 +1170,7 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
     else
         1024;
 
-    const value = @divTrunc(bytes + display_block - 1, display_block);
+    const value = ceilDiv(bytes, display_block);
 
     if (opts.thousands_grouping) {
         return formatWithCommas(buf, value);
@@ -1870,7 +1888,7 @@ fn printTotal_formatField(buf: []u8, bytes: u64, display_block: u64, opts: DfOpt
     std.debug.assert(buf.len >= 16);
     if (opts.human_readable) return formatHumanReadable(buf, bytes, false);
     if (opts.si) return formatHumanReadable(buf, bytes, true);
-    const val = @divTrunc(bytes + display_block - 1, display_block);
+    const val = ceilDiv(bytes, display_block);
     if (opts.thousands_grouping) return formatWithCommas(buf, val);
     return std.fmt.bufPrint(buf, "{d}", .{val}) catch "?";
 }
