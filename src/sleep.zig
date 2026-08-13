@@ -453,8 +453,13 @@ test "runSleep - negative flag treated as unknown argument" {
     );
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(
-        std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null,
+    // Without `--`, GNU treats "-1" as a short flag, not a time interval, and
+    // words short flags differently from long ones. Verified with
+    // `LC_ALL=C /usr/bin/sleep -1` on GNU coreutils 9.5, which also exits 1.
+    try testing.expectEqualStrings(
+        "sleep: invalid option -- '1'\n" ++
+            "Try 'sleep --help' for more information.\n",
+        stderr_aw.writer.buffered(),
     );
 }
 
