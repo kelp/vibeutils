@@ -29,34 +29,14 @@ const regex_c = if (is_linux) struct {
     extern "c" fn regex_heap_free(re: *regex_h.regex_t) void;
 } else struct {};
 
-// C library bindings
-extern "c" fn getpwnam(name: [*:0]const u8) ?*const extern struct {
-    pw_name: [*:0]u8,
-    pw_passwd: [*:0]u8,
-    pw_uid: c.uid_t,
-    pw_gid: c.gid_t,
-    pw_gecos: [*:0]u8,
-    pw_dir: [*:0]u8,
-    pw_shell: [*:0]u8,
-};
-extern "c" fn getgrnam(name: [*:0]const u8) ?*const extern struct {
-    gr_name: [*:0]u8,
-    gr_passwd: [*:0]u8,
-    gr_gid: c.gid_t,
-    gr_mem: [*][*:0]u8,
-};
-extern "c" fn getpwuid(uid: c.uid_t) ?*const extern struct {
-    pw_name: [*:0]u8,
-    pw_passwd: [*:0]u8,
-    pw_uid: c.uid_t,
-    pw_gid: c.gid_t,
-};
-extern "c" fn getgrgid(gid: c.gid_t) ?*const extern struct {
-    gr_name: [*:0]u8,
-    gr_passwd: [*:0]u8,
-    gr_gid: c.gid_t,
-    gr_mem: [*][*:0]u8,
-};
+// libc's passwd and group records are declared exactly once in the tree, in
+// common.user_group; these aliases keep the lookups below reading like the C
+// API they wrap (issue #129).
+const getpwnam = common.user_group.getpwnam;
+const getgrnam = common.user_group.getgrnam;
+const getpwuid = common.user_group.getpwuid;
+const getgrgid = common.user_group.getgrgid;
+const spanOrEmpty = common.user_group.spanOrEmpty;
 
 const prog_name = "find";
 
@@ -2875,7 +2855,7 @@ fn matchUser(name_str: []const u8, uid: c.uid_t) bool {
 
     const pw = getpwnam(c_name);
     if (pw) |p| {
-        return uid == p.pw_uid;
+        return uid == p.uid;
     }
     return false;
 }
@@ -2894,7 +2874,7 @@ fn matchGroup(name_str: []const u8, gid: c.gid_t) bool {
 
     const gr = getgrnam(c_name);
     if (gr) |g| {
-        return gid == g.gr_gid;
+        return gid == g.gid;
     }
     return false;
 }
@@ -3093,7 +3073,7 @@ const NameResult = struct {
 fn getUserName(allocator: Allocator, uid: c.uid_t) NameResult {
     const pw = getpwuid(uid);
     if (pw) |p| {
-        return .{ .name = std.mem.span(p.pw_name), .allocated = false };
+        return .{ .name = spanOrEmpty(p.name), .allocated = false };
     }
     // Fall back to numeric
     const s = std.fmt.allocPrint(allocator, "{d}", .{uid}) catch
@@ -3104,7 +3084,7 @@ fn getUserName(allocator: Allocator, uid: c.uid_t) NameResult {
 fn getGroupName(allocator: Allocator, gid: c.gid_t) NameResult {
     const gr = getgrgid(gid);
     if (gr) |g| {
-        return .{ .name = std.mem.span(g.gr_name), .allocated = false };
+        return .{ .name = spanOrEmpty(g.name), .allocated = false };
     }
     const s = std.fmt.allocPrint(allocator, "{d}", .{gid}) catch
         return .{ .name = "?", .allocated = false };

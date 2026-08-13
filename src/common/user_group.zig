@@ -1,32 +1,51 @@
 const std = @import("std");
 const c = std.c;
 const testing = std.testing;
+const assert = std.debug.assert;
 
-// C library structures for user/group lookups
-const c_passwd = extern struct {
-    pw_name: [*:0]u8,
-    pw_passwd: [*:0]u8,
-    pw_uid: c.uid_t,
-    pw_gid: c.gid_t,
-    pw_gecos: [*:0]u8,
-    pw_dir: [*:0]u8,
-    pw_shell: [*:0]u8,
-};
+/// No passwd or group field libc can hand back is anywhere near this long, so
+/// a span that exceeds it means the pointer was never a NUL-terminated string.
+const max_c_string_bytes = 64 * 1024;
 
-const c_group = extern struct {
-    gr_name: [*:0]u8,
-    gr_passwd: [*:0]u8,
-    gr_gid: c.gid_t,
-    gr_mem: [*][*:0]u8,
-};
+/// The platform's `struct passwd`, taken from std rather than hand-rolled:
+/// macOS interposes pw_change and pw_class between pw_gid and pw_gecos and
+/// appends pw_expire, so a glibc-shaped literal reads gecos at offset 24 where
+/// the field actually sits at 40.
+pub const c_passwd = c.passwd;
 
-// C library bindings for user/group lookups
-extern "c" fn getpwnam(name: [*:0]const u8) ?*c_passwd;
-extern "c" fn getgrnam(name: [*:0]const u8) ?*c_group;
-extern "c" fn getpwuid(uid: c.uid_t) ?*c_passwd;
-extern "c" fn getgrgid(gid: c.gid_t) ?*c_group;
+/// The platform's `struct group`. The layout is identical on Linux and macOS;
+/// it is exported here so that no caller has to re-declare it.
+pub const c_group = c.group;
+
+// C library bindings for user/group lookups.
+pub const getpwnam = c.getpwnam;
+pub const getpwuid = c.getpwuid;
+pub const getgrgid = c.getgrgid;
+
+/// Zig 0.16.0 declares `std.c.getgrnam` as `?*passwd` — an upstream typo, as
+/// every other `getgr*` prototype is correct. `group.gid` sits at offset 16
+/// and `passwd.gid` at 20, so routing group-by-name lookups through std's
+/// declaration would read struct group's tail padding instead of the gid, on
+/// Linux as well as macOS. Declare the correct prototype here instead.
+pub extern "c" fn getgrnam(name: [*:0]const u8) ?*c_group;
+
 extern "c" fn getuid() c.uid_t;
 extern "c" fn getgid() c.gid_t;
+
+/// libc marks every string field of passwd and group optional, and callers
+/// only ever print them, so a NULL field reads as empty instead of failing the
+/// whole lookup.
+pub fn spanOrEmpty(field: ?[*:0]const u8) []const u8 {
+    const ptr = field orelse return "";
+    const out = std.mem.span(ptr);
+    // Negative space: the byte just past the span really is the sentinel, so
+    // the slice covers the whole C string rather than a prefix of it.
+    assert(ptr[out.len] == 0);
+    // A field longer than any plausible passwd line means the pointer did not
+    // point at a C string at all.
+    assert(out.len <= max_c_string_bytes);
+    return out;
+}
 
 /// User and group ID types
 pub const uid_t = std.posix.uid_t;
@@ -166,7 +185,7 @@ pub fn lookupUserByName(name: []const u8, allocator: std.mem.Allocator) Error!ui
     std.debug.assert(name_z.len == name.len);
 
     const passwd = getpwnam(name_z.ptr) orelse return Error.UserNotFound;
-    return passwd.pw_uid;
+    return passwd.uid;
 }
 
 /// Look up group by name using getgrnam
@@ -179,21 +198,21 @@ pub fn lookupGroupByName(name: []const u8, allocator: std.mem.Allocator) Error!g
     std.debug.assert(name_z.len == name.len);
 
     const group = getgrnam(name_z.ptr) orelse return Error.GroupNotFound;
-    return group.gr_gid;
+    return group.gid;
 }
 
 /// Get user information by UID
 /// Caller owns the returned name slice and must free it with the provided allocator
 pub fn getUserById(uid: uid_t, allocator: std.mem.Allocator) Error!UserInfo {
     const passwd = getpwuid(uid) orelse return Error.UserNotFound;
-    const name = std.mem.span(passwd.pw_name);
+    const name = spanOrEmpty(passwd.name);
     const owned_name = allocator.dupe(u8, name) catch return Error.OutOfMemory;
     // dupe copies the source slice exactly, so the owned copy has the same
-    // length as the C-string view of pw_name.
+    // length as the C-string view of the name field.
     std.debug.assert(owned_name.len == name.len);
     return UserInfo{
-        .uid = passwd.pw_uid,
-        .gid = passwd.pw_gid,
+        .uid = passwd.uid,
+        .gid = passwd.gid,
         .name = owned_name,
     };
 }
@@ -202,13 +221,13 @@ pub fn getUserById(uid: uid_t, allocator: std.mem.Allocator) Error!UserInfo {
 /// Caller owns the returned name slice and must free it with the provided allocator
 pub fn getGroupById(gid: gid_t, allocator: std.mem.Allocator) Error!GroupInfo {
     const group = getgrgid(gid) orelse return Error.GroupNotFound;
-    const name = std.mem.span(group.gr_name);
+    const name = spanOrEmpty(group.name);
     const owned_name = allocator.dupe(u8, name) catch return Error.OutOfMemory;
     // dupe copies the source slice exactly, so the owned copy has the same
-    // length as the C-string view of gr_name.
+    // length as the C-string view of the name field.
     std.debug.assert(owned_name.len == name.len);
     return GroupInfo{
-        .gid = group.gr_gid,
+        .gid = group.gid,
         .name = owned_name,
     };
 }

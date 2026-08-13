@@ -2,16 +2,10 @@ const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
 
-// Group struct definition
-const group = extern struct {
-    name: ?[*:0]const u8,
-    passwd: ?[*:0]const u8,
-    gid: std.c.gid_t,
-    mem: ?[*:null]?[*:0]const u8,
-};
-
-// Extern function declaration for getgrgid
-extern "c" fn getgrgid(gid: std.c.gid_t) ?*group;
+// The group lookup goes through the shared module so that libc's `struct
+// group` is declared exactly once in the tree (issue #129).
+const user_group = @import("user_group.zig");
+const getgrgid = user_group.getgrgid;
 
 /// Convert stat buffer to FileInfo
 fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {

@@ -19,31 +19,10 @@ extern "c" fn getgrouplist(
     ngroups: *c_int,
 ) c_int;
 
-// C library bindings for passwd entry access (used by -F and -P flags)
-// macOS passwd struct includes pw_change, pw_class, pw_expire fields
-// that are absent on Linux. Must match the platform's struct layout.
-const c_passwd = if (@import("builtin").os.tag == .macos) extern struct {
-    pw_name: [*:0]u8,
-    pw_passwd: [*:0]u8,
-    pw_uid: std.c.uid_t,
-    pw_gid: std.c.gid_t,
-    pw_change: c_long, // __darwin_time_t
-    pw_class: [*:0]u8,
-    pw_gecos: [*:0]u8,
-    pw_dir: [*:0]u8,
-    pw_shell: [*:0]u8,
-    pw_expire: c_long, // __darwin_time_t
-} else extern struct {
-    pw_name: [*:0]u8,
-    pw_passwd: [*:0]u8,
-    pw_uid: std.c.uid_t,
-    pw_gid: std.c.gid_t,
-    pw_gecos: [*:0]u8,
-    pw_dir: [*:0]u8,
-    pw_shell: [*:0]u8,
-};
-
-extern "c" fn getpwuid(uid: std.c.uid_t) ?*c_passwd;
+// The passwd record libc hands back is declared exactly once in the tree, in
+// common.user_group; -F and -P read it through these aliases (issue #129).
+const getpwuid = common.user_group.getpwuid;
+const spanOrEmpty = common.user_group.spanOrEmpty;
 
 /// Command-line arguments for the id utility
 const IdArgs = struct {
@@ -379,8 +358,8 @@ fn runId_printFullName(ctx: *const RunIdContext, uid: common.user_group.uid_t) !
     const pw = getpwuid(@intCast(uid));
     if (pw) |passwd| {
         // The looked-up entry must belong to the resolved uid.
-        std.debug.assert(passwd.pw_uid == @as(std.c.uid_t, @intCast(uid)));
-        const gecos = std.mem.span(passwd.pw_gecos);
+        std.debug.assert(passwd.uid == @as(std.c.uid_t, @intCast(uid)));
+        const gecos = spanOrEmpty(passwd.gecos);
         try stdout_writer.print("{s}", .{gecos});
         try stdout_writer.writeByte(delimiter);
         return @intFromEnum(common.ExitCode.success);
@@ -409,22 +388,22 @@ fn runId_printPasswdEntry(ctx: *const RunIdContext, uid: common.user_group.uid_t
     const pw = getpwuid(@intCast(uid));
     if (pw) |passwd| {
         // The looked-up entry must belong to the resolved uid.
-        std.debug.assert(passwd.pw_uid == @as(std.c.uid_t, @intCast(uid)));
-        const pw_name = std.mem.span(passwd.pw_name);
-        const pw_passwd = std.mem.span(passwd.pw_passwd);
-        const pw_gecos = std.mem.span(passwd.pw_gecos);
-        const pw_dir = std.mem.span(passwd.pw_dir);
-        const pw_shell = std.mem.span(passwd.pw_shell);
+        std.debug.assert(passwd.uid == @as(std.c.uid_t, @intCast(uid)));
+        const pw_name = spanOrEmpty(passwd.name);
+        const pw_passwd = spanOrEmpty(passwd.passwd);
+        const pw_gecos = spanOrEmpty(passwd.gecos);
+        const pw_dir = spanOrEmpty(passwd.dir);
+        const pw_shell = spanOrEmpty(passwd.shell);
         if (@import("builtin").os.tag == .macos) {
-            const pw_class = std.mem.span(passwd.pw_class);
+            const pw_class = spanOrEmpty(passwd.class);
             try stdout_writer.print("{s}:{s}:{d}:{d}:{s}:{d}:{d}:{s}:{s}:{s}", .{
                 pw_name,
                 pw_passwd,
-                passwd.pw_uid,
-                passwd.pw_gid,
+                passwd.uid,
+                passwd.gid,
                 pw_class,
-                passwd.pw_change,
-                passwd.pw_expire,
+                passwd.change,
+                passwd.expire,
                 pw_gecos,
                 pw_dir,
                 pw_shell,
@@ -433,8 +412,8 @@ fn runId_printPasswdEntry(ctx: *const RunIdContext, uid: common.user_group.uid_t
             try stdout_writer.print("{s}:{s}:{d}:{d}::0:0:{s}:{s}:{s}", .{
                 pw_name,
                 pw_passwd,
-                passwd.pw_uid,
-                passwd.pw_gid,
+                passwd.uid,
+                passwd.gid,
                 pw_gecos,
                 pw_dir,
                 pw_shell,
@@ -714,7 +693,7 @@ fn getGroupsForUser(
     const pw = getpwuid(@intCast(uid)) orelse return null;
 
     // Copy the username out of the libc static buffer.
-    const name_slice = std.mem.sliceTo(pw.pw_name, 0);
+    const name_slice = spanOrEmpty(pw.name);
     const owned_name = allocator.dupeZ(u8, name_slice) catch return null;
     defer allocator.free(owned_name);
 
