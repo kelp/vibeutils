@@ -1028,4 +1028,25 @@ test_rm() {
         fi
         rm -rf "$gnu69_root"
     fi
+
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # AMBIGUOUS: vibeutils' RmArgs declares both "interactive" and
+    # "interactive-once" (a vibeutils-only addition; real GNU rm has only
+    # one long option starting with "i"), so "--i" is genuinely ambiguous
+    # between them, in RmArgs's field-declaration order.
+    local rm_i_cmd="" rm_i_out="" rm_i_err="" rm_i_exit=""
+    run_command rm_i_cmd rm_i_out rm_i_err rm_i_exit "$binary" --i
+    if [[ $rm_i_exit -eq 1 && "$rm_i_err" == "rm: option '--i' is ambiguous; possibilities: '--interactive' '--interactive-once'"$'\n'"Try 'rm --help' for more information." ]]; then
+        print_test_result "rm --i is ambiguous (interactive, interactive-once)" "PASS"
+    else
+        print_test_result "rm --i is ambiguous (interactive, interactive-once)" "FAIL" \
+            "Expected \"rm: option '--i' is ambiguous; possibilities: '--interactive' '--interactive-once'\" then the hint line, got exit=$rm_i_exit stderr='$rm_i_err'"
+    fi
+
+    # REGRESSION, EXACT-MATCH-WINS: "--interactive" is itself a full field
+    # name and must resolve directly, NOT be reported ambiguous against
+    # "--interactive-once". --help exits 0 before touching any file, so
+    # this is safe to run without a target.
+    test_command_exit_code "rm --interactive --help exits 0 (regression)" 0 "$binary" --interactive --help
 }

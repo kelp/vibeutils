@@ -366,6 +366,26 @@ test_cut() {
             "Expected hex '610064' or '61006400', got '$cut_z_hex'"
     fi
 
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # Prefix on a value-taking option AND a separate-value option: "--deli"
+    # is unambiguous for "--delimiter" and "--f" is unambiguous for
+    # "--fields" (no other cut flag starts with either), each taking its
+    # value from the following argv word.
+    test_command_output "cut --deli --f resolve as separate-value prefixes" "a" \
+        bash -c "echo 'a,b' | '$binary' --deli , --f 1"
+
+    # EXPANDED NAME: when the value is missing, the diagnostic must name the
+    # RESOLVED flag in full ("--delimiter"), not the typed prefix ("--deli").
+    local deli_cmd="" deli_out="" deli_err="" deli_exit=""
+    run_command deli_cmd deli_out deli_err deli_exit bash -c "echo 'a,b' | '$binary' --deli"
+    if [[ "$deli_err" == "cut: option '--delimiter' requires an argument"* ]]; then
+        print_test_result "cut --deli missing value names --delimiter" "PASS"
+    else
+        print_test_result "cut --deli missing value names --delimiter" "FAIL" \
+            "Expected \"cut: option '--delimiter' requires an argument\", got: '$deli_err'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}cut tests completed${NC}"

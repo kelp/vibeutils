@@ -349,6 +349,38 @@ $'     1\tline1\n     2\tline2\n\n     3\tline3\n     4\tline4' \
             "Expected 'nl: /nonexistent/file: No such file or directory', got: '$nl_err_stderr'"
     fi
 
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # AMBIGUOUS: "--he" prefixes both "--help" and "--header-numbering".
+    # Candidate order follows NlArgs's own field-declaration order
+    # (help before header_numbering in src/nl.zig), not GNU's own longopts
+    # order and not alphabetical order.
+    # Redirect stdin from /dev/null: a buggy implementation that resolved
+    # this prefix to a value-less flag rather than reporting ambiguity
+    # would otherwise block reading the suite's inherited stdin instead of
+    # failing fast.
+    local he_cmd="" he_out="" he_err="" he_exit=""
+    run_command he_cmd he_out he_err he_exit bash -c "'$binary' --he < /dev/null"
+    if [[ $he_exit -eq 1 && "$he_err" == "nl: option '--he' is ambiguous; possibilities: '--help' '--header-numbering'"$'\n'"Try 'nl --help' for more information." ]]; then
+        print_test_result "nl --he is ambiguous (help, header-numbering)" "PASS"
+    else
+        print_test_result "nl --he is ambiguous (help, header-numbering)" "FAIL" \
+            "Expected \"nl: option '--he' is ambiguous; possibilities: '--help' '--header-numbering'\" then the hint line, got exit=$he_exit stderr='$he_err'"
+    fi
+
+    # AMBIGUOUS ORDER: "--nu" prefixes number_format, number_width, and
+    # number_separator (single-letter fields like "n" are excluded: their
+    # one-character long flag can never match a two-character prefix), in
+    # that field-declaration order from src/nl.zig.
+    local nu_cmd="" nu_out="" nu_err="" nu_exit=""
+    run_command nu_cmd nu_out nu_err nu_exit bash -c "'$binary' --nu < /dev/null"
+    if [[ $nu_exit -eq 1 && "$nu_err" == "nl: option '--nu' is ambiguous; possibilities: '--number-format' '--number-width' '--number-separator'"$'\n'"Try 'nl --help' for more information." ]]; then
+        print_test_result "nl --nu is ambiguous in field-declaration order" "PASS"
+    else
+        print_test_result "nl --nu is ambiguous in field-declaration order" "FAIL" \
+            "Expected \"nl: option '--nu' is ambiguous; possibilities: '--number-format' '--number-width' '--number-separator'\" then the hint line, got exit=$nu_exit stderr='$nu_err'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}nl tests completed${NC}"

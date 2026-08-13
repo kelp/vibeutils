@@ -64,11 +64,20 @@ pub const ArgParser = struct {
             missing_value_short,
             unexpected_value_long,
             invalid_value,
+            /// A typed long-flag prefix matched more than one field's long
+            /// flag and none of them exactly. See `candidates`.
+            ambiguous_long,
         };
 
         kind: Kind = .none,
         flag: []const u8 = "",
         short: u8 = 0,
+        /// Only meaningful when `kind == .ambiguous_long`: every matching
+        /// long flag, individually single-quoted and space-separated, in
+        /// the matching struct's field-declaration order (GNU's own
+        /// `longopts[]` order for that command) — e.g.
+        /// `'--header-numbering' '--help'`. Empty otherwise.
+        candidates: []const u8 = "",
     };
 
     const ValueUsage = enum {
@@ -737,6 +746,17 @@ pub const ArgParser = struct {
                 "{s}: option '{s}' doesn't allow an argument\n",
                 .{ prog_name, diag.flag },
             ) catch {},
+            // Scaffolding only: `.ambiguous_long` is not yet produced by any
+            // parse path (parseLongFlagWithValue has no prefix-matching
+            // logic yet), so this arm exists only to keep the switch
+            // exhaustive while `diag.kind`/`diag.candidates` are exercised
+            // directly via `parseWithDiagnostic` in the unit tests below.
+            // The green phase (issue #128) owns the actual GNU wording and
+            // the hint-line policy for this kind — do not treat this as the
+            // final message.
+            .ambiguous_long => {
+                hint_wanted = false;
+            },
             .invalid_value => {
                 hint_wanted = false;
                 stderr_writer.print(
@@ -1511,4 +1531,130 @@ test "parseWithDiagnostic: unknown-long payload BORROWS argv, it does not copy i
     // caller's argv token so nothing is allocated and nothing must be freed.
     try testing.expectEqual(args[0].ptr, diag.flag.ptr);
     try testing.expectEqual(args[0].len, diag.flag.len);
+}
+
+// ============================================================================
+// Issue #128 — GNU-style long-flag abbreviation (getopt_long prefix matching)
+// ============================================================================
+
+test "parseWithDiagnostic: unambiguous long-flag prefix resolves like GNU getopt_long" {
+    // GNU getopt_long accepts any prefix that names exactly one long option;
+    // "coun" matches only "count" in BasicArgs (no other field starts with
+    // "coun"), so this must resolve exactly as "--count=5" would.
+    const args = [_][]const u8{"--coun=5"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(BasicArgs, testing.allocator, &args, &diag);
+    try testing.expectEqual(@as(?u32, 5), result.count);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+const DeliArgs = struct {
+    help: bool = false,
+    delimiter: ?[]const u8 = null,
+};
+
+test "parseWithDiagnostic: missing-value diagnostic names the expanded flag, not the typed prefix" {
+    // GNU's "requires an argument" wording always names the resolved long
+    // option in full, even when the user typed only a prefix of it:
+    // `cut --deli` (no value) -> "option '--delimiter' requires an argument".
+    const args = [_][]const u8{"--deli"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(DeliArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.MissingValue, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.missing_value_long, diag.kind);
+    try testing.expectEqualStrings("--delimiter", diag.flag);
+}
+
+const NoDerefArgs = struct {
+    no_dereference: bool = false,
+    help: bool = false,
+};
+
+test "parseWithDiagnostic: underscore spelling stays exact-only, hyphen spelling prefix-resolves" {
+    // Field names use `_`, but GNU long-option spellings use `-`; the two are
+    // never interchangeable. Typing the field's literal underscore spelling
+    // as a prefix (`--no_der`) must still miss, even after abbreviation
+    // support lands for the real (hyphenated) long-flag spelling.
+    {
+        const args = [_][]const u8{"--no_der"};
+        var diag: ArgParser.Diagnostic = .{};
+        const result = ArgParser.parseWithDiagnostic(NoDerefArgs, testing.allocator, &args, &diag);
+        try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+        try testing.expectEqual(ArgParser.Diagnostic.Kind.unknown_long, diag.kind);
+    }
+    {
+        const args = [_][]const u8{"--no-der"};
+        var diag: ArgParser.Diagnostic = .{};
+        const result = try ArgParser.parseWithDiagnostic(
+            NoDerefArgs,
+            testing.allocator,
+            &args,
+            &diag,
+        );
+        try testing.expect(result.no_dereference);
+        try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+    }
+}
+
+const AmbiguousAllArgs = struct {
+    alpha: bool = false,
+    beta: ?[]const u8 = null,
+    gamma: bool = false,
+    /// Non-flag field: an enum but NOT wrapped in `?`, mirroring
+    /// `uniq.zig`'s internal `all_repeated_method: AllRepeatedMethod` field.
+    /// Neither `bool` nor `.optional`, so the existing match loop already
+    /// never treats it as a real flag target — it must never appear in a
+    /// candidate list either.
+    delta: enum { off, on } = .off,
+    /// Non-flag field: every real utility's Args struct carries a
+    /// `positionals` sink like this one. It must never appear in a
+    /// candidate list.
+    positionals: []const []const u8 = &.{},
+};
+
+test "parseWithDiagnostic: empty long-flag prefix is ambiguous over every field" {
+    // `--=x` types a completely empty flag name, which is a prefix of every
+    // long option, so GNU's rule ("a prefix matching more than one option is
+    // an error naming the candidates") makes it ambiguous over the whole
+    // struct — never a lucky exact match, since no field is named "".
+    const args = [_][]const u8{"--=x"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(AmbiguousAllArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.ambiguous_long, diag.kind);
+    // The ambiguous message echoes the FULL typed token, "=value" included.
+    try testing.expectEqualStrings("--=x", diag.flag);
+    // Only the real bool/optional flag fields are candidates: "delta" (a
+    // plain, non-optional enum) and "positionals" (the operand sink) must
+    // both be excluded even though their long-flag spellings also start
+    // with the empty prefix.
+    try testing.expectEqualStrings("'--alpha' '--beta' '--gamma'", diag.candidates);
+}
+
+const ShortOnlyArgs = struct {
+    // `one_line`'s long spelling ("one-line") shares no prefix with "1" —
+    // its `meta.short` character is merely an unrelated single digit, the
+    // same shape as `ls`'s real `-1`/`--one-per-line` pairing. Nothing about
+    // a field's *short* flag should ever feed long-flag prefix matching.
+    one_line: bool = false,
+    help: bool = false,
+
+    pub const meta = .{
+        .one_line = .{ .short = '1' },
+        .help = .{ .short = 'h' },
+    };
+};
+
+test "parseWithDiagnostic: a short flag character is never used to prefix-resolve a long flag" {
+    // GNU: `ls --1` stays "unrecognized option '--1'" — `-1` is short-only,
+    // so typing it with two dashes must never resolve via any field's
+    // *short* character, matched or abbreviated. Since no field's *long*
+    // spelling in this fixture starts with "1" either, this must land on
+    // plain UnknownFlag (zero candidates), not ambiguous_long.
+    const args = [_][]const u8{"--1"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(ShortOnlyArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.unknown_long, diag.kind);
+    try testing.expectEqualStrings("--1", diag.flag);
 }

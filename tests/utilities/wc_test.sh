@@ -497,6 +497,42 @@ test_wc() {
         print_test_result "wc processes all valid files" "FAIL" "Expected 3 lines (2 files + total), got $line_count"
     fi
 
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # HEADLINE: an unambiguous prefix of a long flag resolves like GNU
+    # getopt_long. No other wc flag starts with "vers", so "--vers" must
+    # resolve to "--version" and print the version banner.
+    local vers_cmd="" vers_out="" vers_err="" vers_exit=""
+    run_command vers_cmd vers_out vers_err vers_exit "$binary" --vers
+    if [[ $vers_exit -eq 0 && "$vers_out" == "wc (vibeutils)"* ]]; then
+        print_test_result "wc --vers resolves to --version" "PASS"
+    else
+        print_test_result "wc --vers resolves to --version" "FAIL" \
+            "Expected exit 0 and a 'wc (vibeutils)' version banner, got exit=$vers_exit stdout='$vers_out' stderr='$vers_err'"
+    fi
+
+    # "hel" is likewise unambiguous ("--help" is the only wc flag starting
+    # with it), so it must print the help banner and exit 0.
+    local hel_cmd="" hel_out="" hel_err="" hel_exit=""
+    run_command hel_cmd hel_out hel_err hel_exit "$binary" --hel
+    if [[ $hel_exit -eq 0 && "$hel_out" == "Usage: wc "* ]]; then
+        print_test_result "wc --hel resolves to --help" "PASS"
+    else
+        print_test_result "wc --hel resolves to --help" "FAIL" \
+            "Expected exit 0 and a 'Usage: wc ' help banner, got exit=$hel_exit stdout='$hel_out' stderr='$hel_err'"
+    fi
+
+    # REGRESSION: a prefix matching NO flag at all must stay byte-identical
+    # to today's unrecognized-option wording.
+    local zzz_cmd="" zzz_out="" zzz_err="" zzz_exit=""
+    run_command zzz_cmd zzz_out zzz_err zzz_exit "$binary" --zzz
+    if [[ $zzz_exit -eq 1 && "$zzz_err" == "wc: unrecognized option '--zzz'"$'\n'"Try 'wc --help' for more information." ]]; then
+        print_test_result "wc --zzz stays unrecognized (regression)" "PASS"
+    else
+        print_test_result "wc --zzz stays unrecognized (regression)" "FAIL" \
+            "Expected unchanged 'wc: unrecognized option '\''--zzz'\''' message, got exit=$zzz_exit stderr='$zzz_err'"
+    fi
+
     echo -e "${CYAN}Final validation...${NC}"
 
     # Verify comprehensive test count (updated target)
