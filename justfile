@@ -99,6 +99,17 @@ build-util util:
 test:
     {{test_cmd}}
 
+# Check the macOS passwd/group ABI from any host, without a macOS runner.
+#
+# The layout pin in src/common/user_group.zig is a `comptime` block, so
+# --test-no-exec evaluates its macOS arm while cross-compiling. The final
+# cross-build is what compile-checks id.zig's macOS-only `-P` arm, which no
+# Linux test run ever reaches (issue #129).
+abi-macos:
+    zig test --test-no-exec -lc -target aarch64-macos src/common/user_group.zig
+    zig test --test-no-exec -lc -target x86_64-macos src/common/user_group.zig
+    zig build -Dtarget=aarch64-macos-none
+
 # Run the privilege-framework integration tests
 #
 # `zig build test-integration` existed but nothing invoked it — not this file,

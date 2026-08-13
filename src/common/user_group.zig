@@ -415,3 +415,178 @@ test "no octal confusion for user:group format" {
     // When colon is present, it's clearly a user:group spec, no warning
     try testing.expect(!spec.warn_octal_confusion);
 }
+
+// ============================================================================
+// Issue #129: libc passwd/group ABI guards
+//
+// The same `struct passwd` was hand-rolled in four files. The glibc-shaped
+// copies are wrong on macOS, which interposes pw_change and pw_class between
+// pw_gid and pw_gecos and appends pw_expire, so every field past pw_gid reads
+// the wrong offset there. These guards pin the declarations to std's platform
+// structs, which makes a re-hand-rolled copy detectable on Linux even though
+// the bytes happen to agree there.
+// ============================================================================
+
+test "user_group: c_passwd is std's platform passwd struct" {
+    // Type identity, not layout equality: a byte-identical hand-rolled copy is
+    // still a distinct type, so this fails on Linux the moment someone
+    // re-introduces one -- which is what makes the macOS-only bug catchable
+    // without a macOS runner.
+    try testing.expect(c_passwd == std.c.passwd);
+    // Negative space: passwd and group are different records, and confusing
+    // the two is exactly the std.c.getgrnam trap guarded further down.
+    try testing.expect(c_passwd != std.c.group);
+}
+
+test "user_group: c_group is std's platform group struct" {
+    try testing.expect(c_group == std.c.group);
+    // Negative space: the group record must not collapse onto the passwd one.
+    try testing.expect(c_group != std.c.passwd);
+}
+
+test "user_group: the four lookups return pointers to std's platform structs" {
+    const pwnam_ret = @typeInfo(@TypeOf(getpwnam)).@"fn".return_type.?;
+    const pwuid_ret = @typeInfo(@TypeOf(getpwuid)).@"fn".return_type.?;
+    const grnam_ret = @typeInfo(@TypeOf(getgrnam)).@"fn".return_type.?;
+    const grgid_ret = @typeInfo(@TypeOf(getgrgid)).@"fn".return_type.?;
+    try testing.expect(pwnam_ret == ?*std.c.passwd);
+    try testing.expect(pwuid_ret == ?*std.c.passwd);
+    try testing.expect(grnam_ret == ?*std.c.group);
+    try testing.expect(grgid_ret == ?*std.c.group);
+    // Negative space: a group lookup handing back a passwd record is the
+    // upstream typo this module has to route around, so pin it shut here too.
+    try testing.expect(grnam_ret != ?*std.c.passwd);
+    try testing.expect(grgid_ret != ?*std.c.passwd);
+}
+
+test "user_group: std.c.getgrnam is mistyped upstream, so a local decl stays" {
+    // Zig 0.16.0 declares std.c.getgrnam as `?*passwd` -- an upstream typo;
+    // every other getgr* prototype is correct. group.gid sits at offset 16 and
+    // passwd.gid at 20, so routing group-by-name lookups through std's
+    // declaration would read struct group's tail padding instead of the gid,
+    // on Linux as well as macOS. This test is a tripwire, green today and
+    // green after the consolidation: when a Zig upgrade fixes the prototype it
+    // goes red, and that is the signal to delete the local getgrnam and use
+    // std's. build.zig.zon pins 0.16.0, so it cannot flip by accident.
+    const std_grnam_ret = @typeInfo(@TypeOf(std.c.getgrnam)).@"fn".return_type.?;
+    try testing.expect(std_grnam_ret == ?*std.c.passwd);
+    // Negative space: the day this stops being a passwd pointer, delete the
+    // local declaration rather than "fixing" this test.
+    try testing.expect(std_grnam_ret != ?*std.c.group);
+    comptime {
+        // The differing gid offsets are what make the typo a live memory bug
+        // rather than a cosmetic naming slip.
+        std.debug.assert(@offsetOf(std.c.group, "gid") == 16);
+        std.debug.assert(@offsetOf(std.c.passwd, "gid") == 20);
+    }
+}
+
+test "user_group: platform passwd and group ABI offsets are pinned" {
+    // A `comptime` block rather than runtime expectations, because comptime
+    // asserts are evaluated by `zig test --test-no-exec -target aarch64-macos`
+    // even from a Linux-only container. That is what lets this guard the macOS
+    // field order that the hand-rolled glibc copies got wrong.
+    comptime {
+        std.debug.assert(@offsetOf(std.c.passwd, "name") == 0);
+        std.debug.assert(@offsetOf(std.c.passwd, "passwd") == 8);
+        std.debug.assert(@offsetOf(std.c.passwd, "uid") == 16);
+        std.debug.assert(@offsetOf(std.c.passwd, "gid") == 20);
+        switch (@import("builtin").os.tag) {
+            .macos => {
+                std.debug.assert(@sizeOf(std.c.passwd) == 72);
+                std.debug.assert(@offsetOf(std.c.passwd, "change") == 24);
+                std.debug.assert(@offsetOf(std.c.passwd, "class") == 32);
+                std.debug.assert(@offsetOf(std.c.passwd, "gecos") == 40);
+                std.debug.assert(@offsetOf(std.c.passwd, "dir") == 48);
+                std.debug.assert(@offsetOf(std.c.passwd, "shell") == 56);
+                std.debug.assert(@offsetOf(std.c.passwd, "expire") == 64);
+            },
+            else => {
+                std.debug.assert(@sizeOf(std.c.passwd) == 48);
+                std.debug.assert(@offsetOf(std.c.passwd, "gecos") == 24);
+                std.debug.assert(@offsetOf(std.c.passwd, "dir") == 32);
+                std.debug.assert(@offsetOf(std.c.passwd, "shell") == 40);
+            },
+        }
+        // struct group is identical on both platforms; pinning it keeps a
+        // future "harmless" reshuffle from going unnoticed.
+        std.debug.assert(@sizeOf(std.c.group) == 32);
+        std.debug.assert(@offsetOf(std.c.group, "gid") == 16);
+        std.debug.assert(@offsetOf(std.c.group, "mem") == 24);
+    }
+    // The block above is the whole test; these two restate its endpoints at
+    // runtime so the test body is not assertion-free to a reader.
+    try testing.expectEqual(@as(u32, 16), @offsetOf(std.c.passwd, "uid"));
+    try testing.expect(@offsetOf(std.c.passwd, "gid") != @offsetOf(std.c.group, "gid"));
+}
+
+test "user_group: getUserById mirrors libc's passwd entry for every low uid" {
+    // The oracle is libc read through std's struct, so this characterization
+    // does not lean on the module's own declaration: if an accessor ever reads
+    // the wrong offset the two sources disagree. The scan is bounded because
+    // system accounts live in the low uid range on every platform we support.
+    const uid_scan_max: u32 = 256;
+    var entries_checked: u32 = 0;
+    var uid: u32 = 0;
+    while (uid < uid_scan_max) : (uid += 1) {
+        const entry = std.c.getpwuid(@intCast(uid)) orelse continue;
+        const entry_uid: u32 = @intCast(entry.uid);
+        const entry_gid: u32 = @intCast(entry.gid);
+        // libc hands back a pointer into one static buffer that the next
+        // lookup overwrites, so the name has to be copied out first.
+        const entry_name = try testing.allocator.dupe(u8, std.mem.span(entry.name.?));
+        defer testing.allocator.free(entry_name);
+
+        const info = try getUserById(@intCast(uid), testing.allocator);
+        defer testing.allocator.free(info.name);
+
+        try testing.expectEqual(entry_uid, @as(u32, @intCast(info.uid)));
+        try testing.expectEqual(entry_gid, @as(u32, @intCast(info.gid)));
+        try testing.expectEqualStrings(entry_name, info.name);
+        entries_checked += 1;
+    }
+    // Every Unix has at least a root entry, so an empty scan would mean the
+    // assertions above all held vacuously.
+    try testing.expect(entries_checked > 0);
+    // Negative space: a uid no account owns must not resolve to an entry.
+    const absent_uid: u32 = 4_000_000_000;
+    if (std.c.getpwuid(@intCast(absent_uid)) == null) {
+        try testing.expectError(
+            Error.UserNotFound,
+            getUserById(absent_uid, testing.allocator),
+        );
+    }
+}
+
+test "user_group: group names round-trip back to their own gid" {
+    // Bonus guard for the std.c.getgrnam trap: with group-by-name routed
+    // through std's mistyped declaration the gid is read from struct group's
+    // tail padding at offset 20 instead of offset 16. Caveat -- that padding
+    // is usually garbage but is not guaranteed to differ from the real gid,
+    // notably when the gid is 0 in a root container. The deterministic guards
+    // are the prototype and offset tests above; this one is not load-bearing.
+    const gid_scan_max: u32 = 256;
+    var entries_checked: u32 = 0;
+    var gid: u32 = 0;
+    while (gid < gid_scan_max) : (gid += 1) {
+        const entry = std.c.getgrgid(@intCast(gid)) orelse continue;
+        // Same static-buffer hazard as the passwd scan above.
+        const entry_name = try testing.allocator.dupe(u8, std.mem.span(entry.name.?));
+        defer testing.allocator.free(entry_name);
+
+        const info = try getGroupById(@intCast(gid), testing.allocator);
+        defer testing.allocator.free(info.name);
+        try testing.expectEqualStrings(entry_name, info.name);
+        try testing.expectEqual(gid, @as(u32, @intCast(info.gid)));
+
+        const resolved = try lookupGroupByName(entry_name, testing.allocator);
+        try testing.expectEqual(gid, @as(u32, @intCast(resolved)));
+        entries_checked += 1;
+    }
+    try testing.expect(entries_checked > 0);
+    // Negative space: a name no group owns must not resolve to a gid.
+    try testing.expectError(
+        Error.GroupNotFound,
+        lookupGroupByName("nonexistent_group_129_guard", testing.allocator),
+    );
+}

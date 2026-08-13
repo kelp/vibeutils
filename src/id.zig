@@ -1598,6 +1598,144 @@ test "id -P output contains current username" {
     try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), user_info.name));
 }
 
+// ================================================================
+// Issue #129: id must not hand-roll libc's passwd ABI
+// ================================================================
+
+test "id: the passwd lookup uses std's platform passwd struct" {
+    // id is the file that actually reads past pw_gid -- gecos, dir, shell and
+    // the macOS-only class/change/expire -- so a glibc-shaped struct here
+    // would print garbage on macOS. Pin the prototype to std's type, whether
+    // it is re-exported in this file or reached through common.user_group.
+    const ug = common.user_group;
+    const pwuid = if (@hasDecl(@This(), "getpwuid")) getpwuid else ug.getpwuid;
+    const pwuid_ret = @typeInfo(@TypeOf(pwuid)).@"fn".return_type.?;
+    try testing.expect(pwuid_ret == ?*std.c.passwd);
+    // Negative space: a passwd lookup must never yield a group record.
+    try testing.expect(pwuid_ret != ?*std.c.group);
+}
+
+test "id -P puts name, uid and gid in their passwd-entry columns" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{"-P"};
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 1);
+    // Drop the trailing delimiter before splitting so the last column is the
+    // shell rather than "shell plus newline".
+    const line = out[0 .. out.len - 1];
+    const field_count_expected: u32 = 10;
+    var fields: [field_count_expected][]const u8 = undefined;
+    var count: u32 = 0;
+    var it = std.mem.splitScalar(u8, line, ':');
+    while (it.next()) |field| {
+        // The passwd entry format is fixed at ten columns; a longer split
+        // means the format string grew a column rather than reordering one.
+        try testing.expect(count < field_count_expected);
+        fields[count] = field;
+        count += 1;
+    }
+    try testing.expectEqual(field_count_expected, count);
+
+    const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
+    const user_info = try common.user_group.getUserById(uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+    var uid_buf: [32]u8 = undefined;
+    var gid_buf: [32]u8 = undefined;
+    try testing.expectEqualStrings(user_info.name, fields[0]);
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&uid_buf, "{d}", .{uid}), fields[2]);
+    try testing.expectEqualStrings(
+        try std.fmt.bufPrint(&gid_buf, "{d}", .{user_info.gid}),
+        fields[3],
+    );
+    if (@import("builtin").os.tag != .macos) {
+        // Linux passwd entries carry no class/change/expire, so id emits the
+        // empty-and-zero placeholders BSD id prints for an unset account.
+        try testing.expectEqualStrings("", fields[4]);
+        try testing.expectEqualStrings("0", fields[5]);
+        try testing.expectEqualStrings("0", fields[6]);
+    }
+}
+
+test "id -P fills class, change and expire from the macOS passwd entry" {
+    // macOS is the only platform whose passwd entry has these three columns,
+    // and their order is exactly what the hand-rolled glibc struct got wrong.
+    // No Linux run can observe this; CI's macos-26 job is what exercises it.
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{"-P"};
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Read the expected values straight from libc through std's struct so the
+    // check does not lean on id's own declaration of the record.
+    const entry = std.c.getpwuid(geteuid()) orelse return error.SkipZigTest;
+    const class = try testing.allocator.dupe(u8, std.mem.span(entry.class orelse ""));
+    defer testing.allocator.free(class);
+    const change = entry.change;
+    const expire = entry.expire;
+
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 1);
+    var fields: [10][]const u8 = undefined;
+    var count: u32 = 0;
+    var it = std.mem.splitScalar(u8, out[0 .. out.len - 1], ':');
+    while (it.next()) |field| {
+        try testing.expect(count < fields.len);
+        fields[count] = field;
+        count += 1;
+    }
+    try testing.expectEqual(@as(u32, 10), count);
+
+    var change_buf: [32]u8 = undefined;
+    var expire_buf: [32]u8 = undefined;
+    try testing.expectEqualStrings(class, fields[4]);
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&change_buf, "{d}", .{change}), fields[5]);
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&expire_buf, "{d}", .{expire}), fields[6]);
+    // Negative space: change and expire are numbers, so a class/change
+    // transposition is caught even when both timestamps are zero.
+    _ = try std.fmt.parseInt(i64, fields[5], 10);
+    _ = try std.fmt.parseInt(i64, fields[6], 10);
+}
+
+test "id -F prints the GECOS field of the current user" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{"-F"};
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // libc reuses one static passwd buffer, so both fields are copied out of
+    // the same lookup before anything else can call into it.
+    const entry = std.c.getpwuid(geteuid()) orelse return error.SkipZigTest;
+    const gecos = try testing.allocator.dupe(u8, std.mem.span(entry.gecos orelse ""));
+    defer testing.allocator.free(gecos);
+    const home = try testing.allocator.dupe(u8, std.mem.span(entry.dir orelse ""));
+    defer testing.allocator.free(home);
+
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len >= 1);
+    const printed = out[0 .. out.len - 1];
+    try testing.expectEqualStrings(gecos, printed);
+    // Negative space: where this account's GECOS text and home directory
+    // differ, printing the neighbouring field is visibly wrong rather than a
+    // no-op, which is what gives the equality above its teeth.
+    if (!std.mem.eql(u8, gecos, home)) {
+        try testing.expect(!std.mem.eql(u8, printed, home));
+    }
+}
+
 test "printSingleGroup outputs numeric GID with delimiter" {
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

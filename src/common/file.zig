@@ -631,3 +631,48 @@ test "formatTime old file" {
     try testing.expect(std.mem.find(u8, result, "2020") != null);
     try testing.expect(std.mem.find(u8, result, ":") == null); // Should not have time
 }
+
+// ================================================================
+// Issue #129: this file must not hand-roll libc's group ABI
+// ================================================================
+
+test "file: the group lookup uses std's platform group struct" {
+    // getUserName already goes through std.c.getpwuid; the group side kept a
+    // file-local `extern struct group` with a differently-optional `mem`
+    // field. Pin the prototype to std's type, whether it is re-exported here
+    // or reached through the shared user_group module.
+    const ug = @import("user_group.zig");
+    const grgid = if (@hasDecl(@This(), "getgrgid")) getgrgid else ug.getgrgid;
+    const grgid_ret = @typeInfo(@TypeOf(grgid)).@"fn".return_type.?;
+    try testing.expect(grgid_ret == ?*std.c.group);
+    // Negative space: a group lookup must never yield a passwd record, which
+    // is what std.c.getgrnam's upstream typo would do.
+    try testing.expect(grgid_ret != ?*std.c.passwd);
+}
+
+test "file: getUserName and getGroupName mirror the passwd and group entries" {
+    const ug = @import("user_group.zig");
+    const uid = ug.getCurrentUserId();
+    const gid = ug.getCurrentGroupId();
+
+    const user_info = try ug.getUserById(uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+    var user_buf: [256]u8 = undefined;
+    const user_name = try getUserName(@intCast(uid), &user_buf);
+    try testing.expectEqualStrings(user_info.name, user_name);
+
+    const group_info = try ug.getGroupById(gid, testing.allocator);
+    defer testing.allocator.free(group_info.name);
+    var group_buf: [256]u8 = undefined;
+    const group_name = try getGroupName(@intCast(gid), &group_buf);
+    try testing.expectEqualStrings(group_info.name, group_name);
+
+    // Negative space: the numeric fallback is still reachable, so the two
+    // equalities above prove a real lookup rather than a stubbed-out path.
+    const absent_gid: u32 = 4_000_000_000;
+    if (std.c.getgrgid(@intCast(absent_gid)) == null) {
+        var absent_buf: [64]u8 = undefined;
+        const absent = try getGroupName(absent_gid, &absent_buf);
+        try testing.expectEqualStrings("4000000000", absent);
+    }
+}

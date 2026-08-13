@@ -7176,12 +7176,14 @@ test "find: -user matches files by username" {
 
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    // Get the UID of the test file, then look up the username
+    // Get the UID of the test file, then look up the username. The lookup runs
+    // through common.user_group so this test does not reach into a find-local
+    // libc binding -- issue #129 deletes those.
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "myfile.txt" });
     const stat_buf = try doStat(file_path, false);
-    const pw = getpwuid(stat_buf.uid);
-    try testing.expect(pw != null);
-    const username = std.mem.sliceTo(pw.?.pw_name, 0);
+    const user_info = try common.user_group.getUserById(@intCast(stat_buf.uid), allocator);
+    try testing.expect(user_info.name.len > 0);
+    const username = user_info.name;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7215,12 +7217,13 @@ test "find: -group matches files by group name" {
 
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    // Get the GID of the test file, then look up the group name
+    // Get the GID of the test file, then look up the group name. Same reason
+    // as -user above: the shared module owns the libc binding, not find.
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "grpfile.txt" });
     const stat_buf = try doStat(file_path, false);
-    const gr = getgrgid(stat_buf.gid);
-    try testing.expect(gr != null);
-    const groupname = std.mem.sliceTo(gr.?.gr_name, 0);
+    const group_info = try common.user_group.getGroupById(@intCast(stat_buf.gid), allocator);
+    try testing.expect(group_info.name.len > 0);
+    const groupname = group_info.name;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7270,6 +7273,170 @@ test "find: -nogroup matches nothing for normal files" {
     );
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "normalfile.txt") == null);
+}
+
+// ================================================================
+// Issue #129: find must not hand-roll libc's passwd/group ABI
+// ================================================================
+
+test "find: passwd and group lookups use std's platform structs" {
+    // find used to inline four anonymous `extern struct`s into its extern fn
+    // return types. Two were glibc-shaped, which reads the wrong offsets on
+    // macOS, and one was silently truncated after pw_gid. Whichever way the
+    // lookups are reached after the consolidation -- re-exported here under
+    // the same names or taken straight from common.user_group -- the pointee
+    // has to be std's platform struct.
+    const ug = common.user_group;
+    const pwnam = if (@hasDecl(@This(), "getpwnam")) getpwnam else ug.getpwnam;
+    const pwuid = if (@hasDecl(@This(), "getpwuid")) getpwuid else ug.getpwuid;
+    const grnam = if (@hasDecl(@This(), "getgrnam")) getgrnam else ug.getgrnam;
+    const grgid = if (@hasDecl(@This(), "getgrgid")) getgrgid else ug.getgrgid;
+    const pwnam_ret = @typeInfo(@TypeOf(pwnam)).@"fn".return_type.?;
+    const pwuid_ret = @typeInfo(@TypeOf(pwuid)).@"fn".return_type.?;
+    const grnam_ret = @typeInfo(@TypeOf(grnam)).@"fn".return_type.?;
+    const grgid_ret = @typeInfo(@TypeOf(grgid)).@"fn".return_type.?;
+    try testing.expect(pwnam_ret == ?*std.c.passwd);
+    try testing.expect(pwuid_ret == ?*std.c.passwd);
+    try testing.expect(grnam_ret == ?*std.c.group);
+    try testing.expect(grgid_ret == ?*std.c.group);
+    // Negative space: a group lookup must never hand back a passwd record --
+    // that is the std.c.getgrnam typo the shared module routes around.
+    try testing.expect(grnam_ret != ?*std.c.passwd);
+    try testing.expect(grgid_ret != ?*std.c.passwd);
+}
+
+test "find: -user resolves a name to its uid, not to its gid" {
+    // Root is required to chown the fixture onto an account whose uid and gid
+    // differ; on an account where they match, reading pw_gid instead of
+    // pw_uid is invisible, so the check would have no teeth.
+    if (std.c.geteuid() != 0) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile(testing.io, "foreign.txt", .{});
+    f.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "foreign.txt" });
+
+    // Bounded scan of the system account range for a uid/gid mismatch.
+    const uid_scan_max: u32 = 256;
+    var picked_uid: c.uid_t = 0;
+    var picked_gid: c.gid_t = 0;
+    var picked_name: []const u8 = "";
+    var scan: u32 = 0;
+    while (scan < uid_scan_max) : (scan += 1) {
+        const entry = std.c.getpwuid(@intCast(scan)) orelse continue;
+        if (entry.uid == entry.gid) continue;
+        picked_uid = entry.uid;
+        picked_gid = entry.gid;
+        picked_name = try allocator.dupe(u8, std.mem.span(entry.name.?));
+        break;
+    }
+    if (picked_name.len == 0) return error.SkipZigTest;
+    try testing.expect(picked_uid != picked_gid);
+
+    const path_z = try allocator.dupeZ(u8, file_path);
+    const rc = std.c.fchownat(std.c.AT.FDCWD, path_z.ptr, picked_uid, picked_gid, 0);
+    try testing.expectEqual(@as(c_int, 0), rc);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-user", picked_name },
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "foreign.txt") != null);
+}
+
+test "find: -group resolves a name to its gid, not to zero" {
+    // Root is required to move the fixture onto a non-zero group; with the
+    // fixture in group 0 a lookup that always yields 0 would still "match".
+    if (std.c.geteuid() != 0) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile(testing.io, "foreigngrp.txt", .{});
+    f.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "foreigngrp.txt" });
+
+    // Bounded scan of the system group range for any non-zero gid.
+    const gid_scan_max: u32 = 256;
+    var picked_gid: c.gid_t = 0;
+    var picked_name: []const u8 = "";
+    var scan: u32 = 1;
+    while (scan < gid_scan_max) : (scan += 1) {
+        const entry = std.c.getgrgid(@intCast(scan)) orelse continue;
+        picked_gid = entry.gid;
+        picked_name = try allocator.dupe(u8, std.mem.span(entry.name.?));
+        break;
+    }
+    if (picked_name.len == 0) return error.SkipZigTest;
+    try testing.expect(picked_gid != 0);
+
+    const path_z = try allocator.dupeZ(u8, file_path);
+    const rc = std.c.fchownat(std.c.AT.FDCWD, path_z.ptr, std.c.geteuid(), picked_gid, 0);
+    try testing.expectEqual(@as(c_int, 0), rc);
+
+    var match_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer match_aw.deinit();
+    const match_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-group", picked_name },
+        &match_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), match_code);
+    try testing.expect(std.mem.find(u8, match_aw.writer.buffered(), "foreigngrp.txt") != null);
+
+    // Negative space: the numeric form of a group the file is not in must not
+    // match, so a match above cannot be an "everything matches" degeneracy.
+    var miss_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer miss_aw.deinit();
+    const miss_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-type", "f", "-group", "0" },
+        &miss_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), miss_code);
+    try testing.expect(std.mem.find(u8, miss_aw.writer.buffered(), "foreigngrp.txt") == null);
+}
+
+test "find: getUserName and getGroupName return login names, not other fields" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // The oracle is the shared module, so this pins find's long-listing name
+    // columns to the same passwd/group fields the rest of the tree reads.
+    const uid = common.user_group.getCurrentUserId();
+    const user_info = try common.user_group.getUserById(uid, allocator);
+    const user_result = getUserName(allocator, @intCast(uid));
+    try testing.expectEqualStrings(user_info.name, user_result.name);
+    // Negative space: a login name is not a path, so a slip onto pw_dir or
+    // pw_shell shows up even if the expected value ever went stale.
+    try testing.expect(std.mem.find(u8, user_result.name, "/") == null);
+
+    const gid = common.user_group.getCurrentGroupId();
+    const group_info = try common.user_group.getGroupById(gid, allocator);
+    const group_result = getGroupName(allocator, @intCast(gid));
+    try testing.expectEqualStrings(group_info.name, group_result.name);
+    try testing.expect(std.mem.find(u8, group_result.name, "/") == null);
 }
 
 // ================================================================
