@@ -73,6 +73,10 @@ const GrepOptions = struct {
     exclude_dirs: std.ArrayListUnmanaged([]const u8) = .empty,
     patterns: std.ArrayListUnmanaged([]const u8) = .empty,
     pattern_file_contents: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// True once `-e`/`--regexp` or `-f`/`--file` named a pattern source.
+    /// GNU consults this after the whole scan to decide whether the first
+    /// operand is PATTERNS; an empty `-f` file still counts as a source.
+    pattern_source_given: bool = false,
     files: std.ArrayListUnmanaged([]const u8) = .empty,
     help: bool = false,
     version: bool = false,
@@ -150,17 +154,26 @@ fn parseArgs(
                 .fail => return null,
             }
         } else {
-            // Positional argument
-            if (opts.patterns.items.len == 0) {
-                // First positional is the pattern (when no -e given)
-                try opts.patterns.append(allocator, arg);
-            } else {
-                try opts.files.append(allocator, arg);
-            }
+            // Operands are collected in order and the pattern slot is decided
+            // once the scan finishes, because -e/-f may still appear later.
+            try opts.files.append(allocator, arg);
         }
     }
 
+    try parseArgs_takePatternOperand(allocator, &opts);
     return opts;
+}
+
+/// GNU takes the first operand as PATTERNS only when neither -e nor -f
+/// supplied one; `--` ends option parsing without changing that rule.
+fn parseArgs_takePatternOperand(allocator: Allocator, opts: *GrepOptions) !void {
+    assert(opts.patterns.items.len == 0 or opts.pattern_source_given);
+    if (opts.pattern_source_given) return;
+    if (opts.files.items.len == 0) return;
+    const operand_count_before = opts.files.items.len;
+    const pattern = opts.files.orderedRemove(0);
+    try opts.patterns.append(allocator, pattern);
+    assert(opts.files.items.len + 1 == operand_count_before);
 }
 
 /// Outcome of handling one argv element: applied, or report-and-abort.
@@ -367,10 +380,14 @@ fn parseArgs_longValued(
     assert(@intFromEnum(opts.regex_mode) <= @intFromEnum(RegexMode.fixed));
     assert(@intFromEnum(opts.regex_mode) >= @intFromEnum(RegexMode.basic));
     if (std.mem.startsWith(u8, flag, "regexp=")) {
+        opts.pattern_source_given = true;
         try opts.patterns.append(allocator, flag["regexp=".len..]);
     } else if (std.mem.startsWith(u8, flag, "file=")) {
+        // Marked before the load so a *readable* empty file still counts as a
+        // pattern source; an unreadable one aborts the parse outright.
+        opts.pattern_source_given = true;
         const pattern_file = flag["file=".len..];
-        try loadPatternsFromFile(
+        const loaded = try loadPatternsFromFile(
             allocator,
             io,
             &opts.patterns,
@@ -378,6 +395,7 @@ fn parseArgs_longValued(
             pattern_file,
             stderr_writer,
         );
+        if (loaded == .unreadable) return .consumed_error;
     } else if (std.mem.startsWith(u8, flag, "max-count=")) {
         const val_str = flag["max-count=".len..];
         opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
@@ -616,6 +634,7 @@ fn parseArgs_short_e(
         i_ptr,
         j_ptr,
     ) orelse return .consumed_error;
+    opts.pattern_source_given = true;
     try opts.patterns.append(allocator, value);
     return .consumed_break;
 }
@@ -641,7 +660,9 @@ fn parseArgs_short_D(
     return .consumed_break;
 }
 
-/// Handle `-f FILE`: load patterns from a file, one per line.
+/// Handle `-f FILE`: load patterns from a file, one per line. An unreadable
+/// FILE is fatal, as in GNU: the parse aborts rather than degrading into an
+/// empty pattern set that would then search the operands anyway.
 fn parseArgs_short_f(
     allocator: Allocator,
     io: std.Io,
@@ -652,6 +673,9 @@ fn parseArgs_short_f(
     j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
     stderr_writer: *std.Io.Writer,
 ) !ShortValuedResult {
+    assert(arg.len > 1);
+    assert(j_ptr.* < arg.len);
+    assert(arg[j_ptr.*] == 'f');
     const value = parseArgs_requireValue(
         allocator,
         stderr_writer,
@@ -661,7 +685,10 @@ fn parseArgs_short_f(
         i_ptr,
         j_ptr,
     ) orelse return .consumed_error;
-    try loadPatternsFromFile(
+    // Marked before the load so a *readable* empty file still counts as a
+    // pattern source; an unreadable one aborts the parse outright.
+    opts.pattern_source_given = true;
+    const loaded = try loadPatternsFromFile(
         allocator,
         io,
         &opts.patterns,
@@ -669,6 +696,7 @@ fn parseArgs_short_f(
         value,
         stderr_writer,
     );
+    if (loaded == .unreadable) return .consumed_error;
     return .consumed_break;
 }
 
@@ -750,7 +778,17 @@ fn parseArgs_shortNumeric(
     return .consumed_break;
 }
 
-/// Load patterns from a file, one per line
+/// Largest `-f` pattern file we will read into memory.
+const pattern_file_bytes_max = 10 * 1024 * 1024;
+
+/// Outcome of a `-f`/`--file` load. GNU distinguishes a file that reads as an
+/// empty pattern set (legal, matches nothing) from one it could not open at
+/// all (fatal), so the loader reports which happened instead of swallowing it.
+const PatternFileResult = enum { loaded, unreadable };
+
+/// Load patterns from a file, one per line. Returns `.unreadable` after
+/// printing the error when the file cannot be read; the caller must then
+/// abort the parse, because GNU never searches on a failed `-f`.
 fn loadPatternsFromFile(
     allocator: Allocator,
     io: std.Io,
@@ -758,12 +796,12 @@ fn loadPatternsFromFile(
     pattern_file_contents: *std.ArrayListUnmanaged([]const u8),
     path: []const u8,
     stderr_writer: *std.Io.Writer,
-) !void {
+) !PatternFileResult {
     const content = std.Io.Dir.cwd().readFileAlloc(
         io,
         path,
         allocator,
-        .limited(10 * 1024 * 1024),
+        .limited(pattern_file_bytes_max),
     ) catch {
         // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(
@@ -773,8 +811,10 @@ fn loadPatternsFromFile(
             "{s}: No such file or directory",
             .{path},
         );
-        return;
+        return .unreadable;
     };
+    assert(content.len <= pattern_file_bytes_max);
+    // Patterns borrow from `content`, so the buffer must outlive them.
     try pattern_file_contents.append(allocator, content);
 
     var start: usize = 0;
@@ -786,9 +826,11 @@ fn loadPatternsFromFile(
             start = idx + 1;
         }
     }
+    assert(start <= content.len);
     if (start < content.len) {
         try patterns.append(allocator, content[start..]);
     }
+    return .loaded;
 }
 
 // ============================================================================
@@ -2501,7 +2543,7 @@ fn runGrep_earlyExit(
         printVersion(stdout_writer) catch {};
         return @intFromEnum(common.ExitCode.success);
     }
-    if (opts.patterns.items.len == 0) {
+    if (opts.patterns.items.len == 0 and !opts.pattern_source_given) {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -2510,6 +2552,13 @@ fn runGrep_earlyExit(
             .{},
         );
         return @intFromEnum(common.ExitCode.serious_error);
+    }
+    // An empty pattern set can never match, so GNU exits 1 without opening any
+    // operand. -v and -L still walk the files, so they take the normal path.
+    if (opts.patterns.items.len == 0 and !opts.invert_match and !opts.files_without_match) {
+        assert(opts.pattern_source_given);
+        assert(!opts.help);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     return null;
 }
@@ -2596,7 +2645,7 @@ fn runGrep_compilePatterns(
     compiled_ptr: *std.ArrayListUnmanaged(CompiledPattern),
     stderr_writer: *std.Io.Writer,
 ) ?void {
-    assert(opts.patterns.items.len > 0);
+    assert(compiled_ptr.items.len == 0);
     for (opts.patterns.items) |pattern| {
         const cp = compilePattern(allocator, pattern, opts, stderr_writer) orelse return null;
         compiled_ptr.append(allocator, cp) catch return null;
@@ -2656,7 +2705,9 @@ fn runGrep_processOneOperand(
     found_any_ptr: *bool,
     had_error_ptr: *bool,
 ) bool {
-    assert(compiled.len > 0);
+    assert(compiled.len == opts.patterns.items.len);
+    assert(!opts.help);
+    assert(!opts.version);
     if (std.mem.eql(u8, file_path, "-")) {
         const stdin_file = std.Io.File.stdin();
         const matched = processFile(
@@ -5146,4 +5197,342 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     // (report-then-break), not once per remaining entry.
     const reported = std.mem.count(u8, stderr_w.buffered(), "EntryLimitExceeded");
     try testing.expectEqual(@as(usize, 1), reported);
+}
+
+// =============================================================
+// Issue #151: `--` must not consume the PATTERNS slot
+// =============================================================
+//
+// Pinned against GNU grep 3.11 (`/usr/bin/grep`, LC_ALL=C, stdin
+// </dev/null). GNU's rule: `--` is plain end-of-options, and the
+// first *remaining* operand becomes PATTERNS iff neither -e nor
+// -f supplied a pattern source -- a decision made after the whole
+// argument scan, not left-to-right during it.
+
+/// Fixture for the issue #151 tests. Every line is also a plausible
+/// option spelling or separator, so a pattern taken from the wrong
+/// operand slot changes the output instead of passing by accident.
+const ddash_fixture = "a\nb\n-v\n--\nfoo\n";
+
+test "parseArgs -- leaves the next operand as the pattern" {
+    const args = [_][]const u8{ "--", "a", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs -- -v takes -v as the pattern, not as a flag or file" {
+    const args = [_][]const u8{ "--", "-v", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("-v", opts.patterns.items[0]);
+    try testing.expect(!opts.invert_match);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs -- -- takes the second -- as the pattern" {
+    const args = [_][]const u8{ "--", "--", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("--", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs -- with several operands fills pattern then files in order" {
+    const args = [_][]const u8{ "--", "a", "f1.txt", "f2.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 2), opts.files.items.len);
+    try testing.expectEqualStrings("f1.txt", opts.files.items[0]);
+    try testing.expectEqualStrings("f2.txt", opts.files.items[1]);
+}
+
+test "parseArgs bare -- yields no pattern and no files" {
+    const args = [_][]const u8{"--"};
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), opts.patterns.items.len);
+    try testing.expectEqual(@as(usize, 0), opts.files.items.len);
+}
+
+test "parseArgs operand before -e is a file, not the pattern" {
+    // GNU decides the pattern slot after the scan: -e supplied the
+    // pattern source, so the leading operand stays a file operand.
+    const args = [_][]const u8{ "f.txt", "-e", "a" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs operands before -e keep their order as files" {
+    const args = [_][]const u8{ "foo", "-e", "a", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 2), opts.files.items.len);
+    try testing.expectEqualStrings("foo", opts.files.items[0]);
+    try testing.expectEqualStrings("f.txt", opts.files.items[1]);
+}
+
+test "parseArgs guard: -e pattern -- file still splits correctly" {
+    const args = [_][]const u8{ "-e", "a", "--", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs guard: pattern -- file still splits correctly" {
+    const args = [_][]const u8{ "a", "--", "f.txt" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "parseArgs guard: trailing -- adds no operand" {
+    const args = [_][]const u8{ "a", "f.txt", "--" };
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+    try testing.expectEqualStrings("a", opts.patterns.items[0]);
+    try testing.expectEqual(@as(usize, 1), opts.files.items.len);
+    try testing.expectEqualStrings("f.txt", opts.files.items[0]);
+}
+
+test "runGrep -- pattern file prints the matching line" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep -- -v file matches the literal -v line" {
+    // The motivating case from issue #151: a pattern that looks like
+    // a flag. `--` must make it a pattern, not enable invert-match.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "-v" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("-v\n", result.output);
+}
+
+test "runGrep -- -- file matches the literal -- line" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "--" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("--\n", result.output);
+}
+
+test "runGrep -n -- pattern file numbers the line" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-n", "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("1:a\n", result.output);
+}
+
+test "runGrep -v -- pattern file inverts against the right pattern" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-v", "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("b\n-v\n--\nfoo\n", result.output);
+}
+
+test "runGrep -c -- pattern file counts one match" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-c", "--", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("1\n", result.output);
+}
+
+test "runGrep -i -- pattern file folds case" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-i", "--", "A" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep -- nomatch file exits 1 with no output" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "--", "zzzzz" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -- with an empty file operand exits 2 without panicking" {
+    // GNU: `grep a ""` is legal and reports ENOENT on the empty path.
+    // An `assert(file_path.len > 0)` anywhere on this path would trap.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--color=never", "--", "a", "" };
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_aw.writer.buffered(), "No such file") != null);
+}
+
+test "runGrep guard: -e pattern -- file still matches" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-e", "a", "--" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep guard: pattern -- file still matches" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "a", "--" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+test "runGrep guard: pattern file without -- still matches" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{"a"});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\n", result.output);
+}
+
+// ============================================================================
+// Regression: an unopenable -f argument must be fatal (GNU grep 3.11 parity)
+// ============================================================================
+
+/// A portable, always-present, always-empty pattern file. `-f` on it is a
+/// legal *empty* pattern set, which is a different thing from a `-f` that
+/// could not be opened at all.
+const empty_pattern_file = "/dev/null";
+
+/// A path no test run can create, so `-f` on it always fails to open.
+const missing_pattern_file = "/nonexistent/vibeutils/grep/patterns.txt";
+
+test "runGrep -c with an empty pattern set prints nothing, not 0" {
+    // GNU exits 1 without opening any operand, so there is no count to print.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-c", "-f", empty_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -c and -cv with an empty pattern set disagree" {
+    // -v escapes the zero-pattern short circuit and -c must not. The values are
+    // pinned concretely: a mere inequality would survive a mutation that turns
+    // the silent run into a "0", which is exactly the mutation to catch.
+    var counted = try testRunGrepOutput(ddash_fixture, &.{ "-c", "-f", empty_pattern_file });
+    defer counted.arena.deinit();
+    var inverted = try testRunGrepOutput(ddash_fixture, &.{ "-cv", "-f", empty_pattern_file });
+    defer inverted.arena.deinit();
+    try testing.expectEqualStrings("", counted.output);
+    try testing.expectEqual(@as(u8, 1), counted.exit_code);
+    try testing.expectEqualStrings("5\n", inverted.output);
+    try testing.expectEqual(@as(u8, 0), inverted.exit_code);
+}
+
+test "runGrep -L with an empty pattern set still names the file" {
+    // -L is the other escape hatch: it walks the operands and reports the file
+    // as matchless rather than short-circuiting.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-L", "-f", empty_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+    try testing.expect(std.mem.endsWith(u8, result.output, "test.txt\n"));
+}
+
+test "runGrep -f unopenable file exits 2 without reading operands" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -v -f unopenable file must not print the whole input" {
+    // The fail-open regression: -v with a typo'd blocklist printed every line
+    // and exited 0. GNU exits 2 with nothing on stdout.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-v", "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -L -f unopenable file exits 2 with no stdout" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-L", "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -c -f unopenable file exits 2 with no stdout" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-c", "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep --file= unopenable file exits 2 with no stdout" {
+    const flag = "--file=" ++ missing_pattern_file;
+    var result = try testRunGrepOutput(ddash_fixture, &.{flag});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -e valid does not rescue an unopenable -f" {
+    // GNU is fatal in both orders, so a usable pattern from -e is no reprieve.
+    var e_first = try testRunGrepOutput(ddash_fixture, &.{ "-e", "a", "-f", missing_pattern_file });
+    defer e_first.arena.deinit();
+    var f_first = try testRunGrepOutput(ddash_fixture, &.{ "-f", missing_pattern_file, "-e", "a" });
+    defer f_first.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), e_first.exit_code);
+    try testing.expectEqualStrings("", e_first.output);
+    try testing.expectEqual(@as(u8, 2), f_first.exit_code);
+    try testing.expectEqualStrings("", f_first.output);
+}
+
+test "runGrep -f unopenable file reports the operand on stderr" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=never", "-f", missing_pattern_file, "/dev/null" };
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    const reported = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, reported, missing_pattern_file) != null);
 }
