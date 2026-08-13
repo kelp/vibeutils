@@ -1134,6 +1134,24 @@ fn formatWithCommas(buf: []u8, value: u64) []const u8 {
     return buf[0..out_len];
 }
 
+/// Round `numerator` up to the next multiple of `denominator` without
+/// overflowing. The naive `(n + d - 1) / d` wraps whenever n is within d of
+/// u64max, which df reaches for any --block-size near the top of the range
+/// (issue #138). Saturating that addition is wrong in the other direction:
+/// it clamps silently and reports one block short, so the remainder is
+/// inspected instead of widening or clamping.
+fn ceilDiv(numerator: u64, denominator: u64) u64 {
+    // Every caller's divisor is a display block size, and parseBlockSize
+    // rejects zero at parse time, so a zero divisor cannot reach here.
+    std.debug.assert(denominator > 0);
+    const quotient = @divTrunc(numerator, denominator);
+    const result = quotient + @intFromBool(@rem(numerator, denominator) != 0);
+    // Rounding up can only yield zero for an empty numerator: any nonzero
+    // byte count occupies at least one block, however large the block is.
+    std.debug.assert((result == 0) == (numerator == 0));
+    return result;
+}
+
 fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []const u8 {
     const bytes = blocks * fs_block_size;
 
@@ -1152,7 +1170,7 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
     else
         1024;
 
-    const value = @divTrunc(bytes + display_block - 1, display_block);
+    const value = ceilDiv(bytes, display_block);
 
     if (opts.thousands_grouping) {
         return formatWithCommas(buf, value);
@@ -1870,7 +1888,7 @@ fn printTotal_formatField(buf: []u8, bytes: u64, display_block: u64, opts: DfOpt
     std.debug.assert(buf.len >= 16);
     if (opts.human_readable) return formatHumanReadable(buf, bytes, false);
     if (opts.si) return formatHumanReadable(buf, bytes, true);
-    const val = @divTrunc(bytes + display_block - 1, display_block);
+    const val = ceilDiv(bytes, display_block);
     if (opts.thousands_grouping) return formatWithCommas(buf, val);
     return std.fmt.bufPrint(buf, "{d}", .{val}) catch "?";
 }
@@ -3565,6 +3583,69 @@ test "formatSize - human readable" {
     try testing.expectEqualStrings("3.9M", result);
 }
 
+// Issue #138: `bytes + display_block - 1` overflows u64 when
+// display_block is near u64::MAX (e.g. --block-size=18446744073709551615,
+// which is u64::MAX itself). Any nonzero byte count then traps instead of
+// ceiling to 1 block. GNU df never panics here -- pinned against GNU
+// coreutils 9.4, LC_ALL=C: `df --block-size=18446744073709551615 /`
+// prints size/used/avail columns of exactly 1.
+test "formatSize - huge block-size ceils to 1 without overflow (issue #138)" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = std.math.maxInt(u64);
+    // 1000 blocks * 4096 fs_block_size = 4096000 bytes, far smaller than
+    // display_block: must ceil to 1, not trap on the addition overflow.
+    const result = formatSize(&buf, 1000, 4096, opts);
+    try testing.expectEqualStrings("1", result);
+}
+
+// Same overflow, but with bytes itself pushed up near u64::MAX (not just
+// display_block), matching the briefing's "both near u64max" case: blocks=1,
+// fs_block_size=u64max gives bytes == display_block exactly, dividing
+// evenly to a ceiling of 1.
+test "formatSize - bytes and display_block both near u64max (issue #138)" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = std.math.maxInt(u64);
+    const result = formatSize(&buf, 1, std.math.maxInt(u64), opts);
+    try testing.expectEqualStrings("1", result);
+}
+
+// Pinned second GNU repro: --block-size=9223372036854775807 (2^63-1).
+// This is a boundary regression guard, not a red-today test: overflowing
+// `bytes + display_block - 1` at this display_block would require
+// bytes > 2^63, far above any real filesystem's byte count (~4096000
+// here), so this case already passes on the unfixed code. It stays in
+// the suite to pin GNU's ceiling-to-1 behavior at this exact boundary
+// value and must remain green after the fix.
+test "formatSize - block-size 2^63-1 does not overflow (issue #138)" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = std.math.maxInt(u64) / 2; // 9223372036854775807
+    const result = formatSize(&buf, 1000, 4096, opts);
+    try testing.expectEqualStrings("1", result);
+}
+
+// Discriminates a saturating-add "fix" (`bytes +| display_block - 1`)
+// from a correct one. Every other case here has display_block >= bytes,
+// where saturation happens to land on the right quotient by accident.
+// Here bytes = u64::MAX and display_block = 1024 (an ordinary size): the
+// correct ceiling is u64::MAX / 1024 rounded up = 2^54 exactly
+// (18014398509481983 remainder 1023), i.e. "18014398509481984". A
+// saturating implementation clamps the addition to u64::MAX before
+// dividing and returns "18014398509481983" instead -- one short.
+test "formatSize - u64max bytes with ordinary block size rejects saturating fix (issue #138)" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = 1024;
+    const result = formatSize(&buf, 1, std.math.maxInt(u64), opts);
+    try testing.expectEqualStrings("18014398509481984", result);
+}
+
 test "parseArgs - human readable is default" {
     const args = [_][]const u8{};
     const parsed = parseArgs(testing.allocator, &args);
@@ -4327,6 +4408,30 @@ test "formatSize - 1G blocks" {
     // 1000000 blocks * 4096 = 4096000000 bytes / 1G = ~3.8 -> rounds to 4
     const result = formatSize(&buf, 1000000, 4096, opts);
     try testing.expectEqualStrings("4", result);
+}
+
+// Issue #138, site 2: printTotal_formatField has the identical
+// `bytes + display_block - 1` overflow as formatSize, but is a completely
+// separate code path reached only through the --total render path. A fix
+// applied only to formatSize must still trap this test.
+test "printTotal_formatField - huge block-size ceils to 1 without overflow (issue #138)" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    const result = printTotal_formatField(&buf, 4096000, std.math.maxInt(u64), opts);
+    try testing.expectEqualStrings("1", result);
+}
+
+// Same saturating-add discriminator as formatSize's, applied to site 2:
+// bytes = u64::MAX, display_block = 1024 (ordinary size) must ceil to
+// exactly 2^54 ("18014398509481984"), not the saturated
+// "18014398509481983" a `+|` fix would produce.
+test "printTotal_formatField - u64max bytes rejects a saturating fix (issue #138)" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    const result = printTotal_formatField(&buf, std.math.maxInt(u64), 1024, opts);
+    try testing.expectEqualStrings("18014398509481984", result);
 }
 
 test "formatSize - 1M blocks" {

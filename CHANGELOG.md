@@ -89,6 +89,15 @@
 
 ### Fixed
 
+- **`df` no longer panics on a very large `--block-size`.** Any block
+  size within a filesystem's byte count of `u64max` overflowed the
+  ceiling divide `bytes + display_block - 1`, which wraps before the
+  division happens, aborting the process where GNU prints an ordinary
+  table. The expression appeared twice, reached by different paths —
+  `formatSize` for every invocation and `printTotal_formatField` only
+  under `--total` — and both now share one overflow-free `ceilDiv`
+  helper so they cannot drift apart again (#138).
+
 - **Option errors name the offending flag and carry GNU's hint
   line.** `argparse` collapsed every parse failure into one static
   string, so `whoami --invalid-flag` said only `unrecognized option`
