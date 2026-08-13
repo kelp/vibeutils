@@ -383,9 +383,11 @@ fn parseArgs_longValued(
         opts.pattern_source_given = true;
         try opts.patterns.append(allocator, flag["regexp=".len..]);
     } else if (std.mem.startsWith(u8, flag, "file=")) {
+        // Marked before the load so a *readable* empty file still counts as a
+        // pattern source; an unreadable one aborts the parse outright.
         opts.pattern_source_given = true;
         const pattern_file = flag["file=".len..];
-        try loadPatternsFromFile(
+        const loaded = try loadPatternsFromFile(
             allocator,
             io,
             &opts.patterns,
@@ -393,6 +395,7 @@ fn parseArgs_longValued(
             pattern_file,
             stderr_writer,
         );
+        if (loaded == .unreadable) return .consumed_error;
     } else if (std.mem.startsWith(u8, flag, "max-count=")) {
         const val_str = flag["max-count=".len..];
         opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
@@ -657,7 +660,9 @@ fn parseArgs_short_D(
     return .consumed_break;
 }
 
-/// Handle `-f FILE`: load patterns from a file, one per line.
+/// Handle `-f FILE`: load patterns from a file, one per line. An unreadable
+/// FILE is fatal, as in GNU: the parse aborts rather than degrading into an
+/// empty pattern set that would then search the operands anyway.
 fn parseArgs_short_f(
     allocator: Allocator,
     io: std.Io,
@@ -668,6 +673,9 @@ fn parseArgs_short_f(
     j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
     stderr_writer: *std.Io.Writer,
 ) !ShortValuedResult {
+    assert(arg.len > 1);
+    assert(j_ptr.* < arg.len);
+    assert(arg[j_ptr.*] == 'f');
     const value = parseArgs_requireValue(
         allocator,
         stderr_writer,
@@ -677,8 +685,10 @@ fn parseArgs_short_f(
         i_ptr,
         j_ptr,
     ) orelse return .consumed_error;
+    // Marked before the load so a *readable* empty file still counts as a
+    // pattern source; an unreadable one aborts the parse outright.
     opts.pattern_source_given = true;
-    try loadPatternsFromFile(
+    const loaded = try loadPatternsFromFile(
         allocator,
         io,
         &opts.patterns,
@@ -686,6 +696,7 @@ fn parseArgs_short_f(
         value,
         stderr_writer,
     );
+    if (loaded == .unreadable) return .consumed_error;
     return .consumed_break;
 }
 
@@ -767,7 +778,17 @@ fn parseArgs_shortNumeric(
     return .consumed_break;
 }
 
-/// Load patterns from a file, one per line
+/// Largest `-f` pattern file we will read into memory.
+const pattern_file_bytes_max = 10 * 1024 * 1024;
+
+/// Outcome of a `-f`/`--file` load. GNU distinguishes a file that reads as an
+/// empty pattern set (legal, matches nothing) from one it could not open at
+/// all (fatal), so the loader reports which happened instead of swallowing it.
+const PatternFileResult = enum { loaded, unreadable };
+
+/// Load patterns from a file, one per line. Returns `.unreadable` after
+/// printing the error when the file cannot be read; the caller must then
+/// abort the parse, because GNU never searches on a failed `-f`.
 fn loadPatternsFromFile(
     allocator: Allocator,
     io: std.Io,
@@ -775,12 +796,12 @@ fn loadPatternsFromFile(
     pattern_file_contents: *std.ArrayListUnmanaged([]const u8),
     path: []const u8,
     stderr_writer: *std.Io.Writer,
-) !void {
+) !PatternFileResult {
     const content = std.Io.Dir.cwd().readFileAlloc(
         io,
         path,
         allocator,
-        .limited(10 * 1024 * 1024),
+        .limited(pattern_file_bytes_max),
     ) catch {
         // GNU prints this operand unquoted; keep parity.
         common.printErrorWithProgram(
@@ -790,8 +811,10 @@ fn loadPatternsFromFile(
             "{s}: No such file or directory",
             .{path},
         );
-        return;
+        return .unreadable;
     };
+    assert(content.len <= pattern_file_bytes_max);
+    // Patterns borrow from `content`, so the buffer must outlive them.
     try pattern_file_contents.append(allocator, content);
 
     var start: usize = 0;
@@ -803,9 +826,11 @@ fn loadPatternsFromFile(
             start = idx + 1;
         }
     }
+    assert(start <= content.len);
     if (start < content.len) {
         try patterns.append(allocator, content[start..]);
     }
+    return .loaded;
 }
 
 // ============================================================================

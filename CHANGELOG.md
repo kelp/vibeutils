@@ -101,7 +101,13 @@
   which used to read stdin with `FILE` as the pattern. An empty
   pattern set is now legal rather than an error: it matches nothing
   and exits 1, without opening any operand unless `-v` or `-L` is in
-  effect (#151).
+  effect. A `-f`/`--file` argument that cannot be *read* is a
+  different case and remains fatal, as in GNU: grep names the file,
+  exits 2, and opens no operand, and neither an `-e` pattern nor a
+  second readable `-f` rescues it. Previously the failure was
+  swallowed and left an empty pattern set behind, so `grep -v -f
+  typo.txt FILE` printed the entire file and exited 0 — a filtering
+  pipeline with a missing blocklist now fails closed (#151).
 - **Integration runs no longer share a working directory.**
   `tests/utilities/mkdir_test.sh` builds its fixtures with relative
   paths, so whatever directory `scripts/run-integration.sh` was started
