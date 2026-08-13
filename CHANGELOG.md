@@ -101,6 +101,18 @@
   gets a private working directory that is removed afterwards, so
   concurrent suites and interrupted ones can no longer affect each
   other (#125).
+- **The Tiger Style scanner now has a contract test suite, and CI runs
+  it before trusting the scan.** `tests/tools/tiger-check_test.sh` pins
+  that a function whose body grows past the 70-line limit behind an
+  unchanged signature is classified `NEW`, not `PRE` — the case the
+  pre-commit hook, gating on `new>0`, was waving through — and that the
+  same holds for `self-recursion` and for a parameter line added to a
+  multi-line signature. It pins the other direction just as hard:
+  editing an unrelated function, or deleting lines from a still-too-long
+  one, stays `PRE`, so attribution cannot degenerate into "any diff in
+  this file blocks". Fixtures are throwaway git repos in a temp dir,
+  because the scanner has no `--root` and its diff modes need real git
+  history (#131).
 
 - **`df` no longer panics on a very large `--block-size`.** Any block
   size within a filesystem's byte count of `u64max` overflowed the

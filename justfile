@@ -274,6 +274,14 @@ lint-actions: (_require "actionlint")
 tiger-check:
     @./scripts/tiger-check.sh
 
+# Contract tests for scripts/tiger-check.sh. Needs no Zig build: tiger-check
+# has no --root and its diff modes need real history, so every case builds a
+# throwaway git repo in a temp dir. Lives in tests/tools/, which
+# test_runner.sh does not glob, so it must be invoked here and from CI
+# explicitly.
+test-tiger-check:
+    @bash tests/tools/tiger-check_test.sh
+
 # Contract tests for scripts/audit-check.sh. Needs no Zig build: every
 # case points --root at a fixture tree under tests/fixtures/audit. Lives in
 # tests/tools/, which test_runner.sh does not glob, so it must be invoked
