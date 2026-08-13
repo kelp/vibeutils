@@ -97,6 +97,18 @@
   `formatSize` for every invocation and `printTotal_formatField` only
   under `--total` — and both now share one overflow-free `ceilDiv`
   helper so they cannot drift apart again (#138).
+- **`ls -l` sizes the nlink, owner, group and size columns to their
+  content.** They were padded to hardcoded widths — 3, 8, 8 and 8, or
+  5 for a human-readable size — so every listing of small files
+  carried filler, and a username longer than eight characters pushed
+  the columns out of alignment outright. Each is now measured across
+  the section and separated by a single space, matching GNU. Owner and
+  group are left-aligned as names but right-aligned as numbers under
+  `-n`, and the size column is measured on the rendered string, so
+  `-h`, `-k` and `--thousands` each get the width they actually need.
+  `-o` and `-g` keep the surviving column at its section width. The
+  four columns join the single measuring pass that already computed
+  the time and `-s` widths rather than adding a third traversal (#124).
 
 - **Option errors name the offending flag and carry GNU's hint
   line.** `argparse` collapsed every parse failure into one static

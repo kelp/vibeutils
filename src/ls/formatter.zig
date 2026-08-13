@@ -64,8 +64,42 @@ fn writeColoredPermissions(style: anytype, writer: anytype, perms: []const u8) !
     }
 }
 
-/// Write link count dimmed with bright_black.
-fn writeNlinkColored(style: anytype, writer: anytype, nlink: u32) !void {
+/// Write `text` in a `width`-column field followed by the single space that
+/// separates long-format columns. Callers invoke this from inside a color
+/// region, exactly as writeDateColored pads inside its own: emitting the pad
+/// outside the region would either count escape bytes as columns or strand
+/// the filler in the neighbouring field's color.
+fn writePaddedField(
+    writer: anytype,
+    text: []const u8,
+    width: usize, // tiger:allow:usize-arch column width is usize
+    right_align: bool,
+) !void {
+    // Every column renders at least "?" and the caller sized the field to the
+    // widest text in the section, so the pad below cannot underflow.
+    std.debug.assert(text.len > 0);
+    std.debug.assert(width >= text.len);
+    const pad = width - text.len;
+    if (right_align) {
+        for (0..pad) |_| try writer.writeByte(' ');
+        try writer.writeAll(text);
+    } else {
+        try writer.writeAll(text);
+        for (0..pad) |_| try writer.writeByte(' ');
+    }
+    try writer.writeByte(' ');
+}
+
+/// Write link count dimmed with bright_black, right-aligned in the field the
+/// caller sized across the whole section.
+fn writeNlinkColored(
+    style: anytype,
+    writer: anytype,
+    nlink_str: []const u8,
+    width: usize, // tiger:allow:usize-arch column width is usize
+) !void {
+    std.debug.assert(nlink_str.len > 0);
+    std.debug.assert(width >= nlink_str.len);
     if (style.color_mode != .none) {
         if (style.color_mode == .truecolor) {
             try style.setRgb(100, 100, 115);
@@ -73,14 +107,28 @@ fn writeNlinkColored(style: anytype, writer: anytype, nlink: u32) !void {
             try style.setColor(.bright_black);
         }
     }
-    try writer.print(" {d: >3} ", .{nlink});
+    // The permission string ends flush against this field, so the leading
+    // space is this column's separator rather than the previous one's.
+    try writer.writeByte(' ');
+    // Link counts are numbers, and GNU right-aligns numeric columns.
+    try writePaddedField(writer, nlink_str, width, true);
     if (style.color_mode != .none) {
         try style.reset();
     }
 }
 
-/// Write a single owner/group column with color.
-fn writeOwnerColored(style: anytype, writer: anytype, name: []const u8) !void {
+/// Write a single owner/group column with color. GNU left-aligns owner and
+/// group as names but right-aligns them as numbers under -n, so the direction
+/// travels with the flag rather than being fixed here.
+fn writeOwnerColored(
+    style: anytype,
+    writer: anytype,
+    name: []const u8,
+    width: usize, // tiger:allow:usize-arch column width is usize
+    right_align: bool,
+) !void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(width >= name.len);
     if (style.color_mode != .none) {
         if (style.color_mode == .truecolor) {
             try style.setRgb(190, 165, 120);
@@ -88,14 +136,22 @@ fn writeOwnerColored(style: anytype, writer: anytype, name: []const u8) !void {
             try style.setColor(.yellow);
         }
     }
-    try writer.print("{s: <8} ", .{name});
+    try writePaddedField(writer, name, width, right_align);
     if (style.color_mode != .none) {
         try style.reset();
     }
 }
 
-/// Write a single group column with color.
-fn writeGroupColored(style: anytype, writer: anytype, name: []const u8) !void {
+/// Write a single group column with color, aligned like the owner column.
+fn writeGroupColored(
+    style: anytype,
+    writer: anytype,
+    name: []const u8,
+    width: usize, // tiger:allow:usize-arch column width is usize
+    right_align: bool,
+) !void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(width >= name.len);
     if (style.color_mode != .none) {
         if (style.color_mode == .truecolor) {
             try style.setRgb(150, 145, 185);
@@ -103,7 +159,7 @@ fn writeGroupColored(style: anytype, writer: anytype, name: []const u8) !void {
             try style.setColor(.cyan);
         }
     }
-    try writer.print("{s: <8} ", .{name});
+    try writePaddedField(writer, name, width, right_align);
     if (style.color_mode != .none) {
         try style.reset();
     }
@@ -112,6 +168,8 @@ fn writeGroupColored(style: anytype, writer: anytype, name: []const u8) !void {
 /// Write user and group names with distinct colors.
 /// Truecolor: warm wheat for user, soft lavender for group.
 /// 16-color: yellow for user, cyan for group.
+/// Owner and group are sized independently, so dropping one column with -o or
+/// -g leaves the survivor at its own section width.
 fn writeUserGroupColored(
     style: anytype,
     writer: anytype,
@@ -119,12 +177,17 @@ fn writeUserGroupColored(
     group_name: []const u8,
     omit_owner: bool,
     omit_group: bool,
+    owner_width: usize, // tiger:allow:usize-arch column width is usize
+    group_width: usize, // tiger:allow:usize-arch column width is usize
+    right_align: bool,
 ) !void {
+    std.debug.assert(owner_width >= user_name.len);
+    std.debug.assert(group_width >= group_name.len);
     if (!omit_owner) {
-        try writeOwnerColored(style, writer, user_name);
+        try writeOwnerColored(style, writer, user_name, owner_width, right_align);
     }
     if (!omit_group) {
-        try writeGroupColored(style, writer, group_name);
+        try writeGroupColored(style, writer, group_name, group_width, right_align);
     }
 }
 
@@ -132,23 +195,24 @@ fn writeUserGroupColored(
 /// Truecolor: smooth RGB gradient from green (small) to red-orange (large).
 /// 256-color: approximate palette indices.
 /// 16-color: green (normal), bold green (human-readable).
+/// The width is measured on the rendered string, so -h, -k and --thousands
+/// each size this column to what they actually print.
 fn writeSizeColored(
     style: anytype,
     writer: anytype,
     size_str: []const u8,
     size: u64,
     human_readable: bool,
+    width: usize, // tiger:allow:usize-arch column width is usize
 ) !void {
+    std.debug.assert(size_str.len > 0);
+    std.debug.assert(width >= size_str.len);
     if (style.color_mode != .none) {
         if (human_readable and style.color_mode == .basic) try style.setBold();
         try common.colors.applySizeColor(style, size);
     }
 
-    if (human_readable) {
-        try writer.print("{s: >5} ", .{size_str});
-    } else {
-        try writer.print("{s: >8} ", .{size_str});
-    }
+    try writePaddedField(writer, size_str, width, true);
 
     if (style.color_mode != .none) {
         try style.reset();
@@ -411,20 +475,99 @@ fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
     });
 }
 
-/// Print a single entry in long format with time column alignment
+/// Width of every long-format column, sized to the widest value present in
+/// one section the way GNU ls sizes them. A section is a single
+/// printEntries_longFormat call, so these never carry across directories.
+const LongFormatWidths = struct {
+    block_prefix: usize, // tiger:allow:usize-arch matches blockCountWidth
+    nlink: usize, // tiger:allow:usize-arch column width is usize
+    owner: usize, // tiger:allow:usize-arch column width is usize
+    group: usize, // tiger:allow:usize-arch column width is usize
+    size: usize, // tiger:allow:usize-arch column width is usize
+    time: usize, // tiger:allow:usize-arch slice .len is usize
+};
+
+/// The link count exactly as it will be printed, or "?" when the entry could
+/// not be stat'ed. The measure pass and the render pass both go through this
+/// helper so a column can never be sized from a different string than the one
+/// written into it.
+fn nlinkString(entry: Entry, buf: []u8) []const u8 {
+    // A u32 link count needs at most ten digits.
+    std.debug.assert(buf.len >= 10);
+    const stat = entry.stat orelse return "?";
+    const rendered = std.fmt.bufPrint(buf, "{d}", .{stat.nlink}) catch "?";
+    std.debug.assert(rendered.len > 0);
+    return rendered;
+}
+
+/// Owner and group as one entry renders them, sharing the caller's buffers.
+const OwnerGroupStrings = struct {
+    owner: []const u8,
+    group: []const u8,
+};
+
+/// Owner and group exactly as they will be printed, or "?" when the entry
+/// could not be stat'ed. getUserName falls back to the numeric id when the
+/// lookup fails, so the rendered width is only knowable by calling it.
+fn ownerGroupStrings(
+    entry: Entry,
+    options: LsOptions,
+    owner_buf: []u8,
+    group_buf: []u8,
+) !OwnerGroupStrings {
+    std.debug.assert(owner_buf.len >= 16);
+    std.debug.assert(group_buf.len >= 16);
+    const stat = entry.stat orelse return .{ .owner = "?", .group = "?" };
+    if (options.numeric_ids) {
+        return .{
+            .owner = std.fmt.bufPrint(owner_buf, "{d}", .{stat.uid}) catch "?",
+            .group = std.fmt.bufPrint(group_buf, "{d}", .{stat.gid}) catch "?",
+        };
+    }
+    // getUserName copies the name out of libc's static buffer before
+    // getGroupName can reuse it, so the two calls cannot alias.
+    return .{
+        .owner = try common.file.getUserName(stat.uid, owner_buf),
+        .group = try common.file.getGroupName(stat.gid, group_buf),
+    };
+}
+
+/// The size exactly as it will be printed under the active size flags, or "?"
+/// when the entry could not be stat'ed. Measuring the raw number instead
+/// would size the column wrong for -h, -k and --thousands, all of which
+/// render something other than the plain byte count.
+fn sizeString(entry: Entry, options: LsOptions, buf: []u8) ![]const u8 {
+    // Twenty digits hold any u64; the grouped form adds at most six commas.
+    std.debug.assert(buf.len >= 26);
+    const stat = entry.stat orelse return "?";
+    const rendered = if (options.human_readable)
+        try common.file.formatSizeHuman(stat.size, buf)
+    else if (options.kilobytes)
+        try common.file.formatSizeKilobytes(stat.size, buf)
+    else if (options.thousands_grouping)
+        formatWithThousands(stat.size, buf)
+    else
+        try common.file.formatSize(stat.size, buf);
+    std.debug.assert(rendered.len > 0);
+    return rendered;
+}
+
+/// Print a single entry in long format, every column padded to the section
+/// widths the caller measured.
 fn printLongFormatEntryAligned(
     allocator: std.mem.Allocator,
     entry: Entry,
     writer: anytype,
     options: LsOptions,
     style: anytype,
-    max_time_width: usize, // tiger:allow:usize-arch column width is usize
-    block_prefix_width: usize, // tiger:allow:usize-arch matches blockCountWidth
+    widths: LongFormatWidths,
 ) !void {
+    std.debug.assert(options.long_format);
+    std.debug.assert(widths.nlink >= 1);
     // Per-entry block count if -s is active, right-aligned in the field the
     // caller sized across the whole section.
     if (options.show_blocks) {
-        try writeBlockPrefix(entry, options, block_prefix_width, writer);
+        try writeBlockPrefix(entry, options, widths.block_prefix, writer);
     }
 
     // Permission string
@@ -437,19 +580,16 @@ fn printLongFormatEntryAligned(
     try writeColoredPermissions(style, writer, perms);
 
     // Number of links
-    if (entry.stat) |stat| {
-        try writeNlinkColored(style, writer, stat.nlink);
-    } else {
-        try writer.writeAll("   ? ");
-    }
+    var nlink_buf: [16]u8 = undefined;
+    try writeNlinkColored(style, writer, nlinkString(entry, &nlink_buf), widths.nlink);
 
     // User and group names/IDs
-    try printLongFormatEntryAligned_ownerGroup(style, writer, entry, options);
+    try printLongFormatEntryAligned_ownerGroup(style, writer, entry, options, widths);
 
     // Size
-    try printLongFormatEntryAligned_size(style, writer, entry, options);
+    try printLongFormatEntryAligned_size(style, writer, entry, options, widths.size);
 
-    // Date/time (padded to max_time_width for alignment)
+    // Date/time (padded to the section's time width for alignment)
     if (entry.stat) |stat| {
         var time_buf: [128]u8 = undefined;
         const time_field = if (options.use_ctime)
@@ -465,7 +605,7 @@ fn printLongFormatEntryAligned(
             allocator,
             &time_buf,
         );
-        try writeDateColored(style, writer, time_str, time_field, max_time_width);
+        try writeDateColored(style, writer, time_str, time_field, widths.time);
     } else {
         try writer.writeAll("??? ?? ??:?? ");
     }
@@ -507,73 +647,51 @@ fn printLongFormatEntryAligned_symlinkTarget(
     }
 }
 
-/// Write the user/group column of a long-format entry.
-/// Falls back to "?" placeholders when stat is unavailable.
+/// Write the user/group columns of a long-format entry, each padded to its
+/// own section width. The "?" an unstattable entry renders goes through the
+/// same padding as a real name so it lands in the same columns.
 fn printLongFormatEntryAligned_ownerGroup(
     style: anytype,
     writer: anytype,
     entry: Entry,
     options: LsOptions,
+    widths: LongFormatWidths,
 ) !void {
-    if (entry.stat) |stat| {
-        if (options.numeric_ids) {
-            // Show numeric IDs (colored yellow)
-            var uid_buf: [16]u8 = undefined;
-            var gid_buf: [16]u8 = undefined;
-            const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{stat.uid}) catch "?";
-            const gid_str = std.fmt.bufPrint(&gid_buf, "{d}", .{stat.gid}) catch "?";
-            try writeUserGroupColored(
-                style,
-                writer,
-                uid_str,
-                gid_str,
-                options.omit_owner,
-                options.omit_group,
-            );
-        } else {
-            // Show names (default behavior)
-            var user_buf: [32]u8 = undefined;
-            var group_buf: [32]u8 = undefined;
-            const user_name = try common.file.getUserName(stat.uid, &user_buf);
-            const group_name = try common.file.getGroupName(stat.gid, &group_buf);
-            try writeUserGroupColored(
-                style,
-                writer,
-                user_name,
-                group_name,
-                options.omit_owner,
-                options.omit_group,
-            );
-        }
-    } else {
-        if (!options.omit_owner) try writer.writeAll("?        ");
-        if (!options.omit_group) try writer.writeAll("?        ");
-    }
+    std.debug.assert(widths.owner >= 1);
+    std.debug.assert(widths.group >= 1);
+    var owner_buf: [32]u8 = undefined;
+    var group_buf: [32]u8 = undefined;
+    const names = try ownerGroupStrings(entry, options, &owner_buf, &group_buf);
+    try writeUserGroupColored(
+        style,
+        writer,
+        names.owner,
+        names.group,
+        options.omit_owner,
+        options.omit_group,
+        widths.owner,
+        widths.group,
+        options.numeric_ids,
+    );
 }
 
-/// Write the size column of a long-format entry.
-/// Falls back to "?" when stat is unavailable.
+/// Write the size column of a long-format entry, right-aligned in the section
+/// width. Falls back to a padded "?" when stat is unavailable.
 fn printLongFormatEntryAligned_size(
     style: anytype,
     writer: anytype,
     entry: Entry,
     options: LsOptions,
+    width: usize, // tiger:allow:usize-arch column width is usize
 ) !void {
-    if (entry.stat) |stat| {
-        var size_buf: [32]u8 = undefined;
-        const size_str = if (options.human_readable)
-            try common.file.formatSizeHuman(stat.size, &size_buf)
-        else if (options.kilobytes)
-            try common.file.formatSizeKilobytes(stat.size, &size_buf)
-        else if (options.thousands_grouping)
-            formatWithThousands(stat.size, &size_buf)
-        else
-            try common.file.formatSize(stat.size, &size_buf);
-
-        try writeSizeColored(style, writer, size_str, stat.size, options.human_readable);
-    } else {
-        try writer.writeAll("       ? ");
-    }
+    std.debug.assert(options.long_format);
+    std.debug.assert(width >= 1);
+    var size_buf: [32]u8 = undefined;
+    const size_str = try sizeString(entry, options, &size_buf);
+    // An entry with no stat has no byte count to pick a color tier from, so
+    // the "?" takes the smallest-file color.
+    const size: u64 = if (entry.stat) |stat| stat.size else 0;
+    try writeSizeColored(style, writer, size_str, size, options.human_readable, width);
 }
 
 /// Format a number with thousands grouping (commas).
@@ -1123,42 +1241,101 @@ fn printEntries_longFormat(
         try writer.print("total {d}\n", .{total_blocks});
     }
 
-    // Pre-calculate max time width for alignment
-    var max_time_width: usize = 0; // tiger:allow:usize-arch slice .len is usize
-    for (entries) |entry| {
-        if (entry.stat) |stat| {
-            var tbuf: [128]u8 = undefined;
-            const time_field = if (options.use_ctime)
-                stat.ctime
-            else if (options.use_atime)
-                stat.atime
-            else
-                stat.mtime;
-            const eff_ts = if (options.full_time) TimeStyle.full else options.time_style;
-            const ts = formatTimeWithStyle(time_field, eff_ts, allocator, &tbuf) catch continue;
-            max_time_width = @max(max_time_width, ts.len);
-        }
-    }
+    // Nothing else to print, and every column width below is a reduction that
+    // needs at least one entry to reduce over.
+    if (entries.len == 0) return;
 
-    // The -s field is sized across the section just like the time column, so
-    // that both are computed once here and threaded into every entry.
-    const block_prefix_width = if (options.show_blocks and entries.len > 0)
-        blockPrefixWidth(entries, options)
-    else
-        0;
+    const widths = try measureLongFormatWidths(allocator, entries, options);
 
     // Print each entry in long format
     for (entries) |entry| {
-        try printLongFormatEntryAligned(
-            allocator,
-            entry,
-            writer,
-            options,
-            style,
-            max_time_width,
-            block_prefix_width,
-        );
+        try printLongFormatEntryAligned(allocator, entry, writer, options, style, widths);
     }
+}
+
+/// Size every long-format column across one section in a single traversal.
+/// blockPrefixWidth is deliberately not called here: it would walk the same
+/// entries a second time, so the -s width is folded in below instead.
+fn measureLongFormatWidths(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    options: LsOptions,
+) !LongFormatWidths {
+    std.debug.assert(entries.len > 0);
+    std.debug.assert(options.long_format);
+
+    var widths: LongFormatWidths = .{
+        .block_prefix = 0,
+        .nlink = 0,
+        .owner = 0,
+        .group = 0,
+        .size = 0,
+        .time = 0,
+    };
+    var block_width_max: usize = 0; // tiger:allow:usize-arch matches blockCountWidth
+    for (entries) |entry| {
+        if (options.show_blocks) {
+            const blocks = calculateDisplayBlocks(entry, options);
+            block_width_max = @max(block_width_max, blockCountWidth(blocks));
+        }
+        try measureLongFormatWidths_entry(allocator, entry, options, &widths);
+    }
+    // blockCountWidth never returns 0, so the prefix is the count plus its
+    // trailing space, matching what blockPrefixWidth yields elsewhere.
+    if (options.show_blocks) widths.block_prefix = block_width_max + 1;
+
+    // Every one of these columns renders at least "?" for an unstattable
+    // entry, so none of them can come out of the fold empty. The time column
+    // can: its fallback is a fixed literal that no width applies to.
+    std.debug.assert(widths.nlink >= 1);
+    std.debug.assert(widths.size >= 1);
+    std.debug.assert(widths.owner >= 1);
+    std.debug.assert(widths.group >= 1);
+    // Without -s the field is absent, and with it the count carries a space.
+    if (options.show_blocks) std.debug.assert(widths.block_prefix >= 2);
+    if (!options.show_blocks) std.debug.assert(widths.block_prefix == 0);
+    return widths;
+}
+
+/// Fold one entry's rendered columns into the running section maxima. Every
+/// value is measured through the very helper that will later print it, so a
+/// column can never be sized from a different string than it renders.
+fn measureLongFormatWidths_entry(
+    allocator: std.mem.Allocator,
+    entry: Entry,
+    options: LsOptions,
+    widths: *LongFormatWidths,
+) !void {
+    std.debug.assert(options.long_format);
+    std.debug.assert(entry.name.len > 0);
+
+    var nlink_buf: [16]u8 = undefined;
+    widths.nlink = @max(widths.nlink, nlinkString(entry, &nlink_buf).len);
+
+    var owner_buf: [32]u8 = undefined;
+    var group_buf: [32]u8 = undefined;
+    const names = try ownerGroupStrings(entry, options, &owner_buf, &group_buf);
+    widths.owner = @max(widths.owner, names.owner.len);
+    widths.group = @max(widths.group, names.group.len);
+
+    var size_buf: [32]u8 = undefined;
+    const size_str = try sizeString(entry, options, &size_buf);
+    widths.size = @max(widths.size, size_str.len);
+
+    // An entry whose timestamp cannot be formatted contributes no time width
+    // rather than aborting the listing; this is the last fold in the body, so
+    // returning early skips nothing else.
+    const stat = entry.stat orelse return;
+    var time_buf: [128]u8 = undefined;
+    const time_field = if (options.use_ctime)
+        stat.ctime
+    else if (options.use_atime)
+        stat.atime
+    else
+        stat.mtime;
+    const eff_ts = if (options.full_time) TimeStyle.full else options.time_style;
+    const ts = formatTimeWithStyle(time_field, eff_ts, allocator, &time_buf) catch return;
+    widths.time = @max(widths.time, ts.len);
 }
 
 // Tests
@@ -1337,7 +1514,7 @@ test "writeNlinkColored - no color writes plain" {
 
     // A section whose only nlink is 3 sizes the column to width 1, so the
     // field is the separating space, the value, and the trailing space.
-    try writeNlinkColored(style, &buf_aw.writer, 3);
+    try writeNlinkColored(style, &buf_aw.writer, "3", 1);
     try testing.expectEqualSlices(u8, " 3 ", buf_aw.writer.buffered());
 }
 
@@ -1346,7 +1523,7 @@ test "writeNlinkColored - basic mode uses bright_black" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeNlinkColored(style, &buf_aw.writer, 1);
+    try writeNlinkColored(style, &buf_aw.writer, "1", 1);
     const output = buf_aw.writer.buffered();
 
     // Should contain bright_black (90) escape code
@@ -1363,7 +1540,7 @@ test "writeUserGroupColored - no color writes plain" {
 
     // Each column is sized to its own content, so "root" occupies 4 columns
     // and "wheel" 5, with exactly one space separating the fields.
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false, 4, 5, false);
     try testing.expectEqualSlices(u8, "root wheel ", buf_aw.writer.buffered());
 }
 
@@ -1372,7 +1549,7 @@ test "writeUserGroupColored - basic mode uses yellow for user and cyan for group
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false, 4, 5, false);
     const output = buf_aw.writer.buffered();
 
     // Should contain yellow (33) for user and cyan (36) for group
@@ -1388,7 +1565,7 @@ test "writeUserGroupColored - omit_owner hides user column" {
     const style = makeTestStyle(&buf_aw.writer, .none);
 
     // The surviving group column keeps its own content width of 5.
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", true, false);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", true, false, 4, 5, false);
     try testing.expectEqualSlices(u8, "wheel ", buf_aw.writer.buffered());
 }
 
@@ -1398,7 +1575,7 @@ test "writeUserGroupColored - omit_group hides group column" {
     const style = makeTestStyle(&buf_aw.writer, .none);
 
     // The surviving owner column keeps its own content width of 4.
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, true);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, true, 4, 5, false);
     try testing.expectEqualSlices(u8, "root ", buf_aw.writer.buffered());
 }
 
@@ -1409,7 +1586,7 @@ test "writeSizeColored - no color writes plain" {
 
     // A section whose only size renders as "4096" is 4 columns wide, so no
     // filler padding precedes the value.
-    try writeSizeColored(style, &buf_aw.writer, "4096", 4096, false);
+    try writeSizeColored(style, &buf_aw.writer, "4096", 4096, false, 4);
     try testing.expectEqualSlices(u8, "4096 ", buf_aw.writer.buffered());
 }
 
@@ -1420,7 +1597,7 @@ test "writeSizeColored - human readable format" {
 
     // The width comes from the rendered human string, which is 4 columns
     // wide here — not from the fixed 5 the old hardcoded layout reserved.
-    try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true);
+    try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true, 4);
     try testing.expectEqualSlices(u8, "4.0K ", buf_aw.writer.buffered());
 }
 
@@ -1429,7 +1606,7 @@ test "writeSizeColored - truecolor small file uses green" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
-    try writeSizeColored(style, &buf_aw.writer, "512", 512, false);
+    try writeSizeColored(style, &buf_aw.writer, "512", 512, false, 3);
     const output = buf_aw.writer.buffered();
 
     // Small file: RGB (115, 195, 120)
@@ -1443,7 +1620,7 @@ test "writeSizeColored - truecolor large file uses red-orange" {
     const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
     const large_size: u64 = 20 * 1024 * 1024; // 20MB
-    try writeSizeColored(style, &buf_aw.writer, "20971520", large_size, false);
+    try writeSizeColored(style, &buf_aw.writer, "20971520", large_size, false, 8);
     const output = buf_aw.writer.buffered();
 
     // Large file: RGB (210, 115, 100)
@@ -1456,7 +1633,7 @@ test "writeSizeColored - 256 color mode" {
     const style = makeTestStyle(&buf_aw.writer, .extended);
 
     // 50KB file should use index 149 (yellow-green)
-    try writeSizeColored(style, &buf_aw.writer, "51200", 51200, false);
+    try writeSizeColored(style, &buf_aw.writer, "51200", 51200, false, 5);
     const output = buf_aw.writer.buffered();
 
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;5;149m") != null);
@@ -1467,7 +1644,7 @@ test "writeSizeColored - basic mode uses green" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeSizeColored(style, &buf_aw.writer, "100", 100, false);
+    try writeSizeColored(style, &buf_aw.writer, "100", 100, false, 3);
     const output = buf_aw.writer.buffered();
 
     // Basic mode: green (32)
@@ -1479,7 +1656,7 @@ test "writeSizeColored - basic mode bold for human readable" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true);
+    try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true, 4);
     const output = buf_aw.writer.buffered();
 
     // Basic mode with human_readable: bold + green
@@ -1584,7 +1761,7 @@ test "writeSizeColored - all truecolor tiers" {
 
         var size_buf: [32]u8 = undefined;
         const size_str = std.fmt.bufPrint(&size_buf, "{d}", .{tier.size}) catch unreachable;
-        try writeSizeColored(style, &buf_aw.writer, size_str, tier.size, false);
+        try writeSizeColored(style, &buf_aw.writer, size_str, tier.size, false, size_str.len);
 
         var expected_buf: [64]u8 = undefined;
         const expected = std.fmt.bufPrint(
