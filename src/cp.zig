@@ -13,36 +13,40 @@ const TestDir = common.test_dir.TestDir;
 const COPY_BUFFER_SIZE = common.file_ops.COPY_BUFFER_SIZE;
 
 /// Command-line configuration and runtime options for cp
+///
+/// Field order is GNU cp's own `longopts[]` order, because that is the order
+/// an ambiguous abbreviation lists its candidates in (`cp --p` -> '--parents'
+/// '--preserve'). Options vibeutils adds that GNU cp has no entry for sit
+/// after the GNU sequence.
 const CpConfig = struct {
-    // Command-line only options
-    help: bool = false,
-    version: bool = false,
-    positionals: []const []const u8 = &.{},
-
-    // Runtime operation options
+    archive: bool = false,
+    backup: bool = false,
     force: bool = false,
     interactive: bool = false,
+    no_clobber: bool = false,
     no_dereference: bool = false,
+    one_file_system: bool = false,
+    parents: bool = false,
     preserve: bool = false,
     recursive: bool = false,
+    verbose: bool = false,
+    help: bool = false,
+    version: bool = false,
+
+    // Not in GNU cp's longopts table: BSD short-only flags, and vibeutils
+    // spellings of options GNU names differently.
     R: bool = false,
     H: bool = false,
     L: bool = false,
     P: bool = false,
-    archive: bool = false,
-    no_clobber: bool = false,
-    verbose: bool = false,
-
-    // SHOULD flags
-    backup: bool = false,
+    N: bool = false,
+    X: bool = false,
     clone: bool = false,
     hard_link: bool = false,
-    N: bool = false,
     symbolic: bool = false,
     backup_suffix: ?[]const u8 = null,
-    one_file_system: bool = false,
-    X: bool = false,
-    parents: bool = false,
+
+    positionals: []const []const u8 = &.{},
 
     /// Extract runtime-only configuration
     pub fn runtime(self: CpConfig) RuntimeOptions {
@@ -93,6 +97,10 @@ const CpConfig = struct {
         .interactive = .{ .short = 'i', .desc = "Prompt before overwrite" },
         .no_dereference = .{ .short = 'd', .desc = "Never follow symbolic links in SOURCE" },
         .preserve = .{ .short = 'p', .desc = "Preserve mode, ownership, timestamps" },
+        // GNU cp gives --parents no short form; -p is --preserve. Without an
+        // explicit 0 the parser would derive 'p' from the field name and,
+        // now that `parents` precedes `preserve`, hand -p to the wrong flag.
+        .parents = .{ .short = 0, .desc = "Use full source file name under DIRECTORY" },
         .recursive = .{ .short = 'r', .desc = "Copy directories recursively" },
         .R = .{ .short = 'R', .desc = "Copy directories recursively" },
         .H = .{ .short = 'H', .desc = "Follow symbolic links on the command line" },

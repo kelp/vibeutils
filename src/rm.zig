@@ -7,19 +7,25 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
 /// Command-line arguments for rm.
+///
+/// Field order is GNU rm's own `longopts[]` order, because that is the order
+/// an ambiguous abbreviation lists its candidates in (`rm --v` -> '--verbose'
+/// '--version'). Options vibeutils adds that GNU rm has no entry for sit after
+/// the GNU sequence, next to whichever GNU option they alias or extend.
 const RmArgs = struct {
-    help: bool = false,
-    version: bool = false,
     force: bool = false,
     interactive: bool = false,
     interactive_once: bool = false,
+    no_preserve_root: bool = false,
+    preserve_root: bool = false,
     recursive: bool = false,
     R: bool = false,
     remove_empty_dirs: bool = false,
-    P: bool = false,
     verbose: bool = false,
-    preserve_root: bool = false,
-    no_preserve_root: bool = false,
+    help: bool = false,
+    version: bool = false,
+    // Not in GNU rm's longopts table.
+    P: bool = false,
     no_cross_device: bool = false,
     undelete: bool = false,
     positionals: []const []const u8 = &.{},
@@ -51,6 +57,74 @@ const RmArgs = struct {
         .undelete = .{ .short = 'W', .desc = "Attempt to undelete (not supported, stub)" },
     };
 };
+
+/// The one long option GNU rm refuses to let getopt_long abbreviate.
+const no_preserve_root_long = "--no-preserve-root";
+
+/// The token that abbreviated `--no-preserve-root`, or null when the option
+/// was either spelled out in full or never typed at all.
+///
+/// GNU carves this single option out of getopt_long's abbreviation rule:
+/// coreutils' `rm.c` re-reads `argv[optind - 1]` *after* getopt_long has
+/// already resolved the option and dies unless the full spelling was typed.
+/// Because the carve-out runs after resolution, a prefix that names several
+/// options never reaches it — vibeutils' `--no-` also abbreviates
+/// `--no-cross-device`, so it stays an ordinary ambiguity error.
+///
+/// Scanning stops at `--` for the same reason the parser does: past the
+/// separator every token is a file name, and a file may legitimately be
+/// called `--no-p`.
+fn findNoPreserveRootAbbreviation(args: []const []const u8) ?[]const u8 {
+    // Only called once parsing set the flag, so the token that set it is in
+    // here somewhere; an empty argv could not have.
+    std.debug.assert(args.len > 0);
+
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) break;
+        // The full spelling is what GNU demands, so it is never an offender.
+        if (std.mem.eql(u8, arg, no_preserve_root_long)) continue;
+        // `arg.len > 2` keeps a bare "-" — a legal file name — from counting
+        // as a prefix of every long option.
+        if (arg.len > 2 and std.mem.startsWith(u8, no_preserve_root_long, arg)) {
+            // The parser resolved this token to a single option, so it cannot
+            // also abbreviate rm's other `--no-*` option: that collision is
+            // reported as ambiguity long before the carve-out is consulted.
+            std.debug.assert(!std.mem.startsWith(u8, "--no-cross-device", arg));
+            return arg;
+        }
+    }
+    return null;
+}
+
+/// Whether rm must stop because `--no-preserve-root` was abbreviated, with
+/// GNU's diagnostic already written to `stderr_writer` when it must.
+///
+/// GNU `die`s here instead of routing through its usage printer, so the
+/// message stands alone: no "Try 'rm --help' for more information." line
+/// follows it.
+fn rejectAbbreviatedNoPreserveRoot(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    args: []const []const u8,
+    no_preserve_root: bool,
+) bool {
+    // The same bound the parser asserts on the argv it was handed.
+    std.debug.assert(args.len <= std.math.maxInt(u32));
+    if (!no_preserve_root) return false;
+
+    // Parsing set the flag, so the token that set it is somewhere in argv.
+    std.debug.assert(args.len > 0);
+    if (findNoPreserveRootAbbreviation(args) == null) return false;
+
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "rm",
+        "you may not abbreviate the " ++ no_preserve_root_long ++ " option",
+        .{},
+    );
+    return true;
+}
 
 /// Options controlling rm behavior.
 const RmOptions = struct {
@@ -141,6 +215,13 @@ pub fn runRm(
         stderr_writer,
     ) catch return @intFromEnum(common.ExitCode.general_error);
     defer allocator.free(parsed_args.positionals);
+
+    if (rejectAbbreviatedNoPreserveRoot(
+        allocator,
+        stderr_writer,
+        args,
+        parsed_args.no_preserve_root,
+    )) return @intFromEnum(common.ExitCode.general_error);
 
     // Handle help flag
     if (parsed_args.help) {

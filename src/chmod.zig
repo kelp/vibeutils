@@ -10,18 +10,30 @@ const privilege_test = common.privilege_test;
 const assert = std.debug.assert;
 
 /// Command-line arguments for chmod
+///
+/// Field order is GNU chmod's own `longopts[]` order, because that is the
+/// order an ambiguous abbreviation lists its candidates in (`chmod --v` ->
+/// '--verbose' '--version'). Options vibeutils adds that GNU chmod has no
+/// entry for sit after the GNU sequence.
 const ChmodArgs = struct {
-    help: bool = false,
-    version: bool = false,
     changes: bool = false,
+    recursive: bool = false,
+    /// Do not treat '/' specially (default, no-op)
+    no_preserve_root: bool = false,
+    /// Refuse to operate recursively on '/'
+    preserve_root: bool = false,
+    reference: ?[]const u8 = null,
     silent: bool = false,
     verbose: bool = false,
+    help: bool = false,
+    version: bool = false,
+    // Not in GNU chmod's longopts table.
     no_dereference: bool = false,
-    recursive: bool = false,
+    /// Affect the referent of symlinks (default, no-op)
+    dereference: bool = false,
     H: bool = false,
     L: bool = false,
     P: bool = false,
-    reference: ?[]const u8 = null,
     /// Check ACL configuration (macOS, no-op stub)
     acl_check: bool = false,
     /// Read ACL info from stdin (macOS, no-op stub)
@@ -32,12 +44,6 @@ const ChmodArgs = struct {
     acl_remove_all_inherited: bool = false,
     /// Remove ACL from file (macOS, no-op stub)
     acl_remove: bool = false,
-    /// Affect the referent of symlinks (default, no-op)
-    dereference: bool = false,
-    /// Do not treat '/' specially (default, no-op)
-    no_preserve_root: bool = false,
-    /// Refuse to operate recursively on '/'
-    preserve_root: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{

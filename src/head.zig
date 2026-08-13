@@ -5,15 +5,15 @@ const std = @import("std");
 const testing = std.testing;
 
 /// Command-line arguments for the head utility
+///
+/// Field order is GNU head's own `longopts[]` order, because that is the
+/// order an ambiguous abbreviation lists its candidates in (`head --v` ->
+/// '--verbose' '--version').
 const HeadArgs = struct {
-    /// Display help and exit
-    help: bool = false,
-    /// Output version information and exit
-    version: bool = false,
-    /// Number of lines to output (default: 10); accepts negative values like "-3"
-    lines: ?[]const u8 = null,
     /// Number of bytes to output (overrides -n)
     bytes: ?u64 = null,
+    /// Number of lines to output (default: 10); accepts negative values like "-3"
+    lines: ?[]const u8 = null,
     /// Quiet flag - never print headers
     quiet: bool = false,
     /// Suppress headers (alias for --quiet)
@@ -22,6 +22,10 @@ const HeadArgs = struct {
     verbose: bool = false,
     /// Use NUL as line delimiter instead of newline
     zero_terminated: bool = false,
+    /// Display help and exit
+    help: bool = false,
+    /// Output version information and exit
+    version: bool = false,
     /// Files to process
     positionals: []const []const u8 = &.{},
 

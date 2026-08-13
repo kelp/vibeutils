@@ -22,18 +22,26 @@ const assert = std.debug.assert;
 const BUFFER_SIZE = 8192;
 
 /// Command-line arguments for tail
+///
+/// Field order is GNU tail's own `longopts[]` order, because that is the
+/// order an ambiguous abbreviation lists its candidates in (`tail --v` ->
+/// '--verbose' '--version'). Options vibeutils adds that GNU tail has no
+/// entry for sit next to whichever GNU option they extend.
 const TailArgs = struct {
-    help: bool = false,
-    version: bool = false,
-    lines: ?[]const u8 = null,
     bytes: ?[]const u8 = null,
+    /// 512-byte blocks; not in GNU tail's longopts table
     blocks: ?[]const u8 = null,
+    follow: bool = false,
+    /// Same as --follow --retry; not in GNU tail's longopts table
+    follow_retry: bool = false,
+    lines: ?[]const u8 = null,
     quiet: bool = false,
     verbose: bool = false,
     zero_terminated: bool = false,
+    help: bool = false,
+    version: bool = false,
+    /// Not in GNU tail's longopts table
     reverse: bool = false,
-    follow: bool = false,
-    follow_retry: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{

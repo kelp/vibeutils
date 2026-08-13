@@ -4,12 +4,16 @@ const common = @import("common");
 const testing = std.testing;
 
 /// Command-line arguments for rmdir.
+///
+/// Field order is GNU rmdir's own `longopts[]` order, because that is the
+/// order an ambiguous abbreviation lists its candidates in (`rmdir --v` ->
+/// '--verbose' '--version').
 const RmdirArgs = struct {
-    help: bool = false,
-    version: bool = false,
+    ignore_fail_on_non_empty: bool = false,
     parents: bool = false,
     verbose: bool = false,
-    ignore_fail_on_non_empty: bool = false,
+    help: bool = false,
+    version: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
