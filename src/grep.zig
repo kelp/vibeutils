@@ -5400,3 +5400,114 @@ test "runGrep guard: pattern file without -- still matches" {
     try testing.expectEqual(@as(u8, 0), result.exit_code);
     try testing.expectEqualStrings("a\n", result.output);
 }
+
+// ============================================================================
+// Regression: an unopenable -f argument must be fatal (GNU grep 3.11 parity)
+// ============================================================================
+
+/// A portable, always-present, always-empty pattern file. `-f` on it is a
+/// legal *empty* pattern set, which is a different thing from a `-f` that
+/// could not be opened at all.
+const empty_pattern_file = "/dev/null";
+
+/// A path no test run can create, so `-f` on it always fails to open.
+const missing_pattern_file = "/nonexistent/vibeutils/grep/patterns.txt";
+
+test "runGrep -c with an empty pattern set prints nothing, not 0" {
+    // GNU exits 1 without opening any operand, so there is no count to print.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-c", "-f", empty_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -c and -cv with an empty pattern set disagree" {
+    // -v escapes the zero-pattern short circuit and -c must not. The values are
+    // pinned concretely: a mere inequality would survive a mutation that turns
+    // the silent run into a "0", which is exactly the mutation to catch.
+    var counted = try testRunGrepOutput(ddash_fixture, &.{ "-c", "-f", empty_pattern_file });
+    defer counted.arena.deinit();
+    var inverted = try testRunGrepOutput(ddash_fixture, &.{ "-cv", "-f", empty_pattern_file });
+    defer inverted.arena.deinit();
+    try testing.expectEqualStrings("", counted.output);
+    try testing.expectEqual(@as(u8, 1), counted.exit_code);
+    try testing.expectEqualStrings("5\n", inverted.output);
+    try testing.expectEqual(@as(u8, 0), inverted.exit_code);
+}
+
+test "runGrep -L with an empty pattern set still names the file" {
+    // -L is the other escape hatch: it walks the operands and reports the file
+    // as matchless rather than short-circuiting.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-L", "-f", empty_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+    try testing.expect(std.mem.endsWith(u8, result.output, "test.txt\n"));
+}
+
+test "runGrep -f unopenable file exits 2 without reading operands" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -v -f unopenable file must not print the whole input" {
+    // The fail-open regression: -v with a typo'd blocklist printed every line
+    // and exited 0. GNU exits 2 with nothing on stdout.
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-v", "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -L -f unopenable file exits 2 with no stdout" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-L", "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -c -f unopenable file exits 2 with no stdout" {
+    var result = try testRunGrepOutput(ddash_fixture, &.{ "-c", "-f", missing_pattern_file });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep --file= unopenable file exits 2 with no stdout" {
+    const flag = "--file=" ++ missing_pattern_file;
+    var result = try testRunGrepOutput(ddash_fixture, &.{flag});
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), result.exit_code);
+    try testing.expectEqualStrings("", result.output);
+}
+
+test "runGrep -e valid does not rescue an unopenable -f" {
+    // GNU is fatal in both orders, so a usable pattern from -e is no reprieve.
+    var e_first = try testRunGrepOutput(ddash_fixture, &.{ "-e", "a", "-f", missing_pattern_file });
+    defer e_first.arena.deinit();
+    var f_first = try testRunGrepOutput(ddash_fixture, &.{ "-f", missing_pattern_file, "-e", "a" });
+    defer f_first.arena.deinit();
+    try testing.expectEqual(@as(u8, 2), e_first.exit_code);
+    try testing.expectEqualStrings("", e_first.output);
+    try testing.expectEqual(@as(u8, 2), f_first.exit_code);
+    try testing.expectEqualStrings("", f_first.output);
+}
+
+test "runGrep -f unopenable file reports the operand on stderr" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=never", "-f", missing_pattern_file, "/dev/null" };
+    const exit_code = try runGrep(
+        arena.allocator(),
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    const reported = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, reported, missing_pattern_file) != null);
+}

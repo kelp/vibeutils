@@ -656,6 +656,117 @@ test_grep() {
 
     rm -rf "$ddash_dir"
 
+    echo -e "${CYAN}Testing an unopenable -f argument is fatal (exit 2)...${NC}"
+
+    # Pinned against GNU grep 3.11 (LC_ALL=C, stdin </dev/null, pristine fixture
+    # dir). GNU's rule is uniform: if a -f/--file argument cannot be read, grep
+    # dies with exit 2 and never opens a single operand. It must never
+    # "fail open" -- an unreadable blocklist under -v previously printed nothing
+    # and must not start printing the whole input instead.
+    #
+    # Note: the exact stderr text for a directory argument is deliberately not
+    # pinned here (GNU says "Is a directory", we say "No such file or
+    # directory"); that message divergence is pre-existing and out of scope.
+    # Only "exit 2, empty stdout, one error line naming the operand" is pinned.
+    #
+    # Note: an existing-but-unreadable regular file cannot be exercised in this
+    # suite -- integration tests may run as root, where mode 000 is still
+    # readable and GNU itself succeeds. A missing path and a directory cover the
+    # same code path portably.
+    local fdir
+    fdir=$(create_temp_dir)
+    printf 'a\nb\n-v\n--\nfoo\n' > "$fdir/g.txt"
+    printf 'a\n' > "$fdir/pat.txt"
+    : > "$fdir/empty.txt"
+    mkdir -p "$fdir/sub"
+    local fgrep_cmd="cd '$fdir' && LC_ALL=C '$binary' --color=never"
+
+    # Assert exit code, stdout and stderr separately: the regression produced
+    # output with a *zero* exit, so an exit-code-only check would miss it.
+    check_f_fatal() {
+        local name="$1" expected_err="$2"
+        shift 2
+        local cmd out err exit_code
+        run_command cmd out err exit_code bash -c "$fgrep_cmd $* </dev/null"
+        if [[ "$exit_code" -eq 2 && -z "$out" && "$err" == "$expected_err" ]]; then
+            print_test_result "$name" "PASS"
+        else
+            print_test_result "$name" "FAIL" "exit=$exit_code out=$out err=$err"
+        fi
+    }
+
+    local enoent="grep: nosuch.txt: No such file or directory"
+
+    # The table of shapes the review pinned, GNU-first.
+    check_f_fatal "grep -f missing file exits 2" "$enoent" -f nosuch.txt g.txt
+    check_f_fatal "grep -v -f missing file exits 2 with no stdout" "$enoent" \
+        -v -f nosuch.txt g.txt
+    check_f_fatal "grep -L -f missing file exits 2 with no stdout" "$enoent" \
+        -L -f nosuch.txt g.txt
+    check_f_fatal "grep -f -- consumes -- as the pattern file and exits 2" \
+        "grep: --: No such file or directory" -f -- nosuch.txt -v g.txt
+    check_f_fatal "grep -L -f -- empty.txt a exits 2 with no stdout" \
+        "grep: --: No such file or directory" -L -f -- empty.txt a
+
+    # A directory as the -f argument is unopenable too. Message text is not
+    # pinned (see note above), only the fatal shape.
+    local cmd out err exit_code
+    run_command cmd out err exit_code bash -c "$fgrep_cmd -f sub g.txt </dev/null"
+    if [[ "$exit_code" -eq 2 && -z "$out" && "$err" == "grep: sub: "* ]]; then
+        print_test_result "grep -f directory exits 2" "PASS"
+    else
+        print_test_result "grep -f directory exits 2" "FAIL" "exit=$exit_code out=$out err=$err"
+    fi
+
+    run_command cmd out err exit_code bash -c "$fgrep_cmd -v -f sub g.txt </dev/null"
+    if [[ "$exit_code" -eq 2 && -z "$out" && "$err" == "grep: sub: "* ]]; then
+        print_test_result "grep -v -f directory exits 2 with no stdout" "PASS"
+    else
+        print_test_result "grep -v -f directory exits 2 with no stdout" "FAIL" \
+            "exit=$exit_code out=$out err=$err"
+    fi
+
+    # One bad -f poisons the whole run: neither a second valid -f nor an -e
+    # rescues it. Verified against GNU grep 3.11 in both orders.
+    check_f_fatal "grep -f missing -f valid still exits 2" "$enoent" \
+        -f nosuch.txt -f pat.txt g.txt
+    check_f_fatal "grep -f valid -f missing still exits 2" "$enoent" \
+        -f pat.txt -f nosuch.txt g.txt
+    check_f_fatal "grep -f missing -e valid is not rescued by -e" "$enoent" \
+        -f nosuch.txt -e a g.txt
+    check_f_fatal "grep -e valid -f missing is not rescued by -e" "$enoent" \
+        -e a -f nosuch.txt g.txt
+
+    # No operands at all: grep must die before it ever reads stdin.
+    check_f_fatal "grep -f missing with no operands exits 2" "$enoent" -f nosuch.txt
+    check_f_fatal "grep -v -f missing with no operands exits 2" "$enoent" -v -f nosuch.txt
+
+    # Output-suppressing modes must not launder the failure into a 0 or 1.
+    check_f_fatal "grep -c -f missing exits 2" "$enoent" -c -f nosuch.txt g.txt
+    check_f_fatal "grep -q -f missing exits 2" "$enoent" -q -f nosuch.txt g.txt
+    check_f_fatal "grep -l -f missing exits 2" "$enoent" -l -f nosuch.txt g.txt
+
+    # The long spelling shares the same loader and the same regression.
+    check_f_fatal "grep --file=missing exits 2" "$enoent" --file=nosuch.txt g.txt
+    check_f_fatal "grep -v --file=missing exits 2 with no stdout" "$enoent" \
+        -v --file=nosuch.txt g.txt
+
+    # Guards: a *readable* but empty -f file is still a legal empty pattern set
+    # and must keep its pre-regression behavior, so the fix cannot simply make
+    # every zero-pattern run fatal.
+    run_command cmd out err exit_code bash -c "$fgrep_cmd -f empty.txt g.txt </dev/null"
+    if [[ "$exit_code" -eq 1 && -z "$out" && -z "$err" ]]; then
+        print_test_result "grep guard -f empty file exits 1 silently" "PASS"
+    else
+        print_test_result "grep guard -f empty file exits 1 silently" "FAIL" \
+            "exit=$exit_code out=$out err=$err"
+    fi
+
+    test_command_output "grep guard -v -f empty file prints every line" \
+        $'a\nb\n-v\n--\nfoo' bash -c "$fgrep_cmd -v -f empty.txt g.txt </dev/null"
+
+    rm -rf "$fdir"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}grep tests completed${NC}"
