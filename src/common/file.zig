@@ -227,6 +227,115 @@ pub const FileInfo = struct {
     }
 };
 
+/// Names the Linux VFS stores a POSIX ACL under. The kernel discards an ACL
+/// that the mode bits already express rather than storing it, so the mere
+/// presence of either name is the same verdict GNU ls reaches by scanning the
+/// xattr list, without ever reading the value.
+const acl_access_xattr: [:0]const u8 = "system.posix_acl_access";
+const acl_default_xattr: [:0]const u8 = "system.posix_acl_default";
+
+/// Darwin's <sys/acl.h>: ACL_TYPE_EXTENDED is the only type its getters
+/// accept, and ACL_FIRST_ENTRY starts a walk of the entry list.
+const acl_type_extended: c_int = 0x0000_0100;
+const acl_first_entry: c_int = 0;
+
+// libSystem on Darwin. Referenced only from the Darwin arm below, so nothing
+// links against them on a platform that reads xattrs instead.
+extern "c" fn acl_get_file(path: [*:0]const u8, acl_type: c_int) ?*anyopaque;
+extern "c" fn acl_get_link_np(path: [*:0]const u8, acl_type: c_int) ?*anyopaque;
+extern "c" fn acl_get_entry(acl: *anyopaque, entry_id: c_int, entry_p: *?*anyopaque) c_int;
+extern "c" fn acl_free(obj: *anyopaque) c_int;
+
+/// Whether `path` carries an ACL beyond the one its mode bits express — the
+/// condition GNU ls reports as `+` in an eleventh mode column under -l.
+///
+/// `follow` must match the follow-ness of the stat whose mode is printed on
+/// the same line, or the marker and the permission string end up describing
+/// different files. A symlink being described in its own right is never
+/// probed at all, which is what GNU's S_ISLNK short-circuit does.
+///
+/// The operand path in `src/ls/main.zig` passes `follow = true` unconditionally
+/// because `ls -l <symlink>` there already stats the target rather than the
+/// link -- a pre-existing divergence from GNU, which describes the link. The
+/// two are consistent only because both follow. Whoever fixes that stat must
+/// fix this call in the same change, or the mode and the marker will start
+/// describing different files, which is exactly what the paragraph above
+/// forbids.
+///
+/// Every failure answers false. A marker we fail to print misaligns nothing,
+/// while a marker we invent widens every row of the section it lands in.
+pub fn hasExtendedAcl(path: []const u8, kind: std.Io.File.Kind, follow: bool) bool {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    if (kind == .sym_link and !follow) return false;
+
+    var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
+
+    if (comptime builtin.os.tag == .linux) {
+        if (aclXattrPresent(path_z, acl_access_xattr, follow)) return true;
+        // A default ACL exists only on a directory and leaves the mode bits
+        // alone, so nothing in the permission string hints at it; GNU marks
+        // such a directory all the same, and probing the access name by
+        // itself would miss every one of them.
+        if (kind != .directory) return false;
+        return aclXattrPresent(path_z, acl_default_xattr, follow);
+    }
+    if (comptime builtin.os.tag == .macos) return darwinHasExtendedAcl(path_z, follow);
+    return false;
+}
+
+/// Whether the extended attribute `name` exists on `path`, asked as a size
+/// query: the value itself is never read, only whether the kernel has one.
+fn aclXattrPresent(path_z: [*:0]const u8, name: [:0]const u8, follow: bool) bool {
+    // The syscall wrapper takes a value pointer even for a size query; a zero
+    // size means the kernel never writes through it.
+    var unused: [1]u8 = undefined;
+    const rc: isize = @bitCast(if (follow)
+        std.os.linux.getxattr(path_z, name.ptr, &unused, 0)
+    else
+        std.os.linux.lgetxattr(path_z, name.ptr, &unused, 0));
+    // A raw syscall returns a length or a negative errno no smaller than
+    // -4095; anything below that would mean a length was misread as an error.
+    std.debug.assert(rc >= -4095);
+    // ENODATA (no such attribute), EOPNOTSUPP (filesystem without ACLs) and
+    // ENOENT (a dangling link followed) all mean no marker. A stored POSIX
+    // ACL is never zero length: it carries a version header and at least the
+    // three entries that mirror the mode bits.
+    return rc > 0;
+}
+
+/// Darwin has no POSIX ACL xattrs — an extended ACL is an NFSv4-style entry
+/// list reached through libSystem, and a file without one yields a null acl_t.
+///
+/// A non-null handle is not by itself the answer: the entry list it carries
+/// can be empty, and the probe below is what separates the two. GNU reaches
+/// the same verdict the same way, through gnulib's `acl_entries (acl) > 0`.
+fn darwinHasExtendedAcl(path_z: [*:0]const u8, follow: bool) bool {
+    const acl = if (follow)
+        acl_get_file(path_z, acl_type_extended)
+    else
+        acl_get_link_np(path_z, acl_type_extended);
+    const handle = acl orelse return false;
+    defer _ = acl_free(handle);
+
+    var first: ?*anyopaque = null;
+    // Apple's acl_get_entry answers 0 for an entry and -1 both at the end of
+    // the list and on error — the inverse of the 1-then-0 that libacl and
+    // FreeBSD use, so this comparison cannot be shared with the Linux arm.
+    const rc = acl_get_entry(handle, acl_first_entry, &first);
+    // Those two values are the whole documented range. A third would mean we
+    // linked a libacl-shaped acl_get_entry, whose 1-for-success reads here as
+    // an empty list and would drop every marker on the platform in silence.
+    std.debug.assert(rc == 0 or rc == -1);
+    // A reported entry must have been written through the out-parameter; a
+    // null one alongside success would mean we read the wrong ABI.
+    std.debug.assert(rc != 0 or first != null);
+    return rc == 0;
+}
+
 /// Format file permissions as a string (e.g., -rw-r--r--)
 pub fn formatPermissions(mode: std.posix.mode_t, kind: std.Io.File.Kind, buf: []u8) ![]const u8 {
     if (buf.len < 10) return error.BufferTooSmall;
