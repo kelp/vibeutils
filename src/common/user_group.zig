@@ -4,8 +4,8 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 /// No passwd or group field libc can hand back is anywhere near this long, so
-/// a span that exceeds it means the pointer was never a NUL-terminated string.
-const max_c_string_bytes = 64 * 1024;
+/// a span that exceeds it means the entry is corrupt rather than merely long.
+const max_c_string_bytes: u32 = 64 * 1024;
 
 /// The platform's `struct passwd`, taken from std rather than hand-rolled:
 /// macOS interposes pw_change and pw_class between pw_gid and pw_gecos and
@@ -38,11 +38,11 @@ extern "c" fn getgid() c.gid_t;
 pub fn spanOrEmpty(field: ?[*:0]const u8) []const u8 {
     const ptr = field orelse return "";
     const out = std.mem.span(ptr);
-    // Negative space: the byte just past the span really is the sentinel, so
-    // the slice covers the whole C string rather than a prefix of it.
-    assert(ptr[out.len] == 0);
-    // A field longer than any plausible passwd line means the pointer did not
-    // point at a C string at all.
+    // A field longer than any plausible passwd line means a corrupt entry.
+    // This cannot detect a pointer that is not NUL-terminated at all: span
+    // scans for the sentinel first, so such a pointer faults inside span
+    // before returning here. Only libc fills these in, and libc terminates
+    // them, so that case is not reachable.
     assert(out.len <= max_c_string_bytes);
     return out;
 }
