@@ -108,7 +108,11 @@ test:
 abi-macos:
     zig test --test-no-exec -lc -target aarch64-macos src/common/user_group.zig
     zig test --test-no-exec -lc -target x86_64-macos src/common/user_group.zig
-    zig build -Dtarget=aarch64-macos-none
+    # Installs under its own prefix. The integration suites pin PATH to
+    # zig-out/bin, so leaving Mach-O executables there makes every later run
+    # on this host die with "Exec format error" -- the same clobber that was
+    # blamed for the first observed occurrence of issue #125.
+    zig build -Dtarget=aarch64-macos-none -p zig-out/macos
 
 # Run the privilege-framework integration tests
 #
