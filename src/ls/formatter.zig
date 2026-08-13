@@ -1335,8 +1335,10 @@ test "writeNlinkColored - no color writes plain" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .none);
 
+    // A section whose only nlink is 3 sizes the column to width 1, so the
+    // field is the separating space, the value, and the trailing space.
     try writeNlinkColored(style, &buf_aw.writer, 3);
-    try testing.expectEqualSlices(u8, "   3 ", buf_aw.writer.buffered());
+    try testing.expectEqualSlices(u8, " 3 ", buf_aw.writer.buffered());
 }
 
 test "writeNlinkColored - basic mode uses bright_black" {
@@ -1359,8 +1361,10 @@ test "writeUserGroupColored - no color writes plain" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .none);
 
+    // Each column is sized to its own content, so "root" occupies 4 columns
+    // and "wheel" 5, with exactly one space separating the fields.
     try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false);
-    try testing.expectEqualSlices(u8, "root     wheel    ", buf_aw.writer.buffered());
+    try testing.expectEqualSlices(u8, "root wheel ", buf_aw.writer.buffered());
 }
 
 test "writeUserGroupColored - basic mode uses yellow for user and cyan for group" {
@@ -1383,8 +1387,9 @@ test "writeUserGroupColored - omit_owner hides user column" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .none);
 
+    // The surviving group column keeps its own content width of 5.
     try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", true, false);
-    try testing.expectEqualSlices(u8, "wheel    ", buf_aw.writer.buffered());
+    try testing.expectEqualSlices(u8, "wheel ", buf_aw.writer.buffered());
 }
 
 test "writeUserGroupColored - omit_group hides group column" {
@@ -1392,8 +1397,9 @@ test "writeUserGroupColored - omit_group hides group column" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .none);
 
+    // The surviving owner column keeps its own content width of 4.
     try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, true);
-    try testing.expectEqualSlices(u8, "root     ", buf_aw.writer.buffered());
+    try testing.expectEqualSlices(u8, "root ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - no color writes plain" {
@@ -1401,8 +1407,10 @@ test "writeSizeColored - no color writes plain" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .none);
 
+    // A section whose only size renders as "4096" is 4 columns wide, so no
+    // filler padding precedes the value.
     try writeSizeColored(style, &buf_aw.writer, "4096", 4096, false);
-    try testing.expectEqualSlices(u8, "    4096 ", buf_aw.writer.buffered());
+    try testing.expectEqualSlices(u8, "4096 ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - human readable format" {
@@ -1410,8 +1418,10 @@ test "writeSizeColored - human readable format" {
     defer buf_aw.deinit();
     const style = makeTestStyle(&buf_aw.writer, .none);
 
+    // The width comes from the rendered human string, which is 4 columns
+    // wide here — not from the fixed 5 the old hardcoded layout reserved.
     try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true);
-    try testing.expectEqualSlices(u8, " 4.0K ", buf_aw.writer.buffered());
+    try testing.expectEqualSlices(u8, "4.0K ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - truecolor small file uses green" {

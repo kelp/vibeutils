@@ -2090,12 +2090,14 @@ test_ls() {
             "Expected $(printf '%q' "$snarrow_expected"), got: $(printf '%q' "$snarrow_output")"
     fi
 
-    # Long format prints the -s prefix from its own call site, which carried
-    # a separate copy of the hardcoded width. Only the prefix is asserted:
-    # our nlink/owner/group/size padding diverges from BSD's, a pre-existing
-    # gap that would make a whole-line comparison fail for unrelated
-    # reasons. Pinned against macOS /bin/ls -ls on this fixture, whose lines
-    # begin " 0 -" and "16 -".
+    # Long format prints the -s prefix from its own call site, a separate
+    # width computation from the block-only tests above. Only the prefix is
+    # asserted: our nlink/owner/group/size columns follow GNU's dynamic,
+    # section-scoped sizing (see issue #124 below), which is not the same
+    # layout BSD's ls produces, so a whole-line comparison against a BSD
+    # reference would fail for reasons unrelated to this assertion. Pinned
+    # against macOS /bin/ls -ls on this fixture, whose lines begin " 0 -"
+    # and "16 -".
     local slong_output
     slong_output=$(NO_COLOR=1 "$binary" -ls "$sfield_dir" 2>/dev/null | strip_ansi)
     local slong_a slong_b
@@ -2106,5 +2108,185 @@ test_ls() {
     else
         print_test_result "ls #ls-s-field-width: -l -s sizes the block field to the widest count" "FAIL" \
             "Expected lines starting ' 0 -' and '16 -', got: $(printf '%q' "$slong_a") and $(printf '%q' "$slong_b")"
+    fi
+
+    echo -e "${CYAN}Testing issue #124: -l nlink/owner/group/size column widths...${NC}"
+
+    # Real system fixture: /run/systemd/netif, /etc/hostname and /usr give
+    # owner/group names of two different widths in one section --
+    # "root" (4 chars) and "systemd-network" (15 chars, a real system
+    # account) -- which the Zig-level unit tests can only approximate with
+    # numeric-uid fallback strings for host portability. Rather than
+    # hardcoding the exact byte values this host happens to produce today
+    # (a different /usr link count, hostname length, or systemd-network
+    # uid on another Linux host would false-FAIL a fixed snapshot even
+    # against a correct fix), the expected prefix is derived live from a
+    # real GNU ls on the SAME fixture in the SAME run, so only genuine
+    # divergence between our output and GNU's is a failure. Only the
+    # prefix through the size column is compared; the date field depends
+    # on each file's real mtime and the test's timezone, unrelated to
+    # this bug, so it (and everything after it, including the path) is
+    # stripped from both sides before comparing.
+    # Integration tests pin PATH to zig-out/bin (see tests/integration.sh)
+    # so that resolving system binaries under test can't mask the wrong
+    # implementation -- but that means a bare `ls` here would silently
+    # resolve to OUR ls, not a real one. Probe fixed absolute paths
+    # instead, unaffected by that pinning.
+    local gnu_ls=""
+    local candidate
+    for candidate in /usr/bin/ls /bin/ls; do
+        if [[ -x "$candidate" ]] && LC_ALL=C "$candidate" --version 2>/dev/null | head -1 | grep -q "GNU coreutils"; then
+            gnu_ls="$candidate"
+            break
+        fi
+    done
+
+    if [[ -n "$gnu_ls" && -r /run/systemd/netif && -r /etc/hostname && -r /usr ]]; then
+        # Strips " Mon DD HH:MM ...path" (or " Mon DD  YYYY ...path") from
+        # the end of a `ls -ld`-style line, leaving only the permission/
+        # nlink/owner/group/size prefix (with its trailing separator
+        # space) common to both our output and GNU's.
+        strip_date_and_path() {
+            sed -E 's/ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) .*$//'
+        }
+
+        # Drops the leading 10-char permission field, plus GNU's optional
+        # 11th-position marker ('.' for an SELinux context, '+' for an ACL)
+        # that occupies what would otherwise be the separator space on a
+        # runner where any listed file carries one. That marker is unrelated
+        # to issue #124 and vibeutils never emits it, so leaving it in the
+        # comparison would FAIL forever on an SELinux-enabled host (e.g.
+        # Fedora/RHEL) against an otherwise-correct fix. Comparing only from
+        # character 11 onward scopes the assertion to the nlink/owner/group/
+        # size region this issue is actually about; the permission string
+        # itself is covered separately by the Zig-level regression guard.
+        strip_perm_field() {
+            sed -E 's/^.{10}//; s/^[.+]//'
+        }
+
+        local w124_ours w124_gnu
+        w124_ours=$(NO_COLOR=1 "$binary" -ld /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
+        w124_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld /run/systemd/netif /etc/hostname /usr 2>/dev/null)
+
+        local w124_ours_hostname w124_ours_netif w124_ours_usr
+        local w124_gnu_hostname w124_gnu_netif w124_gnu_usr
+        w124_ours_hostname=$(printf '%s\n' "$w124_ours" | grep '/etc/hostname$' | strip_date_and_path)
+        w124_ours_netif=$(printf '%s\n' "$w124_ours" | grep '/run/systemd/netif$' | strip_date_and_path)
+        w124_ours_usr=$(printf '%s\n' "$w124_ours" | grep '/usr$' | strip_date_and_path)
+        w124_gnu_hostname=$(printf '%s\n' "$w124_gnu" | grep '/etc/hostname$' | strip_date_and_path)
+        w124_gnu_netif=$(printf '%s\n' "$w124_gnu" | grep '/run/systemd/netif$' | strip_date_and_path)
+        w124_gnu_usr=$(printf '%s\n' "$w124_gnu" | grep '/usr$' | strip_date_and_path)
+
+        # An empty capture on either side (e.g. because a future change
+        # alters how operands are echoed, or the grep pattern stops
+        # matching) must FAIL, not silently compare "" == "" as a PASS. A
+        # real ls -ld line always starts with a 10-char permission string,
+        # so requiring that shape on the GNU side is a cheap, precise guard.
+        if [[ -z "$w124_gnu_hostname" || -z "$w124_gnu_netif" || -z "$w124_gnu_usr" || \
+              ! "$w124_gnu_hostname" =~ ^[-dlbcpsD][-rwxXsSt]{9} || \
+              ! "$w124_gnu_netif" =~ ^[-dlbcpsD][-rwxXsSt]{9} || \
+              ! "$w124_gnu_usr" =~ ^[-dlbcpsD][-rwxXsSt]{9} ]]; then
+            print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "FAIL" \
+                "GNU ls capture was empty or missing a permission string -- fixture or grep pattern broke: hostname=$(printf '%q' "$w124_gnu_hostname") netif=$(printf '%q' "$w124_gnu_netif") usr=$(printf '%q' "$w124_gnu_usr")"
+        elif [[ "$(printf '%s' "$w124_ours_hostname" | strip_perm_field)" == "$(printf '%s' "$w124_gnu_hostname" | strip_perm_field)" && \
+              "$(printf '%s' "$w124_ours_netif" | strip_perm_field)" == "$(printf '%s' "$w124_gnu_netif" | strip_perm_field)" && \
+              "$(printf '%s' "$w124_ours_usr" | strip_perm_field)" == "$(printf '%s' "$w124_gnu_usr" | strip_perm_field)" ]]; then
+            print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "PASS"
+        else
+            print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "FAIL" \
+                "GNU ls prefix hostname=$(printf '%q' "$w124_gnu_hostname") netif=$(printf '%q' "$w124_gnu_netif") usr=$(printf '%q' "$w124_gnu_usr"); ours hostname=$(printf '%q' "$w124_ours_hostname") netif=$(printf '%q' "$w124_ours_netif") usr=$(printf '%q' "$w124_ours_usr")"
+        fi
+
+        # Same fixture under -n: uid/gid RIGHT-align to the widest value,
+        # the opposite of the name case's left-align above -- a real
+        # behavioral flip, not a cosmetic difference, and easy to miss if
+        # only names are tested. Again compared against a live GNU
+        # reference rather than a hardcoded uid/gid snapshot.
+        local w124n_ours w124n_gnu
+        w124n_ours=$(NO_COLOR=1 "$binary" -ldn /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
+        w124n_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldn /run/systemd/netif /etc/hostname /usr 2>/dev/null)
+
+        local w124n_ours_hostname w124n_ours_netif w124n_ours_usr
+        local w124n_gnu_hostname w124n_gnu_netif w124n_gnu_usr
+        w124n_ours_hostname=$(printf '%s\n' "$w124n_ours" | grep '/etc/hostname$' | strip_date_and_path)
+        w124n_ours_netif=$(printf '%s\n' "$w124n_ours" | grep '/run/systemd/netif$' | strip_date_and_path)
+        w124n_ours_usr=$(printf '%s\n' "$w124n_ours" | grep '/usr$' | strip_date_and_path)
+        w124n_gnu_hostname=$(printf '%s\n' "$w124n_gnu" | grep '/etc/hostname$' | strip_date_and_path)
+        w124n_gnu_netif=$(printf '%s\n' "$w124n_gnu" | grep '/run/systemd/netif$' | strip_date_and_path)
+        w124n_gnu_usr=$(printf '%s\n' "$w124n_gnu" | grep '/usr$' | strip_date_and_path)
+
+        if [[ -z "$w124n_gnu_hostname" || -z "$w124n_gnu_netif" || -z "$w124n_gnu_usr" || \
+              ! "$w124n_gnu_hostname" =~ ^[-dlbcpsD][-rwxXsSt]{9} || \
+              ! "$w124n_gnu_netif" =~ ^[-dlbcpsD][-rwxXsSt]{9} || \
+              ! "$w124n_gnu_usr" =~ ^[-dlbcpsD][-rwxXsSt]{9} ]]; then
+            print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "FAIL" \
+                "GNU ls capture was empty or missing a permission string -- fixture or grep pattern broke: hostname=$(printf '%q' "$w124n_gnu_hostname") netif=$(printf '%q' "$w124n_gnu_netif") usr=$(printf '%q' "$w124n_gnu_usr")"
+        elif [[ "$(printf '%s' "$w124n_ours_hostname" | strip_perm_field)" == "$(printf '%s' "$w124n_gnu_hostname" | strip_perm_field)" && \
+              "$(printf '%s' "$w124n_ours_netif" | strip_perm_field)" == "$(printf '%s' "$w124n_gnu_netif" | strip_perm_field)" && \
+              "$(printf '%s' "$w124n_ours_usr" | strip_perm_field)" == "$(printf '%s' "$w124n_gnu_usr" | strip_perm_field)" ]]; then
+            print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "PASS"
+        else
+            print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "FAIL" \
+                "GNU ls prefix hostname=$(printf '%q' "$w124n_gnu_hostname") netif=$(printf '%q' "$w124n_gnu_netif") usr=$(printf '%q' "$w124n_gnu_usr"); ours hostname=$(printf '%q' "$w124n_ours_hostname") netif=$(printf '%q' "$w124n_ours_netif") usr=$(printf '%q' "$w124n_ours_usr")"
+        fi
+
+        unset -f strip_date_and_path strip_perm_field
+    else
+        print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "SKIP" \
+            "Requires a real GNU ls plus readable /run/systemd/netif, /etc/hostname, /usr on this host"
+        print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "SKIP" \
+            "Requires a real GNU ls plus readable /run/systemd/netif, /etc/hostname, /usr on this host"
+    fi
+
+    # Every fixture above has owner name == group name on both files
+    # ("root"/"root" and "systemd-network"/"systemd-network"), so a
+    # column-width implementation that computes ONE shared width =
+    # max(widest owner, widest group) and reuses it for BOTH columns
+    # passes every test above while still diverging from GNU. /var/log/
+    # journal (root:systemd-journal, a standard systemd path present on
+    # any systemd-based Linux host) alongside /etc/hostname (root:root)
+    # gives owner name "root" (4 chars) on both files but group names of
+    # two different widths ("root" 4 chars vs "systemd-journal" 15
+    # chars) -- so the owner column's correct width (4) and the group
+    # column's correct width (15) differ, and a shared-width bug would
+    # widen the owner column to 15 as well. Verified live against GNU ls
+    # on this host rather than a hardcoded snapshot, for the same
+    # portability reason as the fixture above.
+    if [[ -n "$gnu_ls" && -r /var/log/journal && -r /etc/hostname ]]; then
+        strip_date_and_path() {
+            sed -E 's/ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) .*$//'
+        }
+        strip_perm_field() {
+            sed -E 's/^.{10}//; s/^[.+]//'
+        }
+
+        local w124ind_ours w124ind_gnu
+        w124ind_ours=$(NO_COLOR=1 "$binary" -ld /var/log/journal /etc/hostname 2>/dev/null | strip_ansi)
+        w124ind_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld /var/log/journal /etc/hostname 2>/dev/null)
+
+        local w124ind_ours_hostname w124ind_ours_journal
+        local w124ind_gnu_hostname w124ind_gnu_journal
+        w124ind_ours_hostname=$(printf '%s\n' "$w124ind_ours" | grep '/etc/hostname$' | strip_date_and_path)
+        w124ind_ours_journal=$(printf '%s\n' "$w124ind_ours" | grep '/var/log/journal$' | strip_date_and_path)
+        w124ind_gnu_hostname=$(printf '%s\n' "$w124ind_gnu" | grep '/etc/hostname$' | strip_date_and_path)
+        w124ind_gnu_journal=$(printf '%s\n' "$w124ind_gnu" | grep '/var/log/journal$' | strip_date_and_path)
+
+        if [[ -z "$w124ind_gnu_hostname" || -z "$w124ind_gnu_journal" || \
+              ! "$w124ind_gnu_hostname" =~ ^[-dlbcpsD][-rwxXsSt]{9} || \
+              ! "$w124ind_gnu_journal" =~ ^[-dlbcpsD][-rwxXsSt]{9} ]]; then
+            print_test_result "ls #124: owner and group columns size independently, not to a shared max" "FAIL" \
+                "GNU ls capture was empty or missing a permission string -- fixture or grep pattern broke: hostname=$(printf '%q' "$w124ind_gnu_hostname") journal=$(printf '%q' "$w124ind_gnu_journal")"
+        elif [[ "$(printf '%s' "$w124ind_ours_hostname" | strip_perm_field)" == "$(printf '%s' "$w124ind_gnu_hostname" | strip_perm_field)" && \
+              "$(printf '%s' "$w124ind_ours_journal" | strip_perm_field)" == "$(printf '%s' "$w124ind_gnu_journal" | strip_perm_field)" ]]; then
+            print_test_result "ls #124: owner and group columns size independently, not to a shared max" "PASS"
+        else
+            print_test_result "ls #124: owner and group columns size independently, not to a shared max" "FAIL" \
+                "GNU ls prefix hostname=$(printf '%q' "$w124ind_gnu_hostname") journal=$(printf '%q' "$w124ind_gnu_journal"); ours hostname=$(printf '%q' "$w124ind_ours_hostname") journal=$(printf '%q' "$w124ind_ours_journal")"
+        fi
+
+        unset -f strip_date_and_path strip_perm_field
+    else
+        print_test_result "ls #124: owner and group columns size independently, not to a shared max" "SKIP" \
+            "Requires a real GNU ls plus readable /var/log/journal and /etc/hostname on this host"
     fi
 }
