@@ -2755,10 +2755,16 @@ $sect_r_dir/sub:
             # Without this, a filesystem that stored nothing looks exactly
             # like ls dropping the marker and the failure names the wrong
             # culprit.
+            #
+            # The listed ACE is the oracle rather than the mode-field marker.
+            # Apple's ls(1) prints '@' when a file has extended attributes and
+            # falls back to '+' only otherwise, so a fixture that picked up any
+            # xattr would show '@' and be misread as a storage failure. The -e
+            # listing names the entry either way.
             local macl_ref
             macl_ref=$(LC_ALL=C /bin/ls -le "$macl_root/mixed/acl.txt" 2>&1 | strip_ansi)
-            if [[ ! "$macl_ref" =~ ^-[rwx-]{9}[+] ]]; then
-                macl_broken="$macl_chmod +a reported success but /bin/ls -le sees no ACL on $macl_root/mixed/acl.txt: ${macl_ref//$'\n'/ }"
+            if [[ ! "$macl_ref" =~ group:everyone[[:space:]]+allow[[:space:]]+read ]]; then
+                macl_broken="$macl_chmod +a reported success but /bin/ls -le lists no matching ACE on $macl_root/mixed/acl.txt: ${macl_ref//$'\n'/ }"
             fi
         fi
 
