@@ -122,6 +122,20 @@
   `formatSize` for every invocation and `printTotal_formatField` only
   under `--total` — and both now share one overflow-free `ceilDiv`
   helper so they cannot drift apart again (#138).
+- **`df` no longer panics computing the use percentage on very large
+  filesystems.** `used * 100 + total - 1` was evaluated in u64, so the
+  multiply overflowed above 164 PiB of used space and the trailing
+  addition wrapped even earlier — at `used == total` the last safe
+  value was 182641030432767837. Shipped binaries are ReleaseSafe, so
+  this aborted the process rather than printing a table; under
+  ReleaseFast it silently reported a full filesystem as `0%`. The
+  multiply is now done in u128, exact across the whole u64 range, and
+  the ceiling uses GNU's remainder form `q + (r != 0)` from coreutils
+  `src/df.c` rather than the overflow-prone `+ total - 1`. The
+  `--total` row computed the same expression inline twice and now
+  calls the shared helper, so all three sites — per-filesystem,
+  `--total`, and `--output=pcent` — are fixed together. Percentages
+  for ordinary filesystems are unchanged (#144).
 - **`ls -l` sizes the nlink, owner, group and size columns to their
   content.** They were padded to hardcoded widths — 3, 8, 8 and 8, or
   5 for a human-readable size — so every listing of small files

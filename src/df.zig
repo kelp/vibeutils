@@ -1179,14 +1179,28 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
     return std.fmt.bufPrint(buf, "{d}", .{value}) catch "?";
 }
 
-/// Calculate usage percentage as 0-100 with ceiling (matching GNU df).
+/// Calculate usage percentage as 0-100 with ceiling, matching GNU df's integer
+/// path in coreutils src/df.c: `u100 / nonroot_total + (u100 % nonroot_total
+/// != 0)`. `used * 100` overflows u64 above 184467440737095516 (~164 PiB), and
+/// the old `+ total - 1` term wrapped earlier still. GNU guards that same bound
+/// and degrades to double, but u128 is exact across the whole u64 range, so the
+/// multiply is simply widened and no fallback path is needed (issue #144).
 fn calcUsagePercent(used: u64, total: u64) u8 {
     if (total == 0) return 0;
-    const pct = @divTrunc(used * 100 + total - 1, total);
-    // Clamp to 100: used may exceed total on root-reserved filesystems, so the
-    // raw percentage is tolerated and the result is capped, never panics.
+    // Past the guard above; every divide and remainder below depends on it.
+    std.debug.assert(total > 0);
+    const scaled: u128 = @as(u128, used) * 100;
+    const denominator: u128 = total;
+    const pct = @divTrunc(scaled, denominator) +
+        @intFromBool(@rem(scaled, denominator) != 0);
+    // Only a root-reserved filesystem (used > total) can legitimately exceed
+    // 100, so a >100 result for ordinary input is an arithmetic fault rather
+    // than something the clamp below is entitled to hide.
+    std.debug.assert(used > total or pct <= 100);
     const result: u8 = @intCast(@min(pct, 100));
-    std.debug.assert(result <= 100);
+    // Rounding up means any nonzero usage occupies at least one percent;
+    // a @divTrunc regression would report 0% for a nearly-empty filesystem.
+    std.debug.assert((result == 0) == (used == 0));
     return result;
 }
 
@@ -2192,15 +2206,12 @@ fn printTotalDynamic(
     const used_str = printTotal_formatField(&used_buf, sum_used_bytes, display_block, opts);
     const avail_str = printTotal_formatField(&avail_buf, sum_avail_bytes, display_block, opts);
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
+    // The percentage is shared with the per-filesystem rows rather than
+    // recomputed here, so the overflow-safe arithmetic lives in one place.
+    const percent = calcUsagePercent(sum_used_bytes, sum_use_total);
     const pct_str: []const u8 = if (sum_use_total == 0) "-" else blk: {
-        const pct = @divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total);
-        break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
+        break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{percent}) catch "?";
     };
-    const percent: u8 = if (sum_use_total == 0) 0 else @intCast(
-        @min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100),
-    );
-    // Both branches above yield <= 100 (explicit @min or the 0 branch).
-    std.debug.assert(percent <= 100);
 
     if (s.color_mode == .none) {
         return printTotalDynamic_emitPlain(
