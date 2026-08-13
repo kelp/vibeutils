@@ -114,13 +114,29 @@
   `+` for that entry, a pad space for the rest — so a listing that
   mixes the two lines up with GNU's column for column instead of
   drifting one character left. A section with no such entry keeps
-  the ten-column field and is byte-identical to before. A directory
-  carrying only a default ACL is marked too, a symlink is marked
-  only under `-L`, and no ACL is probed at all outside `-l`.
-  Detection reads `system.posix_acl_access` and
-  `system.posix_acl_default` on Linux and `acl_get_link_np` on
+  the ten-column field and is byte-identical to before, whether it
+  is printed before or after a section that widens. A directory
+  carrying only a default ACL is marked too, including on a
+  filesystem that leaves `d_type` unfilled, and no ACL is probed at
+  all outside `-l`. A symlink listed inside a directory is marked
+  only under `-L`; a symlink named directly on the command line is
+  marked after its target either way, because `ls -l` on a symlink
+  operand already prints the target's mode rather than the link's —
+  a separate pre-existing divergence from GNU, and the marker simply
+  follows the mode it belongs to. Detection reads
+  `system.posix_acl_access` and `system.posix_acl_default` on Linux,
+  and `acl_get_file`/`acl_get_link_np` plus `acl_get_entry` on
   macOS; the SELinux `.` marker is not implemented, so on an
-  SELinux-enforcing host GNU marks every file `.` and we do not
+  SELinux-enforcing host GNU marks every file `.` and we do not.
+
+  One divergence is left standing: GNU measures every command-line
+  operand before it splits directories out of the operand table, so
+  a directory operand's ACL widens the mode field of the *file*
+  operands printed beside it, and ours does not. The size, link
+  count, owner and group columns already scope exactly the same way
+  on that path, so this is one instance of a pre-existing family
+  rather than anything this change introduced; it is left for a
+  separate fix that moves the whole measurement boundary at once
   (#147).
 - **Integration runs no longer share a working directory.**
   `tests/utilities/mkdir_test.sh` builds its fixtures with relative

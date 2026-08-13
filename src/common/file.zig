@@ -254,6 +254,14 @@ extern "c" fn acl_free(obj: *anyopaque) c_int;
 /// different files. A symlink being described in its own right is never
 /// probed at all, which is what GNU's S_ISLNK short-circuit does.
 ///
+/// The operand path in `src/ls/main.zig` passes `follow = true` unconditionally
+/// because `ls -l <symlink>` there already stats the target rather than the
+/// link -- a pre-existing divergence from GNU, which describes the link. The
+/// two are consistent only because both follow. Whoever fixes that stat must
+/// fix this call in the same change, or the mode and the marker will start
+/// describing different files, which is exactly what the paragraph above
+/// forbids.
+///
 /// Every failure answers false. A marker we fail to print misaligns nothing,
 /// while a marker we invent widens every row of the section it lands in.
 pub fn hasExtendedAcl(path: []const u8, kind: std.Io.File.Kind, follow: bool) bool {
@@ -282,7 +290,6 @@ pub fn hasExtendedAcl(path: []const u8, kind: std.Io.File.Kind, follow: bool) bo
 /// Whether the extended attribute `name` exists on `path`, asked as a size
 /// query: the value itself is never read, only whether the kernel has one.
 fn aclXattrPresent(path_z: [*:0]const u8, name: [:0]const u8, follow: bool) bool {
-    std.debug.assert(name.len > 0);
     // The syscall wrapper takes a value pointer even for a size query; a zero
     // size means the kernel never writes through it.
     var unused: [1]u8 = undefined;
@@ -302,6 +309,10 @@ fn aclXattrPresent(path_z: [*:0]const u8, name: [:0]const u8, follow: bool) bool
 
 /// Darwin has no POSIX ACL xattrs — an extended ACL is an NFSv4-style entry
 /// list reached through libSystem, and a file without one yields a null acl_t.
+///
+/// A non-null handle is not by itself the answer: the entry list it carries
+/// can be empty, and the probe below is what separates the two. GNU reaches
+/// the same verdict the same way, through gnulib's `acl_entries (acl) > 0`.
 fn darwinHasExtendedAcl(path_z: [*:0]const u8, follow: bool) bool {
     const acl = if (follow)
         acl_get_file(path_z, acl_type_extended)
@@ -311,14 +322,18 @@ fn darwinHasExtendedAcl(path_z: [*:0]const u8, follow: bool) bool {
     defer _ = acl_free(handle);
 
     var first: ?*anyopaque = null;
-    // acl_get_entry answers 1 for an entry, 0 at the end of the list and -1
-    // on error, so only the first form is a marker.
+    // Apple's acl_get_entry answers 0 for an entry and -1 both at the end of
+    // the list and on error — the inverse of the 1-then-0 that libacl and
+    // FreeBSD use, so this comparison cannot be shared with the Linux arm.
     const rc = acl_get_entry(handle, acl_first_entry, &first);
-    std.debug.assert(rc <= 1);
-    // A reported entry must have been written through the out-parameter;
-    // a null one alongside success would mean we read the wrong ABI.
-    std.debug.assert(rc != 1 or first != null);
-    return rc == 1;
+    // Those two values are the whole documented range. A third would mean we
+    // linked a libacl-shaped acl_get_entry, whose 1-for-success reads here as
+    // an empty list and would drop every marker on the platform in silence.
+    std.debug.assert(rc == 0 or rc == -1);
+    // A reported entry must have been written through the out-parameter; a
+    // null one alongside success would mean we read the wrong ABI.
+    std.debug.assert(rc != 0 or first != null);
+    return rc == 0;
 }
 
 /// Format file permissions as a string (e.g., -rw-r--r--)

@@ -2507,6 +2507,7 @@ $sect_r_dir/sub:
         "ls #147: -l on a lone ACL operand leaves one space after the marker"
         "ls #147: a directory with only a default ACL is marked"
         "ls #147: the eleventh mode column is per section, not per run"
+        "ls #147: a section printed after a marked one keeps the ten-column field"
         "ls #147: a symlink is unmarked without -L and marked with it"
         "ls #147: -l on an ACL directory still exits 0"
         "ls #147: -l output matches GNU byte for byte on an ACL fixture"
@@ -2540,21 +2541,26 @@ $sect_r_dir/sub:
         # depend on the test user's umask; setfacl then rewrites the
         # marked files to 0o664 the way the kernel always does.
         mkdir -p "$acl_root/mixed" "$acl_root/sect_a" "$acl_root/sect_b" \
-            "$acl_root/linkdir" "$acl_root/defaultdir"
+            "$acl_root/linkdir" "$acl_root/defaultdir" \
+            "$acl_root/aaa" "$acl_root/zzz"
         : >"$acl_root/mixed/acl.txt"
         : >"$acl_root/mixed/plain.txt"
         : >"$acl_root/sect_a/plain.txt"
         : >"$acl_root/sect_b/acl.txt"
         : >"$acl_root/linkdir/target.txt"
+        : >"$acl_root/aaa/marked.txt"
+        : >"$acl_root/zzz/bare.txt"
         chmod 644 "$acl_root/mixed/acl.txt" "$acl_root/mixed/plain.txt" \
             "$acl_root/sect_a/plain.txt" "$acl_root/sect_b/acl.txt" \
-            "$acl_root/linkdir/target.txt"
+            "$acl_root/linkdir/target.txt" \
+            "$acl_root/aaa/marked.txt" "$acl_root/zzz/bare.txt"
         chmod 755 "$acl_root/defaultdir"
         ln -s target.txt "$acl_root/linkdir/zlink"
         setfacl -m u:1000:rw "$acl_root/mixed/acl.txt"
         setfacl -m u:1000:rw "$acl_root/sect_b/acl.txt"
         setfacl -m u:1000:rw "$acl_root/linkdir/target.txt"
         setfacl -d -m u:1000:rwx "$acl_root/defaultdir"
+        setfacl -m u:1000:rw "$acl_root/aaa/marked.txt"
 
         # "[+]" rather than "\+": a backslash-escaped plus in an ERE is
         # not portable, a bracket expression is.
@@ -2612,6 +2618,23 @@ $sect_r_dir/sub:
                 "Expected sect_a to match $acl_narrow_re (one space) and sect_b to match $acl_marked_re; got a=$(printf '%q' "$acl_sect_a") b=$(printf '%q' "$acl_sect_b")"
         fi
 
+        # The same rule in the order that can actually catch a global width.
+        # With the marked section second (above), a run-wide flag is still
+        # false while the plain section is measured, so it prints ten columns
+        # and passes by accident. Marked first, the flag is already set when
+        # the plain section is measured, and a global implementation pads it
+        # to eleven. Operands are sorted, so the names put aaa first.
+        local acl_rev_out acl_rev_marked acl_rev_bare
+        acl_rev_out=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$acl_root/aaa" "$acl_root/zzz" 2>/dev/null | strip_ansi)
+        acl_rev_marked=$(printf '%s\n' "$acl_rev_out" | grep 'marked\.txt$')
+        acl_rev_bare=$(printf '%s\n' "$acl_rev_out" | grep 'bare\.txt$')
+        if [[ "$acl_rev_marked" =~ $acl_marked_re && "$acl_rev_bare" =~ $acl_narrow_re ]]; then
+            print_test_result "${acl_names[4]}" "PASS"
+        else
+            print_test_result "${acl_names[4]}" "FAIL" \
+                "Expected aaa to match $acl_marked_re and zzz to match $acl_narrow_re (one space); got marked=$(printf '%q' "$acl_rev_marked") bare=$(printf '%q' "$acl_rev_bare")"
+        fi
+
         # GNU short-circuits on S_ISLNK and never probes a link itself, so
         # the link takes the section's pad space (TWO spaces before the
         # link count) rather than its target's marker; under -L the stat
@@ -2628,13 +2651,13 @@ $sect_r_dir/sub:
         acl_linkL_out=$(NO_COLOR=1 LC_ALL=C "$binary" -lL "$acl_root/linkdir" 2>/dev/null |
             strip_ansi | grep 'zlink')
         if [[ "$acl_link_out" =~ $acl_link_re && "$acl_linkL_out" =~ $acl_marked_re ]]; then
-            print_test_result "${acl_names[4]}" "PASS"
+            print_test_result "${acl_names[5]}" "PASS"
         else
-            print_test_result "${acl_names[4]}" "FAIL" \
+            print_test_result "${acl_names[5]}" "FAIL" \
                 "Expected -l to match $acl_link_re and -lL to match $acl_marked_re; got -l=$(printf '%q' "$acl_link_out") -lL=$(printf '%q' "$acl_linkL_out")"
         fi
 
-        test_command_exit_code "${acl_names[5]}" 0 "$binary" -l "$acl_root/mixed"
+        test_command_exit_code "${acl_names[6]}" 0 "$binary" -l "$acl_root/mixed"
 
         # The strongest form of the assertion: with the marker in place
         # our long format is byte-identical to GNU's on this fixture, as
@@ -2647,17 +2670,97 @@ $sect_r_dir/sub:
                 strip_ansi | sed '/^total /d')
             acl_gnu_full=$(LC_ALL=C TZ=UTC "$gnu_ls" -l "$acl_root/mixed" 2>/dev/null | sed '/^total /d')
             if [[ -z "$acl_gnu_full" ]]; then
-                print_test_result "${acl_names[6]}" "FAIL" \
+                print_test_result "${acl_names[7]}" "FAIL" \
                     "GNU ls produced no output for the ACL fixture -- the fixture or the reference binary broke"
             elif [[ "$acl_ours_full" == "$acl_gnu_full" ]]; then
-                print_test_result "${acl_names[6]}" "PASS"
+                print_test_result "${acl_names[7]}" "PASS"
             else
-                print_test_result "${acl_names[6]}" "FAIL" \
+                print_test_result "${acl_names[7]}" "FAIL" \
                     "GNU: $(printf '%q' "$acl_gnu_full"); ours: $(printf '%q' "$acl_ours_full")"
             fi
         else
-            print_test_result "${acl_names[6]}" "SKIP" \
+            print_test_result "${acl_names[7]}" "SKIP" \
                 "No GNU ls on this host to compare against"
+        fi
+    fi
+    # ------------------------------------------------------------------
+    # Issue #147 on Darwin. macOS has no POSIX ACL xattrs: an extended ACL
+    # is an NFSv4-style entry list reached through libSystem, built here
+    # with `chmod +a` (setfacl(1) does not exist on macOS). The Darwin
+    # probe is a wholly separate code path from the Linux xattr one, so
+    # everything above skips here and this is the only coverage it gets.
+    # ------------------------------------------------------------------
+    if [[ -z "$PLATFORM" ]]; then
+        detect_platform
+    fi
+
+    local macl_names=(
+        "ls #147: -l marks a macOS extended ACL with + and pads its section"
+        "ls #147: -l on a lone macOS ACL operand leaves one space after the marker"
+    )
+
+    if [[ "$PLATFORM" != "macos" ]]; then
+        local macl_name
+        for macl_name in "${macl_names[@]}"; do
+            print_test_result "$macl_name" "SKIP" \
+                "macOS-only: extended ACLs are a Darwin libSystem interface, not a POSIX ACL xattr"
+        done
+    else
+        echo -e "${CYAN}Testing #147 ACL marker on Darwin...${NC}"
+
+        # Probe the real operation, exactly the way the setfacl block above
+        # does: a filesystem mounted without ACL support must skip with the
+        # reason rather than assert against a marker that was never stored.
+        # Never let this section silently pass by asserting nothing.
+        local macl_root macl_ok=0 macl_why=""
+        macl_root=$(create_temp_dir)
+        mkdir -p "$macl_root/mixed"
+        : >"$macl_root/probe"
+        if chmod +a "$(id -un) allow read" "$macl_root/probe" 2>/dev/null; then
+            macl_ok=1
+        else
+            macl_why="chmod +a failed on $macl_root -- filesystem mounted without ACL support?"
+        fi
+        rm -f "$macl_root/probe"
+
+        if (( macl_ok == 0 )); then
+            local macl_name
+            for macl_name in "${macl_names[@]}"; do
+                print_test_result "$macl_name" "SKIP" "$macl_why"
+            done
+        else
+            # 0o644 on both so the rendered permission letters do not depend
+            # on the test user's umask. An ACE does not alter the mode bits,
+            # so the marker is the only difference between these two lines.
+            : >"$macl_root/mixed/acl.txt"
+            : >"$macl_root/mixed/plain.txt"
+            chmod 644 "$macl_root/mixed/acl.txt" "$macl_root/mixed/plain.txt"
+            chmod +a "$(id -un) allow read" "$macl_root/mixed/acl.txt"
+
+            local macl_marked_re='^-[rwx-]{9}[+] [0-9]'
+            local macl_padded_re='^-[rwx-]{9}  [0-9]'
+
+            local macl_out macl_line macl_plain
+            macl_out=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$macl_root/mixed" 2>/dev/null | strip_ansi)
+            macl_line=$(printf '%s\n' "$macl_out" | grep 'acl\.txt$')
+            macl_plain=$(printf '%s\n' "$macl_out" | grep 'plain\.txt$')
+            if [[ "$macl_line" =~ $macl_marked_re && "$macl_plain" =~ $macl_padded_re ]]; then
+                print_test_result "${macl_names[0]}" "PASS"
+            else
+                print_test_result "${macl_names[0]}" "FAIL" \
+                    "Expected the ACL line to match $macl_marked_re and the plain line to match $macl_padded_re (two spaces); got acl=$(printf '%q' "$macl_line") plain=$(printf '%q' "$macl_plain")"
+            fi
+
+            # A section holding exactly one marked entry is eleven wide with
+            # a single separator space after the marker.
+            local macl_solo
+            macl_solo=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$macl_root/mixed/acl.txt" 2>/dev/null | strip_ansi)
+            if [[ "$macl_solo" =~ $macl_marked_re ]]; then
+                print_test_result "${macl_names[1]}" "PASS"
+            else
+                print_test_result "${macl_names[1]}" "FAIL" \
+                    "Expected a line matching $macl_marked_re, got: $(printf '%q' "$macl_solo")"
+            fi
         fi
     fi
 }

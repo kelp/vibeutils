@@ -2070,6 +2070,30 @@ test "ls #147: the eleventh column is sized per section, not once per run" {
     try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
 }
 
+test "ls #147: a section printed after a marked one keeps the ten-column field" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addDir("aaa", 0o755);
+    try fx.addDir("zzz", 0o755);
+    try fx.addFile("aaa/marked.txt", 0o644);
+    try fx.addFile("zzz/bare.txt", 0o644);
+    const kept = try testAttachAcl("aaa/marked.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-l", "aaa", "zzz" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The mirror image of the test above, and the only operand order that
+    // can catch a width latched once for the whole run. With the marked
+    // section second, a global flag is still false while the plain section
+    // is measured, so it prints ten columns and looks correct by accident.
+    // Marked first, the flag is already set when zzz is measured, and a
+    // global implementation pads zzz to eleven. Operands are sorted, so the
+    // names are what put the marked section first.
+    try expectLinePrefix(fx.stdout(), "marked.txt", "-rw-rw-r--+ 1 ");
+    try expectLinePrefix(fx.stdout(), "bare.txt", "-rw-r--r-- 1 ");
+}
+
 test "ls #147: --color=always emits the marker as a plain byte" {
     var fx = try AclFixture.init();
     defer fx.deinit();
