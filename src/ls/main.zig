@@ -694,6 +694,11 @@ fn lsMain_partitionOperands(
             .kind = stat.kind,
             .stat = stat,
             .symlink_target = null,
+            // The stat above follows symlinks, so the probe follows too and
+            // the mode and the marker describe the same file. Outside -l
+            // there is no mode field to mark, and GNU probes nothing either.
+            .has_acl = options.long_format and
+                common.file.hasExtendedAcl(path, stat.kind, true),
         };
         // -d lists a directory operand as an ordinary entry, so it sorts and
         // prints with the files and never gets a "dir:" header.
@@ -939,6 +944,10 @@ fn listSingleFileEntry(
         .kind = stat.kind,
         .stat = stat,
         .symlink_target = null,
+        // Same follow-ness as the stat the caller took, and skipped entirely
+        // outside -l where no mode field is printed to mark.
+        .has_acl = options.long_format and
+            common.file.hasExtendedAcl(path, stat.kind, true),
     }};
 
     lsMain_resolveOperandGitStatus(io, &entries, options, git_context);

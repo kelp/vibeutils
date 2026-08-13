@@ -459,6 +459,15 @@ const LongFormatWidths = struct {
     group: usize, // tiger:allow:usize-arch column width is usize
     size: usize, // tiger:allow:usize-arch column width is usize
     time: usize, // tiger:allow:usize-arch slice .len is usize
+    /// Whether any entry of this section carries an ACL. GNU sizes the mode
+    /// field to eleven columns for the WHOLE section as soon as one does --
+    /// `+` for that entry and a pad space for every other -- and leaves it at
+    /// ten when none does, which makes it a section width like the rest
+    /// rather than a per-entry decision. Defaults to the ten-column field so
+    /// that a caller sizing only the columns it cares about gets the layout
+    /// every ACL-free listing has; printLongFormatEntryAligned asserts that a
+    /// marked entry is never rendered against a width that left it false.
+    mode_marker: bool = false,
 };
 
 /// The link count exactly as it will be printed, or "?" when the entry could
@@ -557,6 +566,10 @@ fn printLongFormatEntryAligned(
 ) !void {
     std.debug.assert(options.long_format);
     std.debug.assert(widths.nlink >= 1);
+    // These widths must be the ones measured over the section this entry
+    // belongs to: a marked entry printed against another section's widths
+    // would have nowhere to put its marker.
+    std.debug.assert(!entry.has_acl or widths.mode_marker);
     // Per-entry block count if -s is active, right-aligned in the field the
     // caller sized across the whole section.
     if (options.show_blocks) {
@@ -571,6 +584,14 @@ fn printLongFormatEntryAligned(
         "----------";
 
     try writeColoredPermissions(style, writer, perms);
+
+    // The eleventh mode column, present for every entry of a section that
+    // holds a marked one. It is written as a plain byte outside the color
+    // region because GNU never colors the mode field, marker included, and
+    // the separator space that follows belongs to the link count below.
+    if (widths.mode_marker) {
+        try writer.writeByte(if (entry.has_acl) '+' else ' ');
+    }
 
     // Number of links
     var nlink_buf: [16]u8 = undefined;
@@ -1268,6 +1289,7 @@ fn measureLongFormatWidths(
         .group = 0,
         .size = 0,
         .time = 0,
+        .mode_marker = false,
     };
     var block_width_max: usize = 0; // tiger:allow:usize-arch matches blockCountWidth
     for (entries) |entry| {
@@ -1305,6 +1327,13 @@ fn measureLongFormatWidths_entry(
 ) !void {
     std.debug.assert(options.long_format);
     std.debug.assert(entry.name.len > 0);
+    // An entry that was never stat'ed was never probed either, so it cannot
+    // be the reason a section widens.
+    std.debug.assert(!entry.has_acl or entry.stat != null);
+
+    // One marked entry is enough to give the whole section its eleventh mode
+    // column, so this folds as an or rather than a max.
+    widths.mode_marker = widths.mode_marker or entry.has_acl;
 
     var nlink_buf: [16]u8 = undefined;
     widths.nlink = @max(widths.nlink, nlinkString(entry, &nlink_buf).len);

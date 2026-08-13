@@ -39,6 +39,10 @@ pub fn listDirectoryImplWithVisited(
     defer entries.deinit(allocator);
     defer entry_collector.freeEntries(entries.items, allocator);
 
+    // The ACL probe takes a path rather than a dirfd, and this frame is the
+    // innermost one that still knows the directory's path.
+    applyAclMarkers(entries.items, path, options);
+
     // Sort entries based on options
     sortEntriesFromOptions(entries.items, options);
 
@@ -89,6 +93,44 @@ pub fn collectAndPrepareEntries(
     }
 
     return entries;
+}
+
+/// Mark the entries of one directory listing that carry an ACL, so the
+/// formatter can size the section's mode field the way GNU does.
+///
+/// Skipped outside -l: GNU issues no xattr syscall at all in any other
+/// format, and a bare `ls` over a large tree would otherwise pay one probe
+/// per entry for a column it never prints.
+fn applyAclMarkers(entries: []Entry, dir_path: []const u8, options: LsOptions) void {
+    std.debug.assert(dir_path.len > 0);
+    std.debug.assert(entries.len <= std.math.maxInt(u32));
+    if (!options.long_format) return;
+
+    // The join below supplies its own separator, so "/" must reduce to the
+    // empty string rather than pick up a second slash: "//name" is the one
+    // form POSIX reserves for an implementation-defined meaning.
+    const parent = std.mem.trimEnd(u8, dir_path, "/");
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    for (entries) |*entry| {
+        // An entry we could not stat renders as ten dashes rather than a
+        // permission string, so it has no mode field to mark.
+        if (entry.stat == null) continue;
+        // A path too long to join is a path we cannot probe; leaving the
+        // entry unmarked loses a column, whereas guessing would invent one.
+        const full = std.fmt.bufPrint(
+            &path_buf,
+            "{s}/{s}",
+            .{ parent, entry.name },
+        ) catch continue;
+        // -L is what made the stat above follow the link, so the probe has to
+        // follow it too or the mode and the marker describe different files.
+        entry.has_acl = common.file.hasExtendedAcl(
+            full,
+            entry.kind,
+            options.follow_all_symlinks,
+        );
+    }
 }
 
 /// Sort entries according to the provided options

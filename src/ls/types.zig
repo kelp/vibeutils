@@ -71,6 +71,11 @@ pub const Entry = struct {
     stat: ?common.file.FileInfo = null,
     symlink_target: ?[]const u8 = null,
     git_status: common.git.GitStatus = .not_in_repo,
+    /// Set when this entry carries an ACL beyond its mode bits, which -l
+    /// renders as `+` in an eleventh mode column. Detection happens where a
+    /// path to probe exists, and only under -l, so an entry that was never
+    /// probed keeps the default and its section stays ten columns wide.
+    has_acl: bool = false,
     display_width: ?usize = null, // Cached display width for performance
     file_type_indicator: ?u8 = null, // Cached file type indicator for performance
 
