@@ -166,6 +166,13 @@ init_test_session() {
 
 # Cleanup test session
 cleanup_test_session() {
+    # scripts/stress-integration.sh sets VIBEUTILS_KEEP_TEMP so a failing
+    # iteration's temp tree survives for inspection. Deleting it is how the
+    # evidence for issue #125 kept disappearing.
+    if [[ -n "${VIBEUTILS_KEEP_TEMP:-}" ]]; then
+        return 0
+    fi
+
     # Remove temp directory, but first restore permissions for any directories
     # that may have been made inaccessible by chmod tests
     if [[ -d "$TEMP_DIR" ]]; then

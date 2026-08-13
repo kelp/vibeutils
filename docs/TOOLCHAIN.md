@@ -210,18 +210,29 @@ and a fresh agent container does not have it. The separate-agents rule the
 and the implementer independent is that they are distinct invocations with
 disjoint file ownership, not the system prompt the plugin adds.
 
-**Run two worktrees' integration suites at once with distinct
-`VIBEUTILS_TEST_USER` values.** The suite `cd`s to the test user's home
-directory and `tests/utilities/mkdir_test.sh` creates *relative*
-directories (`combo`, `dir1`, `parent`, `tree`) there, so two concurrent
-runs sharing `vibedev` overwrite each other's fixtures and produce
-failures that reproduce nowhere. A different user gives a different
-`$HOME`; the temp root is already keyed by uid, so `$TMPDIR` separates
-for free:
+**Concurrent integration runs are safe by construction.** Two worktrees,
+or a macOS run and an OrbStack run over the same checkout, can call
+`just it` at the same time without arranging anything.
+`scripts/run-integration.sh` gives every run a private working directory
+and removes it afterwards, so the *relative* fixtures in
+`tests/utilities/mkdir_test.sh` (`combo`, `dir1`, `parent`, `tree`, …)
+can no longer land where a sibling run will see them. Before that
+isolation the working directory was shared — the test user's `$HOME` on
+the demoting path, the caller's cwd everywhere else — and a leftover
+`combo/` made `mkdir -pv combo/test/path` print two "created directory"
+lines instead of three. Exactly once: the failing run then deleted the
+contaminant and healed itself, which is why issue #125 never reproduced.
+
+`VIBEUTILS_TEST_USER` still gives a run its own `$HOME` and temp root,
+and is still worth setting when you want two runs fully separated. It is
+no longer required to run two suites at once.
+
+To hunt for a regression here, use the stress harness rather than a
+single run — a serial loop does not reproduce this class of bug at all,
+because nothing contaminates the working directory between iterations:
 
 ```
-VIBEUTILS_TEST_USER=vibedev-a just it   # in worktree A
-VIBEUTILS_TEST_USER=vibedev-b just it   # in worktree B, concurrently
+just stress --concurrent 2 --iterations 20 mkdir
 ```
 
 ## Troubleshooting
@@ -233,7 +244,7 @@ VIBEUTILS_TEST_USER=vibedev-b just it   # in worktree B, concurrently
 | Wrong Zig version | `scripts/bootstrap.sh --check` reports it; delete `/opt/vibeutils-toolchain` and re-run to force a reinstall |
 | Bootstrap failed and named every source | Point `VIBEUTILS_ZIG_URL` at a reachable tarball or `VIBEUTILS_ZIG_BIN` at an existing binary |
 | Two dozen "permission denied" integration failures | You ran `tests/integration.sh` directly as root. Use `just it` / `scripts/run-integration.sh`, which demote first |
-| Integration failures only when another worktree is testing | Both runs shared the `vibedev` home directory. Give each a distinct `VIBEUTILS_TEST_USER` |
+| Integration failures only when another worktree is testing | Fixed in #125 — `scripts/run-integration.sh` now isolates each run's working directory. If it recurs, capture it with `just stress --concurrent 2 --iterations 20 <util>`, which keeps the failing iteration's log and temp tree |
 | `kcov`/`gh`/`actionlint`/`docker` reported by bootstrap | If it says `n/a` they are absent by design and nothing is wrong. `just platform` confirms what this host has |
 | Commit aborted right after files were reformatted | Working as designed — the pre-commit hook runs `zig build fmt`, then aborts so you can review. Re-commit. |
 | `just coverage` says kcov is missing | Expected; coverage runs in CI |
