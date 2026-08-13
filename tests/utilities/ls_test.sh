@@ -2708,35 +2708,66 @@ $sect_r_dir/sub:
     else
         echo -e "${CYAN}Testing #147 ACL marker on Darwin...${NC}"
 
-        # Probe the real operation, exactly the way the setfacl block above
-        # does: a filesystem mounted without ACL support must skip with the
-        # reason rather than assert against a marker that was never stored.
-        # Never let this section silently pass by asserting nothing.
-        local macl_root macl_ok=0 macl_why=""
+        # The ACE builder MUST be the system chmod, by absolute path.
+        # tests/integration.sh prepends zig-out/bin to PATH, so a bare
+        # `chmod` here is vibeutils' own chmod, which has no `+a` and
+        # answers "chmod: invalid mode: '+a'" while treating the ACE text
+        # as a second operand. That -- not the filesystem -- is what made
+        # this section skip on the macos-26 runner and shipped the Darwin
+        # acl_get_entry fix unverified behind a green leg. The setfacl
+        # block above is safe from the same trap only because vibeutils
+        # ships no setfacl.
+        local macl_chmod="/bin/chmod"
+
+        # chmod(1) resolves a bare ACE name as a user first and only then
+        # as a group, so `group:` names the base-system `everyone` group
+        # in one lookup and cannot be shadowed by an image-specific
+        # account the way `$(id -un)` can. `allow read` rather than the
+        # `deny delete` idiom on purpose: chmod(1) documents deletion as
+        # grantable "by either this permission on an object or the
+        # delete_child right on the containing directory", so a denied
+        # delete would leave the fixture -- and the temp dir holding it --
+        # unremovable at cleanup.
+        local macl_ace="group:everyone allow read"
+
+        local macl_root macl_err="" macl_broken=""
         macl_root=$(create_temp_dir)
         mkdir -p "$macl_root/mixed"
-        : >"$macl_root/probe"
-        if chmod +a "$(id -un) allow read" "$macl_root/probe" 2>/dev/null; then
-            macl_ok=1
-        else
-            macl_why="chmod +a failed on $macl_root -- filesystem mounted without ACL support?"
-        fi
-        rm -f "$macl_root/probe"
 
-        if (( macl_ok == 0 )); then
+        # 0o644 on both so the rendered permission letters do not depend
+        # on the test user's umask. An ACE does not alter the mode bits,
+        # so the marker is the only difference between these two lines.
+        : >"$macl_root/mixed/acl.txt"
+        : >"$macl_root/mixed/plain.txt"
+        chmod 644 "$macl_root/mixed/acl.txt" "$macl_root/mixed/plain.txt"
+
+        # A fixture that will not build is a FAILURE on Darwin, never a
+        # skip. macOS has no ACL-less mount option -- APFS and HFS+ both
+        # carry ACLs unconditionally -- and this is the only coverage the
+        # Darwin code path gets anywhere in the suite, so a skip here is
+        # indistinguishable from a pass and hides exactly the bug it
+        # exists to catch. chmod's own stderr goes into the message so the
+        # next failure is read rather than guessed at.
+        if ! macl_err=$("$macl_chmod" +a "$macl_ace" "$macl_root/mixed/acl.txt" 2>&1); then
+            macl_broken="$macl_chmod +a '$macl_ace' failed on $macl_root/mixed/acl.txt: ${macl_err//$'\n'/ }"
+        else
+            # Ask the reference implementation whether the ACE landed.
+            # Without this, a filesystem that stored nothing looks exactly
+            # like ls dropping the marker and the failure names the wrong
+            # culprit.
+            local macl_ref
+            macl_ref=$(LC_ALL=C /bin/ls -le "$macl_root/mixed/acl.txt" 2>&1 | strip_ansi)
+            if [[ ! "$macl_ref" =~ ^-[rwx-]{9}[+] ]]; then
+                macl_broken="$macl_chmod +a reported success but /bin/ls -le sees no ACL on $macl_root/mixed/acl.txt: ${macl_ref//$'\n'/ }"
+            fi
+        fi
+
+        if [[ -n "$macl_broken" ]]; then
             local macl_name
             for macl_name in "${macl_names[@]}"; do
-                print_test_result "$macl_name" "SKIP" "$macl_why"
+                print_test_result "$macl_name" "FAIL" "$macl_broken"
             done
         else
-            # 0o644 on both so the rendered permission letters do not depend
-            # on the test user's umask. An ACE does not alter the mode bits,
-            # so the marker is the only difference between these two lines.
-            : >"$macl_root/mixed/acl.txt"
-            : >"$macl_root/mixed/plain.txt"
-            chmod 644 "$macl_root/mixed/acl.txt" "$macl_root/mixed/plain.txt"
-            chmod +a "$(id -un) allow read" "$macl_root/mixed/acl.txt"
-
             local macl_marked_re='^-[rwx-]{9}[+] [0-9]'
             local macl_padded_re='^-[rwx-]{9}  [0-9]'
 
