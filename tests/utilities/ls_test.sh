@@ -2183,20 +2183,23 @@ test_ls() {
         sed -E 's/ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) .*$//'
     }
 
-    # GNU widens the mode field from 10 columns to 11 for EVERY entry in a
-    # section as soon as ANY listed file carries an ACL ('+') or an SELinux
-    # context ('.'); the entries without one get a pad space in that
-    # eleventh column. vibeutils emits no marker, so our mode field is
-    # always 10 wide. Neither the marker nor the pad has anything to do
-    # with issue #124, whose remit is the nlink/owner/group/size columns,
-    # so the mode field is dropped from both sides before comparing -- at
-    # GNU's ACTUAL width, measured from its own output, not a fixed 10.
-    # Assuming 10 is what made this section fail on GitHub runners, whose
-    # /var/log/journal carries an ACL: GNU shifted every line one column
-    # right and the leftover pad read as an nlink-width divergence.
+    # An ls widens the mode field from 10 columns to 11 for EVERY entry in
+    # a section as soon as ANY listed file carries an ACL ('+') or an
+    # SELinux context ('.'); the entries without one get a pad space in
+    # that eleventh column. Neither the marker nor the pad has anything to
+    # do with issue #124, whose remit is the nlink/owner/group/size
+    # columns, so the mode field is dropped from both sides before
+    # comparing -- at each side's ACTUAL width, measured from its own
+    # output, not a fixed 10. Assuming 10 for GNU is what made this
+    # section fail on GitHub runners, whose /var/log/journal carries an
+    # ACL: GNU shifted every line one column right and the leftover pad
+    # read as an nlink-width divergence. Since issue #147 our side marks
+    # ACLs too, so OUR width has to be measured the same way rather than
+    # hardcoded -- these assertions are about the columns to the right of
+    # the mode field and must hold whichever width either side chooses.
     #
-    # Echoes 11 when the given GNU output marks column 11, else 10.
-    gnu_mode_field_width() {
+    # Echoes 11 when the given ls output marks column 11, else 10.
+    mode_field_width() {
         if printf '%s\n' "$1" | grep -qE '^[-dlbcpsD?][-rwxXsSt]{9}[.+]'; then
             printf '11\n'
         else
@@ -2225,10 +2228,11 @@ test_ls() {
     # different digit widths (the -n case).
     if [[ -n "$w124_range" ]] && (( w124_omax > 8 )) && (( w124_omax != w124_omin )) \
         && (( w124_umax != w124_umin )); then
-        local w124_ours w124_gnu w124_gnu_mode_w
+        local w124_ours w124_gnu w124_gnu_mode_w w124_ours_mode_w
         w124_ours=$(NO_COLOR=1 "$binary" -ld /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
         w124_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld /run/systemd/netif /etc/hostname /usr 2>/dev/null)
-        w124_gnu_mode_w=$(gnu_mode_field_width "$w124_gnu")
+        w124_gnu_mode_w=$(mode_field_width "$w124_gnu")
+        w124_ours_mode_w=$(mode_field_width "$w124_ours")
 
         local w124_ours_hostname w124_ours_netif w124_ours_usr
         local w124_gnu_hostname w124_gnu_netif w124_gnu_usr
@@ -2250,9 +2254,9 @@ test_ls() {
               ! "$w124_gnu_usr" =~ ^[-dlbcpsD][-rwxXsSt]{9} ]]; then
             print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "FAIL" \
                 "GNU ls capture was empty or missing a permission string -- fixture or grep pattern broke: hostname=$(printf '%q' "$w124_gnu_hostname") netif=$(printf '%q' "$w124_gnu_netif") usr=$(printf '%q' "$w124_gnu_usr")"
-        elif [[ "$(printf '%s' "$w124_ours_hostname" | strip_mode_field 10)" == "$(printf '%s' "$w124_gnu_hostname" | strip_mode_field "$w124_gnu_mode_w")" && \
-              "$(printf '%s' "$w124_ours_netif" | strip_mode_field 10)" == "$(printf '%s' "$w124_gnu_netif" | strip_mode_field "$w124_gnu_mode_w")" && \
-              "$(printf '%s' "$w124_ours_usr" | strip_mode_field 10)" == "$(printf '%s' "$w124_gnu_usr" | strip_mode_field "$w124_gnu_mode_w")" ]]; then
+        elif [[ "$(printf '%s' "$w124_ours_hostname" | strip_mode_field "$w124_ours_mode_w")" == "$(printf '%s' "$w124_gnu_hostname" | strip_mode_field "$w124_gnu_mode_w")" && \
+              "$(printf '%s' "$w124_ours_netif" | strip_mode_field "$w124_ours_mode_w")" == "$(printf '%s' "$w124_gnu_netif" | strip_mode_field "$w124_gnu_mode_w")" && \
+              "$(printf '%s' "$w124_ours_usr" | strip_mode_field "$w124_ours_mode_w")" == "$(printf '%s' "$w124_gnu_usr" | strip_mode_field "$w124_gnu_mode_w")" ]]; then
             print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "PASS"
         else
             print_test_result "ls #124: -l sizes owner/group to the widest name (15-char systemd-network) and nlink to the widest count" "FAIL" \
@@ -2264,10 +2268,11 @@ test_ls() {
         # behavioral flip, not a cosmetic difference, and easy to miss if
         # only names are tested. Again compared against a live GNU
         # reference rather than a hardcoded uid/gid snapshot.
-        local w124n_ours w124n_gnu w124n_gnu_mode_w
+        local w124n_ours w124n_gnu w124n_gnu_mode_w w124n_ours_mode_w
         w124n_ours=$(NO_COLOR=1 "$binary" -ldn /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
         w124n_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldn /run/systemd/netif /etc/hostname /usr 2>/dev/null)
-        w124n_gnu_mode_w=$(gnu_mode_field_width "$w124n_gnu")
+        w124n_gnu_mode_w=$(mode_field_width "$w124n_gnu")
+        w124n_ours_mode_w=$(mode_field_width "$w124n_ours")
 
         local w124n_ours_hostname w124n_ours_netif w124n_ours_usr
         local w124n_gnu_hostname w124n_gnu_netif w124n_gnu_usr
@@ -2284,9 +2289,9 @@ test_ls() {
               ! "$w124n_gnu_usr" =~ ^[-dlbcpsD][-rwxXsSt]{9} ]]; then
             print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "FAIL" \
                 "GNU ls capture was empty or missing a permission string -- fixture or grep pattern broke: hostname=$(printf '%q' "$w124n_gnu_hostname") netif=$(printf '%q' "$w124n_gnu_netif") usr=$(printf '%q' "$w124n_gnu_usr")"
-        elif [[ "$(printf '%s' "$w124n_ours_hostname" | strip_mode_field 10)" == "$(printf '%s' "$w124n_gnu_hostname" | strip_mode_field "$w124n_gnu_mode_w")" && \
-              "$(printf '%s' "$w124n_ours_netif" | strip_mode_field 10)" == "$(printf '%s' "$w124n_gnu_netif" | strip_mode_field "$w124n_gnu_mode_w")" && \
-              "$(printf '%s' "$w124n_ours_usr" | strip_mode_field 10)" == "$(printf '%s' "$w124n_gnu_usr" | strip_mode_field "$w124n_gnu_mode_w")" ]]; then
+        elif [[ "$(printf '%s' "$w124n_ours_hostname" | strip_mode_field "$w124n_ours_mode_w")" == "$(printf '%s' "$w124n_gnu_hostname" | strip_mode_field "$w124n_gnu_mode_w")" && \
+              "$(printf '%s' "$w124n_ours_netif" | strip_mode_field "$w124n_ours_mode_w")" == "$(printf '%s' "$w124n_gnu_netif" | strip_mode_field "$w124n_gnu_mode_w")" && \
+              "$(printf '%s' "$w124n_ours_usr" | strip_mode_field "$w124n_ours_mode_w")" == "$(printf '%s' "$w124n_gnu_usr" | strip_mode_field "$w124n_gnu_mode_w")" ]]; then
             print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "PASS"
         else
             print_test_result "ls #124: -ln right-aligns numeric uid/gid, flipping alignment vs the name case" "FAIL" \
@@ -2347,10 +2352,11 @@ test_ls() {
     fi
 
     if [[ -n "$w124ind_path" ]]; then
-        local w124ind_ours w124ind_gnu w124ind_gnu_mode_w
+        local w124ind_ours w124ind_gnu w124ind_gnu_mode_w w124ind_ours_mode_w
         w124ind_ours=$(NO_COLOR=1 "$binary" -ld "$w124ind_path" /etc/hostname 2>/dev/null | strip_ansi)
         w124ind_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld "$w124ind_path" /etc/hostname 2>/dev/null)
-        w124ind_gnu_mode_w=$(gnu_mode_field_width "$w124ind_gnu")
+        w124ind_gnu_mode_w=$(mode_field_width "$w124ind_gnu")
+        w124ind_ours_mode_w=$(mode_field_width "$w124ind_ours")
 
         # Every candidate above is a literal absolute path with no regex
         # metacharacters, so anchoring it as a grep pattern needs no
@@ -2370,8 +2376,8 @@ test_ls() {
               ! "$w124ind_gnu_grp" =~ ^[-dlbcpsD][-rwxXsSt]{9} ]]; then
             print_test_result "ls #124: owner and group columns size independently, not to a shared max" "FAIL" \
                 "GNU ls capture was empty or missing a permission string -- fixture or grep pattern broke: hostname=$(printf '%q' "$w124ind_gnu_hostname") ${w124ind_path}=$(printf '%q' "$w124ind_gnu_grp")"
-        elif [[ "$(printf '%s' "$w124ind_ours_hostname" | strip_mode_field 10)" == "$(printf '%s' "$w124ind_gnu_hostname" | strip_mode_field "$w124ind_gnu_mode_w")" && \
-              "$(printf '%s' "$w124ind_ours_grp" | strip_mode_field 10)" == "$(printf '%s' "$w124ind_gnu_grp" | strip_mode_field "$w124ind_gnu_mode_w")" ]]; then
+        elif [[ "$(printf '%s' "$w124ind_ours_hostname" | strip_mode_field "$w124ind_ours_mode_w")" == "$(printf '%s' "$w124ind_gnu_hostname" | strip_mode_field "$w124ind_gnu_mode_w")" && \
+              "$(printf '%s' "$w124ind_ours_grp" | strip_mode_field "$w124ind_ours_mode_w")" == "$(printf '%s' "$w124ind_gnu_grp" | strip_mode_field "$w124ind_gnu_mode_w")" ]]; then
             print_test_result "ls #124: owner and group columns size independently, not to a shared max" "PASS"
         else
             print_test_result "ls #124: owner and group columns size independently, not to a shared max" "FAIL" \
@@ -2382,7 +2388,7 @@ test_ls() {
             "Requires a real GNU ls plus a standard root-owned path with a non-root group (/var/log/journal, /usr/bin/chage, ...) that, paired with /etc/hostname, gives a widest owner name and a widest group name of different widths; last pair observed owner ${w124ind_omax}, group ${w124ind_gmax}"
     fi
 
-    unset -f name_width_range strip_date_and_path gnu_mode_field_width strip_mode_field
+    unset -f name_width_range strip_date_and_path mode_field_width strip_mode_field
 
     # Every #124 test above lists ONE section, so an implementation that
     # computes the widths once and reuses them for every later section
@@ -2482,4 +2488,176 @@ $sect_r_dir/sub:
     fi
 
     unset -f strip_section_noise
+
+    # ------------------------------------------------------------------
+    # Issue #147: `ls -l` must mark an entry carrying an extended ACL with
+    # '+' in an eleventh mode column, and that column has to exist for
+    # every entry of the SECTION that holds one (pad space for the rest),
+    # followed by the usual single separator space.
+    #
+    # Every fixture below is built with setfacl inside this test's own
+    # temp dir. Reading a marker off a system path -- /var/log/journal is
+    # the tempting one -- is exactly what made this divergence invisible
+    # in a dev container while failing on GitHub runners during #124.
+    # ------------------------------------------------------------------
+    echo -e "${CYAN}Testing #147 ACL marker in -l output...${NC}"
+
+    local acl_names=(
+        "ls #147: -l marks an ACL entry with + and pads its section"
+        "ls #147: -l on a lone ACL operand leaves one space after the marker"
+        "ls #147: a directory with only a default ACL is marked"
+        "ls #147: the eleventh mode column is per section, not per run"
+        "ls #147: a symlink is unmarked without -L and marked with it"
+        "ls #147: -l on an ACL directory still exits 0"
+        "ls #147: -l output matches GNU byte for byte on an ACL fixture"
+    )
+
+    # setfacl can be absent (minimal image, macOS) and can fail on a
+    # filesystem mounted without ACL support, so probe the real operation
+    # rather than the tool, and skip with the reason when it does not
+    # take. Never let this section silently pass by asserting nothing.
+    local acl_root acl_ok=0 acl_why=""
+    acl_root=$(create_temp_dir)
+    if command -v setfacl >/dev/null 2>&1; then
+        : >"$acl_root/probe"
+        if setfacl -m u:1000:rw "$acl_root/probe" 2>/dev/null; then
+            acl_ok=1
+        else
+            acl_why="setfacl failed on $acl_root -- filesystem mounted without ACL support?"
+        fi
+        rm -f "$acl_root/probe"
+    else
+        acl_why="setfacl(1) is not installed on this host"
+    fi
+
+    if (( acl_ok == 0 )); then
+        local acl_name
+        for acl_name in "${acl_names[@]}"; do
+            print_test_result "$acl_name" "SKIP" "$acl_why"
+        done
+    else
+        # 0o644 everywhere so the rendered permission letters do not
+        # depend on the test user's umask; setfacl then rewrites the
+        # marked files to 0o664 the way the kernel always does.
+        mkdir -p "$acl_root/mixed" "$acl_root/sect_a" "$acl_root/sect_b" \
+            "$acl_root/linkdir" "$acl_root/defaultdir"
+        : >"$acl_root/mixed/acl.txt"
+        : >"$acl_root/mixed/plain.txt"
+        : >"$acl_root/sect_a/plain.txt"
+        : >"$acl_root/sect_b/acl.txt"
+        : >"$acl_root/linkdir/target.txt"
+        chmod 644 "$acl_root/mixed/acl.txt" "$acl_root/mixed/plain.txt" \
+            "$acl_root/sect_a/plain.txt" "$acl_root/sect_b/acl.txt" \
+            "$acl_root/linkdir/target.txt"
+        chmod 755 "$acl_root/defaultdir"
+        ln -s target.txt "$acl_root/linkdir/zlink"
+        setfacl -m u:1000:rw "$acl_root/mixed/acl.txt"
+        setfacl -m u:1000:rw "$acl_root/sect_b/acl.txt"
+        setfacl -m u:1000:rw "$acl_root/linkdir/target.txt"
+        setfacl -d -m u:1000:rwx "$acl_root/defaultdir"
+
+        # "[+]" rather than "\+": a backslash-escaped plus in an ERE is
+        # not portable, a bracket expression is.
+        local acl_marked_re='^-[rwx-]{9}[+] [0-9]'
+        local acl_padded_re='^-[rwx-]{9}  [0-9]'
+        local acl_narrow_re='^-[rwx-]{9} [0-9]'
+
+        local acl_out acl_line acl_plain_line
+        acl_out=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$acl_root/mixed" 2>/dev/null | strip_ansi)
+        acl_line=$(printf '%s\n' "$acl_out" | grep 'acl\.txt$')
+        acl_plain_line=$(printf '%s\n' "$acl_out" | grep 'plain\.txt$')
+        if [[ "$acl_line" =~ $acl_marked_re && "$acl_plain_line" =~ $acl_padded_re ]]; then
+            print_test_result "${acl_names[0]}" "PASS"
+        else
+            print_test_result "${acl_names[0]}" "FAIL" \
+                "Expected the ACL line to match $acl_marked_re and the plain line to match $acl_padded_re (two spaces); got acl=$(printf '%q' "$acl_line") plain=$(printf '%q' "$acl_plain_line")"
+        fi
+
+        # A section holding exactly one marked entry is eleven wide with a
+        # single separator space after the marker -- never a pad AND a
+        # separator.
+        local acl_solo
+        acl_solo=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$acl_root/mixed/acl.txt" 2>/dev/null | strip_ansi)
+        if [[ "$acl_solo" =~ $acl_marked_re ]]; then
+            print_test_result "${acl_names[1]}" "PASS"
+        else
+            print_test_result "${acl_names[1]}" "FAIL" \
+                "Expected a line matching $acl_marked_re, got: $(printf '%q' "$acl_solo")"
+        fi
+
+        # A default ACL leaves the mode bits untouched, so the marker is
+        # the only thing that distinguishes this directory from a plain
+        # one. Probing system.posix_acl_access alone misses it entirely.
+        local acl_default_re='^d[rwx-]{9}[+] [0-9]'
+        local acl_default_out
+        acl_default_out=$(NO_COLOR=1 LC_ALL=C "$binary" -ld "$acl_root/defaultdir" 2>/dev/null | strip_ansi)
+        if [[ "$acl_default_out" =~ $acl_default_re ]]; then
+            print_test_result "${acl_names[2]}" "PASS"
+        else
+            print_test_result "${acl_names[2]}" "FAIL" \
+                "Expected a line matching $acl_default_re, got: $(printf '%q' "$acl_default_out")"
+        fi
+
+        # Two sections in one process, the marked one second: sect_a must
+        # keep the ten-column field even though sect_b widens. A width
+        # decided once for the whole run pads sect_a too.
+        local acl_sect_out acl_sect_a acl_sect_b
+        acl_sect_out=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$acl_root/sect_a" "$acl_root/sect_b" 2>/dev/null | strip_ansi)
+        acl_sect_a=$(printf '%s\n' "$acl_sect_out" | grep 'plain\.txt$')
+        acl_sect_b=$(printf '%s\n' "$acl_sect_out" | grep 'acl\.txt$')
+        if [[ "$acl_sect_a" =~ $acl_narrow_re && "$acl_sect_b" =~ $acl_marked_re ]]; then
+            print_test_result "${acl_names[3]}" "PASS"
+        else
+            print_test_result "${acl_names[3]}" "FAIL" \
+                "Expected sect_a to match $acl_narrow_re (one space) and sect_b to match $acl_marked_re; got a=$(printf '%q' "$acl_sect_a") b=$(printf '%q' "$acl_sect_b")"
+        fi
+
+        # GNU short-circuits on S_ISLNK and never probes a link itself, so
+        # the link takes the section's pad space (TWO spaces before the
+        # link count) rather than its target's marker; under -L the stat
+        # follows the link and the marker follows with it.
+        #
+        # The directory is listed rather than the link itself because
+        # `ls -l <symlink>` currently follows a command-line symlink
+        # instead of describing it -- a separate divergence from GNU that
+        # this issue's fix has no business addressing.
+        local acl_link_re='^l[rwx-]{9}  [0-9]'
+        local acl_link_out acl_linkL_out
+        acl_link_out=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$acl_root/linkdir" 2>/dev/null |
+            strip_ansi | grep 'zlink')
+        acl_linkL_out=$(NO_COLOR=1 LC_ALL=C "$binary" -lL "$acl_root/linkdir" 2>/dev/null |
+            strip_ansi | grep 'zlink')
+        if [[ "$acl_link_out" =~ $acl_link_re && "$acl_linkL_out" =~ $acl_marked_re ]]; then
+            print_test_result "${acl_names[4]}" "PASS"
+        else
+            print_test_result "${acl_names[4]}" "FAIL" \
+                "Expected -l to match $acl_link_re and -lL to match $acl_marked_re; got -l=$(printf '%q' "$acl_link_out") -lL=$(printf '%q' "$acl_linkL_out")"
+        fi
+
+        test_command_exit_code "${acl_names[5]}" 0 "$binary" -l "$acl_root/mixed"
+
+        # The strongest form of the assertion: with the marker in place
+        # our long format is byte-identical to GNU's on this fixture, as
+        # it already is on an ACL-free one. Only the "total" line is
+        # dropped, because we report 512-byte blocks and GNU reports 1K --
+        # a separate, known divergence with nothing to do with #147.
+        if [[ -n "$gnu_ls" ]]; then
+            local acl_ours_full acl_gnu_full
+            acl_ours_full=$(NO_COLOR=1 LC_ALL=C TZ=UTC "$binary" -l "$acl_root/mixed" 2>/dev/null |
+                strip_ansi | sed '/^total /d')
+            acl_gnu_full=$(LC_ALL=C TZ=UTC "$gnu_ls" -l "$acl_root/mixed" 2>/dev/null | sed '/^total /d')
+            if [[ -z "$acl_gnu_full" ]]; then
+                print_test_result "${acl_names[6]}" "FAIL" \
+                    "GNU ls produced no output for the ACL fixture -- the fixture or the reference binary broke"
+            elif [[ "$acl_ours_full" == "$acl_gnu_full" ]]; then
+                print_test_result "${acl_names[6]}" "PASS"
+            else
+                print_test_result "${acl_names[6]}" "FAIL" \
+                    "GNU: $(printf '%q' "$acl_gnu_full"); ours: $(printf '%q' "$acl_ours_full")"
+            fi
+        else
+            print_test_result "${acl_names[6]}" "SKIP" \
+                "No GNU ls on this host to compare against"
+        fi
+    fi
 }

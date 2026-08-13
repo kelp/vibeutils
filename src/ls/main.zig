@@ -1677,3 +1677,557 @@ test "ls -s sizes the operand block field across all operands, not per operand" 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings(" 8 aa\n16 bb\n", stdout_aw.writer.buffered());
 }
+
+// ============================================================
+// Issue #147: `ls -l` never marks an entry that carries an extended ACL.
+//
+// GNU's print_long_format sizes the mode field per SECTION: ten columns,
+// plus an ELEVENTH as soon as any entry in that section carries a marker.
+// The marked entry gets '+' in that column and every other entry of the
+// same section gets a pad space; then comes the usual single separator
+// space before nlink. A section with no marked entry keeps the ten-column
+// field and its single space, byte-identical to what we print today --
+// which is what makes the all-plain case a regression guard rather than
+// a red.
+//
+// The fixtures below are built here with lsetxattr instead of read off a
+// system path. Asserting against something like /var/log/journal is what
+// made this divergence invisible in a dev container while failing on CI
+// during #124, and a fixture the test creates is the same on every host.
+//
+// Running as root changes none of it: these assertions are about display,
+// not denial, and ACL visibility is not a DAC decision -- so unlike the
+// permission tests in walker.zig/file_ops.zig they need no
+// `geteuid() == 0` guard. Verified by hand: setfacl and lsetxattr both
+// behave identically as root and as an unprivileged owner.
+//
+// POSIX ACLs are a Linux facility; the whole group skips elsewhere and
+// CI's macOS runner covers the acl_get_link_np arm.
+// ============================================================
+
+const TestAclEntry = struct { tag: u16, perm: u16, id: u32 };
+
+// posix_acl_xattr tag and permission constants, from the kernel's
+// <linux/posix_acl_xattr.h> / <linux/posix_acl.h>.
+const acl_tag_user_obj: u16 = 0x01;
+const acl_tag_user: u16 = 0x02;
+const acl_tag_group_obj: u16 = 0x04;
+const acl_tag_mask: u16 = 0x10;
+const acl_tag_other: u16 = 0x20;
+const acl_perm_read: u16 = 4;
+const acl_perm_write: u16 = 2;
+const acl_undefined_id: u32 = 0xFFFF_FFFF;
+const acl_access_xattr: [:0]const u8 = "system.posix_acl_access";
+const acl_default_xattr: [:0]const u8 = "system.posix_acl_default";
+
+/// Serialize `entries` into the kernel's posix_acl_xattr blob: a
+/// little-endian u32 version followed by one <u16 tag, u16 perm, u32 id>
+/// record per entry. Comptime, because every fixture here is fixed-size.
+fn testAclBlob(comptime entries: []const TestAclEntry) [4 + entries.len * 8]u8 {
+    comptime {
+        // A POSIX ACL is only well formed with at least the three entries
+        // that mirror the mode bits; the kernel rejects anything shorter.
+        std.debug.assert(entries.len >= 3);
+        var blob: [4 + entries.len * 8]u8 = undefined;
+        std.mem.writeInt(u32, blob[0..4], 2, .little); // POSIX_ACL_XATTR_VERSION
+        var off: u32 = 4;
+        for (entries) |entry| {
+            std.mem.writeInt(u16, blob[off..][0..2], entry.tag, .little);
+            std.mem.writeInt(u16, blob[off + 2 ..][0..2], entry.perm, .little);
+            std.mem.writeInt(u32, blob[off + 4 ..][0..4], entry.id, .little);
+            off += 8;
+        }
+        // A short write would leave undefined bytes the kernel reads as a
+        // malformed record and rejects, which would silently skip tests.
+        std.debug.assert(off == blob.len);
+        return blob;
+    }
+}
+
+/// An access ACL carrying a NAMED user, which is what makes it extended:
+/// the VFS drops an ACL the mode bits already express (see
+/// `test_acl_trivial`) instead of storing it, so only the named entry
+/// survives as a real xattr. Applied to a 0o644 file the kernel rewrites
+/// the mode to 0o664 ("-rw-rw-r--"), exactly as `setfacl -m u:1000:rw`
+/// does -- pinned against GNU ls 9.4 on ext4.
+const test_acl_extended = testAclBlob(&.{
+    .{ .tag = acl_tag_user_obj, .perm = acl_perm_read | acl_perm_write, .id = acl_undefined_id },
+    .{ .tag = acl_tag_user, .perm = acl_perm_read | acl_perm_write, .id = 1000 },
+    .{ .tag = acl_tag_group_obj, .perm = acl_perm_read, .id = acl_undefined_id },
+    .{ .tag = acl_tag_mask, .perm = acl_perm_read | acl_perm_write, .id = acl_undefined_id },
+    .{ .tag = acl_tag_other, .perm = acl_perm_read, .id = acl_undefined_id },
+});
+
+/// A TRIVIAL ACL: exactly the three entries 0o644 already encodes. The
+/// kernel stores no xattr for it, so GNU prints no marker.
+const test_acl_trivial = testAclBlob(&.{
+    .{ .tag = acl_tag_user_obj, .perm = acl_perm_read | acl_perm_write, .id = acl_undefined_id },
+    .{ .tag = acl_tag_group_obj, .perm = acl_perm_read, .id = acl_undefined_id },
+    .{ .tag = acl_tag_other, .perm = acl_perm_read, .id = acl_undefined_id },
+});
+
+/// Attach `blob` to `rel_path` (resolved against the process cwd, which
+/// AclFixture has already moved into the temp dir) and report how many
+/// bytes the kernel kept -- 0 when it discarded the ACL as mode
+/// equivalent. Skips the test where POSIX ACLs are unavailable: another
+/// OS, or a filesystem mounted noacl.
+fn testAttachAcl(rel_path: [:0]const u8, xattr: [:0]const u8, blob: []const u8) !u32 {
+    if (comptime @import("builtin").os.tag != .linux) {
+        return error.SkipZigTest;
+    } else {
+        std.debug.assert(rel_path.len > 0);
+        std.debug.assert(blob.len >= 4 + 3 * 8);
+        const set_rc: isize = @bitCast(std.os.linux.lsetxattr(
+            rel_path.ptr,
+            xattr.ptr,
+            blob.ptr,
+            blob.len,
+            0,
+        ));
+        if (set_rc != 0) return error.SkipZigTest;
+        // A size query (value = null, size = 0) is the cheapest way to ask
+        // whether the name survived; the value itself is of no interest.
+        var probe: [1]u8 = undefined;
+        const get_rc: isize = @bitCast(std.os.linux.lgetxattr(
+            rel_path.ptr,
+            xattr.ptr,
+            &probe,
+            0,
+        ));
+        return if (get_rc < 0) 0 else @intCast(get_rc);
+    }
+}
+
+/// One ACL-marker test's world: a private temp dir that is ALSO the
+/// process cwd, the display env pinned the way the #103 tests pin it, and
+/// captured writers. The cwd move is load-bearing twice over -- lsetxattr
+/// takes a path rather than a dirfd, and ls resolves its operands against
+/// the process cwd -- so both have to agree on where the fixture lives.
+const AclFixture = struct {
+    tmp: std.testing.TmpDir,
+    saved_cwd: std.Io.Dir,
+    saved_env: []const common.env.Override,
+    out: std.Io.Writer.Allocating,
+    err: std.Io.Writer.Allocating,
+
+    fn init() !AclFixture {
+        if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+        const saved_env = testStageDisplayEnvOverrides();
+        errdefer common.env.test_overrides = saved_env;
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const saved_cwd = try testChdirToTmp(testing.io, &tmp);
+        std.debug.assert(saved_cwd.handle >= 0);
+        std.debug.assert(saved_cwd.handle != std.posix.AT.FDCWD);
+        return .{
+            .tmp = tmp,
+            .saved_cwd = saved_cwd,
+            .saved_env = saved_env,
+            .out = .init(testing.allocator),
+            .err = .init(testing.allocator),
+        };
+    }
+
+    fn deinit(self: *AclFixture) void {
+        // Nothing between init and here may swap the overlay out from
+        // under us; if it did, the listings above ran with unpinned color
+        // and icon settings and their exact-prefix assertions meant
+        // something other than what they claim.
+        std.debug.assert(common.env.test_overrides.len == test_env_overrides.len);
+        self.out.deinit();
+        self.err.deinit();
+        testRestoreCwd(testing.io, &self.saved_cwd);
+        self.tmp.cleanup();
+        common.env.test_overrides = self.saved_env;
+    }
+
+    /// Create `name` with exactly `mode`, so the rendered permission
+    /// letters never depend on the runner's umask.
+    fn addFile(self: *AclFixture, name: [:0]const u8, mode: std.c.mode_t) !void {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(mode <= 0o777);
+        const file = try self.tmp.dir.createFile(testing.io, name, .{});
+        file.close(testing.io);
+        const rc = std.c.fchmodat(self.tmp.dir.handle, name, mode, 0);
+        std.debug.assert(rc == 0);
+    }
+
+    fn addDir(self: *AclFixture, name: [:0]const u8, mode: std.c.mode_t) !void {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(mode <= 0o777);
+        try self.tmp.dir.createDir(testing.io, name, .default_dir);
+        const rc = std.c.fchmodat(self.tmp.dir.handle, name, mode, 0);
+        std.debug.assert(rc == 0);
+    }
+
+    fn addSymlink(self: *AclFixture, target: []const u8, link_name: []const u8) !void {
+        std.debug.assert(target.len > 0);
+        std.debug.assert(link_name.len > 0);
+        try self.tmp.dir.symLink(testing.io, target, link_name, .{});
+    }
+
+    /// Run the real ls entry point over the fixture and return its exit
+    /// code, discarding any previous run's output.
+    fn run(self: *AclFixture, args: []const []const u8) !u8 {
+        std.debug.assert(args.len > 0);
+        self.out.writer.end = 0;
+        self.err.writer.end = 0;
+        const code = try runLs(
+            testing.allocator,
+            testing.io,
+            args,
+            &self.out.writer,
+            &self.err.writer,
+        );
+        // Every fixture here lists at least one entry, so empty output
+        // means the listing failed and the assertions below would pass
+        // vacuously against a missing line rather than a wrong one.
+        std.debug.assert(self.out.writer.buffered().len > 0);
+        return code;
+    }
+
+    fn stdout(self: *AclFixture) []const u8 {
+        return self.out.writer.buffered();
+    }
+};
+
+/// The first output line containing `name`. Returns an error rather than
+/// null so a fixture that stopped producing the line fails loudly instead
+/// of skipping the assertion it was carrying.
+fn testLineWith(output: []const u8, name: []const u8) ![]const u8 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len >= name.len);
+    // No fixture in this group lists more than a handful of entries; the
+    // bound only exists so the scan cannot run away on unexpected input.
+    const line_max: u32 = 256;
+    var seen: u32 = 0;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| : (seen += 1) {
+        if (seen >= line_max) break;
+        if (std.mem.find(u8, line, name) != null) return line;
+    }
+    std.debug.print("no line containing '{s}' in:\n{s}\n", .{ name, output });
+    return error.LineNotFound;
+}
+
+/// Assert that the long-format line for `name` begins with `prefix` --
+/// the mode field, its marker-or-pad column, the separator space and the
+/// link count, which is the whole region issue #147 is about.
+fn expectLinePrefix(output: []const u8, name: []const u8, prefix: []const u8) !void {
+    std.debug.assert(name.len > 0);
+    // Ten mode columns plus the eleventh is the shortest prefix worth
+    // asserting; anything shorter would not reach the marker column.
+    std.debug.assert(prefix.len >= 11);
+    const line = try testLineWith(output, name);
+    if (line.len < prefix.len) {
+        std.debug.print("line for '{s}' is shorter than the expected prefix: '{s}'\n", .{
+            name,
+            line,
+        });
+        return error.LineTooShort;
+    }
+    try testing.expectEqualStrings(prefix, line[0..prefix.len]);
+}
+
+/// Copy `raw` into `buf` with every CSI SGR escape ("\x1b[" ... "m")
+/// removed, so a color-mode listing can be compared column for column.
+fn testStripAnsi(buf: []u8, raw: []const u8) []const u8 {
+    std.debug.assert(buf.len >= raw.len);
+    std.debug.assert(raw.len > 0);
+    var written: u32 = 0;
+    var i: u32 = 0;
+    while (i < raw.len) {
+        if (raw[i] == 0x1b and i + 1 < raw.len and raw[i + 1] == '[') {
+            i += 2;
+            while (i < raw.len and raw[i] != 'm') : (i += 1) {}
+            i += 1;
+            continue;
+        }
+        buf[written] = raw[i];
+        written += 1;
+        i += 1;
+    }
+    return buf[0..written];
+}
+
+test "ls #147: -l marks the ACL entry with + and pads the rest of its section" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    // A mode-equivalent ACL is discarded by the VFS, and a fixture the
+    // kernel threw away would make every assertion below meaningless.
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{"-l"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // GNU 9.4 on ext4: "-rw-rw-r--+ 1 ..." for the marked entry (the ACL
+    // rewrote 0o644 to 0o664) and "-rw-r--r--  1 ..." -- TWO spaces --
+    // for the unmarked one, because the section is now eleven wide.
+    try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r--  1 ");
+}
+
+test "ls #147: a section with no ACL keeps the ten-column mode field" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("one.txt", 0o644);
+    try fx.addFile("two.txt", 0o600);
+
+    const exit_code = try fx.run(&.{"-l"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Ten columns and ONE separator space, byte for byte what we print
+    // today. Almost every real listing has this shape, so an
+    // implementation that widens whenever the feature exists -- rather
+    // than only when the section actually holds a marker -- regresses
+    // all of them, and this is the assertion that catches it.
+    try expectLinePrefix(fx.stdout(), "one.txt", "-rw-r--r-- 1 ");
+    try expectLinePrefix(fx.stdout(), "two.txt", "-rw------- 1 ");
+}
+
+test "ls #147: -l on a lone ACL file operand leaves one space after the marker" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-l", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The marker takes the eleventh column, not a column of its own on
+    // top of the separator: GNU prints "-rw-rw-r--+ 1", never
+    // "-rw-rw-r--+  1".
+    try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
+}
+
+test "ls #147: -ln keeps the marker in column 11, ahead of the numeric uid" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{"-ln"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The marker's position is fixed relative to the mode field, so
+    // swapping owner names for numeric ids must not move it.
+    try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r--  1 ");
+}
+
+test "ls #147: -ls keeps the block prefix before the mode and the marker after it" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-ls", "acl.txt", "plain.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Both files are empty, so each occupies zero blocks and the block
+    // field is one column wide. GNU prints "0 -rw-rw-r--+ 1 ...": the
+    // marker belongs to the mode field, not to the head of the line.
+    try expectLinePrefix(fx.stdout(), "acl.txt", "0 -rw-rw-r--+ 1 ");
+    try expectLinePrefix(fx.stdout(), "plain.txt", "0 -rw-r--r--  1 ");
+}
+
+test "ls #147: the eleventh column is sized per section, not once per run" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addDir("dir_a", 0o755);
+    try fx.addDir("dir_b", 0o755);
+    try fx.addFile("dir_a/plain.txt", 0o644);
+    try fx.addFile("dir_b/acl.txt", 0o644);
+    const kept = try testAttachAcl("dir_b/acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-l", "dir_a", "dir_b" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // dir_a holds no marked entry, so its section stays ten wide even
+    // though dir_b's section -- printed by the same process, moments
+    // later -- widens to eleven. A width decided once for the whole run
+    // pads dir_a too and fails here; this is the assertion that
+    // separates a per-section flag from a global one.
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r-- 1 ");
+    try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
+}
+
+test "ls #147: --color=always emits the marker as a plain byte" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-l", "--color=always", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // GNU never colors the mode field, marker included.
+    // writeColoredPermissions resets after every permission character, so
+    // a marker written outside the color region follows that reset
+    // directly; a marker wrapped in its own SGR pair pushes an escape
+    // sequence in between and fails this.
+    const raw = fx.stdout();
+    try testing.expect(std.mem.find(u8, raw, "\x1b[0m+") != null);
+
+    var plain_buf: [4096]u8 = undefined;
+    const plain = testStripAnsi(&plain_buf, raw);
+    try expectLinePrefix(plain, "acl.txt", "-rw-rw-r--+ 1 ");
+}
+
+test "ls #147: an unstattable entry occupies the section's widened mode field" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addSymlink("nowhere", "zdangle");
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    // -L makes the dangling link unstattable, which is the only way to
+    // reach the `entry.stat == null` branch from a real filesystem. Its
+    // exit code is a separate question (GNU reports 2, we report 0) and
+    // is deliberately not asserted here.
+    _ = try fx.run(&.{"-lL"});
+
+    const out = fx.stdout();
+    const acl_line = try testLineWith(out, "acl.txt");
+    const dangle_line = try testLineWith(out, "zdangle");
+    try testing.expect(dangle_line.len > 12);
+    try testing.expect(acl_line.len > 12);
+
+    // We render an unstattable entry's mode as ten dashes. In a section
+    // that carries a marker it still has to occupy eleven columns, so the
+    // link count starts at the same index as the marked entry's -- and
+    // an entry we could not even stat must never be given the marker.
+    try testing.expectEqualStrings("----------", dangle_line[0..10]);
+    try testing.expect(dangle_line[10] != '+');
+    try testing.expectEqual(@as(u8, '?'), dangle_line[12]);
+    try testing.expectEqual(@as(u8, '1'), acl_line[12]);
+}
+
+test "ls #147: a directory carrying only a default ACL is marked" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addDir("defaultdir", 0o755);
+    const kept = try testAttachAcl("defaultdir", acl_default_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-ld", "defaultdir" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // A default ACL leaves the mode bits alone, so the marker is the only
+    // thing that distinguishes this directory from a plain 0o755 one --
+    // and GNU marks it. Probing system.posix_acl_access alone misses it,
+    // which is exactly the mistake this pins.
+    try expectLinePrefix(fx.stdout(), "defaultdir", "drwxr-xr-x+ 2 ");
+}
+
+test "ls #147: a trivial ACL produces no marker" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("min.txt", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl("min.txt", acl_access_xattr, &test_acl_trivial);
+    // The VFS stores nothing for an ACL the mode bits already express, so
+    // there is no xattr to find and GNU prints no marker. Pinning the
+    // zero keeps the fixture honest: if a kernel ever starts persisting
+    // it, this test stops silently testing an ordinary plain file.
+    try testing.expectEqual(@as(u32, 0), kept);
+
+    const exit_code = try fx.run(&.{"-l"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    try expectLinePrefix(fx.stdout(), "min.txt", "-rw-r--r-- 1 ");
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r-- 1 ");
+}
+
+test "ls #147: a symlink is unmarked without -L and marked with it" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addSymlink("acl.txt", "zlink");
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    var exit_code = try fx.run(&.{"-l"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // GNU short-circuits on S_ISLNK and never probes the link itself, so
+    // the link gets the section's pad space rather than its target's
+    // marker.
+    try expectLinePrefix(fx.stdout(), "zlink", "lrwxrwxrwx  1 ");
+    try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
+
+    exit_code = try fx.run(&.{"-lL"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Under -L the stat follows the link, and the probe has to follow it
+    // the same way or the mode and the marker disagree about which file
+    // the line describes.
+    try expectLinePrefix(fx.stdout(), "zlink", "-rw-rw-r--+ 1 ");
+}
+
+test "ls #147: --time-style=long-iso does not move the marker" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{ "-l", "--time-style=long-iso" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The time column is far to the right of the mode field; widening it
+    // must not disturb the marker, and vice versa.
+    try expectLinePrefix(fx.stdout(), "acl.txt", "-rw-rw-r--+ 1 ");
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r--  1 ");
+}
+
+test "ls #147: the marker is a long-format detail and never appears without -l" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl("acl.txt", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    const exit_code = try fx.run(&.{"-1"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // GNU issues no xattr syscall at all outside -l, and prints nothing
+    // but the names. A marker appended in short format would be visible
+    // here as "acl.txt+".
+    try testing.expectEqualStrings("acl.txt\nplain.txt\n", fx.stdout());
+}
+
+test "ls #147: an ACL entry the section does not list cannot widen it" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile(".hidden_acl", 0o644);
+    try fx.addFile("plain.txt", 0o644);
+    const kept = try testAttachAcl(".hidden_acl", acl_access_xattr, &test_acl_extended);
+    try testing.expect(kept > 0);
+
+    var exit_code = try fx.run(&.{"-l"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // The hidden entry is not part of this section, so its ACL is none of
+    // the section's business: the width follows what was LISTED, not what
+    // is on disk.
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r-- 1 ");
+
+    // -A pulls it in (and, unlike -a, leaves "." and ".." out, whose link
+    // counts would otherwise resize the nlink column), and now the whole
+    // section widens.
+    exit_code = try fx.run(&.{"-lA"});
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try expectLinePrefix(fx.stdout(), ".hidden_acl", "-rw-rw-r--+ 1 ");
+    try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r--  1 ");
+}
