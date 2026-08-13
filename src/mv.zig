@@ -7,23 +7,28 @@ const test_utils = common.test_utils;
 const assert = std.debug.assert;
 
 /// Command line arguments for mv utility
+///
+/// Field order is GNU mv's own `longopts[]` order, because that is the order
+/// an ambiguous abbreviation lists its candidates in (`mv --v` -> '--verbose'
+/// '--version'). Options vibeutils adds that GNU mv has no entry for sit next
+/// to whichever GNU option they neighbour.
 const MvArgs = struct {
+    /// Make backup of each destination file
+    backup: bool = false,
+    /// Force overwrite without prompting
+    force: bool = false,
+    /// Prompt before overwrite
+    interactive: bool = false,
+    /// Do not overwrite existing files
+    no_clobber: bool = false,
+    /// Do not follow symlinks at target (not in GNU mv's longopts table)
+    no_follow_symlink: bool = false,
+    /// Explain what is being done
+    verbose: bool = false,
     /// Display help and exit
     help: bool = false,
     /// Display version and exit
     version: bool = false,
-    /// Prompt before overwrite
-    interactive: bool = false,
-    /// Force overwrite without prompting
-    force: bool = false,
-    /// Explain what is being done
-    verbose: bool = false,
-    /// Do not overwrite existing files
-    no_clobber: bool = false,
-    /// Do not follow symlinks at target
-    no_follow_symlink: bool = false,
-    /// Make backup of each destination file
-    backup: bool = false,
     /// Source files and destination
     positionals: []const []const u8 = &.{},
 

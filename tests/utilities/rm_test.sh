@@ -1028,4 +1028,136 @@ test_rm() {
         fi
         rm -rf "$gnu69_root"
     fi
+
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # AMBIGUOUS: vibeutils' RmArgs declares both "interactive" and
+    # "interactive-once" (a vibeutils-only addition; real GNU rm has only
+    # one long option starting with "i"), so "--i" is genuinely ambiguous
+    # between them, in RmArgs's field-declaration order.
+    local rm_i_cmd="" rm_i_out="" rm_i_err="" rm_i_exit=""
+    run_command rm_i_cmd rm_i_out rm_i_err rm_i_exit "$binary" --i
+    if [[ $rm_i_exit -eq 1 && "$rm_i_err" == "rm: option '--i' is ambiguous; possibilities: '--interactive' '--interactive-once'"$'\n'"Try 'rm --help' for more information." ]]; then
+        print_test_result "rm --i is ambiguous (interactive, interactive-once)" "PASS"
+    else
+        print_test_result "rm --i is ambiguous (interactive, interactive-once)" "FAIL" \
+            "Expected \"rm: option '--i' is ambiguous; possibilities: '--interactive' '--interactive-once'\" then the hint line, got exit=$rm_i_exit stderr='$rm_i_err'"
+    fi
+
+    # REGRESSION, EXACT-MATCH-WINS: "--interactive" is itself a full field
+    # name and must resolve directly, NOT be reported ambiguous against
+    # "--interactive-once". --help exits 0 before touching any file, so
+    # this is safe to run without a target.
+    test_command_exit_code "rm --interactive --help exits 0 (regression)" 0 "$binary" --interactive --help
+
+    echo -e "${CYAN}Testing ambiguous-abbreviation candidate order (issue #128)...${NC}"
+
+    # GNU orders an ambiguous option's candidates by its own longopts table,
+    # not by vibeutils' RmArgs field-declaration order. Re-pinned against
+    # real GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/rm --v
+    #   /usr/bin/rm: option '--v' is ambiguous; possibilities: '--verbose' '--version'
+    # so '--verbose' comes FIRST; vibeutils lists '--version' first today.
+    # All three lengths are pinned because candidate ORDER must not depend
+    # on how much of the option was typed.
+    local rm_ord_abbrev=""
+    for rm_ord_abbrev in --v --ve --ver; do
+        local rm_ord_cmd="" rm_ord_out="" rm_ord_err="" rm_ord_exit=""
+        run_command rm_ord_cmd rm_ord_out rm_ord_err rm_ord_exit "$binary" "$rm_ord_abbrev"
+        local rm_ord_expected="rm: option '$rm_ord_abbrev' is ambiguous; possibilities: '--verbose' '--version'"$'\n'"Try 'rm --help' for more information."
+        if [[ $rm_ord_exit -eq 1 && "$rm_ord_err" == "$rm_ord_expected" ]]; then
+            print_test_result "rm $rm_ord_abbrev lists candidates in GNU longopts order" "PASS"
+        else
+            print_test_result "rm $rm_ord_abbrev lists candidates in GNU longopts order" "FAIL" \
+                "Expected: '$rm_ord_expected', got exit=$rm_ord_exit stderr='$rm_ord_err'"
+        fi
+    done
+
+    echo -e "${CYAN}Testing --no-preserve-root abbreviation carve-out (issue #128)...${NC}"
+
+    # GNU deliberately exempts this ONE option from getopt_long's
+    # abbreviation rule: coreutils' rm.c re-checks argv[optind - 1] after
+    # getopt_long resolved the option and dies unless the full spelling was
+    # typed. Pinned against real GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/rm --no-p /nonexistent-xyz
+    #   /usr/bin/rm: you may not abbreviate the --no-preserve-root option
+    #   $ echo $?
+    #   1
+    # Note there is NO "Try 'rm --help' for more information." hint line:
+    # GNU dies here rather than routing through its usage printer, so the
+    # whole of stderr is that single line. The program-name prefix follows
+    # this repo's convention ("rm: ", as in every other rm diagnostic),
+    # where GNU echoes its argv[0].
+    #
+    # SAFETY: every probe below names a path that does not exist and never
+    # names "/" or any real file. What is under test is the diagnostic and
+    # the exit code, not any removal.
+    local npr_expected="rm: you may not abbreviate the --no-preserve-root option"
+    local npr_abbrev=""
+    for npr_abbrev in --no-p --no-pre --no-preserve --no-preserve-roo; do
+        local npr_cmd="" npr_out="" npr_err="" npr_exit=""
+        run_command npr_cmd npr_out npr_err npr_exit \
+            "$binary" "$npr_abbrev" -f /nonexistent-xyz
+        if [[ $npr_exit -eq 1 && "$npr_err" == "$npr_expected" ]]; then
+            print_test_result "rm $npr_abbrev refuses to abbreviate --no-preserve-root" "PASS"
+        else
+            print_test_result "rm $npr_abbrev refuses to abbreviate --no-preserve-root" "FAIL" \
+                "Expected exit 1 and exactly '$npr_expected', got exit=$npr_exit stderr='$npr_err'"
+        fi
+    done
+
+    # PRECEDENCE: GNU's carve-out lives AFTER getopt_long has resolved the
+    # option, so a prefix that is genuinely ambiguous is reported ambiguous
+    # and never reaches the carve-out. vibeutils' RmArgs carries a second
+    # "--no-*" option that GNU rm does not have (--no-cross-device, its -x),
+    # so "--n", "--no" and "--no-" match two options here and must keep the
+    # ordinary ambiguity diagnostic. The candidate ORDER is deliberately not
+    # pinned: --no-cross-device has no GNU longopts position to order it by.
+    local npr_amb=""
+    for npr_amb in --n --no --no-; do
+        local nab_cmd="" nab_out="" nab_err="" nab_exit=""
+        run_command nab_cmd nab_out nab_err nab_exit \
+            "$binary" "$npr_amb" -f /nonexistent-xyz
+        if [[ $nab_exit -eq 1 \
+            && "$nab_err" == *"option '$npr_amb' is ambiguous;"* \
+            && "$nab_err" == *"'--no-preserve-root'"* \
+            && "$nab_err" == *"'--no-cross-device'"* \
+            && "$nab_err" != *"you may not abbreviate"* ]]; then
+            print_test_result "rm $npr_amb stays ambiguous, carve-out does not preempt it" "PASS"
+        else
+            print_test_result "rm $npr_amb stays ambiguous, carve-out does not preempt it" "FAIL" \
+                "Expected an ambiguity message naming --no-preserve-root and --no-cross-device (and not the carve-out wording), got exit=$nab_exit stderr='$nab_err'"
+        fi
+    done
+
+    # REGRESSION: the FULL spelling is unaffected by the carve-out. GNU:
+    #   $ LC_ALL=C /usr/bin/rm --no-preserve-root -f /nonexistent-xyz
+    #   $ echo $?
+    #   0
+    local nprf_cmd="" nprf_out="" nprf_err="" nprf_exit=""
+    run_command nprf_cmd nprf_out nprf_err nprf_exit \
+        "$binary" --no-preserve-root -f /nonexistent-xyz
+    if [[ $nprf_exit -eq 0 && -z "$nprf_err" ]]; then
+        print_test_result "rm --no-preserve-root (full spelling) still accepted" "PASS"
+    else
+        print_test_result "rm --no-preserve-root (full spelling) still accepted" "FAIL" \
+            "Expected exit 0 and empty stderr, got exit=$nprf_exit stderr='$nprf_err'"
+    fi
+
+    # REGRESSION: the carve-out is scoped to --no-preserve-root alone.
+    # Abbreviations of OTHER rm options keep resolving, including "--pre",
+    # which is one character away from the exempt option's own text but
+    # abbreviates --preserve-root. GNU accepts both (exit 0, silent).
+    local npro_abbrev=""
+    for npro_abbrev in --forc --pre --rec; do
+        local npro_cmd="" npro_out="" npro_err="" npro_exit=""
+        run_command npro_cmd npro_out npro_err npro_exit \
+            "$binary" "$npro_abbrev" -f /nonexistent-xyz
+        if [[ $npro_exit -eq 0 && -z "$npro_err" ]]; then
+            print_test_result "rm $npro_abbrev still abbreviates normally (carve-out is scoped)" "PASS"
+        else
+            print_test_result "rm $npro_abbrev still abbreviates normally (carve-out is scoped)" "FAIL" \
+                "Expected exit 0 and empty stderr, got exit=$npro_exit stderr='$npro_err'"
+        fi
+    done
 }

@@ -415,4 +415,40 @@ test_tail() {
 
     # -c 0 from stdin should produce nothing (edge case, not the OOM bug)
     test_command_output "tail -c 0 from stdin" "" bash -c "printf 'data' | '$binary' -c 0"
+
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation, exact-match-wins (issue #128)...${NC}"
+
+    # REGRESSION, EXACT-MATCH-WINS: "--follow" is itself a full field name
+    # (a plain bool in vibeutils' TailArgs) and must resolve directly, NOT
+    # be reported ambiguous against "--follow-retry" — it must still reject
+    # the attached "=name" value exactly as it does today. This errors
+    # before entering the follow loop, so it needs no backgrounding.
+    local follow_file=$(create_temp_file "line one")
+    local fnv_cmd="" fnv_out="" fnv_err="" fnv_exit=""
+    run_command fnv_cmd fnv_out fnv_err fnv_exit "$binary" --follow=name "$follow_file"
+    if [[ $fnv_exit -eq 1 && "$fnv_err" == "tail: option '--follow' doesn't allow an argument"* && "$fnv_err" != *ambiguous* ]]; then
+        print_test_result "tail --follow=name resolves exactly (regression)" "PASS"
+    else
+        print_test_result "tail --follow=name resolves exactly (regression)" "FAIL" \
+            "Expected \"tail: option '--follow' doesn't allow an argument\" (not ambiguous), got exit=$fnv_exit stderr='$fnv_err'"
+    fi
+
+    echo -e "${CYAN}Testing ambiguous-abbreviation candidate order (issue #128)...${NC}"
+
+    # GNU orders an ambiguous option's candidates by its own longopts table,
+    # not by vibeutils' Args field-declaration order. Re-pinned against real
+    # GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/tail --v
+    #   /usr/bin/tail: option '--v' is ambiguous; possibilities: '--verbose' '--version'
+    # so '--verbose' comes FIRST; vibeutils lists '--version' first today.
+    local abbrev_v_cmd="" abbrev_v_out="" abbrev_v_err="" abbrev_v_exit=""
+    run_command abbrev_v_cmd abbrev_v_out abbrev_v_err abbrev_v_exit bash -c "'$binary' --v < /dev/null"
+    local abbrev_v_expected="tail: option '--v' is ambiguous; possibilities: '--verbose' '--version'"$'\n'"Try 'tail --help' for more information."
+    if [[ $abbrev_v_exit -eq 1 && "$abbrev_v_err" == "$abbrev_v_expected" ]]; then
+        print_test_result "tail --v lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "tail --v lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$abbrev_v_expected', got exit=$abbrev_v_exit stderr='$abbrev_v_err'"
+    fi
+
 }

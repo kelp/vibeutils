@@ -235,6 +235,36 @@ test_uniq() {
             "Expected bare 'uniq: /nonexistent_dir_$$/out.txt: No such file or directory', got: '$out_err_stderr'"
     fi
 
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # "coun" is unambiguous ("--count" is the only uniq flag starting with
+    # it), so it must resolve exactly as "--count" would.
+    test_command_output "uniq --coun resolves to --count" "      2 a" bash -c "printf 'a\na\n' | '$binary' --coun"
+
+    # AMBIGUOUS, FULL TOKEN ECHOED: "--c" prefixes both "--count" and
+    # "--check-chars"; the ambiguous message must quote the FULL typed
+    # token including its "=value", not just "--c". Re-pinned directly
+    # against real GNU on this host: `LC_ALL=C /usr/bin/uniq --c=x
+    # </dev/null` prints the ambiguous line AND
+    # "Try '/usr/bin/uniq --help' for more information.", exit 1 -- so the
+    # hint line belongs in the expected value on its own GNU-parity merits,
+    # not merely because the shared printer also emits it for nl/rm.
+    local ambig_cmd="" ambig_out="" ambig_err="" ambig_exit=""
+    run_command ambig_cmd ambig_out ambig_err ambig_exit bash -c "printf 'x\n' | '$binary' --c=x"
+    local ambig_expected="uniq: option '--c=x' is ambiguous; possibilities: '--count' '--check-chars'"$'\n'"Try 'uniq --help' for more information."
+    if [[ $ambig_exit -eq 1 && "$ambig_err" == "$ambig_expected" ]]; then
+        print_test_result "uniq --c=x is ambiguous, echoes full token" "PASS"
+    else
+        print_test_result "uniq --c=x is ambiguous, echoes full token" "FAIL" \
+            "Expected \"$ambig_expected\", got exit=$ambig_exit stderr='$ambig_err'"
+    fi
+
+    # REGRESSION, EXACT-MATCH-WINS: "--all-repeated" is itself a full field
+    # name; it must resolve directly and NOT be reported ambiguous against
+    # "--all-repeated-method" (an internal, non-flag field whose long name
+    # happens to share the prefix).
+    test_command_exit_code "uniq --all-repeated exits 0 (regression)" 0 bash -c "printf 'a\na\nb\n' | '$binary' --all-repeated"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}uniq tests completed${NC}"

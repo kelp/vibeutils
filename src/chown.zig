@@ -16,41 +16,47 @@ extern "c" fn chown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 extern "c" fn lchown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 
 /// Command-line arguments for chown
+///
+/// Field order is GNU chown's own `longopts[]` order, because that is the
+/// order an ambiguous abbreviation lists its candidates in (`chown --v` ->
+/// '--verbose' '--version'). Options vibeutils adds that GNU chown has no
+/// entry for sit after the GNU sequence.
 const ChownArgs = struct {
+    /// Operate on files and directories recursively
+    recursive: bool = false,
+    /// Report only when a change is made
+    changes: bool = false,
+    /// Affect the referent of symlinks (default, no-op)
+    dereference: bool = false,
+    /// Affect symbolic links instead of referenced files
+    no_dereference: bool = false,
+    /// Do not treat '/' specially (default, no-op)
+    no_preserve_root: bool = false,
+    /// Refuse to operate recursively on '/'
+    preserve_root: bool = false,
+    /// Same as silent
+    quiet: bool = false,
+    /// Suppress most error messages
+    silent: bool = false,
+    /// Use file's owner and group as reference
+    reference: ?[]const u8 = null,
+    /// Output a diagnostic for every file processed
+    verbose: bool = false,
     /// Display help and exit
     help: bool = false,
     /// Display version and exit
     version: bool = false,
-    /// Report only when a change is made
-    changes: bool = false,
-    /// Suppress most error messages
-    silent: bool = false,
-    /// Same as silent
-    quiet: bool = false,
-    /// Output a diagnostic for every file processed
-    verbose: bool = false,
-    /// Affect symbolic links instead of referenced files
-    no_dereference: bool = false,
+    // Not in GNU chown's longopts table.
     /// Traverse symlinks given on the command line
     H: bool = false,
     /// Traverse every symbolic link to a directory encountered
     L: bool = false,
     /// Do not traverse any symbolic links (default behavior)
     P: bool = false,
-    /// Operate on files and directories recursively
-    recursive: bool = false,
-    /// Use file's owner and group as reference
-    reference: ?[]const u8 = null,
     /// Numeric IDs only, don't resolve names (macOS)
     numeric_ids: bool = false,
     /// Don't cross mount points during recursion (macOS)
     no_cross_device: bool = false,
-    /// Affect the referent of symlinks (default, no-op)
-    dereference: bool = false,
-    /// Do not treat '/' specially (default, no-op)
-    no_preserve_root: bool = false,
-    /// Refuse to operate recursively on '/'
-    preserve_root: bool = false,
     /// Positional arguments (owner spec and file paths)
     positionals: []const []const u8 = &.{},
 

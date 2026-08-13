@@ -10,27 +10,32 @@ const testing = std.testing;
 /// Value is platform-dependent: 0x0040 on macOS, 0x0400 on Linux.
 const AT_SYMLINK_FOLLOW: c_int = if (@import("builtin").os.tag == .macos) 0x0040 else 0x0400;
 
+/// Field order is GNU ln's own `longopts[]` order, because that is the order
+/// an ambiguous abbreviation lists its candidates in (`ln --v` -> '--verbose'
+/// '--version'). Options vibeutils adds that GNU ln has no entry for sit next
+/// to whichever GNU option they alias, after the GNU sequence otherwise.
 const LnArgs = struct {
-    help: bool = false,
-    version: bool = false,
-    force: bool = false,
-    interactive: bool = false,
-    L: bool = false,
+    /// Make backup of each destination file
+    backup: bool = false,
     no_dereference: bool = false,
     /// Alias for no_dereference: -h is POSIX for no-dereference
     no_deref_h: bool = false,
-    P: bool = false,
+    no_target_directory: bool = false,
+    force: bool = false,
+    interactive: bool = false,
+    target_directory: ?[]const u8 = null,
     relative: bool = false,
     symbolic: bool = false,
-    target_directory: ?[]const u8 = null,
-    no_target_directory: bool = false,
     verbose: bool = false,
+    help: bool = false,
+    version: bool = false,
+    // Not in GNU ln's longopts table.
+    L: bool = false,
+    P: bool = false,
     /// Force removal of existing destination files including directories
     force_dir: bool = false,
     /// Warn if symlink source does not exist
     warn_missing: bool = false,
-    /// Make backup of each destination file
-    backup: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{

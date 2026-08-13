@@ -64,6 +64,11 @@ pub const ArgParser = struct {
             missing_value_short,
             unexpected_value_long,
             invalid_value,
+            /// A typed long-flag prefix matched more than one field's long
+            /// flag and none of them exactly. The matching options are not
+            /// recorded here: the printer re-derives them from `flag`, which
+            /// still holds the typed token.
+            ambiguous_long,
         };
 
         kind: Kind = .none,
@@ -445,44 +450,169 @@ pub const ArgParser = struct {
         // "requires an argument" / "doesn't allow an argument" wordings.
         const name_token = token[0 .. 2 + flag_name.len];
 
+        // Exact spelling first, over both the field name and its hyphenated
+        // long form. Running this to completion before any prefix matching is
+        // what makes an exact name beat being the prefix of a longer one, so
+        // `--interactive` never reports ambiguity against `--interactive-once`.
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
-            // Check if field name or converted name matches
             const long_flag = comptime getLongFlag(field.name);
             const matches = std.mem.eql(u8, field.name, flag_name) or
                 std.mem.eql(u8, long_flag, flag_name);
 
             if (matches) {
-                // Check field type
-                const field_type_info = @typeInfo(field.type);
-                if (field.type == bool) {
-                    // Boolean flag
-                    if (provided_value != null) {
-                        diag.* = .{ .kind = .unexpected_value_long, .flag = name_token };
-                        return ParseError.TooManyValues;
-                    }
-                    @field(obj, field.name) = true;
-                    return .NoValue;
-                } else if (field_type_info == .optional) {
-                    // Optional field - parse based on child type
-                    const value_str = provided_value orelse next_arg orelse {
-                        diag.* = .{ .kind = .missing_value_long, .flag = name_token };
-                        return ParseError.MissingValue;
-                    };
+                const used = try parseLongFlag_assignField(
+                    T,
+                    field.name,
+                    obj,
+                    provided_value,
+                    next_arg,
+                    position,
+                    name_token,
+                    diag,
+                );
+                if (used != .Unknown) return used;
+            }
+        }
 
-                    try parseValue(
-                        field_type_info.optional.child,
-                        &@field(obj, field.name),
-                        value_str,
-                        name_token,
-                        position,
-                        diag,
-                    );
-                    return if (provided_value != null) .NoValue else .ValueUsed;
+        return parseLongFlag_resolvePrefix(
+            T,
+            obj,
+            flag_name,
+            provided_value,
+            next_arg,
+            position,
+            token,
+            diag,
+        );
+    }
+
+    /// Whether a field is a flag target at all: only `bool` (a switch) and
+    /// optionals (a value-taking option) are. The `positionals` sink and
+    /// internal state fields such as uniq's `all_repeated_method` are neither,
+    /// so an abbreviation must never resolve to one nor list one among its
+    /// candidates.
+    fn isFlagField(comptime FieldType: type) bool {
+        return FieldType == bool or @typeInfo(FieldType) == .optional;
+    }
+
+    /// Apply an already-resolved long flag to its field.
+    ///
+    /// `name_token` is what the diagnostics quote: the token as typed for an
+    /// exact match, the expanded `--long-flag` for an abbreviation, since GNU
+    /// names the option it resolved rather than the prefix that was typed.
+    ///
+    /// A field that is neither `bool` nor optional is not a flag target, so it
+    /// yields `.Unknown` and the caller keeps looking — the behavior the
+    /// original inline `if/else if` had by falling through.
+    fn parseLongFlag_assignField(
+        comptime T: type,
+        comptime field_name: []const u8,
+        obj: *T,
+        provided_value: ?[]const u8,
+        next_arg: ?[]const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+        name_token: []const u8,
+        diag: *Diagnostic,
+    ) ParseError!ValueUsage {
+        std.debug.assert(name_token.len > 2);
+        std.debug.assert(name_token[0] == '-');
+
+        const FieldType = @FieldType(T, field_name);
+        const field_type_info = @typeInfo(FieldType);
+        if (FieldType == bool) {
+            // Boolean flag
+            if (provided_value != null) {
+                diag.* = .{ .kind = .unexpected_value_long, .flag = name_token };
+                return ParseError.TooManyValues;
+            }
+            @field(obj, field_name) = true;
+            return .NoValue;
+        } else if (field_type_info == .optional) {
+            // Optional field - parse based on child type
+            const value_str = provided_value orelse next_arg orelse {
+                diag.* = .{ .kind = .missing_value_long, .flag = name_token };
+                return ParseError.MissingValue;
+            };
+
+            try parseValue(
+                field_type_info.optional.child,
+                &@field(obj, field_name),
+                value_str,
+                name_token,
+                position,
+                diag,
+            );
+            return if (provided_value != null) .NoValue else .ValueUsed;
+        }
+        return .Unknown;
+    }
+
+    /// GNU's getopt_long accepts any abbreviation that names exactly one long
+    /// option, and reports one naming several as an error listing them. Only
+    /// reached once exact matching has failed.
+    ///
+    /// Matching is over the hyphenated long spelling alone: GNU knows no
+    /// underscore form, so `--no_der` stays unrecognized while `--no-der`
+    /// resolves.
+    fn parseLongFlag_resolvePrefix(
+        comptime T: type,
+        obj: *T,
+        flag_name: []const u8,
+        provided_value: ?[]const u8,
+        next_arg: ?[]const u8,
+        position: usize, // tiger:allow:usize-arch positional argument index
+        token: []const u8,
+        diag: *Diagnostic,
+    ) ParseError!ValueUsage {
+        std.debug.assert(token.len >= 2 + flag_name.len);
+        std.debug.assert(token[1] == '-');
+
+        // Every field's long spelling is rebuilt at comptime twice over, once
+        // per pass; the widest Args struct here outruns the default quota.
+        @setEvalBranchQuota(10_000);
+        const fields = @typeInfo(T).@"struct".fields;
+
+        var match_count: u32 = 0;
+        var match_index: u32 = 0;
+        inline for (fields, 0..) |field, index| {
+            if (comptime isFlagField(field.type)) {
+                if (std.mem.startsWith(u8, comptime getLongFlag(field.name), flag_name)) {
+                    match_count += 1;
+                    match_index = index;
                 }
             }
         }
-        return .Unknown;
+        std.debug.assert(match_count <= fields.len);
+
+        if (match_count == 0) return .Unknown;
+        if (match_count > 1) {
+            // GNU echoes the whole token, `=value` included: `ls --c=never`
+            // reports '--c=never'. Reusing UnknownFlag keeps every caller's
+            // existing exit code for a bad option.
+            diag.* = .{ .kind = .ambiguous_long, .flag = token };
+            return ParseError.UnknownFlag;
+        }
+
+        // An `inline for` cannot break with a runtime-selected field, so the
+        // single match is dispatched by a second pass guarded on its index.
+        inline for (fields, 0..) |field, index| {
+            if (comptime isFlagField(field.type)) {
+                if (index == match_index) {
+                    return parseLongFlag_assignField(
+                        T,
+                        field.name,
+                        obj,
+                        provided_value,
+                        next_arg,
+                        position,
+                        comptime "--" ++ getLongFlag(field.name),
+                        diag,
+                    );
+                }
+            }
+        }
+        unreachable; // match_count == 1 means the second pass always hits.
     }
 
     fn parseShortFlagWithValue(
@@ -689,7 +819,7 @@ pub const ArgParser = struct {
         var diag: Diagnostic = .{};
         return ArgParser.parseWithDiagnostic(T, allocator, args, &diag) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            parseOrExit_printDiagnostic(stderr_writer, prog_name, err, diag);
+            parseOrExit_printDiagnostic(T, stderr_writer, prog_name, err, diag);
             return error.ParseFailed;
         };
     }
@@ -697,12 +827,14 @@ pub const ArgParser = struct {
     /// Print GNU coreutils' wording for `diag`, followed by the standard hint
     /// line where GNU emits one.
     ///
-    /// GNU has five distinct option-error messages rather than one, differing
-    /// in wording and in what they quote: an unrecognized long option echoes
-    /// the full typed token, the "requires"/"doesn't allow" forms name the
-    /// option only, and short forms quote a bare character. A bad option value
-    /// gets no hint line — GNU's `head -n abc` prints its complaint alone.
+    /// GNU has six distinct option-error messages rather than one, differing
+    /// in wording and in what they quote: an unrecognized long option and an
+    /// ambiguous abbreviation echo the full typed token, the
+    /// "requires"/"doesn't allow" forms name the option only, and short forms
+    /// quote a bare character. A bad option value gets no hint line — GNU's
+    /// `head -n abc` prints its complaint alone.
     fn parseOrExit_printDiagnostic(
+        comptime T: type,
         stderr_writer: anytype,
         prog_name: []const u8,
         err: ParseError,
@@ -737,6 +869,12 @@ pub const ArgParser = struct {
                 "{s}: option '{s}' doesn't allow an argument\n",
                 .{ prog_name, diag.flag },
             ) catch {},
+            .ambiguous_long => parseOrExit_printAmbiguous(
+                T,
+                stderr_writer,
+                prog_name,
+                diag.flag,
+            ),
             .invalid_value => {
                 hint_wanted = false;
                 stderr_writer.print(
@@ -752,6 +890,52 @@ pub const ArgParser = struct {
                 .{prog_name},
             ) catch {};
         }
+    }
+
+    /// GNU's ambiguous-abbreviation line: the whole typed token echoed back,
+    /// then `possibilities:` followed by every long flag the typed prefix
+    /// names, individually single-quoted, separated by one space, in field-
+    /// declaration order (GNU's own `longopts[]` order for that command) —
+    /// e.g. `possibilities: '--header-numbering' '--help'`.
+    ///
+    /// The candidates are re-derived here rather than carried on the
+    /// Diagnostic because every one of them is a comptime-static string: they
+    /// can go straight to the stream, so no list ever needs an allocator or a
+    /// buffer to live in. The prefix that selects them is recovered from the
+    /// echoed token, which the parser recorded verbatim.
+    fn parseOrExit_printAmbiguous(
+        comptime T: type,
+        stderr_writer: anytype,
+        prog_name: []const u8,
+        token: []const u8,
+    ) void {
+        std.debug.assert(prog_name.len > 0);
+        std.debug.assert(token.len >= 2);
+
+        // The token is echoed whole, `=value` included, but only the part
+        // before the first `=` was ever prefix-matched.
+        const name_end = std.mem.indexOfScalar(u8, token, '=') orelse token.len;
+        const prefix = std.mem.trimStart(u8, token[0..name_end], "-");
+        std.debug.assert(prefix.len <= token.len);
+        std.debug.assert(prefix.len == 0 or prefix[0] != '-');
+
+        stderr_writer.print(
+            "{s}: option '{s}' is ambiguous; possibilities:",
+            .{ prog_name, token },
+        ) catch {};
+
+        // Rebuilding every field's long spelling outruns the default quota on
+        // the widest Args struct here, just as the parse path does.
+        @setEvalBranchQuota(10_000);
+        inline for (@typeInfo(T).@"struct".fields) |field| {
+            if (comptime isFlagField(field.type)) {
+                const long_flag = comptime "--" ++ getLongFlag(field.name);
+                if (std.mem.startsWith(u8, long_flag[2..], prefix)) {
+                    stderr_writer.print(" '{s}'", .{long_flag}) catch {};
+                }
+            }
+        }
+        stderr_writer.print("\n", .{}) catch {};
     }
 
     /// Wording for a failure that carried no structured detail — today only a
@@ -1511,4 +1695,297 @@ test "parseWithDiagnostic: unknown-long payload BORROWS argv, it does not copy i
     // caller's argv token so nothing is allocated and nothing must be freed.
     try testing.expectEqual(args[0].ptr, diag.flag.ptr);
     try testing.expectEqual(args[0].len, diag.flag.len);
+}
+
+// ============================================================================
+// Issue #128 — GNU-style long-flag abbreviation (getopt_long prefix matching)
+// ============================================================================
+
+test "parseWithDiagnostic: unambiguous long-flag prefix resolves like GNU getopt_long" {
+    // GNU getopt_long accepts any prefix that names exactly one long option;
+    // "coun" matches only "count" in BasicArgs (no other field starts with
+    // "coun"), so this must resolve exactly as "--count=5" would.
+    const args = [_][]const u8{"--coun=5"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(BasicArgs, testing.allocator, &args, &diag);
+    try testing.expectEqual(@as(?u32, 5), result.count);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+const DeliArgs = struct {
+    help: bool = false,
+    delimiter: ?[]const u8 = null,
+};
+
+test "parseWithDiagnostic: missing-value diagnostic names the expanded flag, not the typed prefix" {
+    // GNU's "requires an argument" wording always names the resolved long
+    // option in full, even when the user typed only a prefix of it:
+    // `cut --deli` (no value) -> "option '--delimiter' requires an argument".
+    const args = [_][]const u8{"--deli"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(DeliArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.MissingValue, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.missing_value_long, diag.kind);
+    try testing.expectEqualStrings("--delimiter", diag.flag);
+}
+
+const NoDerefArgs = struct {
+    no_dereference: bool = false,
+    help: bool = false,
+};
+
+test "parseWithDiagnostic: underscore spelling stays exact-only, hyphen spelling prefix-resolves" {
+    // Field names use `_`, but GNU long-option spellings use `-`; the two are
+    // never interchangeable. Typing the field's literal underscore spelling
+    // as a prefix (`--no_der`) must still miss, even after abbreviation
+    // support lands for the real (hyphenated) long-flag spelling.
+    {
+        const args = [_][]const u8{"--no_der"};
+        var diag: ArgParser.Diagnostic = .{};
+        const result = ArgParser.parseWithDiagnostic(NoDerefArgs, testing.allocator, &args, &diag);
+        try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+        try testing.expectEqual(ArgParser.Diagnostic.Kind.unknown_long, diag.kind);
+    }
+    {
+        const args = [_][]const u8{"--no-der"};
+        var diag: ArgParser.Diagnostic = .{};
+        const result = try ArgParser.parseWithDiagnostic(
+            NoDerefArgs,
+            testing.allocator,
+            &args,
+            &diag,
+        );
+        try testing.expect(result.no_dereference);
+        try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+    }
+}
+
+const AmbiguousAllArgs = struct {
+    alpha: bool = false,
+    beta: ?[]const u8 = null,
+    gamma: bool = false,
+    /// Non-flag field: an enum but NOT wrapped in `?`, mirroring
+    /// `uniq.zig`'s internal `all_repeated_method: AllRepeatedMethod` field.
+    /// Neither `bool` nor `.optional`, so the existing match loop already
+    /// never treats it as a real flag target — it must never appear in a
+    /// candidate list either.
+    delta: enum { off, on } = .off,
+    /// Non-flag field: every real utility's Args struct carries a
+    /// `positionals` sink like this one. It must never appear in a
+    /// candidate list.
+    positionals: []const []const u8 = &.{},
+};
+
+test "parseWithDiagnostic: empty long-flag prefix is ambiguous over every field" {
+    // `--=x` types a completely empty flag name, which is a prefix of every
+    // long option, so GNU's rule ("a prefix matching more than one option is
+    // an error naming the candidates") makes it ambiguous over the whole
+    // struct — never a lucky exact match, since no field is named "".
+    const args = [_][]const u8{"--=x"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(AmbiguousAllArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.ambiguous_long, diag.kind);
+    // The ambiguous message echoes the FULL typed token, "=value" included.
+    try testing.expectEqualStrings("--=x", diag.flag);
+    // Which options that prefix names is asserted on the rendered message
+    // instead, by the parseOrExit test below: the candidate list is a
+    // property of the printed diagnostic, so pinning it there also pins the
+    // wording around it and leaves the parser free to derive the list
+    // however it likes.
+}
+
+test "parseOrExit: ambiguous long flag lists every candidate, in declaration order" {
+    // The user-facing half of the case above. GNU (LC_ALL=C):
+    //   nl: option '--he' is ambiguous; possibilities: '--header-numbering' '--help'
+    //   Try 'nl --help' for more information.
+    // Three things are pinned here beyond the wording. The list is in field-
+    // DECLARATION order, not alphabetical — reversing it would spell
+    // "'--gamma' '--beta' '--alpha'". Each candidate is individually
+    // single-quoted and separated by exactly one space. And only real flag
+    // fields appear: "delta" (a plain, non-optional enum, the shape of
+    // uniq's internal `all_repeated_method`) and "positionals" (the operand
+    // sink every Args struct carries) are both excluded, even though the
+    // empty prefix `--=x` is a prefix of their names too.
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"--=x"};
+    const result = ArgParser.parseOrExit(
+        AmbiguousAllArgs,
+        testing.allocator,
+        &args,
+        "testprog",
+        &w,
+    );
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: option '--=x' is ambiguous; " ++
+            "possibilities: '--alpha' '--beta' '--gamma'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}
+
+const ShortOnlyArgs = struct {
+    // `one_line`'s long spelling ("one-line") shares no prefix with "1" —
+    // its `meta.short` character is merely an unrelated single digit, the
+    // same shape as `ls`'s real `-1`/`--one-per-line` pairing. Nothing about
+    // a field's *short* flag should ever feed long-flag prefix matching.
+    one_line: bool = false,
+    help: bool = false,
+
+    pub const meta = .{
+        .one_line = .{ .short = '1' },
+        .help = .{ .short = 'h' },
+    };
+};
+
+test "parseWithDiagnostic: a short flag character is never used to prefix-resolve a long flag" {
+    // GNU: `ls --1` stays "unrecognized option '--1'" — `-1` is short-only,
+    // so typing it with two dashes must never resolve via any field's
+    // *short* character, matched or abbreviated. Since no field's *long*
+    // spelling in this fixture starts with "1" either, this must land on
+    // plain UnknownFlag (zero candidates), not ambiguous_long.
+    const args = [_][]const u8{"--1"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(ShortOnlyArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.unknown_long, diag.kind);
+    try testing.expectEqualStrings("--1", diag.flag);
+}
+
+/// Exactly TWO flag fields, sharing the prefix "ver" and nothing longer.
+///
+/// The width is the point. Every other ambiguity fixture in this file has
+/// three or more candidates, so a threshold that fired on "more than two
+/// matches" instead of "more than one" would still look correct there. Two
+/// is the smallest ambiguity GNU reports, so it is the only width that pins
+/// the boundary. Held apart from `--verb`, which names exactly one of them,
+/// so the fixture cannot be ambiguous by construction.
+const TwoWayPrefixArgs = struct {
+    verbose: bool = false,
+    version: bool = false,
+};
+
+test "parseWithDiagnostic: a TWO-way prefix collision is ambiguous, not silently resolved" {
+    // GNU (LC_ALL=C): `rm --ver` -> "option '--ver' is ambiguous;
+    // possibilities: '--verbose' '--version'", exit 1. Two candidates is the
+    // narrowest ambiguity there is: resolving it to either field — the first
+    // or the last one scanned — is the failure this pins.
+    const args = [_][]const u8{"--ver"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(TwoWayPrefixArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.ambiguous_long, diag.kind);
+    try testing.expectEqualStrings("--ver", diag.flag);
+    // Negative space: not the unknown-option diagnostic, which is the other
+    // way a two-way collision could plausibly be (mis)reported.
+    try testing.expect(diag.kind != ArgParser.Diagnostic.Kind.unknown_long);
+}
+
+test "parseWithDiagnostic: a two-field fixture still resolves the prefix that names one field" {
+    // Companion to the test above: "--verb" is a prefix of "--verbose" alone,
+    // so this fixture is NOT ambiguous by construction. Without this, a
+    // parser that called every prefix ambiguous would pass the test above
+    // for the wrong reason.
+    const args = [_][]const u8{"--verb"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(
+        TwoWayPrefixArgs,
+        testing.allocator,
+        &args,
+        &diag,
+    );
+    try testing.expect(result.verbose);
+    try testing.expect(!result.version);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+/// One field name is a STRICT PREFIX of another: "number" against
+/// "number-nonblank", the shape `cat` really has (`-n`/`-b`) and the shape
+/// `rm --interactive` / `--interactive-once` and `tail --follow` /
+/// `--follow-retry` have in this repo.
+///
+/// No other fixture in this file has it, and it is the only shape that can
+/// tell exact matching apart from prefix matching: for every other struct
+/// here an exact spelling matches exactly one field either way round, so
+/// running the prefix pass first would go unnoticed.
+const StrictPrefixArgs = struct {
+    number: bool = false,
+    number_nonblank: bool = false,
+};
+
+test "parseWithDiagnostic: an exact long flag wins over being a strict prefix of another" {
+    // GNU: `cat --number` sets -n and never reports ambiguity against
+    // `--number-nonblank`, even though the typed name IS a proper prefix of
+    // it. Exact-match-wins is the whole load-bearing property of the
+    // abbreviation design, so it is pinned on the one struct shape that can
+    // observe it.
+    const args = [_][]const u8{"--number"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(
+        StrictPrefixArgs,
+        testing.allocator,
+        &args,
+        &diag,
+    );
+    try testing.expect(result.number);
+    // Negative space: the LONGER option must not have been set as a
+    // side effect, and no diagnostic may have been recorded.
+    try testing.expect(!result.number_nonblank);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+test "parseWithDiagnostic: the longer of two strict-prefix flags still resolves to itself" {
+    // The other half of the pair: "--number-nonblank" names only itself, so
+    // it must set that field and leave the shorter one alone. Guards against
+    // a fix for the case above that made the SHORTER field win everything.
+    const args = [_][]const u8{"--number-nonblank"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(
+        StrictPrefixArgs,
+        testing.allocator,
+        &args,
+        &diag,
+    );
+    try testing.expect(result.number_nonblank);
+    try testing.expect(!result.number);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+test "parseWithDiagnostic: a strict-prefix pair is still ambiguous below the shorter name" {
+    // "--numb" stops one character short of "--number", so it is a genuine
+    // abbreviation of BOTH fields and must be reported ambiguous. Without
+    // this, the exact-match tests above would also pass on a parser that had
+    // simply stopped prefix-matching altogether.
+    const args = [_][]const u8{"--numb"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(StrictPrefixArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.ambiguous_long, diag.kind);
+    try testing.expectEqualStrings("--numb", diag.flag);
+}
+
+test "parseOrExit: strict-prefix candidates are both listed, shorter name first" {
+    // The rendered form of the case above. Both names appear even though one
+    // is a prefix of the other, in field-declaration order, so a candidate
+    // walk that skipped a field once a longer field had already matched
+    // would drop one of them.
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"--numb"};
+    const result = ArgParser.parseOrExit(
+        StrictPrefixArgs,
+        testing.allocator,
+        &args,
+        "testprog",
+        &w,
+    );
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: option '--numb' is ambiguous; " ++
+            "possibilities: '--number' '--number-nonblank'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
 }

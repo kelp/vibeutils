@@ -6,12 +6,16 @@ const privilege_test = common.privilege_test;
 const testing = std.testing;
 
 /// Command-line arguments for mkdir
+///
+/// Field order is GNU mkdir's own `longopts[]` order, because that is the
+/// order an ambiguous abbreviation lists its candidates in (`mkdir --v` ->
+/// '--verbose' '--version').
 const MkdirArgs = struct {
-    help: bool = false,
-    version: bool = false,
     mode: ?[]const u8 = null,
     parents: bool = false,
     verbose: bool = false,
+    help: bool = false,
+    version: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{

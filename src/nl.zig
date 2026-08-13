@@ -54,31 +54,38 @@ const NlOptions = struct {
 };
 
 /// Command-line arguments for nl
+///
+/// Field order is GNU nl's own `longopts[]` order, because that is the order
+/// an ambiguous abbreviation lists its candidates in (`nl --nu` ->
+/// '--number-separator' '--number-width' '--number-format'). Each
+/// single-letter field is the short spelling of the long option above it and
+/// has no GNU longopts entry of its own; a one-character long flag can never
+/// match a two-character prefix, so it never joins a candidate list.
 const NlArgs = struct {
-    help: bool = false,
-    version: bool = false,
-    body_numbering: ?[]const u8 = null,
-    b: ?[]const u8 = null,
     header_numbering: ?[]const u8 = null,
     h: ?[]const u8 = null,
+    body_numbering: ?[]const u8 = null,
+    b: ?[]const u8 = null,
     footer_numbering: ?[]const u8 = null,
     f: ?[]const u8 = null,
-    number_format: ?[]const u8 = null,
-    n: ?[]const u8 = null,
-    number_width: ?[]const u8 = null,
-    w: ?[]const u8 = null,
-    number_separator: ?[]const u8 = null,
-    s: ?[]const u8 = null,
     starting_line_number: ?[]const u8 = null,
     v: ?[]const u8 = null,
     line_increment: ?[]const u8 = null,
     i: ?[]const u8 = null,
     no_renumber: bool = false,
     p: bool = false,
-    section_delimiter: ?[]const u8 = null,
-    d: ?[]const u8 = null,
     join_blank_lines: ?[]const u8 = null,
     l: ?[]const u8 = null,
+    number_separator: ?[]const u8 = null,
+    s: ?[]const u8 = null,
+    number_width: ?[]const u8 = null,
+    w: ?[]const u8 = null,
+    number_format: ?[]const u8 = null,
+    n: ?[]const u8 = null,
+    section_delimiter: ?[]const u8 = null,
+    d: ?[]const u8 = null,
+    help: bool = false,
+    version: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{

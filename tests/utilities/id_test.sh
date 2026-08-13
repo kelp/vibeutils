@@ -385,4 +385,29 @@ test_id() {
         print_test_result "id -Gn count matches id -G count" "FAIL" \
             "-G has $g_count groups, -Gn has $gn_count names"
     fi
+
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation, exact-match-wins (issue #128)...${NC}"
+
+    # REGRESSION, EXACT-MATCH-WINS: "--group" is itself a full field name and
+    # "--groups" is a DIFFERENT full field name that happens to share
+    # "--group" as a prefix. Both must resolve directly to their own field
+    # and print a numeric ID/list, never be reported ambiguous against the
+    # other.
+    local grp_cmd="" grp_out="" grp_err="" grp_exit=""
+    run_command grp_cmd grp_out grp_err grp_exit "$binary" --group
+    if [[ $grp_exit -eq 0 && "$grp_out" =~ ^[0-9]+$ ]]; then
+        print_test_result "id --group resolves exactly, not ambiguous" "PASS"
+    else
+        print_test_result "id --group resolves exactly, not ambiguous" "FAIL" \
+            "Expected exit 0 and a bare gid, got exit=$grp_exit stdout='$grp_out' stderr='$grp_err'"
+    fi
+
+    local grps_cmd="" grps_out="" grps_err="" grps_exit=""
+    run_command grps_cmd grps_out grps_err grps_exit "$binary" --groups
+    if [[ $grps_exit -eq 0 && -n "$grps_out" && ! "$grps_err" == *ambiguous* ]]; then
+        print_test_result "id --groups resolves exactly, not ambiguous" "PASS"
+    else
+        print_test_result "id --groups resolves exactly, not ambiguous" "FAIL" \
+            "Expected exit 0 and a group list, got exit=$grps_exit stdout='$grps_out' stderr='$grps_err'"
+    fi
 }

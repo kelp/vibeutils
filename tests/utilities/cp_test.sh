@@ -1372,4 +1372,39 @@ test_cp() {
         print_test_result "cp -p on /dev/null: EPERM does not leak an 'unexpected errno' trace to stderr (issue 99)" "SKIP" \
             "requires Linux, non-root, non-fakeroot (matches issue 81 U13's guard in src/cp.zig)"
     fi
+
+    echo -e "${CYAN}Testing ambiguous-abbreviation candidate order (issue #128)...${NC}"
+
+    # GNU orders an ambiguous option's candidates by its own longopts table,
+    # not by vibeutils' Args field-declaration order. Re-pinned against real
+    # GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/cp --v
+    #   /usr/bin/cp: option '--v' is ambiguous; possibilities: '--verbose' '--version'
+    # so '--verbose' comes FIRST; vibeutils lists '--version' first today.
+    local abbrev_v_cmd="" abbrev_v_out="" abbrev_v_err="" abbrev_v_exit=""
+    run_command abbrev_v_cmd abbrev_v_out abbrev_v_err abbrev_v_exit "$binary" --v
+    local abbrev_v_expected="cp: option '--v' is ambiguous; possibilities: '--verbose' '--version'"$'\n'"Try 'cp --help' for more information."
+    if [[ $abbrev_v_exit -eq 1 && "$abbrev_v_err" == "$abbrev_v_expected" ]]; then
+        print_test_result "cp --v lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "cp --v lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$abbrev_v_expected', got exit=$abbrev_v_exit stderr='$abbrev_v_err'"
+    fi
+
+    # GNU orders an ambiguous option's candidates by its own longopts table,
+    # not by vibeutils' Args field-declaration order. Re-pinned against real
+    # GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/cp --p
+    #   /usr/bin/cp: option '--p' is ambiguous; possibilities: '--parents' '--preserve'
+    # so '--parents' comes FIRST; vibeutils lists '--preserve' first today.
+    local abbrev_p_cmd="" abbrev_p_out="" abbrev_p_err="" abbrev_p_exit=""
+    run_command abbrev_p_cmd abbrev_p_out abbrev_p_err abbrev_p_exit "$binary" --p
+    local abbrev_p_expected="cp: option '--p' is ambiguous; possibilities: '--parents' '--preserve'"$'\n'"Try 'cp --help' for more information."
+    if [[ $abbrev_p_exit -eq 1 && "$abbrev_p_err" == "$abbrev_p_expected" ]]; then
+        print_test_result "cp --p lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "cp --p lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$abbrev_p_expected', got exit=$abbrev_p_exit stderr='$abbrev_p_err'"
+    fi
+
 }

@@ -122,6 +122,38 @@
   `-o` and `-g` keep the surviving column at its section width. The
   four columns join the single measuring pass that already computed
   the time and `-s` widths rather than adding a third traversal (#124).
+- **Unambiguous long-option abbreviations now resolve, as GNU's
+  `getopt_long` does.** `wc --vers` printed `unrecognized option`
+  where GNU prints the version banner, because long flags matched
+  only by exact name. A prefix matching exactly one option now
+  resolves to it, and one matching several reports them —
+  `option '--he' is ambiguous; possibilities: …` — in the order GNU
+  itself lists them, not alphabetically. The candidate list follows
+  the utility's `Args` field declaration order, so those fields were
+  reordered to GNU's own longopts order in `chmod`, `chown`, `cp`,
+  `head`, `ln`, `mkdir`, `mv`, `nl`, `rm`, `rmdir` and `tail`:
+  `cp --v` now lists `'--verbose' '--version'` and `cp --p` lists
+  `'--parents' '--preserve'`, byte for byte as GNU does. An exact
+  match still wins over being the prefix of something longer, so
+  `cat --number`, `id --group` and `rm --interactive` keep working
+  rather than becoming ambiguous. Downstream diagnostics name the
+  expanded option, so `cut --deli` reports
+  `option '--delimiter' requires an argument`. Shared by the
+  utilities that parse through `common.argparse`; those with
+  hand-rolled parsers are unaffected (#128).
+- **`rm` refuses abbreviations of `--no-preserve-root`.** GNU carves
+  that one option out of `getopt_long`'s abbreviation rule on
+  purpose, because it disables the guard that stops `rm -r /`, so
+  `rm --no-p` must not quietly enable it. It now prints
+  `rm: you may not abbreviate the --no-preserve-root option` and
+  exits 1, with no `Try 'rm --help'` hint line — GNU dies there
+  rather than routing through its usage printer. The check runs
+  after the option has resolved, so a prefix that is genuinely
+  ambiguous still reports ambiguity: `rm --no-` also abbreviates
+  vibeutils' `--no-cross-device`. Every other `rm` long option
+  still abbreviates, `--pre` (`--preserve-root`) included. `chmod`
+  and `chown` have a no-op `--no-preserve-root` and are not carved
+  out, matching GNU (#128).
 
 - **Option errors name the offending flag and carry GNU's hint
   line.** `argparse` collapsed every parse failure into one static

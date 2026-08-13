@@ -349,6 +349,61 @@ $'     1\tline1\n     2\tline2\n\n     3\tline3\n     4\tline4' \
             "Expected 'nl: /nonexistent/file: No such file or directory', got: '$nl_err_stderr'"
     fi
 
+    echo -e "${CYAN}Testing GNU-style long-flag abbreviation (issue #128)...${NC}"
+
+    # AMBIGUOUS: "--he" prefixes both "--help" and "--header-numbering".
+    # Candidate order follows GNU's own longopts table, NOT vibeutils'
+    # NlArgs field-declaration order and not alphabetical order. Re-pinned
+    # against real GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/nl --he
+    #   /usr/bin/nl: option '--he' is ambiguous; possibilities: '--header-numbering' '--help'
+    # so '--header-numbering' comes FIRST.
+    # Redirect stdin from /dev/null: a buggy implementation that resolved
+    # this prefix to a value-less flag rather than reporting ambiguity
+    # would otherwise block reading the suite's inherited stdin instead of
+    # failing fast.
+    local he_cmd="" he_out="" he_err="" he_exit=""
+    run_command he_cmd he_out he_err he_exit bash -c "'$binary' --he < /dev/null"
+    local he_expected="nl: option '--he' is ambiguous; possibilities: '--header-numbering' '--help'"$'\n'"Try 'nl --help' for more information."
+    if [[ $he_exit -eq 1 && "$he_err" == "$he_expected" ]]; then
+        print_test_result "nl --he lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "nl --he lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$he_expected', got exit=$he_exit stderr='$he_err'"
+    fi
+
+    # AMBIGUOUS ORDER, THREE CANDIDATES: "--nu" prefixes number_separator,
+    # number_width and number_format (single-letter fields like "n" are
+    # excluded: their one-character long flag can never match a
+    # two-character prefix). GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/nl --nu
+    #   /usr/bin/nl: option '--nu' is ambiguous; possibilities: '--number-separator' '--number-width' '--number-format'
+    # which is the exact REVERSE of vibeutils' current field order, so a
+    # fix that merely swapped two neighbours would not satisfy this.
+    local nu_cmd="" nu_out="" nu_err="" nu_exit=""
+    run_command nu_cmd nu_out nu_err nu_exit bash -c "'$binary' --nu < /dev/null"
+    local nu_expected="nl: option '--nu' is ambiguous; possibilities: '--number-separator' '--number-width' '--number-format'"$'\n'"Try 'nl --help' for more information."
+    if [[ $nu_exit -eq 1 && "$nu_err" == "$nu_expected" ]]; then
+        print_test_result "nl --nu lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "nl --nu lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$nu_expected', got exit=$nu_exit stderr='$nu_err'"
+    fi
+
+    # The longest prefix still ambiguous over the same three options.
+    # Candidate order must not depend on how much of the option was typed:
+    #   $ LC_ALL=C /usr/bin/nl --number-
+    #   /usr/bin/nl: option '--number-' is ambiguous; possibilities: '--number-separator' '--number-width' '--number-format'
+    local nud_cmd="" nud_out="" nud_err="" nud_exit=""
+    run_command nud_cmd nud_out nud_err nud_exit bash -c "'$binary' --number- < /dev/null"
+    local nud_expected="nl: option '--number-' is ambiguous; possibilities: '--number-separator' '--number-width' '--number-format'"$'\n'"Try 'nl --help' for more information."
+    if [[ $nud_exit -eq 1 && "$nud_err" == "$nud_expected" ]]; then
+        print_test_result "nl --number- lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "nl --number- lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$nud_expected', got exit=$nud_exit stderr='$nud_err'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}nl tests completed${NC}"
