@@ -363,10 +363,10 @@ test_df() {
     # Ceiling rounding: size/used/avail columns must all be exactly 1 (not
     # 0, and not a wrapped garbage value from the overflow).
     local ov1_row ov1_size ov1_used ov1_avail
-    ov1_row=$(echo "$ov1_stdout" | sed -n '2p')
-    ov1_size=$(echo "$ov1_row" | awk '{print $2}')
-    ov1_used=$(echo "$ov1_row" | awk '{print $3}')
-    ov1_avail=$(echo "$ov1_row" | awk '{print $4}')
+    ov1_row=$(sed -n '2p' <<<"$ov1_stdout")
+    ov1_size=$(awk '{print $2}' <<<"$ov1_row")
+    ov1_used=$(awk '{print $3}' <<<"$ov1_row")
+    ov1_avail=$(awk '{print $4}' <<<"$ov1_row")
     if [[ "$ov1_size" == "1" && "$ov1_used" == "1" && "$ov1_avail" == "1" ]]; then
         print_test_result "df --block-size=u64max ceils size/used/avail to 1" "PASS"
     else
@@ -390,10 +390,10 @@ test_df() {
     # (it already passes on unfixed code, see the unit-test comment above)
     # would not constrain behavior at all.
     local ov2_row ov2_size ov2_used ov2_avail
-    ov2_row=$(echo "$ov2_stdout" | sed -n '2p')
-    ov2_size=$(echo "$ov2_row" | awk '{print $2}')
-    ov2_used=$(echo "$ov2_row" | awk '{print $3}')
-    ov2_avail=$(echo "$ov2_row" | awk '{print $4}')
+    ov2_row=$(sed -n '2p' <<<"$ov2_stdout")
+    ov2_size=$(awk '{print $2}' <<<"$ov2_row")
+    ov2_used=$(awk '{print $3}' <<<"$ov2_row")
+    ov2_avail=$(awk '{print $4}' <<<"$ov2_row")
     if [[ "$ov2_size" == "1" && "$ov2_used" == "1" && "$ov2_avail" == "1" ]]; then
         print_test_result "df --block-size=2^63-1 ceils size/used/avail to 1" "PASS"
     else
@@ -419,10 +419,10 @@ test_df() {
     # where the process panics before printing anything) yields an empty
     # string instead of a nonzero exit that would abort the whole suite
     # under `set -euo pipefail` (test_runner.sh invokes test_df bare).
-    ov3_total_row=$(echo "$ov3_stdout" | awk '/^total/')
-    ov3_total_size=$(echo "$ov3_total_row" | awk '{print $2}')
-    ov3_total_used=$(echo "$ov3_total_row" | awk '{print $3}')
-    ov3_total_avail=$(echo "$ov3_total_row" | awk '{print $4}')
+    ov3_total_row=$(awk '/^total/' <<<"$ov3_stdout")
+    ov3_total_size=$(awk '{print $2}' <<<"$ov3_total_row")
+    ov3_total_used=$(awk '{print $3}' <<<"$ov3_total_row")
+    ov3_total_avail=$(awk '{print $4}' <<<"$ov3_total_row")
     if [[ "$ov3_total_size" == "1" && "$ov3_total_used" == "1" && "$ov3_total_avail" == "1" ]]; then
         print_test_result "df --total --block-size=u64max ceils total row to 1" "PASS"
     else
@@ -443,10 +443,10 @@ test_df() {
     run_command regk_cmd regk_stdout regk_stderr regk_exit \
         "$binary" -k /
     local reg1k_header regk_header reg1k_size regk_size
-    reg1k_header=$(echo "$reg1k_stdout" | sed -n '1p')
-    regk_header=$(echo "$regk_stdout" | sed -n '1p')
-    reg1k_size=$(echo "$reg1k_stdout" | awk 'NR==2{print $2}')
-    regk_size=$(echo "$regk_stdout" | awk 'NR==2{print $2}')
+    reg1k_header=$(sed -n '1p' <<<"$reg1k_stdout")
+    regk_header=$(sed -n '1p' <<<"$regk_stdout")
+    reg1k_size=$(awk 'NR==2{print $2}' <<<"$reg1k_stdout")
+    regk_size=$(awk 'NR==2{print $2}' <<<"$regk_stdout")
     if [[ "$reg1k_exit" -eq 0 && "$regk_exit" -eq 0 && \
           "$reg1k_header" == "$regk_header" && \
           "$reg1k_size" == "$regk_size" && \
