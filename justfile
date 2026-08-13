@@ -281,6 +281,15 @@ tiger-check:
 test-audit-check:
     @bash tests/tools/audit-check_test.sh
 
+# Every run gets a private working directory, so a leftover fixture can
+# never change a later run's outcome. Needs a build, since it runs the real
+# mkdir suite, and takes ~5 minutes — the full-suite guard is most of it.
+# Also in tests/tools/, so it needs an explicit invocation.
+#
+# Contract tests for scripts/run-integration.sh (issue #125)
+test-run-integration: build
+    @bash tests/tools/run-integration_test.sh
+
 # Stage-1 audit pre-pass over every unit in build/utils.zig. A finding
 # already recorded in scripts/audit-baseline.tsv is BASELINED; anything
 # else is NEW and fails. Plain sh + awk, so it needs no Zig toolchain.
@@ -373,6 +382,15 @@ it: build
 it-util util: build
     @echo "Running comprehensive tests for {{util}} utility..."
     @scripts/run-integration.sh {{util}}
+
+# A SERIAL loop does not reproduce #125 — nothing contaminates the cwd
+# between iterations — so use --concurrent K to probe the real mechanism:
+# `just stress --concurrent 2 --iterations 20 mkdir`. A failing iteration's
+# temp tree and log are kept; a passing one's are deleted.
+#
+# Stress one utility's integration suite, hunting working-directory contamination
+stress *args: build
+    @./scripts/stress-integration.sh {{args}}
 
 # List available utilities for integration testing
 it-list: build

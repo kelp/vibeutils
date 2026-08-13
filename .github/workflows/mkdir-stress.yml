@@ -1,0 +1,77 @@
+name: mkdir Stress (issue #125)
+
+# Manual only. This is the closing criterion for issue #125: the mechanism
+# behind the flake is proven and fixed on Linux, but the trigger was only
+# ever observed on a macOS dev box, so the fix is confirmed by hammering
+# the mkdir suite on macOS rather than by a single green run.
+#
+# Two legs, and only the second one is a real probe:
+#   serial      - a regression guard. It does NOT reproduce #125, not even
+#                 before the fix, because nothing contaminates the working
+#                 directory between iterations.
+#   concurrent  - K suites at once from one shared working directory. This
+#                 is the leg that is red before the fix (6/6 and 8/8 in the
+#                 investigation) and must be green after it.
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Serial iterations of the mkdir suite.
+        required: false
+        default: "100"
+      concurrent_rounds:
+        description: Rounds of two concurrent suites sharing one directory.
+        required: false
+        default: "40"
+
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions (setup-zig, setup-just, etc.) to run on Node 24
+# regardless of their action.yml-declared runtime.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: mkdir-stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    timeout-minutes: 30
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29  # v2.2.1
+        with:
+          version: 0.16.0
+      - name: Install bash 4+ (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bash
+      - uses: ./.github/actions/setup-just
+      - name: Build once
+        run: just build
+      # TMPDIR is pinned so the harness workspace lands somewhere the
+      # upload step can name; by default it follows the ambient $TMPDIR,
+      # which on a macOS runner is an unpredictable /var/folders path.
+      - name: Serial iterations
+        env:
+          ITERATIONS: ${{ inputs.iterations }}
+          TMPDIR: ${{ runner.temp }}
+        run: ./scripts/stress-integration.sh --iterations "$ITERATIONS" mkdir
+      - name: Concurrent rounds
+        env:
+          ROUNDS: ${{ inputs.concurrent_rounds }}
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          ./scripts/stress-integration.sh --concurrent 2 \
+            --iterations "$ROUNDS" mkdir
+      # The harness keeps a failing iteration's whole tree — the log with
+      # the Expected/Got block, the suite's $TEMP_DIR, and the shared
+      # working directory. That is the evidence #125 never produced, so it
+      # has to leave the runner.
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: mkdir-stress-evidence
+          path: ${{ runner.temp }}/vibeutils-stress-*
+          if-no-files-found: warn

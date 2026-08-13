@@ -89,6 +89,19 @@
 
 ### Fixed
 
+- **Integration runs no longer share a working directory.**
+  `tests/utilities/mkdir_test.sh` builds its fixtures with relative
+  paths, so whatever directory `scripts/run-integration.sh` was started
+  from became scratch space for the whole suite — the caller's cwd (the
+  repo root under `just it`) when unprivileged, the test user's home
+  when demoting. A leftover `combo/` from an interrupted or concurrent
+  run made `mkdir -pv combo/test/path` print two "created directory"
+  lines instead of three, failing once and then deleting the
+  contaminant, which is why the flake never reproduced. Every run now
+  gets a private working directory that is removed afterwards, so
+  concurrent suites and interrupted ones can no longer affect each
+  other (#125).
+
 - **`df` no longer panics on a very large `--block-size`.** Any block
   size within a filesystem's byte count of `u64max` overflowed the
   ceiling divide `bytes + display_block - 1`, which wraps before the
