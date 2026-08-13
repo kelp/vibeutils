@@ -109,6 +109,20 @@
   `-o` and `-g` keep the surviving column at its section width. The
   four columns join the single measuring pass that already computed
   the time and `-s` widths rather than adding a third traversal (#124).
+- **Unambiguous long-option abbreviations now resolve, as GNU's
+  `getopt_long` does.** `wc --vers` printed `unrecognized option`
+  where GNU prints the version banner, because long flags matched
+  only by exact name. A prefix matching exactly one option now
+  resolves to it, and one matching several reports them —
+  `option '--he' is ambiguous; possibilities: …` — in field
+  declaration order, matching how GNU orders its own longopts table
+  rather than alphabetically. An exact match still wins over being
+  the prefix of something longer, so `cat --number`, `id --group`
+  and `rm --interactive` keep working rather than becoming
+  ambiguous. Downstream diagnostics name the expanded option, so
+  `cut --deli` reports `option '--delimiter' requires an argument`.
+  Shared by the utilities that parse through `common.argparse`;
+  those with hand-rolled parsers are unaffected (#128).
 
 - **Option errors name the offending flag and carry GNU's hint
   line.** `argparse` collapsed every parse failure into one static
