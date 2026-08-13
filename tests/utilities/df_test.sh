@@ -322,4 +322,162 @@ test_df() {
         print_test_result "df --block-size=0 rejected with exit 1" "FAIL" \
             "Exit: $bs0_exit, stderr: $bs0_stderr"
     fi
+
+    # ==================================================================
+    # Issue #138: the ceiling-divide `bytes + display_block - 1` overflows
+    # u64 when display_block is near u64::MAX, so df panics with 'integer
+    # overflow' instead of printing a table. Two identical-shape sites:
+    # src/df.zig:1155 (formatSize, the default and --total per-fs row) and
+    # src/df.zig:1873 (printTotal_formatField, only reachable via --total's
+    # total row -- a fix touching only formatSize leaves this one panicking).
+    #
+    # Expected values pinned against real GNU coreutils 9.4, LC_ALL=C, on
+    # this host:
+    #   LC_ALL=C /usr/bin/df --block-size=18446744073709551615 /
+    #     Filesystem     19EB-blocks  Used Available Use% Mounted on
+    #     /dev/vda                 1     1         1  40% /
+    #   LC_ALL=C /usr/bin/df --block-size=9223372036854775807 /
+    #     Filesystem     9.3EB-blocks  Used Available Use% Mounted on
+    #     /dev/vda                  1     1         1  40% /
+    #   LC_ALL=C /usr/bin/df --total --block-size=18446744073709551615 /
+    #     Filesystem     19EB-blocks  Used Available Use% Mounted on
+    #     /dev/vda                 1     1         1  40% /
+    #     total                    1     1         1  40% -
+    # (size/used/avail all ceil to exactly 1 block for any nonzero byte
+    # count against a block size that large; Use% varies by host disk
+    # usage and is intentionally not asserted below.)
+    # ==================================================================
+    echo -e "${CYAN}Testing --block-size overflow safety (issue #138)...${NC}"
+
+    local ov1_cmd ov1_stdout ov1_stderr ov1_exit
+    run_command ov1_cmd ov1_stdout ov1_stderr ov1_exit \
+        "$binary" --block-size=18446744073709551615 /
+    if [[ $ov1_exit -eq 0 && "$ov1_stdout" == *"19EB-blocks"* && \
+          "$ov1_stderr" != *"panic"* ]]; then
+        print_test_result "df --block-size=u64max does not panic, exit 0" "PASS"
+    else
+        print_test_result "df --block-size=u64max does not panic, exit 0" "FAIL" \
+            "Exit: $ov1_exit, stdout: $ov1_stdout, stderr: $ov1_stderr"
+    fi
+
+    # Ceiling rounding: size/used/avail columns must all be exactly 1 (not
+    # 0, and not a wrapped garbage value from the overflow).
+    local ov1_row ov1_size ov1_used ov1_avail
+    ov1_row=$(echo "$ov1_stdout" | sed -n '2p')
+    ov1_size=$(echo "$ov1_row" | awk '{print $2}')
+    ov1_used=$(echo "$ov1_row" | awk '{print $3}')
+    ov1_avail=$(echo "$ov1_row" | awk '{print $4}')
+    if [[ "$ov1_size" == "1" && "$ov1_used" == "1" && "$ov1_avail" == "1" ]]; then
+        print_test_result "df --block-size=u64max ceils size/used/avail to 1" "PASS"
+    else
+        print_test_result "df --block-size=u64max ceils size/used/avail to 1" "FAIL" \
+            "Row: $ov1_row"
+    fi
+
+    local ov2_cmd ov2_stdout ov2_stderr ov2_exit
+    run_command ov2_cmd ov2_stdout ov2_stderr ov2_exit \
+        "$binary" --block-size=9223372036854775807 /
+    if [[ $ov2_exit -eq 0 && "$ov2_stdout" == *"9.3EB-blocks"* && \
+          "$ov2_stderr" != *"panic"* ]]; then
+        print_test_result "df --block-size=2^63-1 does not panic, exit 0" "PASS"
+    else
+        print_test_result "df --block-size=2^63-1 does not panic, exit 0" "FAIL" \
+            "Exit: $ov2_exit, stdout: $ov2_stdout, stderr: $ov2_stderr"
+    fi
+
+    # Pin the exact GNU columns for this boundary case too (size/used/avail
+    # all ceil to 1), not just exit-0 -- otherwise this near-vacuous check
+    # (it already passes on unfixed code, see the unit-test comment above)
+    # would not constrain behavior at all.
+    local ov2_row ov2_size ov2_used ov2_avail
+    ov2_row=$(echo "$ov2_stdout" | sed -n '2p')
+    ov2_size=$(echo "$ov2_row" | awk '{print $2}')
+    ov2_used=$(echo "$ov2_row" | awk '{print $3}')
+    ov2_avail=$(echo "$ov2_row" | awk '{print $4}')
+    if [[ "$ov2_size" == "1" && "$ov2_used" == "1" && "$ov2_avail" == "1" ]]; then
+        print_test_result "df --block-size=2^63-1 ceils size/used/avail to 1" "PASS"
+    else
+        print_test_result "df --block-size=2^63-1 ceils size/used/avail to 1" "FAIL" \
+            "Row: $ov2_row"
+    fi
+
+    # --total exercises the SECOND overflow site (printTotal_formatField,
+    # src/df.zig:1873), a different function from formatSize.
+    local ov3_cmd ov3_stdout ov3_stderr ov3_exit
+    run_command ov3_cmd ov3_stdout ov3_stderr ov3_exit \
+        "$binary" --total --block-size=18446744073709551615 /
+    if [[ $ov3_exit -eq 0 && "$ov3_stderr" != *"panic"* && \
+          "$ov3_stdout" == *"total"* ]]; then
+        print_test_result "df --total --block-size=u64max does not panic (site 2)" "PASS"
+    else
+        print_test_result "df --total --block-size=u64max does not panic (site 2)" "FAIL" \
+            "Exit: $ov3_exit, stdout: $ov3_stdout, stderr: $ov3_stderr"
+    fi
+
+    local ov3_total_row ov3_total_size ov3_total_used ov3_total_avail
+    # awk (not grep) so an empty/missing total row (today's red state,
+    # where the process panics before printing anything) yields an empty
+    # string instead of a nonzero exit that would abort the whole suite
+    # under `set -euo pipefail` (test_runner.sh invokes test_df bare).
+    ov3_total_row=$(echo "$ov3_stdout" | awk '/^total/')
+    ov3_total_size=$(echo "$ov3_total_row" | awk '{print $2}')
+    ov3_total_used=$(echo "$ov3_total_row" | awk '{print $3}')
+    ov3_total_avail=$(echo "$ov3_total_row" | awk '{print $4}')
+    if [[ "$ov3_total_size" == "1" && "$ov3_total_used" == "1" && "$ov3_total_avail" == "1" ]]; then
+        print_test_result "df --total --block-size=u64max ceils total row to 1" "PASS"
+    else
+        print_test_result "df --total --block-size=u64max ceils total row to 1" "FAIL" \
+            "Row: $ov3_total_row"
+    fi
+
+    # REGRESSION GUARD: ordinary block sizes must be unaffected by the fix.
+    # Compare only stable content (header line + total-size column), not
+    # the whole raw output: Used/Available come from a fresh statfs on
+    # each of the two invocations and can drift by a block under
+    # concurrent disk activity (e.g. sibling worktrees building at once),
+    # which would make a full-output diff spuriously flaky.
+    local reg1k_cmd reg1k_stdout reg1k_stderr reg1k_exit
+    local regk_cmd regk_stdout regk_stderr regk_exit
+    run_command reg1k_cmd reg1k_stdout reg1k_stderr reg1k_exit \
+        "$binary" --block-size=1024 /
+    run_command regk_cmd regk_stdout regk_stderr regk_exit \
+        "$binary" -k /
+    local reg1k_header regk_header reg1k_size regk_size
+    reg1k_header=$(echo "$reg1k_stdout" | sed -n '1p')
+    regk_header=$(echo "$regk_stdout" | sed -n '1p')
+    reg1k_size=$(echo "$reg1k_stdout" | awk 'NR==2{print $2}')
+    regk_size=$(echo "$regk_stdout" | awk 'NR==2{print $2}')
+    if [[ "$reg1k_exit" -eq 0 && "$regk_exit" -eq 0 && \
+          "$reg1k_header" == "$regk_header" && \
+          "$reg1k_size" == "$regk_size" && \
+          "$reg1k_header" == *"1K-blocks"* ]]; then
+        print_test_result "df --block-size=1024 matches -k output (regression)" "PASS"
+    else
+        print_test_result "df --block-size=1024 matches -k output (regression)" "FAIL" \
+            "block-size=1024 header/size: $reg1k_header / $reg1k_size | -k header/size: $regk_header / $regk_size"
+    fi
+
+    # REGRESSION GUARD: 1E block-size labeling from #132 must still work;
+    # the overflow fix touches only the numeric column, not the label.
+    local reg1e_cmd reg1e_stdout reg1e_stderr reg1e_exit
+    run_command reg1e_cmd reg1e_stdout reg1e_stderr reg1e_exit \
+        "$binary" --block-size=1152921504606846976 /
+    if [[ $reg1e_exit -eq 0 && "$reg1e_stdout" == *"1E-blocks"* ]]; then
+        print_test_result "df --block-size=1E still works and labels 1E-blocks (regression)" "PASS"
+    else
+        print_test_result "df --block-size=1E still works and labels 1E-blocks (regression)" "FAIL" \
+            "Exit: $reg1e_exit, output: $reg1e_stdout"
+    fi
+
+    # REGRESSION GUARD: --total -k must be unaffected by the
+    # printTotal_formatField rewrite for ordinary block sizes.
+    local regtk_cmd regtk_stdout regtk_stderr regtk_exit
+    run_command regtk_cmd regtk_stdout regtk_stderr regtk_exit \
+        "$binary" --total -k /
+    if [[ $regtk_exit -eq 0 && "$regtk_stdout" == *"total"* && "$regtk_stdout" == *"1K-blocks"* ]]; then
+        print_test_result "df --total -k totals unchanged (regression)" "PASS"
+    else
+        print_test_result "df --total -k totals unchanged (regression)" "FAIL" \
+            "Exit: $regtk_exit, output: $regtk_stdout"
+    fi
 }
