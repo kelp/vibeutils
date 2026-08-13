@@ -1183,20 +1183,23 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
 /// path in coreutils src/df.c: `u100 / nonroot_total + (u100 % nonroot_total
 /// != 0)`. `used * 100` overflows u64 above 184467440737095516 (~164 PiB), and
 /// the old `+ total - 1` term wrapped earlier still. GNU guards that same bound
-/// and degrades to double, but u128 is exact across the whole u64 range, so the
-/// multiply is simply widened and no fallback path is needed (issue #144).
+/// and degrades to double, so u128 is not merely a simpler way to reach GNU's
+/// answer: above 164 PiB it is a deliberately better one. Sampling both across
+/// the range, GNU's double path prints 101% for a filesystem that is exactly
+/// full, and floors a fraction it cannot represent, in either direction by at
+/// most one. We are exact everywhere, so our digit can differ from GNU's above
+/// that bound (issue #144).
 fn calcUsagePercent(used: u64, total: u64) u8 {
     if (total == 0) return 0;
-    // Past the guard above; every divide and remainder below depends on it.
-    std.debug.assert(total > 0);
     const scaled: u128 = @as(u128, used) * 100;
     const denominator: u128 = total;
     const pct = @divTrunc(scaled, denominator) +
         @intFromBool(@rem(scaled, denominator) != 0);
-    // Only a root-reserved filesystem (used > total) can legitimately exceed
-    // 100, so a >100 result for ordinary input is an arithmetic fault rather
-    // than something the clamp below is entitled to hide.
-    std.debug.assert(used > total or pct <= 100);
+    // Callers pass used = f_blocks - f_bfree and total = used + avail, so used
+    // cannot exceed total and the clamp is dead weight for them. It is kept
+    // because the exported contract is a percentage, and a caller that does
+    // pass used > total -- a summed total that wrapped, say -- must get 100
+    // rather than a value @intCast cannot hold.
     const result: u8 = @intCast(@min(pct, 100));
     // Rounding up means any nonzero usage occupies at least one percent;
     // a @divTrunc regression would report 0% for a nearly-empty filesystem.
@@ -2209,9 +2212,12 @@ fn printTotalDynamic(
     // The percentage is shared with the per-filesystem rows rather than
     // recomputed here, so the overflow-safe arithmetic lives in one place.
     const percent = calcUsagePercent(sum_used_bytes, sum_use_total);
-    const pct_str: []const u8 = if (sum_use_total == 0) "-" else blk: {
-        break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{percent}) catch "?";
-    };
+    const pct_str = formatPercent(&pct_buf, sum_used_bytes, sum_use_total);
+    // Asserted here rather than left to the emit helpers: the colored total
+    // path only re-checks this when it actually draws a usage bar, so in
+    // colored non-bar mode nothing downstream would catch a bad value.
+    std.debug.assert(percent <= 100);
+    std.debug.assert((pct_str.len == 1) == (sum_use_total == 0));
 
     if (s.color_mode == .none) {
         return printTotalDynamic_emitPlain(
@@ -3764,6 +3770,30 @@ test "calcUsagePercent - ordinary operands keep ceiling semantics (issue #144)" 
     try testing.expectEqual(@as(u8, 1), calcUsagePercent(1, 1000));
     try testing.expectEqual(@as(u8, 100), calcUsagePercent(199, 200));
     try testing.expectEqual(@as(u8, 34), calcUsagePercent(1_000_000_000, 3_000_000_000));
+}
+
+// `df` proper cannot reach used > total: callers pass used = f_blocks -|
+// f_bfree and total = used + avail, so the clamp is unreachable from the
+// utility. It is still part of the helper's exported contract -- the return
+// type promises a percentage -- so pin it directly. Vectors stay well clear of
+// the separate aggregate-overflow case tracked as issue #158.
+test "calcUsagePercent - clamps to 100 when used exceeds total" {
+    // Twice the total is 200%, which fits u8, so an unclamped implementation
+    // silently returns 200 instead of trapping.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(200, 100));
+    // One block past full: the smallest overshoot a wrapped total can produce.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(101, 100));
+    // Exactly u8max unclamped -- the last overshoot that still fits the return
+    // type, and so the last one an unclamped @intCast would let through.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(255, 100));
+}
+
+test "calcUsagePercent - clamps values that do not fit the u8 return" {
+    // Ten times the total is 1000%, which no u8 can hold; without the clamp the
+    // narrowing @intCast is illegal behavior rather than a wrong number.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(1_000, 100));
+    // The widest overshoot u64 operands can express: ~1.8e16 percent.
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(std.math.maxInt(u64), 1_000));
 }
 
 test "formatUsageBar - 0 percent" {
