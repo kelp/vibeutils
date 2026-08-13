@@ -165,37 +165,6 @@ fn writeGroupColored(
     }
 }
 
-/// Write user and group names with distinct colors, both justified the same
-/// way -- the case where the two values are of the same kind (both resolved
-/// names, or both bare numbers under -n).
-/// Truecolor: warm wheat for user, soft lavender for group.
-/// 16-color: yellow for user, cyan for group.
-/// Owner and group are sized independently, so dropping one column with -o or
-/// -g leaves the survivor at its own section width. A long-format entry whose
-/// owner resolves while its group does not needs the two directions to differ,
-/// so printLongFormatEntryAligned_ownerGroup drives the two column writers
-/// itself instead of going through here.
-fn writeUserGroupColored(
-    style: anytype,
-    writer: anytype,
-    user_name: []const u8,
-    group_name: []const u8,
-    omit_owner: bool,
-    omit_group: bool,
-    owner_width: usize, // tiger:allow:usize-arch column width is usize
-    group_width: usize, // tiger:allow:usize-arch column width is usize
-    right_align: bool,
-) !void {
-    std.debug.assert(owner_width >= user_name.len);
-    std.debug.assert(group_width >= group_name.len);
-    if (!omit_owner) {
-        try writeOwnerColored(style, writer, user_name, owner_width, right_align);
-    }
-    if (!omit_group) {
-        try writeGroupColored(style, writer, group_name, group_width, right_align);
-    }
-}
-
 /// Write size with tiered color based on file size.
 /// Truecolor: smooth RGB gradient from green (small) to red-orange (large).
 /// 256-color: approximate palette indices.
@@ -1561,50 +1530,194 @@ test "writeNlinkColored - basic mode uses bright_black" {
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[0m") != null);
 }
 
-test "writeUserGroupColored - no color writes plain" {
-    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer buf_aw.deinit();
-    const style = makeTestStyle(&buf_aw.writer, .none);
-
-    // Each column is sized to its own content, so "root" occupies 4 columns
-    // and "wheel" 5, with exactly one space separating the fields.
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false, 4, 5, false);
-    try testing.expectEqualSlices(u8, "root wheel ", buf_aw.writer.buffered());
+/// Issue #124 test helper: a stat'able entry whose only interesting fields
+/// are the ids the owner/group columns render. Owner and group alignment is
+/// a per-value property now, so these tests go through
+/// printLongFormatEntryAligned_ownerGroup -- the function the render path
+/// actually calls, and the one that reads -o/-g -- rather than a combined
+/// writer that no product code drives.
+fn ownerGroupTestEntry(uid: u32, gid: u32) Entry {
+    return .{
+        .name = "f",
+        .kind = .file,
+        .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = 0,
+            .mtime = 0,
+            .kind = .file,
+            .inode = 1,
+            .uid = uid,
+            .gid = gid,
+            .nlink = 1,
+        },
+    };
 }
 
-test "writeUserGroupColored - basic mode uses yellow for user and cyan for group" {
+/// Issue #124 test helper: the name gid 0 resolves to, which is "root" on
+/// Linux and "wheel" on macOS. Only uid 0's name ("root") is portable, so
+/// the group expectations below resolve their name at test time instead of
+/// hardcoding either spelling. Fails loudly if the lookup does not resolve,
+/// because an unresolved id would right-align and change the expected bytes.
+fn ownerGroupTestGroupName(gid: u32, buf: []u8) ![]const u8 {
+    const lookup = try common.file.lookupGroupName(gid, buf);
+    try testing.expect(lookup.resolved);
+    try testing.expect(lookup.name.len > 0);
+    return lookup.name;
+}
+
+/// Issue #124 test helper: column widths for an owner/group render. Only
+/// the owner and group fields are read by the function under test; the rest
+/// carry the smallest legal values so a change to them cannot affect it.
+fn ownerGroupTestWidths(
+    owner: usize, // tiger:allow:usize-arch column width is usize
+    group: usize, // tiger:allow:usize-arch column width is usize
+) LongFormatWidths {
+    std.debug.assert(owner >= 1);
+    std.debug.assert(group >= 1);
+    return .{
+        .block_prefix = 0,
+        .nlink = 1,
+        .owner = owner,
+        .group = group,
+        .size = 1,
+        .time = 12,
+    };
+}
+
+/// Issue #124 test helper: render just the owner/group columns of one entry
+/// through the driver the long-format render path uses, returning the bytes
+/// it wrote. Lets a single test assert several width/flag combinations.
+fn renderOwnerGroup(
+    color_mode: TestStyle.ColorMode,
+    entry: Entry,
+    options: LsOptions,
+    widths: LongFormatWidths,
+    out: *std.Io.Writer.Allocating,
+) ![]const u8 {
+    std.debug.assert(widths.owner >= 1);
+    std.debug.assert(widths.group >= 1);
+    const style = makeTestStyle(&out.writer, color_mode);
+    try printLongFormatEntryAligned_ownerGroup(style, &out.writer, entry, options, widths);
+    return out.writer.buffered();
+}
+
+test "printLongFormatEntryAligned_ownerGroup - no color writes plain" {
+    var tight: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer tight.deinit();
+    var padded: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer padded.deinit();
+
+    var group_buf: [32]u8 = undefined;
+    const group = try ownerGroupTestGroupName(0, &group_buf);
+    const entry = ownerGroupTestEntry(0, 0);
+    const options = LsOptions{ .long_format = true };
+
+    // Each column is sized to its own content, so "root" occupies 4 columns
+    // and the group name its own, with exactly one space separating them.
+    const tight_widths = ownerGroupTestWidths(4, group.len);
+    const tight_want = try std.fmt.allocPrint(testing.allocator, "root {s} ", .{group});
+    defer testing.allocator.free(tight_want);
+    try testing.expectEqualSlices(
+        u8,
+        tight_want,
+        try renderOwnerGroup(.none, entry, options, tight_widths, &tight),
+    );
+
+    // A resolved name left-aligns, so a section wider than this entry's
+    // values pads on the right of each column, never on the left.
+    const padded_widths = ownerGroupTestWidths(6, group.len + 2);
+    const padded_want = try std.fmt.allocPrint(testing.allocator, "root   {s}   ", .{group});
+    defer testing.allocator.free(padded_want);
+    try testing.expectEqualSlices(
+        u8,
+        padded_want,
+        try renderOwnerGroup(.none, entry, options, padded_widths, &padded),
+    );
+}
+
+test "printLongFormatEntryAligned_ownerGroup - basic mode uses yellow user, cyan group" {
     var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buf_aw.deinit();
-    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false, 4, 5, false);
-    const output = buf_aw.writer.buffered();
+    var group_buf: [32]u8 = undefined;
+    const group = try ownerGroupTestGroupName(0, &group_buf);
+    const options = LsOptions{ .long_format = true };
+    const output = try renderOwnerGroup(
+        .basic,
+        ownerGroupTestEntry(0, 0),
+        options,
+        ownerGroupTestWidths(4, group.len),
+        &buf_aw,
+    );
 
     // Should contain yellow (33) for user and cyan (36) for group
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[33m") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[36m") != null);
     try testing.expect(std.mem.indexOf(u8, output, "root") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "wheel") != null);
+    try testing.expect(std.mem.indexOf(u8, output, group) != null);
+    // The user column is written first, so its color opens before the
+    // group's -- a swap of the two writers would reverse this order.
+    const yellow_at = std.mem.indexOf(u8, output, "\x1b[33m").?;
+    const cyan_at = std.mem.indexOf(u8, output, "\x1b[36m").?;
+    try testing.expect(yellow_at < cyan_at);
 }
 
-test "writeUserGroupColored - omit_owner hides user column" {
-    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer buf_aw.deinit();
-    const style = makeTestStyle(&buf_aw.writer, .none);
+test "printLongFormatEntryAligned_ownerGroup - omit_owner hides user column" {
+    var tight: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer tight.deinit();
+    var padded: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer padded.deinit();
 
-    // The surviving group column keeps its own content width of 5.
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", true, false, 4, 5, false);
-    try testing.expectEqualSlices(u8, "wheel ", buf_aw.writer.buffered());
+    var group_buf: [32]u8 = undefined;
+    const group = try ownerGroupTestGroupName(0, &group_buf);
+    const entry = ownerGroupTestEntry(0, 0);
+    const options = LsOptions{ .long_format = true, .omit_owner = true };
+
+    // -g drops the owner field entirely; the surviving group column keeps
+    // its own content width, with no owner padding left ahead of it.
+    const tight_want = try std.fmt.allocPrint(testing.allocator, "{s} ", .{group});
+    defer testing.allocator.free(tight_want);
+    try testing.expectEqualSlices(
+        u8,
+        tight_want,
+        try renderOwnerGroup(.none, entry, options, ownerGroupTestWidths(4, group.len), &tight),
+    );
+
+    // The survivor still pads to the section width, on the right.
+    const padded_widths = ownerGroupTestWidths(4, group.len + 2);
+    const padded_want = try std.fmt.allocPrint(testing.allocator, "{s}   ", .{group});
+    defer testing.allocator.free(padded_want);
+    try testing.expectEqualSlices(
+        u8,
+        padded_want,
+        try renderOwnerGroup(.none, entry, options, padded_widths, &padded),
+    );
 }
 
-test "writeUserGroupColored - omit_group hides group column" {
-    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer buf_aw.deinit();
-    const style = makeTestStyle(&buf_aw.writer, .none);
+test "printLongFormatEntryAligned_ownerGroup - omit_group hides group column" {
+    var tight: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer tight.deinit();
+    var padded: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer padded.deinit();
 
-    // The surviving owner column keeps its own content width of 4.
-    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, true, 4, 5, false);
-    try testing.expectEqualSlices(u8, "root ", buf_aw.writer.buffered());
+    const entry = ownerGroupTestEntry(0, 0);
+    const options = LsOptions{ .long_format = true, .omit_group = true };
+
+    // -o drops the group field entirely; the surviving owner column keeps
+    // its own content width of 4, then the single separator space.
+    try testing.expectEqualSlices(
+        u8,
+        "root ",
+        try renderOwnerGroup(.none, entry, options, ownerGroupTestWidths(4, 5), &tight),
+    );
+
+    // The survivor still pads to the section width, on the right.
+    try testing.expectEqualSlices(
+        u8,
+        "root   ",
+        try renderOwnerGroup(.none, entry, options, ownerGroupTestWidths(6, 5), &padded),
+    );
 }
 
 test "writeSizeColored - no color writes plain" {
