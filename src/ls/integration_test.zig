@@ -1471,7 +1471,7 @@ test "blocks: -l -s right-aligns counts in a field sized to the widest count" {
 // "wheel" on macOS -- this repo's CI runs `zig build test` on macos-26,
 // and this is exactly the macOS failure class CLAUDE.md calls out. Tests
 // below that use `.gid = 0` as a group-column filler therefore resolve
-// the real name via `groupZeroName` at test time and build their expected
+// the real name via `groupName` at test time and build their expected
 // field with `padField`, rather than hardcoding the Linux-only literal
 // "root" -- so the WIDTH/alignment arithmetic each test actually pins is
 // unaffected while the rendered TEXT adapts to whatever the host's gid 0
@@ -1485,19 +1485,38 @@ test "blocks: -l -s right-aligns counts in a field sized to the widest count" {
 // pinned in the issue.
 // ============================================================================
 
-/// Issue #124 test helper: gid 0's real group name on this host ("root" on
-/// Linux, "wheel" on macOS -- see the block comment above). Resolving this
-/// at test time keeps every test below correct on both platforms instead
-/// of hardcoding the Linux-only literal.
-fn groupZeroName(buf: []u8) []const u8 {
-    return common.file.getGroupName(0, buf) catch "root";
+/// Issue #124 test helper: the owner name uid `uid` really renders as on
+/// this host -- a resolved account name, or uid's own decimal string when
+/// the lookup fails. This is the same lookup (and the same numeric
+/// fallback) the formatter measures its column width with, so deriving an
+/// expectation from it is correct on any host by construction rather than
+/// correct on Linux by luck. Cannot fail: getUserName's only error comes
+/// from bufPrint, and 16 bytes hold every u32 (10 digits).
+fn userName(uid: u32, buf: []u8) []const u8 {
+    std.debug.assert(buf.len >= 16);
+    const name = common.file.getUserName(uid, buf) catch unreachable;
+    std.debug.assert(name.len > 0);
+    return name;
+}
+
+/// Issue #124 test helper: the group name gid `gid` really renders as on
+/// this host -- gid 0 is "root" on Linux but "wheel" on macOS, and an
+/// unmapped gid renders as its own digits (see the block comment above).
+/// Resolving it at test time keeps every test below correct on both
+/// platforms instead of hardcoding the Linux-only literal. Cannot fail for
+/// the same reason userName cannot.
+fn groupName(gid: u32, buf: []u8) []const u8 {
+    std.debug.assert(buf.len >= 16);
+    const name = common.file.getGroupName(gid, buf) catch unreachable;
+    std.debug.assert(name.len > 0);
+    return name;
 }
 
 /// Issue #124 test helper: builds a field exactly the way the real
 /// write-helpers do -- `name` padded to `width` on the correct side (left
 /// for name mode, right for `-n` numeric mode), plus exactly one trailing
 /// separator space -- so tests can assert against a runtime-resolved name
-/// (e.g. `groupZeroName`) instead of only a comptime string literal.
+/// (e.g. `groupName`) instead of only a comptime string literal.
 fn padField(buf: []u8, name: []const u8, width: usize, right_align: bool) []const u8 {
     std.debug.assert(width >= name.len);
     std.debug.assert(buf.len > width);
@@ -1563,7 +1582,7 @@ test "printEntries: fixture uid 0 resolves to root; fixture gid 0 does not assum
     // exactly the assumption that is false on macOS (gid 0 is "wheel", not
     // "root") and would also break in a minimal container with no
     // /etc/group. Every test below resolves gid 0's name via
-    // `groupZeroName` at test time instead of assuming it; this guard only
+    // `groupName` at test time instead of assuming it; this guard only
     // confirms the lookup succeeds and returns *something* non-empty, not
     // a specific string, and confirms uid 0's name specifically is "root"
     // since every test's OWNER field literal depends on that being true.
@@ -1572,7 +1591,7 @@ test "printEntries: fixture uid 0 resolves to root; fixture gid 0 does not assum
     try testing.expectEqualStrings("root", uid0_name);
 
     var gid_buf: [32]u8 = undefined;
-    const gid0_name = groupZeroName(&gid_buf);
+    const gid0_name = groupName(0, &gid_buf);
     try testing.expect(gid0_name.len > 0);
 }
 
@@ -1650,10 +1669,10 @@ test "printEntries: -l nlink and size columns widen to the widest value in a sec
     const SIZE_4096 = "4096 ";
 
     // gid 0's name is "root" on Linux but "wheel" on macOS; resolved at
-    // test time (see groupZeroName's comment above) so this test's real
+    // test time (see groupName's comment above) so this test's real
     // point -- nlink/size widening -- holds on both platforms.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -1725,7 +1744,7 @@ test "printEntries: -lh size field widens to the widest rendered string, not a h
     const SIZE_4096H = "4.0K ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -2053,9 +2072,9 @@ test "printEntries: -lg (omit_owner) keeps group column at section width in name
     const SIZE_0 = "0 "; // width 1; no owner column precedes it
     // Left-aligned to width 6 ("424242" is widest) on every platform: gid
     // 0's name is "root" (Linux) or "wheel" (macOS), both shorter than 6;
-    // resolved at test time (see groupZeroName's comment above).
+    // resolved at test time (see groupName's comment above).
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, 6, false);
     const GROUP_424242 = "424242 ";
@@ -2110,11 +2129,11 @@ test "printEntries: -l all-minimal section has no filler whitespace anywhere" {
     );
 
     // gid 0's name is "root" on Linux but "wheel" on macOS; resolved at
-    // test time (see groupZeroName's comment above) instead of hardcoding
+    // test time (see groupName's comment above) instead of hardcoding
     // the issue's Linux-only literal, so this test's real point -- no
     // filler whitespace anywhere -- holds on both platforms.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
 
     const fmt = "total 0\n" ++ "-rw-r--r-- 1 root {s} 0 {s} a\n";
     const expected = try std.fmt.allocPrint(testing.allocator, fmt, .{ group0, time_str });
@@ -2183,7 +2202,7 @@ test "printEntries: -ls block-size prefix width is independent of nlink/owner/gr
     const SIZE_4096 = "4096 ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -2288,11 +2307,11 @@ test "printEntries: mixed section pads null-stat fallbacks to the stat-derived w
     const DATE_NULL = "??? ?? ??:?? "; // unaffected by this bug, its own fallback
 
     // "a"'s group is gid 0, whose name is "root" on Linux but "wheel" on
-    // macOS; resolved at test time (see groupZeroName's comment above) so
+    // macOS; resolved at test time (see groupName's comment above) so
     // the width this test pins holds on both platforms. The null-stat "?"
     // fallback pads to that same resolved width.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_A = padField(&group_field_buf, group0, group0.len, false);
     var group_null_field_buf: [32]u8 = undefined;
@@ -2433,7 +2452,7 @@ test "printEntries: -l nlink column widens past the old hardcoded 3-column width
     const SIZE_0 = "0 ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -2501,7 +2520,7 @@ test "printEntries: -l plain size column widens past the old hardcoded 8-column 
     const SIZE_BIG = "123456789 ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -2580,10 +2599,10 @@ test "printEntries: -l owner/group names left-align, proven with two different-w
     // gid 0's group name is "root" on Linux but "wheel" on macOS; either
     // way its length (4 or 5) is still shorter than "424242" (6), so the
     // column's width stays 6 regardless of platform -- resolved at test
-    // time (see groupZeroName's comment above) so only the padding amount
+    // time (see groupName's comment above) so only the padding amount
     // for the group-0 entry, not the width itself, varies by platform.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, 6, false);
     const GROUP_424242 = "424242 ";
@@ -2657,7 +2676,7 @@ test "printEntries: -l owner/group names (no -n) widen past the old hardcoded 8 
     const OWNER_BIG = "123456789 ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, 9, false);
     const GROUP_BIG = "123456789 ";
@@ -2688,6 +2707,14 @@ test "printEntries: -l owner/group name-mode widens to a genuinely long rendered
     // exercised elsewhere, and it runs deterministically on every host
     // (Linux or macOS, with or without a systemd-network account), unlike
     // the shell-level fixture.
+    //
+    // Which of those two ids actually resolves is NOT portable, so no
+    // width is hardcoded here: both columns are sized from the names
+    // userName/groupName really return on this host. Linux resolves
+    // neither maxInt(u32) id and renders "4294967295" in both columns;
+    // macOS resolves gid -1 to the real group "nogroup" (7 chars) while
+    // leaving the uid unresolved, which is exactly what made a hardcoded
+    // width-10 group column fail there.
     var buf: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buf.deinit();
 
@@ -2732,23 +2759,52 @@ test "printEntries: -l owner/group name-mode widens to a genuinely long rendered
     const PERM_FILE = "-rw-r--r--";
     const NLINK_1 = " 1 ";
     const SIZE_0 = "0 ";
-    // Left-aligned to width 10 ("4294967295" is widest).
-    const OWNER_ROOT = "root       ";
-    const OWNER_BIG = "4294967295 ";
-    const GROUP_BIG = "4294967295 ";
 
-    var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
-    var group_field_buf: [32]u8 = undefined;
-    const GROUP_ROOT = padField(&group_field_buf, group0, 10, false);
+    const big_id = std.math.maxInt(u32);
+    var owner0_buf: [32]u8 = undefined;
+    var owner_big_buf: [32]u8 = undefined;
+    const owner0 = userName(0, &owner0_buf);
+    const owner_big = userName(big_id, &owner_big_buf);
+    var group0_buf: [32]u8 = undefined;
+    var group_big_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group0_buf);
+    const group_big = groupName(big_id, &group_big_buf);
+
+    // Each column is exactly as wide as the widest name it must hold. Both
+    // long names are genuinely longer than the short ones -- that widening
+    // is the entire point of this test, and a fixture that failed to
+    // produce it would silently assert nothing -- so it is asserted rather
+    // than assumed. It holds on every host: uid 0 and gid 0 are the
+    // shortest ids there are ("root" 4, "wheel" 5), while maxInt(u32)
+    // renders either its own 10 digits or a real long-tail account name
+    // ("nogroup", 7, on macOS).
+    try testing.expect(owner_big.len > owner0.len);
+    try testing.expect(group_big.len > group0.len);
+    const owner_width = @max(owner0.len, owner_big.len);
+    const group_width = @max(group0.len, group_big.len);
+
+    // Neither width may coincide with the 8 columns the pre-#124 code
+    // hardcoded, or this test could pass against that very regression.
+    // Linux gives 10 and 10, macOS 10 and 7.
+    try testing.expect(owner_width != 8);
+    try testing.expect(group_width != 8);
+
+    var owner0_field_buf: [32]u8 = undefined;
+    var owner_big_field_buf: [32]u8 = undefined;
+    var group0_field_buf: [32]u8 = undefined;
+    var group_big_field_buf: [32]u8 = undefined;
+    const OWNER_ROOT = padField(&owner0_field_buf, owner0, owner_width, false);
+    const OWNER_BIG = padField(&owner_big_field_buf, owner_big, owner_width, false);
+    const GROUP_ROOT = padField(&group0_field_buf, group0, group_width, false);
+    const GROUP_BIG = padField(&group_big_field_buf, group_big, group_width, false);
 
     const fmt = "total 0\n" ++
-        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
-        PERM_FILE ++ NLINK_1 ++ OWNER_BIG ++ GROUP_BIG ++ SIZE_0 ++ "{s} b\n";
+        PERM_FILE ++ NLINK_1 ++ "{s}{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ "{s}{s}" ++ SIZE_0 ++ "{s} b\n";
     const expected = try std.fmt.allocPrint(
         testing.allocator,
         fmt,
-        .{ GROUP_ROOT, time_str, time_str },
+        .{ OWNER_ROOT, GROUP_ROOT, time_str, OWNER_BIG, GROUP_BIG, time_str },
     );
     defer testing.allocator.free(expected);
 
@@ -2773,10 +2829,20 @@ test "printEntries: -l owner/group name-mode width comes from the rendered name,
     // as "root" (name width 4, digit width only 1). So:
     //   - correct (name-width) hypothesis: max(len("500"), len("root")) = 4
     //   - buggy (digit-width) hypothesis:   max(len("500"), len("0"))    = 3
-    // A digit-width implementation would render "500" as fully packed at
-    // width 3 (no trailing pad), one column narrower than the correct
-    // "500 " (padded to 4). Group is pinned to gid 0 ("root") on both
-    // entries so only the owner column is under test.
+    // A digit-width implementation would render "500" fully packed at
+    // width 3, one column narrower than the correct width-4 field. Group
+    // is pinned to gid 0 ("root") on both entries so only the owner column
+    // is under test.
+    //
+    // uid 500 does not resolve, so it prints as a BARE NUMBER, and GNU's
+    // format_user_or_group right-aligns those -- it keys the alignment on
+    // what it printed, not on -n. Verified against GNU coreutils on this
+    // host with a fixture chowned to the unmapped uid 500 (LC_ALL=C):
+    //   -rw-r--r-- 1 root root 0 ... a
+    //   -rw-r--r-- 1  500  500 0 ... b
+    // So the expected owner field for uid 500 is " 500", right-aligned in
+    // the name-derived width-4 column, next to the LEFT-aligned "root" in
+    // that same column.
     const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
     var entries = [_]types.Entry{
         .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
@@ -2818,17 +2884,18 @@ test "printEntries: -l owner/group name-mode width comes from the rendered name,
     const PERM_FILE = "-rw-r--r--";
     const NLINK_1 = " 1 ";
     const SIZE_0 = "0 ";
-    // Owner left-aligned to width 4 ("root" is widest by rendered length,
-    // NOT "500" by digit count): "500" pads with one trailing space.
-    const OWNER_500 = "500  ";
+    // Width 4 comes from "root" (rendered length), NOT from "500" by digit
+    // count. "root" is a resolved name and left-aligns; "500" is a bare
+    // number and right-aligns, so its one pad column lands in FRONT.
+    const OWNER_500 = " 500 ";
     const OWNER_ROOT = "root ";
     // Group is gid 0 on both entries, so its own width is just its own
     // resolved length regardless; this isolates the owner column as the
     // only variable under test. Resolved at test time (see
-    // groupZeroName's comment above) since gid 0's name is "root" on
+    // groupName's comment above) since gid 0's name is "root" on
     // Linux but "wheel" on macOS.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -2839,6 +2906,110 @@ test "printEntries: -l owner/group name-mode width comes from the rendered name,
         testing.allocator,
         fmt,
         .{ GROUP_ROOT, time_str, GROUP_ROOT, time_str },
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqualStrings(expected, buf.writer.buffered());
+}
+
+test "printEntries: -l right-aligns a bare numeric id beside a left-aligned name in one column" {
+    // GNU's format_user_or_group picks the alignment from WHAT IT PRINTED,
+    // not from -n: a resolved name left-aligns, a bare numeric id
+    // right-aligns, and both happen inside the same section column. The
+    // -n tests elsewhere in this file cannot see the difference, because
+    // -n makes every value numeric; the name-mode tests cannot either,
+    // because their unresolved ids happen to be the widest value and so
+    // fill the column exactly, leaving no pad to place on either side.
+    //
+    // Here three entries make the pad visible on both rules at once. In
+    // the owner column: "root" (resolved, 4) left-aligned, "123456789"
+    // (unresolved, 9, the width) exact, and "500" (unresolved, 3)
+    // right-aligned with six leading spaces. The group column repeats it
+    // with gid 424242 so both columns are pinned independently. Verified
+    // against GNU coreutils on this host with fixtures chowned to the
+    // unmapped ids (LC_ALL=C), which prints e.g.
+    //   -rw-r--r-- 1 root            root            0 ... a
+    //   -rw-r--r-- 1             500             500 0 ... b
+    // A regression that keys alignment on options.numeric_ids alone
+    // renders "500      " and "424242   " instead.
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+
+    const mtime_ns: i128 = 1_700_000_000 * std.time.ns_per_s;
+    var entries = [_]types.Entry{
+        .{ .name = "a", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 1,
+            .uid = 0,
+            .gid = 0,
+            .nlink = 1,
+        } },
+        .{ .name = "b", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 2,
+            .uid = 500,
+            .gid = 424242,
+            .nlink = 1,
+        } },
+        .{ .name = "c", .kind = .file, .stat = common.file.FileInfo{
+            .size = 0,
+            .mode = 0o644,
+            .atime = mtime_ns,
+            .mtime = mtime_ns,
+            .kind = .file,
+            .inode = 3,
+            .uid = 123456789,
+            .gid = 123456789,
+            .nlink = 1,
+        } },
+    };
+
+    const options = types.LsOptions{ .long_format = true };
+    const style = try display.initStyle(testing.allocator, &buf.writer, .never);
+    _ = try formatter.printEntries(testing.allocator, &entries, &buf.writer, options, style);
+
+    var time_buf: [128]u8 = undefined;
+    const time_str = try formatter.formatTimeWithStyle(
+        mtime_ns,
+        .default,
+        testing.allocator,
+        &time_buf,
+    );
+
+    const PERM_FILE = "-rw-r--r--";
+    const NLINK_1 = " 1 ";
+    const SIZE_0 = "0 ";
+    // Both columns are 9 wide ("123456789"). gid 0's name is "root" on
+    // Linux and "wheel" on macOS, so the group field for entry "a" is
+    // built from the resolved name; either way it is shorter than 9 and
+    // left-aligned, while every numeric field right-aligns.
+    const OWNER_ROOT = "root      ";
+    const OWNER_500 = "      500 ";
+    const OWNER_BIG = "123456789 ";
+    const GROUP_424242 = "   424242 ";
+    const GROUP_BIG = "123456789 ";
+
+    var group_name_buf: [32]u8 = undefined;
+    const group0 = groupName(0, &group_name_buf);
+    var group_field_buf: [32]u8 = undefined;
+    const GROUP_ROOT = padField(&group_field_buf, group0, 9, false);
+
+    const fmt = "total 0\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_0 ++ "{s} a\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_500 ++ GROUP_424242 ++ SIZE_0 ++ "{s} b\n" ++
+        PERM_FILE ++ NLINK_1 ++ OWNER_BIG ++ GROUP_BIG ++ SIZE_0 ++ "{s} c\n";
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        fmt,
+        .{ GROUP_ROOT, time_str, time_str, time_str },
     );
     defer testing.allocator.free(expected);
 
@@ -2911,10 +3082,10 @@ test "printEntries: -l owner and group columns size independently, not to a shar
     // Group left-aligns to width 6 ("424242" is widest in the group
     // column specifically) on every platform: gid 0's name is "root"
     // (Linux) or "wheel" (macOS), both shorter than 6, resolved at test
-    // time (see groupZeroName's comment above) since only the padding
+    // time (see groupName's comment above) since only the padding
     // amount for the group-0 entry -- not the width itself -- varies.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, 6, false);
     const GROUP_424242 = "424242 ";
@@ -3048,7 +3219,7 @@ test "printEntries: --thousands size column widens to the widest grouped rendere
     const SIZE_GROUPED = "1,234,567 ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -3129,7 +3300,7 @@ test "printEntries: -k size column widens to the widest rendered kilobyte string
     const KB_2 = "2 ";
 
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
@@ -3216,12 +3387,12 @@ test "printEntries: successive sections each recompute their own column widths i
 
     // Both sections' single entry has gid 0, whose name is "root" on
     // Linux but "wheel" on macOS; resolved at test time (see
-    // groupZeroName's comment above) so the widths this test pins hold on
+    // groupName's comment above) so the widths this test pins hold on
     // both platforms. Each section recomputes independently, but since
     // both sections' only value is the same gid 0, the resolved field is
     // identical in both.
     var group_name_buf: [32]u8 = undefined;
-    const group0 = groupZeroName(&group_name_buf);
+    const group0 = groupName(0, &group_name_buf);
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
