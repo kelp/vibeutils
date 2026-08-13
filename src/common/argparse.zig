@@ -1853,3 +1853,139 @@ test "parseWithDiagnostic: a short flag character is never used to prefix-resolv
     try testing.expectEqual(ArgParser.Diagnostic.Kind.unknown_long, diag.kind);
     try testing.expectEqualStrings("--1", diag.flag);
 }
+
+/// Exactly TWO flag fields, sharing the prefix "ver" and nothing longer.
+///
+/// The width is the point. Every other ambiguity fixture in this file has
+/// three or more candidates, so a threshold that fired on "more than two
+/// matches" instead of "more than one" would still look correct there. Two
+/// is the smallest ambiguity GNU reports, so it is the only width that pins
+/// the boundary. Held apart from `--verb`, which names exactly one of them,
+/// so the fixture cannot be ambiguous by construction.
+const TwoWayPrefixArgs = struct {
+    verbose: bool = false,
+    version: bool = false,
+};
+
+test "parseWithDiagnostic: a TWO-way prefix collision is ambiguous, not silently resolved" {
+    // GNU (LC_ALL=C): `rm --ver` -> "option '--ver' is ambiguous;
+    // possibilities: '--verbose' '--version'", exit 1. Two candidates is the
+    // narrowest ambiguity there is: resolving it to either field — the first
+    // or the last one scanned — is the failure this pins.
+    const args = [_][]const u8{"--ver"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(TwoWayPrefixArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.ambiguous_long, diag.kind);
+    try testing.expectEqualStrings("--ver", diag.flag);
+    // Negative space: not the unknown-option diagnostic, which is the other
+    // way a two-way collision could plausibly be (mis)reported.
+    try testing.expect(diag.kind != ArgParser.Diagnostic.Kind.unknown_long);
+}
+
+test "parseWithDiagnostic: a two-field fixture still resolves the prefix that names one field" {
+    // Companion to the test above: "--verb" is a prefix of "--verbose" alone,
+    // so this fixture is NOT ambiguous by construction. Without this, a
+    // parser that called every prefix ambiguous would pass the test above
+    // for the wrong reason.
+    const args = [_][]const u8{"--verb"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(
+        TwoWayPrefixArgs,
+        testing.allocator,
+        &args,
+        &diag,
+    );
+    try testing.expect(result.verbose);
+    try testing.expect(!result.version);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+/// One field name is a STRICT PREFIX of another: "number" against
+/// "number-nonblank", the shape `cat` really has (`-n`/`-b`) and the shape
+/// `rm --interactive` / `--interactive-once` and `tail --follow` /
+/// `--follow-retry` have in this repo.
+///
+/// No other fixture in this file has it, and it is the only shape that can
+/// tell exact matching apart from prefix matching: for every other struct
+/// here an exact spelling matches exactly one field either way round, so
+/// running the prefix pass first would go unnoticed.
+const StrictPrefixArgs = struct {
+    number: bool = false,
+    number_nonblank: bool = false,
+};
+
+test "parseWithDiagnostic: an exact long flag wins over being a strict prefix of another" {
+    // GNU: `cat --number` sets -n and never reports ambiguity against
+    // `--number-nonblank`, even though the typed name IS a proper prefix of
+    // it. Exact-match-wins is the whole load-bearing property of the
+    // abbreviation design, so it is pinned on the one struct shape that can
+    // observe it.
+    const args = [_][]const u8{"--number"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(
+        StrictPrefixArgs,
+        testing.allocator,
+        &args,
+        &diag,
+    );
+    try testing.expect(result.number);
+    // Negative space: the LONGER option must not have been set as a
+    // side effect, and no diagnostic may have been recorded.
+    try testing.expect(!result.number_nonblank);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+test "parseWithDiagnostic: the longer of two strict-prefix flags still resolves to itself" {
+    // The other half of the pair: "--number-nonblank" names only itself, so
+    // it must set that field and leave the shorter one alone. Guards against
+    // a fix for the case above that made the SHORTER field win everything.
+    const args = [_][]const u8{"--number-nonblank"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = try ArgParser.parseWithDiagnostic(
+        StrictPrefixArgs,
+        testing.allocator,
+        &args,
+        &diag,
+    );
+    try testing.expect(result.number_nonblank);
+    try testing.expect(!result.number);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.none, diag.kind);
+}
+
+test "parseWithDiagnostic: a strict-prefix pair is still ambiguous below the shorter name" {
+    // "--numb" stops one character short of "--number", so it is a genuine
+    // abbreviation of BOTH fields and must be reported ambiguous. Without
+    // this, the exact-match tests above would also pass on a parser that had
+    // simply stopped prefix-matching altogether.
+    const args = [_][]const u8{"--numb"};
+    var diag: ArgParser.Diagnostic = .{};
+    const result = ArgParser.parseWithDiagnostic(StrictPrefixArgs, testing.allocator, &args, &diag);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+    try testing.expectEqual(ArgParser.Diagnostic.Kind.ambiguous_long, diag.kind);
+    try testing.expectEqualStrings("--numb", diag.flag);
+}
+
+test "parseOrExit: strict-prefix candidates are both listed, shorter name first" {
+    // The rendered form of the case above. Both names appear even though one
+    // is a prefix of the other, in field-declaration order, so a candidate
+    // walk that skipped a field once a longer field had already matched
+    // would drop one of them.
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const args = [_][]const u8{"--numb"};
+    const result = ArgParser.parseOrExit(
+        StrictPrefixArgs,
+        testing.allocator,
+        &args,
+        "testprog",
+        &w,
+    );
+    try testing.expectError(error.ParseFailed, result);
+    try testing.expectEqualStrings(
+        "testprog: option '--numb' is ambiguous; " ++
+            "possibilities: '--number' '--number-nonblank'\n" ++
+            "Try 'testprog --help' for more information.\n",
+        w.buffered(),
+    );
+}

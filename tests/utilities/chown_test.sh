@@ -562,4 +562,23 @@ test_chown() {
     rm -rf "$cyc_parent" "$cyc_parent.stderr"
 
     echo -e "${CYAN}chown testing completed${NC}"
+
+    echo -e "${CYAN}Testing ambiguous-abbreviation candidate order (issue #128)...${NC}"
+
+    # GNU orders an ambiguous option's candidates by its own longopts table,
+    # not by vibeutils' Args field-declaration order. Re-pinned against real
+    # GNU coreutils 9.4 on this host:
+    #   $ LC_ALL=C /usr/bin/chown --v
+    #   /usr/bin/chown: option '--v' is ambiguous; possibilities: '--verbose' '--version'
+    # so '--verbose' comes FIRST; vibeutils lists '--version' first today.
+    local abbrev_v_cmd="" abbrev_v_out="" abbrev_v_err="" abbrev_v_exit=""
+    run_command abbrev_v_cmd abbrev_v_out abbrev_v_err abbrev_v_exit "$binary" --v
+    local abbrev_v_expected="chown: option '--v' is ambiguous; possibilities: '--verbose' '--version'"$'\n'"Try 'chown --help' for more information."
+    if [[ $abbrev_v_exit -eq 1 && "$abbrev_v_err" == "$abbrev_v_expected" ]]; then
+        print_test_result "chown --v lists candidates in GNU longopts order" "PASS"
+    else
+        print_test_result "chown --v lists candidates in GNU longopts order" "FAIL" \
+            "Expected: '$abbrev_v_expected', got exit=$abbrev_v_exit stderr='$abbrev_v_err'"
+    fi
+
 }
