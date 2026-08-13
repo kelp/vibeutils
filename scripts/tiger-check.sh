@@ -10,8 +10,11 @@
 #                                violations; exit 1 if any.
 #   tiger-check.sh --base <ref>  scan src/**/*.zig that differ from
 #                                <ref>; classify each violation NEW
-#                                (offending line is ADDED in the diff)
-#                                vs PRE; exit 1 ONLY if any NEW.
+#                                (any line of the construct it describes
+#                                is ADDED in the diff — one line for the
+#                                line rules, the whole function for
+#                                long-fn and self-recursion) vs PRE;
+#                                exit 1 ONLY if any NEW.
 #   tiger-check.sh --staged      like --base but compare index to HEAD
 #                                (for a pre-commit hook).
 #   tiger-check.sh               (no args) scan all src/**/*.zig;
@@ -71,14 +74,26 @@ function status_for(lineno,   key) {
     return "PRE";
 }
 
+# Span variant, for rules whose violation describes a multi-line construct
+# rather than one offending line. A function whose body grows past the limit
+# while its signature stays untouched is new debt, so any added line anywhere
+# in [start, end] must classify the violation NEW.
+function status_for_span(start, end,   i) {
+    if (STATUS_MODE != "diff") return "-";
+    for (i = start; i <= end; i++) {
+        if (index(ADDED, " " i " ") > 0) return "NEW";
+    }
+    return "PRE";
+}
+
 # Inline-suppression escape hatch. A violation is suppressed if the
 # ORIGINAL source line at lineno carries a comment token of the form
 # "tiger:allow:<rule>" matching this rule, or the wildcard
 # "tiger:allow:*". The token must be read from the RAW line (it lives in
 # a comment, which strip_comments_strings would otherwise blank), so we
-# stash each raw line in RAW[lineno] and scan it here. For long-fn the
-# violation is reported at the fn signature line, so lineno is fn_start
-# and the token is expected on that signature line.
+# stash each raw line in RAW[lineno] and scan it here. Span rules report at
+# the fn signature line, so lineno is fn_start and the token is expected on
+# that signature line even though the whole body decides NEW versus PRE.
 function is_suppressed(rule, lineno,   raw, tok, star) {
     raw = RAW[lineno];
     if (raw == "") return 0;
@@ -95,6 +110,19 @@ function emit(rule, lineno, detail,   st) {
         return;
     }
     st = status_for(lineno);
+    printf "%s\t%s:%d\t%s\t%s\n", rule, FILE, lineno, st, detail;
+}
+
+# Like emit, but the violation covers [start, end] instead of one line. It
+# still reports at lineno, because the output format, the sort key, and the
+# pre-commit hook filter all key on the declaration line; only the NEW versus
+# PRE decision widens to the span.
+function emit_span(rule, lineno, start, end, detail,   st) {
+    if (is_suppressed(rule, lineno)) {
+        SUPPRESSED++;
+        return;
+    }
+    st = status_for_span(start, end);
     printf "%s\t%s:%d\t%s\t%s\n", rule, FILE, lineno, st, detail;
 }
 
@@ -322,13 +350,16 @@ function finalize_fn(end_lineno) {
     # opening-brace line and includes the closing-brace line, i.e. the
     # inclusive span of body content from just after "{" through "}".
     # Per the contract, a body spanning MORE than 70 lines is a
-    # violation. end_lineno is the closing-brace line (kept for clarity
-    # and possible future detail reporting).
+    # violation. Both rules describe the whole function, so they are
+    # attributed over [fn_start, end_lineno] — signature, continuation
+    # lines and body — or a body edited past the limit under an untouched
+    # signature would read PRE and slip past a gate keyed on new=0.
     if (fn_body_lines > 70) {
-        emit("long-fn", fn_start, "body_lines=" fn_body_lines " fn=" fn_name);
+        emit_span("long-fn", fn_start, fn_start, end_lineno,
+                  "body_lines=" fn_body_lines " fn=" fn_name);
     }
     if (fn_recursed) {
-        emit("self-recursion", fn_start, "fn=" fn_name);
+        emit_span("self-recursion", fn_start, fn_start, end_lineno, "fn=" fn_name);
     }
     in_fn = 0;
     fn_pending = 0;
