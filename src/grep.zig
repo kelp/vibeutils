@@ -73,6 +73,10 @@ const GrepOptions = struct {
     exclude_dirs: std.ArrayListUnmanaged([]const u8) = .empty,
     patterns: std.ArrayListUnmanaged([]const u8) = .empty,
     pattern_file_contents: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// True once `-e`/`--regexp` or `-f`/`--file` named a pattern source.
+    /// GNU consults this after the whole scan to decide whether the first
+    /// operand is PATTERNS; an empty `-f` file still counts as a source.
+    pattern_source_given: bool = false,
     files: std.ArrayListUnmanaged([]const u8) = .empty,
     help: bool = false,
     version: bool = false,
@@ -150,17 +154,26 @@ fn parseArgs(
                 .fail => return null,
             }
         } else {
-            // Positional argument
-            if (opts.patterns.items.len == 0) {
-                // First positional is the pattern (when no -e given)
-                try opts.patterns.append(allocator, arg);
-            } else {
-                try opts.files.append(allocator, arg);
-            }
+            // Operands are collected in order and the pattern slot is decided
+            // once the scan finishes, because -e/-f may still appear later.
+            try opts.files.append(allocator, arg);
         }
     }
 
+    try parseArgs_takePatternOperand(allocator, &opts);
     return opts;
+}
+
+/// GNU takes the first operand as PATTERNS only when neither -e nor -f
+/// supplied one; `--` ends option parsing without changing that rule.
+fn parseArgs_takePatternOperand(allocator: Allocator, opts: *GrepOptions) !void {
+    assert(opts.patterns.items.len == 0 or opts.pattern_source_given);
+    if (opts.pattern_source_given) return;
+    if (opts.files.items.len == 0) return;
+    const operand_count_before = opts.files.items.len;
+    const pattern = opts.files.orderedRemove(0);
+    try opts.patterns.append(allocator, pattern);
+    assert(opts.files.items.len + 1 == operand_count_before);
 }
 
 /// Outcome of handling one argv element: applied, or report-and-abort.
@@ -367,8 +380,10 @@ fn parseArgs_longValued(
     assert(@intFromEnum(opts.regex_mode) <= @intFromEnum(RegexMode.fixed));
     assert(@intFromEnum(opts.regex_mode) >= @intFromEnum(RegexMode.basic));
     if (std.mem.startsWith(u8, flag, "regexp=")) {
+        opts.pattern_source_given = true;
         try opts.patterns.append(allocator, flag["regexp=".len..]);
     } else if (std.mem.startsWith(u8, flag, "file=")) {
+        opts.pattern_source_given = true;
         const pattern_file = flag["file=".len..];
         try loadPatternsFromFile(
             allocator,
@@ -616,6 +631,7 @@ fn parseArgs_short_e(
         i_ptr,
         j_ptr,
     ) orelse return .consumed_error;
+    opts.pattern_source_given = true;
     try opts.patterns.append(allocator, value);
     return .consumed_break;
 }
@@ -661,6 +677,7 @@ fn parseArgs_short_f(
         i_ptr,
         j_ptr,
     ) orelse return .consumed_error;
+    opts.pattern_source_given = true;
     try loadPatternsFromFile(
         allocator,
         io,
@@ -2501,7 +2518,7 @@ fn runGrep_earlyExit(
         printVersion(stdout_writer) catch {};
         return @intFromEnum(common.ExitCode.success);
     }
-    if (opts.patterns.items.len == 0) {
+    if (opts.patterns.items.len == 0 and !opts.pattern_source_given) {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -2510,6 +2527,13 @@ fn runGrep_earlyExit(
             .{},
         );
         return @intFromEnum(common.ExitCode.serious_error);
+    }
+    // An empty pattern set can never match, so GNU exits 1 without opening any
+    // operand. -v and -L still walk the files, so they take the normal path.
+    if (opts.patterns.items.len == 0 and !opts.invert_match and !opts.files_without_match) {
+        assert(opts.pattern_source_given);
+        assert(!opts.help);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     return null;
 }
@@ -2596,7 +2620,7 @@ fn runGrep_compilePatterns(
     compiled_ptr: *std.ArrayListUnmanaged(CompiledPattern),
     stderr_writer: *std.Io.Writer,
 ) ?void {
-    assert(opts.patterns.items.len > 0);
+    assert(compiled_ptr.items.len == 0);
     for (opts.patterns.items) |pattern| {
         const cp = compilePattern(allocator, pattern, opts, stderr_writer) orelse return null;
         compiled_ptr.append(allocator, cp) catch return null;
@@ -2656,7 +2680,9 @@ fn runGrep_processOneOperand(
     found_any_ptr: *bool,
     had_error_ptr: *bool,
 ) bool {
-    assert(compiled.len > 0);
+    assert(compiled.len == opts.patterns.items.len);
+    assert(!opts.help);
+    assert(!opts.version);
     if (std.mem.eql(u8, file_path, "-")) {
         const stdin_file = std.Io.File.stdin();
         const matched = processFile(

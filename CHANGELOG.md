@@ -89,6 +89,19 @@
 
 ### Fixed
 
+- **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
+  reported "no pattern specified" and exited 2, which made a pattern
+  that looks like an option impossible to search for. `--` did not
+  consume the pattern; it disabled the branch that assigns one, so
+  every operand after it became a file. grep now follows GNU's rule
+  and decides the pattern slot after the whole argument scan: the
+  first remaining operand is PATTERNS if and only if neither `-e` nor
+  `-f` supplied a pattern source. That also fixes `grep FILE -e PAT`,
+  which used to take `FILE` as the pattern, and `grep -f empty FILE`,
+  which used to read stdin with `FILE` as the pattern. An empty
+  pattern set is now legal rather than an error: it matches nothing
+  and exits 1, without opening any operand unless `-v` or `-L` is in
+  effect (#151).
 - **Integration runs no longer share a working directory.**
   `tests/utilities/mkdir_test.sh` builds its fixtures with relative
   paths, so whatever directory `scripts/run-integration.sh` was started
