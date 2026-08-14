@@ -195,6 +195,70 @@ test_host_refuses_bindir() {
     fi
 }
 
+# Regression: wrappers are export -f'd into `bash -c` / timeout children,
+# but BIN_DIR was a shell-local. An empty BIN_DIR made the refuse pattern
+# `"$BIN_DIR"/*` expand to `/*`, so every absolute host path (e.g.
+# /bin/sleep) was treated as the build and returned 127. That is why
+# timeout --kill-after, tr extra-operand, tee special-characters, cut,
+# and find failed in CI: they all spawn bash -c that calls a wrapped name.
+test_host_resolve_empty_bin_dir_does_not_refuse_host() {
+    echo -e "${CYAN}host_resolve with empty BIN_DIR still returns a host binary...${NC}"
+    local resolved="" status=0
+    if ! declare -F host_resolve >/dev/null 2>&1; then
+        print_test_result "host_resolve empty BIN_DIR does not refuse /bin or /usr/bin" "FAIL" \
+            "host_resolve is not defined"
+        return
+    fi
+    (
+        unset BIN_DIR
+        resolved=$(host_resolve cat)
+        status=$?
+        if [[ "$status" -eq 0 && ( "$resolved" == "/bin/cat" || "$resolved" == "/usr/bin/cat" ) ]]; then
+            exit 0
+        fi
+        printf 'status=%s resolved=%s\n' "$status" "$resolved" >&2
+        exit 1
+    )
+    if [[ $? -eq 0 ]]; then
+        print_test_result "host_resolve empty BIN_DIR does not refuse /bin or /usr/bin" "PASS"
+    else
+        print_test_result "host_resolve empty BIN_DIR does not refuse /bin or /usr/bin" "FAIL" \
+            "empty BIN_DIR treated a host path as BIN_DIR/*"
+    fi
+}
+
+test_wrapper_works_in_bash_c_without_bin_dir() {
+    echo -e "${CYAN}exported cat wrapper works in bash -c when BIN_DIR is unset...${NC}"
+    local status=0
+    (
+        unset BIN_DIR
+        bash -c 'cat /dev/null'
+    )
+    status=$?
+    if [[ "$status" -eq 0 ]]; then
+        print_test_result "exported wrapper works in bash -c without BIN_DIR" "PASS"
+    else
+        print_test_result "exported wrapper works in bash -c without BIN_DIR" "FAIL" \
+            "bash -c 'cat /dev/null' exited $status (expected 0); empty BIN_DIR likely matched /*"
+    fi
+}
+
+# Fallback for host-missing names (seq/timeout on macOS) is `"$BIN_DIR/$name"`.
+# That only works in `bash -c` if BIN_DIR is in the environment, not just
+# the parent shell. Timeout's child is a new bash; unexported BIN_DIR is
+# empty there even when the parent set it.
+test_bin_dir_is_exported_to_bash_c() {
+    echo -e "${CYAN}BIN_DIR is visible to bash -c children...${NC}"
+    local child_bin=""
+    child_bin=$(bash -c 'printf %s "${BIN_DIR-}"')
+    if [[ -n "$child_bin" && "$child_bin" == "$BIN_DIR" ]]; then
+        print_test_result "BIN_DIR is exported to bash -c" "PASS"
+    else
+        print_test_result "BIN_DIR is exported to bash -c" "FAIL" \
+            "child saw '$child_bin' parent has '$BIN_DIR'"
+    fi
+}
+
 main() {
     detect_platform
     setup_path_shadow
@@ -208,6 +272,9 @@ main() {
     test_explicit_bindir_chmod_still_runs_the_subject
     test_host_resolve_refuses_bindir
     test_host_refuses_bindir
+    test_host_resolve_empty_bin_dir_does_not_refuse_host
+    test_wrapper_works_in_bash_c_without_bin_dir
+    test_bin_dir_is_exported_to_bash_c
 
     print_test_summary "host-path"
 }
