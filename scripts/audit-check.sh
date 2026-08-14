@@ -16,7 +16,8 @@
 #                       defect without that defect entering the repo gate.
 #   --check NAME        run only NAME. Repeatable. Names:
 #                       stub-flag, unscannable, matrix-drift,
-#                       toothless-assert, test-only-code, parse-only-test.
+#                       toothless-assert, test-only-code, parse-only-test,
+#                       path-shadow.
 #   --baseline FILE     use FILE as the baseline. A named file that is
 #                       absent is an error; the DEFAULT baseline
 #                       (<root>/scripts/audit-baseline.tsv) being absent
@@ -51,8 +52,9 @@
 #   silent suppression.
 #
 # CHECK COVERAGE AND ITS LIMITS
-#   stub-flag, unscannable, matrix-drift, toothless-assert and
-#   test-only-code are complete for the shapes this repo actually uses.
+#   stub-flag, unscannable, matrix-drift, toothless-assert,
+#   test-only-code and path-shadow are complete for the shapes this repo
+#   actually uses.
 #
 #   parse-only-test SHIPS DELIBERATELY INCOMPLETE. There is no reliable
 #   mechanical link from a shell test to the struct field it exercises,
@@ -80,7 +82,7 @@ PROG=audit-check
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 TAB=$(printf '\t')
 
-ALL_CHECKS="stub-flag unscannable matrix-drift toothless-assert test-only-code parse-only-test"
+ALL_CHECKS="stub-flag unscannable matrix-drift toothless-assert test-only-code parse-only-test path-shadow"
 
 note() {
     # Human-readable note to stderr only.
@@ -96,7 +98,7 @@ Usage:
   --root DIR         scan DIR instead of the repository root
   --check NAME       run only NAME (repeatable): stub-flag, unscannable,
                      matrix-drift, toothless-assert, test-only-code,
-                     parse-only-test
+                     parse-only-test, path-shadow
   --baseline FILE    use FILE as the baseline (must exist)
   --no-baseline      classify every finding NEW
   --update-baseline  rewrite the baseline from current findings
@@ -625,6 +627,141 @@ function emit(rule, subject, why,   key) {
 '
 
 # ---------------------------------------------------------------------------
+# PATH-shadow scanner. Reads one tests/utilities/<util>_test.sh.
+# Variables: FILE, UNIT, UTILS — same as TOOTH_AWK.
+#
+# Wrappers in tests/lib/common.sh intercept a bare `chmod`. This check
+# flags the lookups those wrappers cannot see: `command chmod`,
+# `find -exec chmod`, `env chmod`, and `run_with_limit N chmod`.
+# Absolute paths, `$binary`, `$BIN_DIR/...`, and `host chmod` are allowed.
+# A substitution naming the unit under test is left to toothless-assert.
+# ---------------------------------------------------------------------------
+SHADOW_AWK='
+function trim(s) {
+    sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s);
+    return s;
+}
+
+function emit(rule, subject, why,   key) {
+    key = FILE "::" (fn == "" ? "<file>" : fn) "::" rule;
+    if (subject != "") key = key ":" subject;
+    if (key in SEEN) return;
+    SEEN[key] = 1;
+    printf "ROW\t%s\t%s\t%s\n", "path-shadow", key, why;
+}
+
+# A PATH lookup of a shipped name that is not the unit under test, and
+# is not already an absolute path, a `$binary`/`$BIN_DIR` expansion, or
+# `host`.
+function maybe(rule, word, why) {
+    word = trim(word);
+    gsub(/^["\x27]|["\x27]$/, "", word);
+    if (word == "") return;
+    if (word ~ /\//) return;
+    if (word ~ /^\$/) return;
+    if (word == "host") return;
+    if (word == UNIT) return;
+    if (index(UTILS, " " word " ") == 0) return;
+    emit(rule, word, why);
+}
+
+{
+    line = $0;
+    sub(/\r$/, "", line);
+    if (line ~ /^[ \t]*#/) next;
+    if (match(line, /^[A-Za-z_][A-Za-z0-9_]*[ \t]*\(\)/)) {
+        fn = substr(line, RSTART, RLENGTH);
+        sub(/[ \t]*\(\).*$/, "", fn);
+    }
+
+    # Drop quoted spans so `print_test_result "find -exec true"` cannot
+    # fire. `"$binary" -exec true` still has a bare `-exec` after this
+    # strip; the -exec rule below ignores it when $binary precedes it.
+    stripped = line;
+    while (match(stripped, /"[^"]*"/)) {
+        stripped = substr(stripped, 1, RSTART - 1) " " substr(stripped, RSTART + RLENGTH);
+    }
+    while (match(stripped, /\x27[^\x27]*\x27/)) {
+        stripped = substr(stripped, 1, RSTART - 1) " " substr(stripped, RSTART + RLENGTH);
+    }
+
+    # command chmod / command -p chmod. `command -v`/`-V` is a lookup,
+    # not an invocation, and must not fire (mkdir_test.sh: command -v ln).
+    rest = stripped;
+    while (match(rest, /(^|[ \t;|&])command[ \t]+/)) {
+        rest = substr(rest, RSTART + RLENGTH);
+        lookup = 0;
+        while (rest ~ /^-/) {
+            opt = rest;
+            sub(/[ \t].*$/, "", opt);
+            if (opt == "-v" || opt == "-V") { lookup = 1; break; }
+            sub(/^[^ \t]+[ \t]*/, "", rest);
+        }
+        if (lookup) break;
+        word = rest;
+        sub(/[ \t].*$/, "", word);
+        maybe("command", word,
+              "`command " word "` bypasses the host wrapper and follows PATH into zig-out/bin");
+        break;
+    }
+
+    # find -exec chmod / -execdir chmod. find execvp()s the word, so the
+    # bash chmod() wrapper never runs.
+    #
+    # `"$binary" -exec true` is an operand of the unit under test, not a
+    # fixture lookup. Quote stripping already removed `"$binary"`, so
+    # consult the original line: skip when $binary / $BIN_DIR appears
+    # before -exec. Fixture `find ... -exec chmod` has neither.
+    rest = stripped;
+    while (match(rest, /(^|[ \t])-exec(dir)?[ \t]+/)) {
+        rest = substr(rest, RSTART + RLENGTH);
+        before = line;
+        if (match(line, /(^|[ \t])-exec(dir)?[ \t]/)) {
+            before = substr(line, 1, RSTART);
+        }
+        if (before ~ /\$binary/ || before ~ /\$BIN_DIR/) break;
+        word = rest;
+        sub(/[ \t].*$/, "", word);
+        maybe("exec", word,
+              "`-exec " word "` is execvp()d by find and follows PATH into zig-out/bin");
+        break;
+    }
+
+    # env [NAME=VAL ...] chmod. Skip env(1) options and assignments.
+    rest = stripped;
+    while (match(rest, /(^|[ \t;|&])env[ \t]+/)) {
+        rest = substr(rest, RSTART + RLENGTH);
+        while (rest != "" && rest !~ /^[ \t]*$/) {
+            word = rest;
+            sub(/[ \t].*$/, "", word);
+            if (word ~ /^-/) { sub(/^[^ \t]+[ \t]*/, "", rest); continue; }
+            if (word ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+                sub(/^[^ \t]+[ \t]*/, "", rest);
+                continue;
+            }
+            break;
+        }
+        word = rest;
+        sub(/[ \t].*$/, "", word);
+        maybe("env", word,
+              "`env ... " word "` follows PATH into zig-out/bin");
+        break;
+    }
+
+    # run_with_limit SECONDS CMD — python os.execvp, no bash functions.
+    # The definition line `run_with_limit()` has no duration and is skipped.
+    rest = stripped;
+    if (match(rest, /(^|[ \t;|&])run_with_limit[ \t]+[0-9.]+[ \t]+/)) {
+        rest = substr(rest, RSTART + RLENGTH);
+        word = rest;
+        sub(/[ \t].*$/, "", word);
+        maybe("run_with_limit", word,
+              "`run_with_limit` execvp()s `" word "` via PATH, bypassing the host wrapper");
+    }
+}
+'
+
+# ---------------------------------------------------------------------------
 # Argument parsing.
 # ---------------------------------------------------------------------------
 ROOT=""
@@ -877,6 +1014,8 @@ while IFS="$TAB" read -r name path; do
         continue
     fi
     awk -v FILE="$tf" -v UNIT="$name" -v UTILS="$UTIL_NAMES" "$TOOTH_AWK" \
+        <"$ROOT/$tf" | cut -f2- >>"$ROWS"
+    awk -v FILE="$tf" -v UNIT="$name" -v UTILS="$UTIL_NAMES" "$SHADOW_AWK" \
         <"$ROOT/$tf" | cut -f2- >>"$ROWS"
 done <"$UNITS"
 

@@ -19,6 +19,121 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$(dirname "$LIB_DIR")"
 PROJECT_ROOT="$(dirname "$TESTS_DIR")"
 BIN_DIR="$PROJECT_ROOT/zig-out/bin"
+# Wrappers are export -f'd into `bash -c` / timeout children. Those
+# children inherit functions, not unexported shell variables; without
+# this, BIN_DIR is empty there and `"$BIN_DIR"/*` matches every absolute
+# path (issue #167 CI: timeout/tr/tee/cut/find all returned 127).
+export BIN_DIR
+
+# ---------------------------------------------------------------------------
+# Host-tool isolation (issue #167)
+#
+# tests/integration.sh prepends BIN_DIR to PATH so `$binary` and a forgotten
+# unqualified name of the unit under test resolve to the build. Fixture
+# setup must not follow that PATH: `chmod +a` is Darwin's ACL builder, and
+# vibeutils' chmod treats `+a` as a mode. Capture the pre-prepend PATH as
+# HOST_PATH (or strip BIN_DIR when this file is sourced directly), resolve
+# shipped names to /bin or /usr/bin, and wrap every non-builtin utility
+# so a bare `chmod` cannot see zig-out/bin.
+# ---------------------------------------------------------------------------
+if [[ -z "${HOST_PATH:-}" ]]; then
+    HOST_PATH=""
+    _hp_ifs="$IFS"
+    IFS=:
+    for _hp_p in $PATH; do
+        if [[ -n "$_hp_p" && "$_hp_p" != "$BIN_DIR" ]]; then
+            if [[ -z "$HOST_PATH" ]]; then
+                HOST_PATH="$_hp_p"
+            else
+                HOST_PATH="$HOST_PATH:$_hp_p"
+            fi
+        fi
+    done
+    IFS="$_hp_ifs"
+    unset _hp_p _hp_ifs
+fi
+export HOST_PATH
+
+# Print the host path for $1. Prefers /bin then /usr/bin, then HOST_PATH.
+# Refuses anything under BIN_DIR. `type -P` is a PATH search that ignores
+# the function wrappers below; `command -v` would name the wrapper.
+host_resolve() {
+    local cmd="${1:-}"
+    local cand resolved=""
+    if [[ -z "$cmd" ]]; then
+        return 127
+    fi
+    if [[ "$cmd" == */* ]]; then
+        resolved="$cmd"
+    else
+        for cand in "/bin/$cmd" "/usr/bin/$cmd"; do
+            if [[ -x "$cand" && ! -d "$cand" ]]; then
+                resolved="$cand"
+                break
+            fi
+        done
+        if [[ -z "$resolved" ]]; then
+            resolved=$(PATH="${HOST_PATH:-}" type -P "$cmd" 2>/dev/null) || return 127
+        fi
+    fi
+    # An empty BIN_DIR makes `"$BIN_DIR"/*` expand to `/*`, which matches
+    # every absolute host path. Skip the refuse when BIN_DIR is unset.
+    if [[ -n "${BIN_DIR:-}" ]]; then
+        case "$resolved" in
+            "$BIN_DIR"|"$BIN_DIR"/*)
+                return 127
+                ;;
+        esac
+    fi
+    printf '%s\n' "$resolved"
+}
+
+host() {
+    local cmd="${1:-}"
+    shift
+    local resolved
+    resolved=$(host_resolve "$cmd") || return 127
+    "$resolved" "$@"
+}
+
+# Do not wrap bash builtins: a function of that name hides the builtin
+# and breaks the suite. echo, printf, test, [, true, false, pwd stay.
+#
+# If the host has no binary of that name (macOS has no seq, timeout, tac,
+# or free), fall back to BIN_DIR so generators like `seq 1 N` still run.
+# host() / host_resolve never take that hatch: they refuse BIN_DIR.
+_VIBEUTILS_HOST_WRAP_NAMES=(
+    cat ls cp mv rm mkdir rmdir touch dirname chmod chown ln basename
+    sleep yes head tail tac tee wc date seq whoami realpath id mktemp
+    env timeout stat sort tr nl uniq readlink cut free du df dd find grep
+)
+for _vibeutils_u in "${_VIBEUTILS_HOST_WRAP_NAMES[@]}"; do
+    eval "${_vibeutils_u}() {
+        local _vu_resolved
+        _vu_resolved=\$(host_resolve ${_vibeutils_u} 2>/dev/null) || _vu_resolved=
+        if [[ -n \"\$_vu_resolved\" ]]; then
+            \"\$_vu_resolved\" \"\$@\"
+        elif [[ -n \"\${BIN_DIR:-}\" && -x \"\$BIN_DIR/${_vibeutils_u}\" ]]; then
+            \"\$BIN_DIR/${_vibeutils_u}\" \"\$@\"
+        else
+            return 127
+        fi
+    }"
+    export -f "$_vibeutils_u"
+done
+unset _vibeutils_u
+export -f host_resolve host
+
+# Repeat $2 exactly $1 times, one per line. Independent of GNU vs BSD
+# `yes`: GNU `yes -- -not` prints `-not`, BSD prints `--`, and wrapping
+# `yes` to the host made find's deep-parser fixtures abort on macOS.
+repeat_lines() {
+    local n="${1:-0}"
+    local s="${2-}"
+    awk -v n="$n" -v s="$s" 'BEGIN { for (i = 0; i < n; i++) print s }'
+}
+export -f repeat_lines
+
 # Canonicalize the temp root so physical-path checks (e.g. pwd -P) compare
 # equal regardless of the /tmp -> /private/tmp or /var -> /private/var
 # symlinks on macOS, without per-prefix special-casing in the tests.
@@ -51,59 +166,60 @@ detect_platform() {
     export PLATFORM
 }
 
-# Cross-platform file permissions getter
+# Cross-platform file permissions getter. Returns octal digits (644,
+# 4755), never an ls-style string. Wrapping `stat` sends GNU
+# `stat -c %a` to host stat; on macOS that flag is invalid and BSD
+# `stat -f %A` is not a reliable octal mode. Read st_mode from Python
+# instead, which does not go through the wrapper.
 get_file_permissions() {
     local file="$1"
     local perms=""
 
-    # Ensure platform is detected
     if [[ -z "$PLATFORM" ]]; then
         detect_platform
     fi
 
-    # Debug: Check if file exists
     if [[ ! -e "$file" ]]; then
         echo "000"
         return 0
     fi
 
-    # Try GNU stat first (works on Linux and macOS with GNU coreutils)
-    perms=$(stat -c %a "$file" 2>/dev/null)
-    # Fall back to BSD stat (macOS default)
-    if [[ -z "$perms" ]]; then
-        perms=$(stat -f %A "$file" 2>/dev/null)
-    fi
-
-    # If stat failed or returned empty, try fallback methods
-    if [[ -z "$perms" ]]; then
-        # Fallback: Use ls -l and parse permissions manually
-        if [[ -e "$file" ]]; then
-            local ls_output
-            ls_output=$(ls -ld "$file" 2>/dev/null | cut -c2-10)
-            if [[ -n "$ls_output" && ${#ls_output} -eq 9 ]]; then
-                # Convert rwxrwxrwx format to octal
-                local octal=0
-                # User permissions
-                [[ "${ls_output:0:1}" == "r" ]] && octal=$((octal + 400))
-                [[ "${ls_output:1:1}" == "w" ]] && octal=$((octal + 200))
-                [[ "${ls_output:2:1}" == "x" ]] && octal=$((octal + 100))
-                # Group permissions
-                [[ "${ls_output:3:1}" == "r" ]] && octal=$((octal + 40))
-                [[ "${ls_output:4:1}" == "w" ]] && octal=$((octal + 20))
-                [[ "${ls_output:5:1}" == "x" ]] && octal=$((octal + 10))
-                # Other permissions
-                [[ "${ls_output:6:1}" == "r" ]] && octal=$((octal + 4))
-                [[ "${ls_output:7:1}" == "w" ]] && octal=$((octal + 2))
-                [[ "${ls_output:8:1}" == "x" ]] && octal=$((octal + 1))
-
-                printf "%03d" "$octal"
-                return 0
-            fi
-        fi
-        echo "000"
-    else
+    perms=$(python3 -c 'import os, sys; print("{:o}".format(os.stat(sys.argv[1]).st_mode & 0o7777))' "$file" 2>/dev/null) || perms=""
+    if [[ -n "$perms" && "$perms" =~ ^[0-7]+$ ]]; then
         echo "$perms"
+        return 0
     fi
+
+    # GNU, then BSD octal (%OLp), then ls -l. Reject a symbolic %A.
+    perms=$(stat -c %a "$file" 2>/dev/null) || perms=""
+    if [[ -z "$perms" || ! "$perms" =~ ^[0-7]+$ ]]; then
+        perms=$(stat -f %OLp "$file" 2>/dev/null) || perms=""
+    fi
+    if [[ -n "$perms" && "$perms" =~ ^[0-7]+$ ]]; then
+        echo "$perms"
+        return 0
+    fi
+
+    if [[ -e "$file" ]]; then
+        local ls_output
+        ls_output=$(ls -ld "$file" 2>/dev/null | cut -c2-10)
+        if [[ -n "$ls_output" && ${#ls_output} -eq 9 ]]; then
+            local octal=0
+            [[ "${ls_output:0:1}" == "r" ]] && octal=$((octal + 400))
+            [[ "${ls_output:1:1}" == "w" ]] && octal=$((octal + 200))
+            [[ "${ls_output:2:1}" == "x" ]] && octal=$((octal + 100))
+            [[ "${ls_output:3:1}" == "r" ]] && octal=$((octal + 40))
+            [[ "${ls_output:4:1}" == "w" ]] && octal=$((octal + 20))
+            [[ "${ls_output:5:1}" == "x" ]] && octal=$((octal + 10))
+            [[ "${ls_output:6:1}" == "r" ]] && octal=$((octal + 4))
+            [[ "${ls_output:7:1}" == "w" ]] && octal=$((octal + 2))
+            [[ "${ls_output:8:1}" == "x" ]] && octal=$((octal + 1))
+
+            printf "%03d" "$octal"
+            return 0
+        fi
+    fi
+    echo "000"
 }
 
 # Cross-platform file size getter
@@ -177,7 +293,7 @@ cleanup_test_session() {
     # that may have been made inaccessible by chmod tests
     if [[ -d "$TEMP_DIR" ]]; then
         # Restore execute permissions on any directories that lost them
-        find "$TEMP_DIR" -type d -exec chmod u+x {} \; 2>/dev/null || true
+        find "$TEMP_DIR" -type d -exec "$(host_resolve chmod)" u+x {} \; 2>/dev/null || true
         rm -rf "$TEMP_DIR"
     fi
 }

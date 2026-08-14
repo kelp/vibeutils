@@ -101,12 +101,8 @@ test_chmod() {
             continue
         fi
 
-        # Try GNU stat first, then fall back to BSD stat
-        local perms=""
-        perms=$(stat -c %a "$file" 2>/dev/null)
-        if [[ -z "$perms" ]]; then
-            perms=$(stat -f %A "$file" 2>/dev/null)
-        fi
+        local perms
+        perms=$(get_file_permissions "$file")
 
         if [[ "$perms" == "755" ]]; then
             print_test_result "chmod -R verification $(basename "$file")" "PASS"
@@ -127,11 +123,8 @@ test_chmod() {
     test_command_succeeds "chmod -R 644 makes dirs inaccessible" "$binary" -R 644 "$test_tree_644"
 
     # Verify that the root directory now has 644 permissions (correct behavior)
-    local dir_perms=""
-    dir_perms=$(stat -c %a "$test_tree_644" 2>/dev/null)
-    if [[ -z "$dir_perms" ]]; then
-        dir_perms=$(stat -f %A "$test_tree_644" 2>/dev/null)
-    fi
+    local dir_perms
+    dir_perms=$(get_file_permissions "$test_tree_644")
 
     if [[ "$dir_perms" == "644" ]]; then
         print_test_result "chmod -R 644 on directory" "PASS"
@@ -324,12 +317,8 @@ test_chmod() {
             continue
         fi
 
-        # Try GNU stat first, then fall back to BSD stat
-        local perms=""
-        perms=$(stat -c %a "$file" 2>/dev/null)
-        if [[ -z "$perms" ]]; then
-            perms=$(stat -f %A "$file" 2>/dev/null)
-        fi
+        local perms
+        perms=$(get_file_permissions "$file")
 
         if [[ "$perms" == "644" ]]; then
             print_test_result "chmod multiple files verification $(basename "$file")" "PASS"
@@ -391,12 +380,8 @@ test_chmod() {
     if [[ ! -e "$sample_file" ]]; then
         print_test_result "chmod -R large tree verification" "FAIL" "Sample file does not exist: $sample_file"
     else
-        # Try GNU stat first, then fall back to BSD stat
-        local perms=""
-        perms=$(stat -c %a "$sample_file" 2>/dev/null)
-        if [[ -z "$perms" ]]; then
-            perms=$(stat -f %A "$sample_file" 2>/dev/null)
-        fi
+        local perms
+        perms=$(get_file_permissions "$sample_file")
 
         if [[ "$perms" == "755" ]]; then
             print_test_result "chmod -R large tree verification" "PASS"
@@ -414,7 +399,7 @@ test_chmod() {
     done
 
     # First, ensure directories have proper permissions (755)
-    find "$files_only_tree" -type d -exec chmod 755 {} \;
+    find "$files_only_tree" -type d -exec "$(host_resolve chmod)" 755 {} \;
     # Then, apply 644 only to files (this is the proper way to use 644 recursively)
     find "$files_only_tree" -type f -exec "$binary" 644 {} \;
 
@@ -425,16 +410,8 @@ test_chmod() {
     local file_perms=""
     local dir_perms=""
 
-    # Try GNU stat first, then fall back to BSD stat
-    file_perms=$(stat -c %a "$sample_file_644" 2>/dev/null)
-    if [[ -z "$file_perms" ]]; then
-        file_perms=$(stat -f %A "$sample_file_644" 2>/dev/null)
-    fi
-
-    dir_perms=$(stat -c %a "$sample_dir" 2>/dev/null)
-    if [[ -z "$dir_perms" ]]; then
-        dir_perms=$(stat -f %A "$sample_dir" 2>/dev/null)
-    fi
+    file_perms=$(get_file_permissions "$sample_file_644")
+    dir_perms=$(get_file_permissions "$sample_dir")
 
     if [[ "$file_perms" == "644" && "$dir_perms" == "755" ]]; then
         print_test_result "files 644, directories 755 (proper pattern)" "PASS"
@@ -451,10 +428,7 @@ test_chmod() {
     # u+t should set the sticky bit
     test_command_succeeds "chmod u+t sets sticky bit" "$binary" u+t "$sticky_file"
     local sticky_perms=""
-    sticky_perms=$(stat -c %a "$sticky_file" 2>/dev/null)
-    if [[ -z "$sticky_perms" ]]; then
-        sticky_perms=$(stat -f %A "$sticky_file" 2>/dev/null)
-    fi
+    sticky_perms=$(get_file_permissions "$sticky_file")
     if [[ "$sticky_perms" == "1755" ]]; then
         print_test_result "chmod u+t sticky bit verification" "PASS"
     else
@@ -467,10 +441,7 @@ test_chmod() {
     # g+t should also set the sticky bit
     test_command_succeeds "chmod g+t sets sticky bit" "$binary" g+t "$sticky_file"
     sticky_perms=""
-    sticky_perms=$(stat -c %a "$sticky_file" 2>/dev/null)
-    if [[ -z "$sticky_perms" ]]; then
-        sticky_perms=$(stat -f %A "$sticky_file" 2>/dev/null)
-    fi
+    sticky_perms=$(get_file_permissions "$sticky_file")
     if [[ "$sticky_perms" == "1755" ]]; then
         print_test_result "chmod g+t sticky bit verification" "PASS"
     else
@@ -480,10 +451,7 @@ test_chmod() {
     # a-t should remove the sticky bit
     test_command_succeeds "chmod a-t removes sticky bit" "$binary" a-t "$sticky_file"
     sticky_perms=""
-    sticky_perms=$(stat -c %a "$sticky_file" 2>/dev/null)
-    if [[ -z "$sticky_perms" ]]; then
-        sticky_perms=$(stat -f %A "$sticky_file" 2>/dev/null)
-    fi
+    sticky_perms=$(get_file_permissions "$sticky_file")
     if [[ "$sticky_perms" == "755" ]]; then
         print_test_result "chmod a-t sticky bit removed" "PASS"
     else

@@ -17,10 +17,14 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BIN_DIR="$PROJECT_ROOT/zig-out/bin"
+export BIN_DIR
 
-# Prepend BIN_DIR to PATH so unqualified utility names in tests
-# (e.g. `head -n 1` in yes_test.sh) resolve to the freshly-built
-# binaries, not whatever vibeutils is installed system-wide.
+# Capture the host PATH before we prepend the build. Fixture setup must
+# resolve to the system tools, not vibeutils (issue #167: `chmod +a` is
+# Darwin's ACL builder; our chmod treats `+a` as a mode). common.sh wraps
+# non-builtin shipped names so a bare `chmod` uses HOST_PATH. The prepend
+# stays so a forgotten `$binary` still tests the build under test.
+export HOST_PATH="$PATH"
 export PATH="$BIN_DIR:$PATH"
 
 # Source the new test infrastructure

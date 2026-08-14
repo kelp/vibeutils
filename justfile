@@ -289,6 +289,13 @@ test-tiger-check:
 test-audit-check:
     @bash tests/tools/audit-check_test.sh
 
+# Contract tests for host/host_resolve PATH isolation (issue #167). Needs
+# no Zig build: it plants a fake chmod first on PATH and sources
+# tests/lib/common.sh. Lives in tests/tools/, so it needs an explicit
+# invocation here and from CI.
+test-host-path:
+    @bash tests/tools/host_path_test.sh
+
 # Every run gets a private working directory, so a leftover fixture can
 # never change a later run's outcome. Needs a build, since it runs the real
 # mkdir suite, and takes ~5 minutes — the full-suite guard is most of it.

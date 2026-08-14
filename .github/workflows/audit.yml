@@ -36,5 +36,8 @@ jobs:
       - name: Self-test the audit scanner
         run: bash tests/tools/audit-check_test.sh
 
+      - name: Self-test host PATH isolation
+        run: bash tests/tools/host_path_test.sh
+
       - name: Stage-1 audit pre-pass (gates on NEW findings only)
         run: sh scripts/audit-check.sh

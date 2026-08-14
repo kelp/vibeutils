@@ -43,6 +43,7 @@ candidate list, not verdicts.
 | Stub flags | For each field in the args struct, count reads and writes of `opts.<field>` outside `test` blocks. Writes with zero reads are stubs. |
 | Parse-only tests | Test blocks asserting `parsed.opts.<field>` where no behavioral test exercises that flag. |
 | Toothless shell assertions | `=~` against a pattern that matches any plausible output; `test_binary_exists` without `\|\| return 1`; `$(cmd)` oracles naming a binary that exists in `zig-out/bin`. |
+| PATH-shadowed fixture tools | Unquoted `command <util>`, `find -exec <util>`, `env <util>`, or `run_with_limit N <util>` naming a shipped utility that is not the unit under test. Bare names are intercepted by host wrappers; these lookups bypass them. |
 | Test-only code | Functions whose only call sites are inside `test` blocks. |
 | Matrix drift | Every `docs/specs/<util>-flags.md` row claiming `Ours: yes` whose flag is absent from the parser or unread. |
 
@@ -56,8 +57,7 @@ for the next audit.
 
 #### The script
 
-`scripts/audit-check.sh` implements the table above, plus a sixth
-check the table does not name. `just audit-check` runs it over the
+`scripts/audit-check.sh` implements the table above. `just audit-check` runs it over the
 repo, `just test-audit-check` runs its contract tests, and
 `.github/workflows/audit.yml` runs both — self-tests first, because
 a scanner that has stopped working reports zero findings and exits
@@ -72,10 +72,11 @@ The whole sweep takes about three seconds.
 | `toothless-assert` | `tests/utilities/pwd_test.sh::test_pwd::self-oracle:pwd` |
 | `test-only-code` | `src/rm.zig::getDeviceId` |
 | `parse-only-test` | `src/df.zig::no_sync` |
+| `path-shadow` | `tests/utilities/shadowly_test.sh::test_shadowly::command:chmod` |
 | `unscannable` | `src/printf.zig::no-args-struct` |
 
-**`unscannable` is the sixth check, and the one that makes the
-other five worth believing.** A unit whose args struct cannot be
+**`unscannable` is the anti-false-negative device that makes the
+other checks worth believing.** A unit whose args struct cannot be
 found, whose flag matrix has no `Ours` column, or whose test file is
 missing is reported and counted toward the gate, so a unit the
 scanner stops understanding fails the build instead of quietly

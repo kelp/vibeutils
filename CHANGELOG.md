@@ -51,6 +51,16 @@
   run. The `ExitCode.misuse` name is gone; the enum is now
   `success`, `general_error`, `serious_error`, and
   `internal_error`.
+- **Integration tests no longer run vibeutils when they mean the host
+  tool.** `tests/integration.sh` still prepends `zig-out/bin` so
+  `$binary` tests the build, but fixture setup (`chmod`, `ln`, `stat`,
+  `mkdir`, …) is routed through `host` / `host_resolve` in
+  `tests/lib/common.sh` and prefers `/bin` then `/usr/bin`. A new
+  `audit-check` `path-shadow` rule flags the lookups those wrappers
+  cannot intercept (`command chmod`, `find -exec chmod`,
+  `run_with_limit chmod`). The macOS ACL tests in #147 skipped on CI
+  because our `chmod` rejected `+a`; that class of skip is now a
+  failure when the host tool cannot build the fixture (#167).
 - **`ls` reserves the git-status column only when something has a
   status.** The 3-column indicator was reserved for every entry
   whenever git status was active, so a repository with no changes
