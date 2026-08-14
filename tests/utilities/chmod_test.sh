@@ -414,7 +414,7 @@ test_chmod() {
     done
 
     # First, ensure directories have proper permissions (755)
-    find "$files_only_tree" -type d -exec chmod 755 {} \;
+    find "$files_only_tree" -type d -exec "$(host_resolve chmod)" 755 {} \;
     # Then, apply 644 only to files (this is the proper way to use 644 recursively)
     find "$files_only_tree" -type f -exec "$binary" 644 {} \;
 

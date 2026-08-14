@@ -189,9 +189,11 @@ test_realpath() {
     local link_dir="$TEMP_DIR/realpath_symlink_test"
     mkdir -p "$link_dir"
     echo "test" > "$link_dir/real_file"
-    ln -sf "$link_dir/real_file" "$link_dir/link_file" 2>/dev/null
-
-    if [[ -L "$link_dir/link_file" ]]; then
+    if ! ln -sf "$link_dir/real_file" "$link_dir/link_file" 2>/dev/null || \
+        [[ ! -L "$link_dir/link_file" ]]; then
+        print_test_result "symlink tests" "FAIL" \
+            "host ln could not create a symlink in $link_dir"
+    else
         # Default mode should resolve symlink
         local resolved
         resolved=$("$binary" "$link_dir/link_file" 2>/dev/null)
@@ -209,8 +211,6 @@ test_realpath() {
         else
             print_test_result "-s mode preserves symlinks" "FAIL" "Output: $no_resolve"
         fi
-    else
-        print_test_result "symlink tests" "SKIP" "Cannot create symlinks"
     fi
 
     rm -rf "$link_dir"
@@ -498,7 +498,8 @@ test_realpath() {
                 "Expected exit 0 and '$dd_dir/file.txt', got rc=$dd_slink_rc out='$dd_slink_out'"
         fi
     else
-        print_test_result "-s '..' past symlink-to-dir succeeds" "SKIP" "Cannot create symlinks"
+        print_test_result "-s '..' past symlink-to-dir succeeds" "FAIL" \
+            "host ln could not create $dd_dir/slink"
     fi
 
     # symlink-to-file before '..': stat follows, sees a non-dir -> ENOTDIR rc=1.
@@ -514,7 +515,8 @@ test_realpath() {
                 "rc=$dd_flink_rc err='$dd_flink_err'"
         fi
     else
-        print_test_result "-s '..' past symlink-to-file errors ENOTDIR" "SKIP" "Cannot create symlinks"
+        print_test_result "-s '..' past symlink-to-file errors ENOTDIR" "FAIL" \
+            "host ln could not create $dd_dir/flink"
     fi
 
     rm -rf "$dd_dir"

@@ -341,7 +341,8 @@ test_touch() {
             test_command_succeeds "touch -h broken symlink" "$binary" -h "$broken_link"
         fi
     else
-        print_test_result "symlink test setup" "SKIP" "Cannot create symlinks on this system"
+        print_test_result "symlink test setup" "FAIL" \
+            "host ln could not create a symlink in $TEMP_DIR"
     fi
 
     echo -e "${CYAN}Testing -d date string...${NC}"

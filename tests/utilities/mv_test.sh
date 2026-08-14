@@ -505,7 +505,8 @@ test_mv() {
             fi
             rm -f "$cross_dest"  # Cleanup
         else
-            print_test_result "mv cross-filesystem" "SKIP" "Operation failed"
+            print_test_result "mv cross-filesystem" "FAIL" \
+                "cross-filesystem move of $cross_src to $cross_dest failed"
         fi
     else
         print_test_result "mv cross-filesystem" "SKIP" "Same filesystem or cannot determine"
