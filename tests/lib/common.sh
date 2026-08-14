@@ -124,6 +124,16 @@ done
 unset _vibeutils_u
 export -f host_resolve host
 
+# Repeat $2 exactly $1 times, one per line. Independent of GNU vs BSD
+# `yes`: GNU `yes -- -not` prints `-not`, BSD prints `--`, and wrapping
+# `yes` to the host made find's deep-parser fixtures abort on macOS.
+repeat_lines() {
+    local n="${1:-0}"
+    local s="${2-}"
+    awk -v n="$n" -v s="$s" 'BEGIN { for (i = 0; i < n; i++) print s }'
+}
+export -f repeat_lines
+
 # Canonicalize the temp root so physical-path checks (e.g. pwd -P) compare
 # equal regardless of the /tmp -> /private/tmp or /var -> /private/var
 # symlinks on macOS, without per-prefix special-casing in the tests.

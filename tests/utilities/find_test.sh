@@ -1181,13 +1181,16 @@ test_find() {
     create_temp_file "content" "$paren_dir/leaf.txt"
 
     # Build: 20000 "(" tokens, then -name leaf.txt, then 20000 ")"
-    # tokens. mapfile + yes fills the array in O(n); a bash append loop
-    # would be O(n^2). 40001 short tokens is well under ARG_MAX.
+    # tokens. mapfile + repeat_lines fills the array in O(n); a bash
+    # append loop would be O(n^2). Do not use `yes -- TOKEN`: GNU yes
+    # prints TOKEN, BSD yes prints `--`, and the host wrapper now
+    # resolves to BSD yes on macOS. 40001 short tokens is well under
+    # ARG_MAX.
     local paren_args=()
     local paren_open=()
     local paren_close=()
-    mapfile -t paren_open < <(yes -- "(" | head -n 20000)
-    mapfile -t paren_close < <(yes -- ")" | head -n 20000)
+    mapfile -t paren_open < <(repeat_lines 20000 '(')
+    mapfile -t paren_close < <(repeat_lines 20000 ')')
     paren_args=("${paren_open[@]}" -name leaf.txt "${paren_close[@]}")
 
     run_command cmd out err exit_code "$binary" "$paren_dir" "${paren_args[@]}"
@@ -1232,11 +1235,12 @@ test_find() {
     not_dir=$(create_temp_dir)
     create_temp_file "content" "$not_dir/leaf.txt"
 
-    # Build: 50000 -not tokens, then -name leaf.txt. mapfile + yes fills
-    # the array in O(n). 50000 negations (even) leave the predicate
+    # Build: 50000 -not tokens, then -name leaf.txt. mapfile +
+    # repeat_lines fills the array in O(n). `yes -- -not` is GNU-only
+    # (BSD yes emits `--`). 50000 negations (even) leave the predicate
     # un-inverted, so the file matches.
     local not_args=()
-    mapfile -t not_args < <(yes -- -not | head -n 50000)
+    mapfile -t not_args < <(repeat_lines 50000 -not)
     not_args+=(-name leaf.txt)
 
     run_command cmd out err exit_code "$binary" "$not_dir" "${not_args[@]}"
@@ -1289,10 +1293,11 @@ test_find() {
     create_temp_file "content" "$containsdelete_dir/leaf.txt"
 
     # Build: 200000 implicitly-ANDed -true primaries (no -delete).
-    # mapfile + yes fills the array in O(n); a bash append loop would be
-    # O(n^2) and far too slow at this depth.
+    # mapfile + repeat_lines fills the array in O(n); a bash append loop
+    # would be O(n^2) and far too slow at this depth. `yes -- -true` is
+    # GNU-only (BSD yes emits `--`).
     local containsdelete_args=()
-    mapfile -t containsdelete_args < <(yes -- -true | head -n 200000)
+    mapfile -t containsdelete_args < <(repeat_lines 200000 -true)
 
     run_command cmd out err exit_code \
         "$binary" "$containsdelete_dir" "${containsdelete_args[@]}"
