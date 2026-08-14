@@ -1,0 +1,5 @@
+{
+	"name": "vibeutils",
+	"user": "ubuntu",
+	"install": ".cursor/install.sh"
+}

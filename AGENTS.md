@@ -48,3 +48,15 @@
 - Do not implement “security theater.” Rely on filesystem permissions; avoid hardcoded protected paths.
 - Use fakeroot for privileged-path tests on macOS/Linux.
 - Keep utilities GNU-compatible while adopting safe, modern defaults.
+
+## Cursor Cloud specific instructions
+- The Cloud Agent environment is defined by `.cursor/environment.json`, which
+  runs `.cursor/install.sh` (installs the pinned Zig plus `just` via
+  `scripts/bootstrap.sh`, adds the `fakeroot`/`mandoc` apt tools, and warms
+  `zig build`). No `start`/`terminals` are needed — vibeutils is a CLI library
+  with no long-running services.
+- The base image exports `NO_COLOR=1`. vibeutils honors `NO_COLOR` even over
+  `--color=always`, so the `ls truecolor icons emit RGB sequences` integration
+  test fails under the ambient value. Run the integration suite with the
+  variable scrubbed — `env -u NO_COLOR just it` — to get a fully green run
+  (`zig build test`, privileged tests, and every other suite pass as-is).
