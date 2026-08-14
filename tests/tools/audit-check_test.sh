@@ -118,6 +118,8 @@ run_preflight() {
 
     # toothless-assert flips one line rather than adding one.
     require_single_differing_file toothless-assert tests/utilities/toothy_test.sh
+    # path-shadow flips `command chmod` to `host chmod`.
+    require_single_differing_file path-shadow tests/utilities/shadowly_test.sh
     # matrix-drift moves the Ours column; unscannable adds a whole struct.
     require_single_differing_file matrix-drift docs/specs/driftly-flags.md
     require_single_differing_file unscannable src/opaquely.zig
@@ -395,6 +397,23 @@ test_matrix_drift() {
         "$FIXTURES/matrix-drift/negative" matrix-drift
 }
 
+test_path_shadow() {
+    echo -e "${CYAN}Testing path-shadow...${NC}"
+    # The key's third segment is the sub-rule name, which the contract leaves
+    # to the implementation; the file and the test function are pinned.
+    expect_one_new_finding "path-shadow positive" \
+        "$FIXTURES/path-shadow/positive" path-shadow \
+        "tests/utilities/shadowly_test.sh::test_shadowly::" 0 prefix
+    expect_no_findings "path-shadow negative" \
+        "$FIXTURES/path-shadow/negative" path-shadow
+    expect_one_new_finding "path-shadow exec" \
+        "$FIXTURES/path-shadow/positive-exec" path-shadow \
+        "tests/utilities/shadowly_test.sh::test_shadowly::" 0 prefix
+    expect_one_new_finding "path-shadow run_with_limit" \
+        "$FIXTURES/path-shadow/positive-limit" path-shadow \
+        "tests/utilities/shadowly_test.sh::test_shadowly::" 0 prefix
+}
+
 test_toothless_assert() {
     echo -e "${CYAN}Testing toothless-assert...${NC}"
     # The key's third segment is the sub-rule name, which the contract leaves
@@ -604,6 +623,7 @@ main() {
     test_output_is_deterministic
     test_matrix_drift
     test_toothless_assert
+    test_path_shadow
     test_test_only_code
     test_parse_only_test
     test_unscannable
