@@ -674,10 +674,9 @@ function maybe(rule, word, why) {
         sub(/[ \t]*\(\).*$/, "", fn);
     }
 
-    # Drop quoted spans so `print_test_result "find -exec true"` and
-    # `"$binary" -exec true` (arguments to the unit under test) cannot
-    # fire. The bypass this check exists to catch is unquoted:
-    # `find ... -exec chmod`.
+    # Drop quoted spans so `print_test_result "find -exec true"` cannot
+    # fire. `"$binary" -exec true` still has a bare `-exec` after this
+    # strip; the -exec rule below ignores it when $binary precedes it.
     stripped = line;
     while (match(stripped, /"[^"]*"/)) {
         stripped = substr(stripped, 1, RSTART - 1) " " substr(stripped, RSTART + RLENGTH);
@@ -708,9 +707,19 @@ function maybe(rule, word, why) {
 
     # find -exec chmod / -execdir chmod. find execvp()s the word, so the
     # bash chmod() wrapper never runs.
+    #
+    # `"$binary" -exec true` is an operand of the unit under test, not a
+    # fixture lookup. Quote stripping already removed `"$binary"`, so
+    # consult the original line: skip when $binary / $BIN_DIR appears
+    # before -exec. Fixture `find ... -exec chmod` has neither.
     rest = stripped;
     while (match(rest, /(^|[ \t])-exec(dir)?[ \t]+/)) {
         rest = substr(rest, RSTART + RLENGTH);
+        before = line;
+        if (match(line, /(^|[ \t])-exec(dir)?[ \t]/)) {
+            before = substr(line, 1, RSTART);
+        }
+        if (before ~ /\$binary/ || before ~ /\$BIN_DIR/) break;
         word = rest;
         sub(/[ \t].*$/, "", word);
         maybe("exec", word,

@@ -166,59 +166,60 @@ detect_platform() {
     export PLATFORM
 }
 
-# Cross-platform file permissions getter
+# Cross-platform file permissions getter. Returns octal digits (644,
+# 4755), never an ls-style string. Wrapping `stat` sends GNU
+# `stat -c %a` to host stat; on macOS that flag is invalid and BSD
+# `stat -f %A` is not a reliable octal mode. Read st_mode from Python
+# instead, which does not go through the wrapper.
 get_file_permissions() {
     local file="$1"
     local perms=""
 
-    # Ensure platform is detected
     if [[ -z "$PLATFORM" ]]; then
         detect_platform
     fi
 
-    # Debug: Check if file exists
     if [[ ! -e "$file" ]]; then
         echo "000"
         return 0
     fi
 
-    # Try GNU stat first (works on Linux and macOS with GNU coreutils)
-    perms=$(stat -c %a "$file" 2>/dev/null)
-    # Fall back to BSD stat (macOS default)
-    if [[ -z "$perms" ]]; then
-        perms=$(stat -f %A "$file" 2>/dev/null)
-    fi
-
-    # If stat failed or returned empty, try fallback methods
-    if [[ -z "$perms" ]]; then
-        # Fallback: Use ls -l and parse permissions manually
-        if [[ -e "$file" ]]; then
-            local ls_output
-            ls_output=$(ls -ld "$file" 2>/dev/null | cut -c2-10)
-            if [[ -n "$ls_output" && ${#ls_output} -eq 9 ]]; then
-                # Convert rwxrwxrwx format to octal
-                local octal=0
-                # User permissions
-                [[ "${ls_output:0:1}" == "r" ]] && octal=$((octal + 400))
-                [[ "${ls_output:1:1}" == "w" ]] && octal=$((octal + 200))
-                [[ "${ls_output:2:1}" == "x" ]] && octal=$((octal + 100))
-                # Group permissions
-                [[ "${ls_output:3:1}" == "r" ]] && octal=$((octal + 40))
-                [[ "${ls_output:4:1}" == "w" ]] && octal=$((octal + 20))
-                [[ "${ls_output:5:1}" == "x" ]] && octal=$((octal + 10))
-                # Other permissions
-                [[ "${ls_output:6:1}" == "r" ]] && octal=$((octal + 4))
-                [[ "${ls_output:7:1}" == "w" ]] && octal=$((octal + 2))
-                [[ "${ls_output:8:1}" == "x" ]] && octal=$((octal + 1))
-
-                printf "%03d" "$octal"
-                return 0
-            fi
-        fi
-        echo "000"
-    else
+    perms=$(python3 -c 'import os, sys; print("{:o}".format(os.stat(sys.argv[1]).st_mode & 0o7777))' "$file" 2>/dev/null) || perms=""
+    if [[ -n "$perms" && "$perms" =~ ^[0-7]+$ ]]; then
         echo "$perms"
+        return 0
     fi
+
+    # GNU, then BSD octal (%OLp), then ls -l. Reject a symbolic %A.
+    perms=$(stat -c %a "$file" 2>/dev/null) || perms=""
+    if [[ -z "$perms" || ! "$perms" =~ ^[0-7]+$ ]]; then
+        perms=$(stat -f %OLp "$file" 2>/dev/null) || perms=""
+    fi
+    if [[ -n "$perms" && "$perms" =~ ^[0-7]+$ ]]; then
+        echo "$perms"
+        return 0
+    fi
+
+    if [[ -e "$file" ]]; then
+        local ls_output
+        ls_output=$(ls -ld "$file" 2>/dev/null | cut -c2-10)
+        if [[ -n "$ls_output" && ${#ls_output} -eq 9 ]]; then
+            local octal=0
+            [[ "${ls_output:0:1}" == "r" ]] && octal=$((octal + 400))
+            [[ "${ls_output:1:1}" == "w" ]] && octal=$((octal + 200))
+            [[ "${ls_output:2:1}" == "x" ]] && octal=$((octal + 100))
+            [[ "${ls_output:3:1}" == "r" ]] && octal=$((octal + 40))
+            [[ "${ls_output:4:1}" == "w" ]] && octal=$((octal + 20))
+            [[ "${ls_output:5:1}" == "x" ]] && octal=$((octal + 10))
+            [[ "${ls_output:6:1}" == "r" ]] && octal=$((octal + 4))
+            [[ "${ls_output:7:1}" == "w" ]] && octal=$((octal + 2))
+            [[ "${ls_output:8:1}" == "x" ]] && octal=$((octal + 1))
+
+            printf "%03d" "$octal"
+            return 0
+        fi
+    fi
+    echo "000"
 }
 
 # Cross-platform file size getter
