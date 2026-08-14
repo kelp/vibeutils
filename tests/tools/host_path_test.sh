@@ -259,6 +259,55 @@ test_bin_dir_is_exported_to_bash_c() {
     fi
 }
 
+# GNU `yes -- -not` prints `-not`; BSD `yes -- -not` prints `--` (the
+# first operand is the payload). Wrapping `yes` to the host made
+# find_test.sh's `yes -- -not | head` build 50000 `--` tokens on macOS,
+# so find exited 1 instead of parsing a deep -not chain. repeat_lines
+# must not go through that GNU-only `--` spelling: sabotage `yes` to
+# emit `--` and still require `-not`.
+test_repeat_lines_dash_prefixed_token_ignores_host_yes() {
+    echo -e "${CYAN}repeat_lines emits a dash-prefixed token even if yes prints --...${NC}"
+    if ! declare -F repeat_lines >/dev/null 2>&1; then
+        print_test_result "repeat_lines emits -not, not --" "FAIL" \
+            "repeat_lines is not defined"
+        return
+    fi
+    local lines=()
+    (
+        yes() { printf '%s\n' --; }
+        export -f yes
+        mapfile -t lines < <(repeat_lines 3 -not)
+        if [[ ${#lines[@]} -eq 3 && ${lines[0]} == "-not" && ${lines[1]} == "-not" && ${lines[2]} == "-not" ]]; then
+            exit 0
+        fi
+        printf 'count=%s first=%s\n' "${#lines[@]}" "${lines[0]-}" >&2
+        exit 1
+    )
+    if [[ $? -eq 0 ]]; then
+        print_test_result "repeat_lines emits -not, not --" "PASS"
+    else
+        print_test_result "repeat_lines emits -not, not --" "FAIL" \
+            "repeat_lines followed GNU yes -- and emitted -- (or is missing)"
+    fi
+}
+
+test_repeat_lines_paren_token_and_count() {
+    echo -e "${CYAN}repeat_lines emits N copies of a parenthesis token...${NC}"
+    if ! declare -F repeat_lines >/dev/null 2>&1; then
+        print_test_result "repeat_lines emits N parenthesis tokens" "FAIL" \
+            "repeat_lines is not defined"
+        return
+    fi
+    local lines=()
+    mapfile -t lines < <(repeat_lines 4 '(')
+    if [[ ${#lines[@]} -eq 4 && ${lines[0]} == "(" && ${lines[3]} == "(" ]]; then
+        print_test_result "repeat_lines emits N parenthesis tokens" "PASS"
+    else
+        print_test_result "repeat_lines emits N parenthesis tokens" "FAIL" \
+            "count=${#lines[@]} first='${lines[0]-}'"
+    fi
+}
+
 main() {
     detect_platform
     setup_path_shadow
@@ -275,6 +324,8 @@ main() {
     test_host_resolve_empty_bin_dir_does_not_refuse_host
     test_wrapper_works_in_bash_c_without_bin_dir
     test_bin_dir_is_exported_to_bash_c
+    test_repeat_lines_dash_prefixed_token_ignores_host_yes
+    test_repeat_lines_paren_token_and_count
 
     print_test_summary "host-path"
 }
