@@ -19,6 +19,11 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$(dirname "$LIB_DIR")"
 PROJECT_ROOT="$(dirname "$TESTS_DIR")"
 BIN_DIR="$PROJECT_ROOT/zig-out/bin"
+# Wrappers are export -f'd into `bash -c` / timeout children. Those
+# children inherit functions, not unexported shell variables; without
+# this, BIN_DIR is empty there and `"$BIN_DIR"/*` matches every absolute
+# path (issue #167 CI: timeout/tr/tee/cut/find all returned 127).
+export BIN_DIR
 
 # ---------------------------------------------------------------------------
 # Host-tool isolation (issue #167)
@@ -71,11 +76,15 @@ host_resolve() {
             resolved=$(PATH="${HOST_PATH:-}" type -P "$cmd" 2>/dev/null) || return 127
         fi
     fi
-    case "$resolved" in
-        "$BIN_DIR"|"$BIN_DIR"/*)
-            return 127
-            ;;
-    esac
+    # An empty BIN_DIR makes `"$BIN_DIR"/*` expand to `/*`, which matches
+    # every absolute host path. Skip the refuse when BIN_DIR is unset.
+    if [[ -n "${BIN_DIR:-}" ]]; then
+        case "$resolved" in
+            "$BIN_DIR"|"$BIN_DIR"/*)
+                return 127
+                ;;
+        esac
+    fi
     printf '%s\n' "$resolved"
 }
 
@@ -104,7 +113,7 @@ for _vibeutils_u in "${_VIBEUTILS_HOST_WRAP_NAMES[@]}"; do
         _vu_resolved=\$(host_resolve ${_vibeutils_u} 2>/dev/null) || _vu_resolved=
         if [[ -n \"\$_vu_resolved\" ]]; then
             \"\$_vu_resolved\" \"\$@\"
-        elif [[ -x \"\$BIN_DIR/${_vibeutils_u}\" ]]; then
+        elif [[ -n \"\${BIN_DIR:-}\" && -x \"\$BIN_DIR/${_vibeutils_u}\" ]]; then
             \"\$BIN_DIR/${_vibeutils_u}\" \"\$@\"
         else
             return 127

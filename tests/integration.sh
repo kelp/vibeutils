@@ -17,6 +17,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BIN_DIR="$PROJECT_ROOT/zig-out/bin"
+export BIN_DIR
 
 # Capture the host PATH before we prepend the build. Fixture setup must
 # resolve to the system tools, not vibeutils (issue #167: `chmod +a` is
