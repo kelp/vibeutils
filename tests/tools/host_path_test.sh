@@ -291,6 +291,47 @@ test_repeat_lines_dash_prefixed_token_ignores_host_yes() {
     fi
 }
 
+# Wrapping `stat` sends GNU `stat -c %a` to host stat. On macOS that
+# flag is invalid, so the helper fell through to `stat -f %A`. Darwin
+# `%A` is not a reliable octal mode (GNU `%A` is ls -l form; some BSD
+# builds print a symbolic string). Permission compares against 755/644
+# then fail. Sabotage GNU -c and BSD %A to the symbolic form; the helper
+# must still return octal 644.
+test_get_file_permissions_octal_when_stat_is_bsd() {
+    echo -e "${CYAN}get_file_permissions returns octal when host stat is BSD-shaped...${NC}"
+    local f="$HOST_TMP/permfile" got=""
+    : >"$f"
+    sys_chmod 644 "$f"
+    (
+        stat() {
+            case "${1-}" in
+                -c) return 1 ;;
+                -f)
+                    if [[ "${2-}" == %A ]]; then
+                        printf '%s\n' '-rw-r--r--'
+                        return 0
+                    fi
+                    return 1
+                    ;;
+                *) return 1 ;;
+            esac
+        }
+        export -f stat
+        got=$(get_file_permissions "$f")
+        if [[ "$got" == "644" ]]; then
+            exit 0
+        fi
+        printf 'got=%s\n' "$got" >&2
+        exit 1
+    )
+    if [[ $? -eq 0 ]]; then
+        print_test_result "get_file_permissions returns octal 644 under BSD stat" "PASS"
+    else
+        print_test_result "get_file_permissions returns octal 644 under BSD stat" "FAIL" \
+            "GNU -c failed and BSD %A was symbolic; helper returned a non-octal mode"
+    fi
+}
+
 test_repeat_lines_paren_token_and_count() {
     echo -e "${CYAN}repeat_lines emits N copies of a parenthesis token...${NC}"
     if ! declare -F repeat_lines >/dev/null 2>&1; then
@@ -326,6 +367,7 @@ main() {
     test_bin_dir_is_exported_to_bash_c
     test_repeat_lines_dash_prefixed_token_ignores_host_yes
     test_repeat_lines_paren_token_and_count
+    test_get_file_permissions_octal_when_stat_is_bsd
 
     print_test_summary "host-path"
 }

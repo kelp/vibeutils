@@ -409,6 +409,11 @@ test_path_shadow() {
     expect_one_new_finding "path-shadow exec" \
         "$FIXTURES/path-shadow/positive-exec" path-shadow \
         "tests/utilities/shadowly_test.sh::test_shadowly::" 0 prefix
+    # `"$binary" -exec true` is an operand of the unit under test. The
+    # scanner comment says this must not fire; quote stripping used to
+    # leave a bare `-exec true` that matched a shipped name.
+    expect_no_findings "path-shadow uut -exec" \
+        "$FIXTURES/path-shadow/negative-uut-exec" path-shadow
     expect_one_new_finding "path-shadow run_with_limit" \
         "$FIXTURES/path-shadow/positive-limit" path-shadow \
         "tests/utilities/shadowly_test.sh::test_shadowly::" 0 prefix
