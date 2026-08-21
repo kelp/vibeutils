@@ -26,7 +26,6 @@ matrix-drift	docs/specs/chmod-flags.md::-i	macOS ACL -i is parsed and unused; re
 matrix-drift	docs/specs/chown-flags.md::--dereference	chown --dereference is parsed and unused; resolve with src/chown.zig::dereference (#157 .short=0).
 matrix-drift	docs/specs/chown-flags.md::--no-preserve-root	chown --no-preserve-root is parsed and unused; resolve with src/chown.zig::no_preserve_root (#157 .short=0).
 matrix-drift	docs/specs/cp-flags.md::-c	macOS clonefile -c is parsed and unused; resolve with src/cp.zig::clone.
-matrix-drift	docs/specs/cut-flags.md::--complement	cut --complement is parsed and unused; resolve with src/cut.zig::complement (#157).
 matrix-drift	docs/specs/du-flags.md::-H	du -H is parsed and unused; resolve with src/du.zig::dereference_args.
 matrix-drift	docs/specs/du-flags.md::-I	du -I is parsed and unused; resolve with src/du.zig::ignore_pattern.
 matrix-drift	docs/specs/du-flags.md::-L	du -L is parsed and unused; resolve with src/du.zig::dereference.
@@ -67,7 +66,6 @@ stub-flag	src/chown.zig::dereference	chown --dereference is parsed and unused. S
 stub-flag	src/chown.zig::no_preserve_root	chown --no-preserve-root is parsed and unused. Stage 2 implement-vs-decline; surfaced by .short=0 meta counting (#157).
 stub-flag	src/chown.zig::no_traverse_symlinks	ChownOptions field set from the -H/-L/-P policy and never consulted by the walker; same stage-2 question as the chmod field.
 stub-flag	src/cp.zig::clone	macOS cp -c (clonefile) is parsed and unused. Stage 2 implement-vs-decline (#157).
-stub-flag	src/cut.zig::complement	cut --complement is parsed and unused. Stage 2 implement-vs-decline (#157).
 stub-flag	src/date.zig::no_set_date	-j is accepted and ignored (BSD `do not set the date`). Either it becomes real or date-flags.md stops claiming it; both are behaviour verdicts stage 2 owes.
 stub-flag	src/df.zig::no_sync	df -n is accepted and ignored. AUDIT_SWEEP names this class; the fix is a df spec/behaviour decision, out of scope for the PR that adds the scanner.
 stub-flag	src/df.zig::suppress_inodes	df -I is accepted and ignored. Named in AUDIT_SWEEP as the finding this check exists to catch; left for stage 2 to settle implement-vs-decline.

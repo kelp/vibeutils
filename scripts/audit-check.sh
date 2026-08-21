@@ -300,10 +300,10 @@ END {
 # inside the same unit, so depth and mode do not leak across siblings.
 function classify(   i, c, ld, f, r, m, t, ch, file) {
     gdepth = 0; mode = ""; n_structs = 0; n_fields = 0; cur_meta = "";
-    in_sfn = 0; sfn_base = 0;
+    in_sfn = 0; sfn_base = 0; sfn_entered = 0;
     for (i = 1; i <= n_lines; i++) {
         if (IS_MARK[i]) {
-            mode = ""; gdepth = 0; in_sfn = 0; cur_meta = "";
+            mode = ""; gdepth = 0; in_sfn = 0; sfn_entered = 0; cur_meta = "";
             continue;
         }
         c = CODE[i];
@@ -330,7 +330,7 @@ function classify(   i, c, ld, f, r, m, t, ch, file) {
             if (!in_sfn) {
                 STRUCT_SKIP[i] = 1;
                 if (c ~ /(^|[^A-Za-z0-9_])fn[ \t]+[A-Za-z_]/) {
-                    in_sfn = 1; sfn_base = ld; STRUCT_SKIP[i] = 1;
+                    in_sfn = 1; sfn_base = ld; sfn_entered = 0; STRUCT_SKIP[i] = 1;
                 }
             }
             if (!in_sfn && ld == 1 && RAW[i] ~ /^[ \t]*[a-z_][A-Za-z0-9_]*[ \t]*:/) {
@@ -366,7 +366,13 @@ function classify(   i, c, ld, f, r, m, t, ch, file) {
             }
         }
         gdepth += brace_delta(c);
-        if (in_sfn && gdepth <= sfn_base) in_sfn = 0;
+        if (in_sfn && gdepth > sfn_base) sfn_entered = 1;
+        # A brace-less `fn init(` line is still at sfn_base, so clearing
+        # in_sfn there skipped the whole method body and hid real reads
+        # (cut --complement). Wait until the body has opened.
+        if (in_sfn && sfn_entered && gdepth <= sfn_base) {
+            in_sfn = 0; sfn_entered = 0;
+        }
         if (mode != "" && gdepth <= 0) { mode = ""; in_sfn = 0; }
         if (gdepth < 0) gdepth = 0;
     }
