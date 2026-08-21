@@ -21,148 +21,228 @@ rebase after predecessors land. Do not stack on #189.
 ## Classification
 
 Info/query (directory listing), not a stdin filter. No
-`runUtilWithInput`. Classify like `ls` / `find`: walk the
-filesystem, print to stdout, errors on stderr.
+`runUtilWithInput`. Classify like `ls` / `find`.
 
-`tree` is **not** POSIX and **not** GNU coreutils. The de
-facto reference is Steve Baker's `tree(1)`. Where that
-tool and this TODO disagree, the TODO heading wins; Baker
-tree is the reference for flags the TODO names (`-L`, `-d`,
-`-I`, the summary line, box-drawing).
+`tree` is **not** POSIX and **not** GNU coreutils. Steve
+Baker's `tree(1)` (2.x) is the de facto reference for flags
+the TODO names. Where Baker and the TODO disagree, the TODO
+wins (`--color=WHEN`, `-h` as help).
 
 ## In scope
 
 New `src/tree.zig`, registered **only** in `build/utils.zig`
 (do not edit `build.zig`). `runTree`. Arena per invocation.
+Do not add walker API this slice.
 
 ### Walk
 
-Use `src/common/walker.zig`. No recursion. `sort_children =
-true`. `symlinks = .no_follow`. `order = .pre`. Bound
-`max_depth` and `max_entries` from `WalkConfig` (defaults
-1024 / 16 Mi). Do not follow directory symlinks this slice
-(Baker `-l` is out of scope).
+`src/common/walker.zig`. No recursion. `sort_children =
+true`. `symlinks = .no_follow`. `order = .pre`. Leave
+`WalkConfig.max_depth` at its **safety** default (1024) and
+`max_entries` at 16 Mi. `DepthLimitExceeded` /
+`EntryLimitExceeded` are hard failures, not `-L`.
 
-### Output
+Do not follow directory symlinks (Baker `-l` is out of
+scope). Do not print `name -> target`.
 
-UTF-8 box-drawing (`├── `, `└── `, `│   `, `    `) with an
-explicit prefix stack whose length is the walk depth. ASCII
-`|--` / `` `-- `` when stdout is not a TTY or `NO_COLOR` is
-set is **not** required; emit UTF-8 always so pipes stay
-parseable by tools that expect Baker's default charset.
-Flush stdout before the writer goes out of scope.
+Preflight each operand with open/stat. A missing or
+unreadable root is a stderr diagnostic and a nonzero exit;
+do not rely on the walker turning a failed `openDir` into a
+`.file` entry.
 
-Default operand: `.` when no positionals. Multiple directory
-operands: print each tree in argv order, with a blank line
-between trees (Baker). Trust the OS; report kernel errors;
-do not block `../`.
+### `-L` (not walker `max_depth`)
 
-Skip `.` and `..`. Skip other names that start with `.`
-unless `-a` (Baker default; without `-a` hidden files are
-invisible). `-a` is in scope because it is required for that
-default to be usable.
+Walker root is depth 0. `-L N` means emit the operand and
+descendants with `entry.depth <= N`. After emitting a
+**directory** at `depth == N`, call `walker.pruneCurrent()`
+so grandchildren are not visited. `-L 1` is the operand's
+direct children. `-L 0` emits only the operand (then prune
+if it is a directory). Missing, non-numeric, negative, or
+overflowing `N` is an error, exit 1.
+
+### `-I`
+
+Baker 2.x **accumulates** repeated `-I` / `--ignore` and
+treats `|` inside a pattern as alternation. Do not last-wins.
+
+Argparse optional string cannot store a list. Scan argv
+(stop at `--`) for `-I PATTERN`, `-IPATTERN`, `--ignore`,
+and `--ignore=PATTERN`. Bound `args.len`. Split each
+PATTERN on `|` and match basename with
+`common.glob.globMatch`. A name matches if **any**
+alternative of **any** `-I` matches. On a matching
+directory, `pruneCurrent()` after deciding to skip it so
+children do not leak.
+
+Long `--ignore` is KEEP house style (every flag has a long
+spelling), not an invented Baker flag.
+
+### Output / box-drawing
+
+UTF-8 `├── ` / `└── ` / `│   ` / `    ` always (no ASCII
+fallback this slice). Flush stdout before the writer leaves
+scope.
+
+`Entry` has no last-sibling bit, and pre-order streaming
+emits a directory's subtree before its next sibling. Buffer
+the **filtered** tree (or per-directory filtered child
+lists) in the arena, bound by `max_entries`, **then** print.
+Connectors use last-**emitted** child after `-a` / `-d` /
+`-I` filters. If the alphabetically last child is excluded,
+the previous remaining sibling gets `└──`.
+
+Prefix/connector loops are indexed with `u16` to match
+`Entry.depth`. No recursion.
+
+Default operand: `.`. Multiple operands: print each tree in
+argv order with a blank line between trees, then **one**
+combined summary at the end (Baker). A file operand is a
+single-node tree (just the name). Trust the OS; no `../`
+theater.
+
+Skip `.` and `..`. Skip other `.*` names unless `-a`.
 
 ### Flags (this slice)
 
+Matrix header: tree is in no POSIX/macOS/OpenBSD/GNU
+coreutils spec. **SHOULD** = Baker `tree(1)` and in this
+TODO heading. **KEEP** = vibeutils spelling or convention.
+Implement every TODO box this slice even though CLAUDE MUST
+(POSIX+other) does not apply.
+
 | Flag | Tier | Behavior |
 |------|------|----------|
-| `-L N` / `--level=N` | MUST (TODO) | Do not descend past depth N. Depth 1 is the operand's children. Invalid / non-numeric N is an error (exit 1). |
-| `-d` / `--directories-only` | MUST (TODO) | Emit directories only; still count only directories in the summary files=0. |
-| `-I PATTERN` / `--ignore=PATTERN` | MUST (TODO) | Exclude a basename matching `common.glob.globMatch`. Applied to files and directories (pruned). Repeatable: last-wins is wrong; **any** matching pattern excludes (Baker: last `-I` replaces — we match Baker: one pattern, last `-I` wins, because argparse optional string is last-wins and repeating fnmatch lists is extra). Record: last `-I` wins. |
-| `-a` / `--all` | SHOULD (Baker) | Include names starting with `.` |
-| `--color=WHEN` | MUST (TODO) | `always` / `auto` / `never`. Default `auto`. Color only when `isTty()` and not `NO_COLOR`. Reuse `common.display_config` + `common.style` / `common.icons` truecolor→256→basic like `ls`. Do not invent `-C`/`-n` this slice; `--color` is the TODO spelling. |
-| `--icons=WHEN` | KEEP (TODO) | `always` / `auto` / `never`. File-type icons before names via `common.icons`. Gated like `ls` (TTY / `NO_COLOR` / `VIBEUTILS_STYLE`). |
-| `--help` / `-h` | MUST | Help. Baker uses `-h` for human sizes; we keep `-h` as help (vibeutils convention). Document the divergence. |
-| `--version` / `-V` | MUST | Version. |
+| `-L N` / `--level=N` | SHOULD | Depth cap via `pruneCurrent`; see above. |
+| `-d` / `--directories-only` | SHOULD | Directories only. |
+| `-I PATTERN` / `--ignore=PATTERN` | SHOULD | Cumulative ignore; `\|` alternation; prune matching dirs. Repeatable. |
+| `-a` / `--all` | SHOULD | Include `.*` names. Needed so the Baker hidden default is usable. |
+| `--color=WHEN` | KEEP | `always`/`auto`/`never`. Default `auto`. Not Baker `-C`/`-n`. |
+| `--icons=WHEN` | KEEP | `always`/`auto`/`never`. `common.icons`. |
+| `--help` / `-h` | KEEP | Help. Baker `-h` is human sizes; we do not implement that. |
+| `--version` / `-V` | KEEP | Version (vibeutils `-V`). |
 
-Summary line after each tree (Baker default, TODO):
-`N directories, M files` (British plural: `1 directory, 0 files`).
-Count emitted entries, not ignored ones. Directories include
-the root operand.
+`--level`, `--directories-only`, `--ignore`, `--all` are
+KEEP long spellings required by man-page house style.
+
+### Summary
+
+One report after all operands. Baker 2.x counts the listed
+root directory (empty dir: `1 directory, 0 files`). British
+plurals. Count emitted entries only.
+
+`-d`: Baker prints only `N directories` (no `, 0 files`).
+Match Baker.
 
 ### Color / icons
 
-Do not leak ANSI into pipes, files, or tests. Gate on
-`isTty()`, not only `ColorMode.detect()`. `NO_COLOR` wins
-even over `--color=always` (vibeutils house rule; Cloud
-`NO_COLOR=1`). Directory names get the directory color;
-icons use the existing mapping.
+Follow `ls`/`wc`: `DisplayConfig.resolve()`, then apply
+`--color`/`--icons` WHEN. Gate color on `isTty()`, not only
+`ColorMode.detect()`. `NO_COLOR` disables **color**, not
+icons (same as `display_config` / `ls`). `--color=always`
+still loses to `NO_COLOR`. Icons with `--icons=always` may
+appear without color. Cloud tests that need color use
+`env -u NO_COLOR`.
 
 ### Help, man, specs, changelog
 
-- Help via `common.help.printColorized`.
-- `man/man1/tree.1` (mdoc; `docs/MAN_PAGE_REFERENCES.md`).
-- New `docs/specs/tree-flags.md` (matrix; POSIX/macOS/OpenBSD
-  columns `--`; GNU column is Baker `tree(1)`, labeled as
-  such). `docs/specs/tree-vibeutils.txt` for KEEP notes.
+- `common.help.printColorized`.
+- `man/man1/tree.1` (mdoc; `mandoc -T lint`; NAME,
+  SYNOPSIS, DESCRIPTION, EXIT STATUS, EXAMPLES, SEE ALSO,
+  STANDARDS, AUTHORS; no HISTORY).
+- `docs/specs/tree-flags.md` with the tier basis in the
+  header. Remaining Baker flags (`-l`, `-f`, `-P`, sizes,
+  HTML/JSON, `-o`, `--noreport`, …) listed **WONT** this
+  slice with one-line rationale. `docs/specs/tree-vibeutils.txt`.
 - `CHANGELOG.md` Unreleased.
-- Check every box under `### 5. `tree` Utility`.
+- Check every box under `### 5`.
 
 ## Out of scope
 
 - `### 4` du relative color
 - `### 6` progress
 - `### 7` smarter errors
-- Baker flags not in the table: `-l` follow, `-f` full path,
-  `-P` include pattern, `-s`/`-h` sizes, `-p` permissions,
-  `-u`/`-g`, `-D`, `-F`, `-x`, HTML/JSON, `-o`, `--noreport`,
-  `--dirsfirst`, gitignore
-- Sharing a new module in `src/common/` (walker, glob, icons,
-  display_config already exist)
+- Baker flags marked WONT in the matrix
+- New `src/common/` module or walker API
 - Editing `build.zig`
 - Recursion
+- ASCII box-drawing charset
+- `name -> target`
 
 ## Spec impact
 
-New matrix. No change to other utilities' matrices. `-h` as
-help is a documented KEEP vs Baker. `--color=WHEN` is KEEP vs
-Baker `-C`/`-n`.
+New matrix only. KEEP: `--color=WHEN` vs `-C`/`-n`; `-h`
+help vs Baker sizes.
 
-User-visible design; plan review is the consensus gate. Do
-not write Zig until the three-model plan review ends in
-consensus.
+Do not write Zig until this revision's three-model review
+ends in consensus.
 
-## Tests (TDD; test agent first)
+## Tests (TDD; separate test-writer; all new behavior RED)
 
-Unit tests in `src/tree.zig` with a temp fixture (dir, file,
-subdir, skipped dotfile). Integration `tests/utilities/tree_test.sh`.
+Assert **emitted output and exit codes**, never argparse
+fields. `common.env.test_overrides` for env, not libc
+`setenv`. Unit tests in `src/tree.zig`. Integration
+`tests/utilities/tree_test.sh`.
 
-1. Bare `tree DIR` prints the root name, box-drawing children
-   sorted by name, and a summary. Hidden `.dot` is absent
-   without `-a`.
+1. Bare `tree DIR`: root name, sorted children, `├──` /
+   `└──` / `│` topology, hidden `.dot` absent, summary
+   `1 directory, N files` (or the fixture's counts).
 2. `-a` includes `.dot`.
-3. `-d` lists directories only; summary files=0.
-4. `-L 1` does not print grandchildren.
-5. `-I '*.log'` excludes matching basenames (and prunes a
-   matching directory).
-6. `--color=never` has no ESC; `--color=always` still respects
-   `NO_COLOR`.
-7. `--icons=always` emits an icon when color/icons are on and
-   `NO_COLOR` is unset.
-8. `--help` / `--version` / unknown flag exit codes.
-9. Nonexistent operand: stderr + nonzero. No path-traversal
-   theater.
+3. `-d`: directories only; summary is `N directories` with
+   no file clause.
+4. `-L 1` on a deeper tree **succeeds** and omits
+   grandchildren (`pruneCurrent`, not `DepthLimitExceeded`).
+5. `-L 0` prints only the operand.
+6. Invalid / missing / negative `-L`: exit 1.
+7. `-I '*.log'` excludes matching basenames and prunes a
+   matching directory.
+8. Repeated `-I skipme -I '*.log'` excludes both.
+9. `-I 'skipme|*.log'` same as two alternatives.
+10. Last remaining sibling gets `└──` when the
+    alphabetically last child is excluded by `-I` or `-d`.
+11. Default `.` when no operands.
+12. Two directory operands: blank line between trees, **one**
+    summary at the end.
+13. `--color=never`: no ESC. `--color=always` with `NO_COLOR`
+    set: no ESC. `--icons=always` with `NO_COLOR`: icon
+    present, no color.
+14. `--help` / `--version` / unknown flag / invalid
+    `--color`/`--icons` exit codes.
+15. Nonexistent operand: stderr, nonzero, no Zig error names.
+16. Directory symlink: listed, not followed.
 
-Prove RED on 1–5 before implementing each (or the first
-failing batch, then green). No stdin reads.
+Prove RED before GREEN. Test-writer does not edit production;
+implementer does not author those tests.
+
+Gates: `just fmt-check`, `zig build test -Dtest-util=tree`,
+`env -u NO_COLOR just it-util tree`, `scripts/tiger-check.sh`,
+`scripts/audit-check.sh`, `mandoc -T lint man/man1/tree.1`.
+No privileged tests. Do not run the full `just it` unless
+needed.
 
 ## Risks
 
 - Not a filter; no stdin hang.
 - No privileged tests. No `st_dev` `@intCast`.
-- Walker `max_depth` vs `-L`: set the walker's depth bound
-  from `-L` (plus the root frame). Do not recurse if the
-  walker is short.
-- Tiger: no recursion; prefix loop bound = depth; functions
-  ≤70 lines; two asserts per new helper; `u32` indices.
-- `isTty()` for color/icons.
-- Cloud `NO_COLOR=1`: integration color tests use
-  `env -u NO_COLOR`.
-- argparse `-h` is help; do not add Baker human-size `-h`.
-- Multiple `-I`: last-wins (argparse optional). Document.
-- Box-drawing width vs `common.unicode.displayWidth` if we
-  pad; we will not pad columns.
+- `-L` **must not** lower `WalkConfig.max_depth`.
+- Buffer the filtered tree; bound `max_entries`.
+- Tiger: no recursion; prefix loops bound by depth (`u16`);
+  helpers ≤70 lines; two asserts each.
+- `isTty()` for color; `NO_COLOR` does not force icons off.
+- argparse `-h` is help.
 
 ## Plan review history
 
-None yet. This is round 1.
+Round 1: Grok, GPT, and Fable REQUEST CHANGES. `-L` via
+walker `max_depth` would error instead of truncate;
+`Entry` cannot choose `└──` while streaming; `-I` text
+contradicted itself and Baker 2.x accumulates + `|`;
+summary/multi-root Baker shape was wrong; spec tiers MUST
+were illegal for a no-spec utility; `NO_COLOR` vs icons
+must match `ls`; tests incomplete.
+
+This revision locks: `pruneCurrent` for `-L`/`-I` dirs;
+buffer-then-print; cumulative `-I` with `|`; one combined
+Baker-2.x summary; SHOULD/KEEP tiers; `ls` color/icon
+precedence; expanded RED tests. Long aliases stay KEEP
+house style (GPT asked to drop them; man-page house style
+requires a long spelling).
