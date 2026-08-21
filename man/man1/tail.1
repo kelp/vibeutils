@@ -25,6 +25,13 @@ Output the last
 bytes instead of lines.
 .It Fl f , Fl Fl follow
 Output appended data as the file grows.
+Every real file operand is followed, not only the last one.
+When switching from one operand to another,
+.Nm
+prints a GNU-style header
+.Pq Sq \n==> file <==\n
+before the new chunk.
+At most 256 real files may be followed; more is an error.
 Uses kqueue on macOS and inotify on Linux.
 .It Fl F
 Same as
@@ -89,6 +96,11 @@ $ tail -c 100 file.txt
 Follow a log file for new entries:
 .Bd -literal -offset indent
 $ tail -f /var/log/syslog
+.Ed
+.Pp
+Follow two files, with a header each time output switches:
+.Bd -literal -offset indent
+$ tail -f a b
 .Ed
 .Sh SEE ALSO
 .Xr cat 1 ,

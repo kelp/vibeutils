@@ -762,7 +762,7 @@ For each utility:
 - [x] Implement: Efficient line reading from end
 - [x] Implement: Follow mode with kqueue (macOS) and inotify (Linux)
 - [x] Implement: Follow retry with file rotation detection (-F)
-- [ ] Implement: Multi-file follow (GNU tail follows all files)
+- [x] Implement: Multi-file follow (GNU tail follows all files)
 - [x] Implement: CircularLineBuffer for performance
 - [x] Implement: Zero-terminated line support
 - [x] Implement: Zig 0.15.1 Reader API migration

@@ -10,6 +10,12 @@
   green.
 
 ### Added
+- **`tail -f` / `-F` now follow every file operand.** Appends to any
+  followed file appear in stdout, with GNU `\n==> file <==\n` headers
+  when output switches from one operand to another (suppressed by
+  `-q`). Duplicate operands are separate slots. A hard cap of 256 real
+  files applies before any dump I/O. `-F` retries missing or rotated
+  names without stalling the other files.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so
