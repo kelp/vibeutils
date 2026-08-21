@@ -13,8 +13,9 @@ const branch_end = "└── ";
 const pipe_pad = "│   ";
 const space_pad = "    ";
 const args_len_max: u32 = 1 << 20;
-const ignore_alts_max: u32 = 256;
 const walk_entries_max: u64 = 1 << 24;
+const walk_calls_max: u64 = walk_entries_max + 1;
+const print_steps_max: u64 = 2 * walk_entries_max + 2;
 
 const When = enum { always, auto, never };
 
@@ -116,15 +117,13 @@ fn runTreeArena(
 ) !u8 {
     std.debug.assert(args.len < args_len_max);
     std.debug.assert(@intFromPtr(stdout_writer) != 0);
-    var diag: common.argparse.ArgParser.Diagnostic = .{};
-    const parsed = common.argparse.ArgParser.parseWithDiagnostic(
+    const parsed = common.argparse.ArgParser.parseOrExit(
         TreeArgs,
         gpa,
         args,
-        &diag,
-    ) catch |err| {
-        return reportParseError(gpa, stderr_writer, err);
-    };
+        prog_name,
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.general_error);
     defer gpa.free(parsed.positionals);
 
     if (parsed.help) {
@@ -236,7 +235,11 @@ fn emitTrees(
     var status: u8 = @intFromEnum(common.ExitCode.success);
     var style = try makeStyle(gpa, stdout_writer, display);
     for (operands) |operand| {
-        std.debug.assert(operand.len > 0);
+        if (operand.len == 0) {
+            reportPathError(gpa, stderr_writer, operand, error.FileNotFound);
+            status = @intFromEnum(common.ExitCode.general_error);
+            continue;
+        }
         const tree_status = emitOneOperand(
             gpa,
             arena,
@@ -273,7 +276,7 @@ fn emitOneOperand(
     counts: *Counts,
 ) !u8 {
     std.debug.assert(operand.len > 0);
-    std.debug.assert(operand.len < std.Io.Dir.max_path_bytes);
+    std.debug.assert(operand.len <= std.Io.Dir.max_path_bytes);
     const kind = try preflightOperand(io, operand);
     const root = try makeNode(arena, operand, kind);
     countNode(counts, root.kind);
@@ -294,42 +297,38 @@ fn emitOneOperand(
     return status;
 }
 
-fn reportParseError(
-    allocator: Allocator,
-    stderr_writer: *std.Io.Writer,
-    err: anyerror,
-) u8 {
-    std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
-    std.debug.assert(@intFromPtr(stderr_writer) != 0);
-    const msg: []const u8 = switch (err) {
-        error.UnknownFlag => "unrecognized option",
-        error.MissingValue => "option requires an argument",
-        error.InvalidValue => "invalid option value",
-        else => "invalid argument",
-    };
-    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{msg});
-    return @intFromEnum(common.ExitCode.general_error);
-}
-
 fn reportPathError(
     allocator: Allocator,
     stderr_writer: *std.Io.Writer,
     path: []const u8,
     err: anyerror,
 ) void {
-    std.debug.assert(path.len > 0);
     std.debug.assert(@intFromPtr(stderr_writer) != 0);
+    std.debug.assert(@intFromPtr(allocator.vtable) != 0);
+    const shown = if (path.len == 0) "''" else path;
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
         prog_name,
         "{s}: {s}",
-        .{ path, common.posixErrorString(err) },
+        .{ shown, pathErrorString(err) },
     );
+}
+
+fn pathErrorString(err: anyerror) []const u8 {
+    const msg = switch (err) {
+        error.DepthLimitExceeded => "directory tree too deep",
+        error.EntryLimitExceeded, error.TooManyEntries => "too many directory entries",
+        error.DirectoryCycle => "filesystem cycle detected",
+        else => common.posixErrorString(err),
+    };
+    std.debug.assert(msg.len > 0);
+    return msg;
 }
 
 fn parseWhenArg(value: ?[]const u8) !?When {
     const text = value orelse return null;
+    if (text.len == 0) return error.InvalidValue;
     std.debug.assert(text.len > 0);
     if (std.mem.eql(u8, text, "always")) return .always;
     if (std.mem.eql(u8, text, "auto")) return .auto;
@@ -339,10 +338,12 @@ fn parseWhenArg(value: ?[]const u8) !?When {
 
 fn parseLevelArg(value: ?[]const u8) !?u16 {
     const text = value orelse return null;
+    if (text.len == 0) return error.InvalidValue;
     std.debug.assert(text.len > 0);
     if (text[0] == '-' or text[0] == '+') return error.InvalidValue;
     const parsed = std.fmt.parseInt(u32, text, 10) catch return error.InvalidValue;
     if (parsed > std.math.maxInt(u16)) return error.InvalidValue;
+    std.debug.assert(parsed <= std.math.maxInt(u16));
     return @intCast(parsed);
 }
 
@@ -359,9 +360,6 @@ fn applyColorWhen(
         }
     }
     if (common.env.getEnv("NO_COLOR") != null) display.color = .off;
-    if (common.env.getEnv("TERM")) |term| {
-        if (std.mem.eql(u8, term, "dumb")) display.color = .off;
-    }
 }
 
 fn applyIconWhen(
@@ -418,17 +416,51 @@ fn collectIgnoreAt(
     std.debug.assert(i < args.len);
     std.debug.assert(args.len < args_len_max);
     const arg = args[i];
-    if (std.mem.startsWith(u8, arg, "--ignore=")) {
-        try list.append(arena, arg["--ignore=".len..]);
+    if (ignoreLongAttached(arg)) |pattern| {
+        try list.append(arena, pattern);
         return i;
     }
-    if (std.mem.eql(u8, arg, "--ignore")) {
+    if (isIgnoreLongBare(arg)) {
         return try takeNextPattern(arena, args, i, list);
     }
     if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
         return try collectIgnoreCluster(arena, args, i, list);
     }
     return i;
+}
+
+fn ignoreLongAttached(arg: []const u8) ?[]const u8 {
+    std.debug.assert(arg.len < args_len_max);
+    const eq = std.mem.indexOfScalar(u8, arg, '=') orelse return null;
+    if (!std.mem.startsWith(u8, arg, "--")) return null;
+    if (!isIgnoreLongName(arg[2..eq])) return null;
+    std.debug.assert(eq + 1 <= arg.len);
+    return arg[eq + 1 ..];
+}
+
+fn isIgnoreLongBare(arg: []const u8) bool {
+    std.debug.assert(arg.len < args_len_max);
+    if (!std.mem.startsWith(u8, arg, "--")) return false;
+    return isIgnoreLongName(arg[2..]);
+}
+
+fn isIgnoreLongName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    std.debug.assert(name.len > 0);
+    if (!std.mem.startsWith(u8, "ignore", name)) return false;
+    const others = [_][]const u8{
+        "help",
+        "version",
+        "all",
+        "directories-only",
+        "level",
+        "color",
+        "icons",
+    };
+    for (others) |other| {
+        if (std.mem.startsWith(u8, other, name)) return false;
+    }
+    return true;
 }
 
 fn takeNextPattern(
@@ -491,8 +523,8 @@ fn skipClusterValue(args: []const []const u8, i: u32, j: u32) u32 {
 }
 
 fn preflightOperand(io: std.Io, path: []const u8) !FileKind {
-    std.debug.assert(path.len > 0);
-    std.debug.assert(path.len < std.Io.Dir.max_path_bytes);
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
     const info = try common.file.FileInfo.lstat(path);
     if (info.kind == .directory) {
         var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
@@ -503,7 +535,7 @@ fn preflightOperand(io: std.Io, path: []const u8) !FileKind {
 
 fn makeNode(arena: Allocator, name: []const u8, kind: FileKind) !*Node {
     std.debug.assert(name.len > 0);
-    std.debug.assert(name.len < std.Io.Dir.max_path_bytes);
+    std.debug.assert(name.len <= std.Io.Dir.max_path_bytes);
     const node = try arena.create(Node);
     node.* = .{
         .name = try arena.dupe(u8, name),
@@ -515,11 +547,13 @@ fn makeNode(arena: Allocator, name: []const u8, kind: FileKind) !*Node {
 
 fn countNode(counts: *Counts, kind: FileKind) void {
     std.debug.assert(@intFromPtr(counts) != 0);
+    const before = counts.directories + counts.files;
     if (kind == .directory) {
         counts.directories += 1;
     } else {
         counts.files += 1;
     }
+    std.debug.assert(counts.directories + counts.files == before + 1);
 }
 
 fn walkDirectory(
@@ -569,19 +603,20 @@ fn drainWalker(
     std.debug.assert(@intFromPtr(walker) != 0);
     var status: u8 = 0;
     var n: u64 = 0;
-    while (n < walk_entries_max) : (n += 1) {
+    while (n < walk_calls_max) : (n += 1) {
         const maybe = walker.next(io) catch |err| {
             status = @intFromEnum(common.ExitCode.general_error);
             reportWalkerError(gpa, stderr_writer, walker, err);
             if (err == error.DepthLimitExceeded or err == error.EntryLimitExceeded) {
-                break;
+                return status;
             }
             continue;
         };
-        const entry = maybe orelse break;
+        const entry = maybe orelse return status;
         try consumeEntry(arena, walker, parents, walk_opts, entry, counts);
     }
-    return status;
+    reportWalkerError(gpa, stderr_writer, walker, error.EntryLimitExceeded);
+    return @intFromEnum(common.ExitCode.general_error);
 }
 
 fn reportWalkerError(
@@ -592,8 +627,24 @@ fn reportWalkerError(
 ) void {
     std.debug.assert(@intFromPtr(stderr_writer) != 0);
     std.debug.assert(@intFromPtr(walker) != 0);
-    const path = walker.errorPath() orelse prog_name;
-    reportPathError(allocator, stderr_writer, path, err);
+    const msg = pathErrorString(err);
+    if (walker.errorPath()) |path| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "{s}: {s}",
+            .{ path, msg },
+        );
+        return;
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "{s}",
+        .{msg},
+    );
 }
 
 fn consumeEntry(
@@ -654,10 +705,12 @@ fn nameIgnored(name: []const u8, patterns: []const []const u8) bool {
 
 fn patternMatches(name: []const u8, pattern: []const u8) bool {
     std.debug.assert(name.len > 0);
-    std.debug.assert(pattern.len < std.Io.Dir.max_path_bytes);
+    if (pattern.len == 0) return false;
+    std.debug.assert(pattern.len > 0);
     var alts: u32 = 0;
     var it = std.mem.splitScalar(u8, pattern, '|');
-    while (alts < ignore_alts_max) : (alts += 1) {
+    const alts_max = pattern.len + 1;
+    while (alts < alts_max) : (alts += 1) {
         const alt = it.next() orelse return false;
         if (alt.len > 0 and common.glob.globMatch(alt, name)) return true;
     }
@@ -689,17 +742,12 @@ fn setParentAtDepth(
 ) !void {
     std.debug.assert(depth >= 1);
     std.debug.assert(node.kind == .directory);
+    std.debug.assert(parents.items.len >= depth);
     if (parents.items.len > depth) {
         parents.items.len = depth;
     }
-    while (parents.items.len < depth) {
-        try parents.append(arena, parents.items[parents.items.len - 1]);
-    }
-    if (parents.items.len == depth) {
-        try parents.append(arena, node);
-    } else {
-        parents.items[depth] = node;
-    }
+    std.debug.assert(parents.items.len == depth);
+    try parents.append(arena, node);
 }
 
 const PrintFrame = struct {
@@ -734,7 +782,7 @@ fn printDescendants(
     std.debug.assert(sp.* >= 1);
     std.debug.assert(sp.* <= 1024);
     var n: u64 = 0;
-    while (n < walk_entries_max and sp.* > 0) : (n += 1) {
+    while (n < print_steps_max and sp.* > 0) : (n += 1) {
         const frame = &frames[sp.* - 1];
         if (frame.next_child >= frame.node.children.items.len) {
             sp.* -= 1;
@@ -753,6 +801,7 @@ fn printDescendants(
             sp.* += 1;
         }
     }
+    if (sp.* != 0) return error.TooManyEntries;
 }
 
 fn writeConnectors(
@@ -849,7 +898,7 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     std.debug.assert(@intFromPtr(writer) != 0);
     std.debug.assert(prog_name.len > 0);
     const text =
-        \\Usage: tree [OPTION]... [DIRECTORY]...
+        \\Usage: tree [OPTION]... [PATH]...
         \\List contents of directories in a tree-like format.
         \\
         \\  -a, --all                 include hidden entries
@@ -863,6 +912,7 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
         \\
         \\WHEN defaults to 'auto'. Repeated -I patterns accumulate; '|'
         \\separates alternatives. Directory symlinks are not followed.
+        \\A file operand is listed as a single-node tree.
         \\
     ;
     try common.help.printColorized(allocator, writer, text);

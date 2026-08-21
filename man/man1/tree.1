@@ -18,13 +18,15 @@
 .Op Fl Fl icons Ns = Ns Ar when
 .Op Fl Fl help
 .Op Fl Fl version
-.Op Ar directory ...
+.Op Ar file ...
 .Sh DESCRIPTION
 The
 .Nm
 utility lists the contents of each
-.Ar directory
+.Ar file
 operand as a tree, using UTF-8 box-drawing connectors.
+A directory operand is walked; a non-directory operand is
+printed as a single-node tree.
 Hidden names are omitted unless
 .Fl a
 is given.

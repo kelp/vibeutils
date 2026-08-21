@@ -1,4 +1,4 @@
-Usage: tree [OPTION]... [DIRECTORY]...
+Usage: tree [OPTION]... [PATH]...
 List contents of directories in a tree-like format.
 
   -a, --all                 include hidden entries
@@ -12,3 +12,4 @@ List contents of directories in a tree-like format.
 
 WHEN defaults to 'auto'. Repeated -I patterns accumulate; '|'
 separates alternatives. Directory symlinks are not followed.
+A file operand is listed as a single-node tree.
