@@ -244,6 +244,9 @@ fn resolveSizeMode(args: []const []const u8) SizeDisplay {
                     last_was_k = false;
                     if (i < args_len) i += 1;
                 },
+                .skip_next => {
+                    if (i < args_len) i += 1;
+                },
             }
         } else {
             const consume_value = applySizeModeCluster(
@@ -260,7 +263,7 @@ fn resolveSizeMode(args: []const []const u8) SizeDisplay {
     return mode;
 }
 
-const SizeModeLongHit = enum { no, yes, yes_skip_next };
+const SizeModeLongHit = enum { no, yes, yes_skip_next, skip_next };
 
 fn applySizeModeLong(arg: []const u8, mode: *SizeDisplay) SizeModeLongHit {
     assert(arg.len >= 3);
@@ -287,7 +290,29 @@ fn applySizeModeLong(arg: []const u8, mode: *SizeDisplay) SizeModeLongHit {
         mode.* = .custom_block;
         return .yes;
     }
+    if (isValuedLongWithoutEquals(body)) return .skip_next;
     return .no;
+}
+
+/// Valued longs whose next argv token is an operand, not a flag cluster.
+/// `--threshold -4k` is a real GNU form (negative SIZE); the `k` is not `-k`.
+fn isValuedLongWithoutEquals(body: []const u8) bool {
+    assert(body.len > 0);
+    if (std.mem.indexOfScalar(u8, body, '=') != null) return false;
+    const names = [_][]const u8{
+        "threshold",
+        "ignore-pattern",
+        "max-depth",
+        "color",
+        "icons",
+    };
+    for (names) |name| {
+        if (std.mem.eql(u8, body, name)) {
+            assert(std.mem.indexOfScalar(u8, body, '=') == null);
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Returns true when a value-taking short (`-B`/`-d`/`-I`/`-t`) has no

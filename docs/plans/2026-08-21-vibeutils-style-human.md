@@ -184,3 +184,7 @@ the KEEP default. Fold last-was-k into `applySizeModeCluster`,
 stop at valued shorts (`B`/`d`/`I`/`t`), and skip the next argv
 token when the value is not attached. Do not scan size-mode
 letters inside those values.
+
+Valued longs with a separate token (`--threshold -4k`,
+`--ignore-pattern -k`) skip that token the same way; attached
+`--threshold=-4k` is already safe because it is one argv word.
