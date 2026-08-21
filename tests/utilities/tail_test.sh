@@ -221,6 +221,257 @@ test_tail() {
         print_test_result "tail -F waits for nonexistent file" "FAIL" "Expected 'file appeared' in stdout and quoted 'cannot open ... for reading' on stderr"
     fi
 
+    # Multi-file follow (GNU follows every real positional). Background tail
+    # is killed by PID only; do not wrap it or wait in run_with_limit.
+
+    # Test: tail -f two files sees appends to both
+    local both_a=$(create_temp_file $'dump-a-init\n')
+    local both_b=$(create_temp_file $'dump-b-init\n')
+    local both_out="$TEMP_DIR/mf_both_stdout"
+    local both_err="$TEMP_DIR/mf_both_stderr"
+    "$binary" -f "$both_a" "$both_b" >"$both_out" 2>"$both_err" &
+    local both_pid=$!
+    local i
+    for i in $(seq 1 25); do
+        grep -q "dump-a-init" "$both_out" && grep -q "dump-b-init" "$both_out" && break
+        sleep 0.2
+    done
+    echo "append-a-live" >> "$both_a"
+    echo "append-b-live" >> "$both_b"
+    for i in $(seq 1 25); do
+        grep -q "append-a-live" "$both_out" && grep -q "append-b-live" "$both_out" && break
+        sleep 0.2
+    done
+    kill "$both_pid" 2>/dev/null || true
+    wait "$both_pid" 2>/dev/null || true
+    if grep -q "append-a-live" "$both_out" && grep -q "append-b-live" "$both_out" \
+        && ! grep -q "multiple-file follow not yet supported" "$both_err"; then
+        print_test_result "tail -f two files sees appends to both" "PASS"
+    else
+        print_test_result "tail -f two files sees appends to both" "FAIL" \
+            "Expected appends to both files and no multi-file warning"
+    fi
+
+    # Test: tail -f two files prints switch headers
+    local hdr_a=$(create_temp_file $'dump-a-hdr\n')
+    local hdr_b=$(create_temp_file $'dump-b-hdr\n')
+    local hdr_out="$TEMP_DIR/mf_hdr_stdout"
+    local hdr_err="$TEMP_DIR/mf_hdr_stderr"
+    "$binary" -f "$hdr_a" "$hdr_b" >"$hdr_out" 2>"$hdr_err" &
+    local hdr_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "dump-a-hdr" "$hdr_out" && grep -q "dump-b-hdr" "$hdr_out" && break
+        sleep 0.2
+    done
+    echo "append-first-only" >> "$hdr_a"
+    for i in $(seq 1 25); do
+        grep -q "append-first-only" "$hdr_out" && break
+        sleep 0.2
+    done
+    kill "$hdr_pid" 2>/dev/null || true
+    wait "$hdr_pid" 2>/dev/null || true
+    local hdr_needle=$'\n==> '"$hdr_a"$' <==\nappend-first-only'
+    if [[ "$(cat "$hdr_out")" == *"$hdr_needle"* ]]; then
+        print_test_result "tail -f two files prints switch headers" "PASS"
+    else
+        print_test_result "tail -f two files prints switch headers" "FAIL" \
+            "Expected append-first-only immediately preceded by GNU switch header for the first file"
+    fi
+
+    # Test: tail -f two files omits switch header for last dump file
+    local last_a=$(create_temp_file $'dump-a-last\n')
+    local last_b=$(create_temp_file $'dump-b-last\n')
+    local last_out="$TEMP_DIR/mf_last_stdout"
+    local last_err="$TEMP_DIR/mf_last_stderr"
+    "$binary" -f "$last_a" "$last_b" >"$last_out" 2>"$last_err" &
+    local last_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "dump-a-last" "$last_out" && grep -q "dump-b-last" "$last_out" && break
+        sleep 0.2
+    done
+    echo "append-last-only" >> "$last_b"
+    for i in $(seq 1 25); do
+        grep -q "append-last-only" "$last_out" && break
+        sleep 0.2
+    done
+    kill "$last_pid" 2>/dev/null || true
+    wait "$last_pid" 2>/dev/null || true
+    local last_bad=$'\n==> '"$last_b"$' <==\nappend-last-only'
+    if grep -q "append-last-only" "$last_out" \
+        && [[ "$(cat "$last_out")" != *"$last_bad"* ]]; then
+        print_test_result "tail -f two files omits switch header for last dump file" "PASS"
+    else
+        print_test_result "tail -f two files omits switch header for last dump file" "FAIL" \
+            "Expected append-last-only without an immediate switch header for the last dump file"
+    fi
+
+    # Test: tail -fq two files omits switch headers
+    local q_a=$(create_temp_file $'dump-a-quiet\n')
+    local q_b=$(create_temp_file $'dump-b-quiet\n')
+    local q_out="$TEMP_DIR/mf_quiet_stdout"
+    local q_err="$TEMP_DIR/mf_quiet_stderr"
+    "$binary" -fq "$q_a" "$q_b" >"$q_out" 2>"$q_err" &
+    local q_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "dump-a-quiet" "$q_out" && grep -q "dump-b-quiet" "$q_out" && break
+        sleep 0.2
+    done
+    echo "quiet-first-append" >> "$q_a"
+    for i in $(seq 1 25); do
+        grep -q "quiet-first-append" "$q_out" && break
+        sleep 0.2
+    done
+    kill "$q_pid" 2>/dev/null || true
+    wait "$q_pid" 2>/dev/null || true
+    if grep -q "dump-a-quiet" "$q_out" && grep -q "quiet-first-append" "$q_out" \
+        && ! grep -q "==>" "$q_out"; then
+        print_test_result "tail -fq two files omits switch headers" "PASS"
+    else
+        print_test_result "tail -fq two files omits switch headers" "FAIL" \
+            "Expected both lines and no ==> headers under -fq"
+    fi
+
+    # Test: tail -f missing existing follows the live file
+    local miss_first="$TEMP_DIR/mf_missing_first"
+    local exist_second=$(create_temp_file $'exist-second-init\n')
+    local me_out="$TEMP_DIR/mf_miss_exist_stdout"
+    local me_err="$TEMP_DIR/mf_miss_exist_stderr"
+    "$binary" -f "$miss_first" "$exist_second" >"$me_out" 2>"$me_err" &
+    local me_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "exist-second-init" "$me_out" && break
+        sleep 0.2
+    done
+    echo "exist-second-append" >> "$exist_second"
+    for i in $(seq 1 25); do
+        grep -q "exist-second-append" "$me_out" && break
+        sleep 0.2
+    done
+    kill "$me_pid" 2>/dev/null || true
+    wait "$me_pid" 2>/dev/null || true
+    if grep -q "exist-second-append" "$me_out" \
+        && grep -q "cannot open '$miss_first'" "$me_err"; then
+        print_test_result "tail -f missing existing follows the live file" "PASS"
+    else
+        print_test_result "tail -f missing existing follows the live file" "FAIL" \
+            "Expected live-file append and cannot-open for the missing operand"
+    fi
+
+    # Test: tail -f existing missing follows the live file
+    local exist_first=$(create_temp_file $'exist-first-init\n')
+    local miss_second="$TEMP_DIR/mf_missing_second"
+    local em_out="$TEMP_DIR/mf_exist_miss_stdout"
+    local em_err="$TEMP_DIR/mf_exist_miss_stderr"
+    "$binary" -f "$exist_first" "$miss_second" >"$em_out" 2>"$em_err" &
+    local em_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "exist-first-init" "$em_out" && break
+        sleep 0.2
+    done
+    echo "exist-first-append" >> "$exist_first"
+    for i in $(seq 1 25); do
+        grep -q "exist-first-append" "$em_out" && break
+        sleep 0.2
+    done
+    kill "$em_pid" 2>/dev/null || true
+    wait "$em_pid" 2>/dev/null || true
+    local em_needle=$'\n==> '"$exist_first"$' <==\nexist-first-append'
+    if grep -q "exist-first-append" "$em_out" \
+        && [[ "$(cat "$em_out")" == *"$em_needle"* ]] \
+        && grep -q "cannot open '$miss_second'" "$em_err"; then
+        print_test_result "tail -f existing missing follows the live file" "PASS"
+    else
+        print_test_result "tail -f existing missing follows the live file" "FAIL" \
+            "Expected live-file append with switch header and cannot-open for missing"
+    fi
+
+    # Test: tail -F missing existing follows then both
+    local F_miss="$TEMP_DIR/mf_F_missing"
+    local F_exist=$(create_temp_file $'F-exist-init\n')
+    local F_out="$TEMP_DIR/mf_F_stdout"
+    local F_err="$TEMP_DIR/mf_F_stderr"
+    "$binary" -F "$F_miss" "$F_exist" >"$F_out" 2>"$F_err" &
+    local F_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "F-exist-init" "$F_out" && break
+        sleep 0.2
+    done
+    echo "F-exist-while-missing" >> "$F_exist"
+    for i in $(seq 1 25); do
+        grep -q "F-exist-while-missing" "$F_out" && break
+        sleep 0.2
+    done
+    echo "F-missing-init" > "$F_miss"
+    echo "F-missing-append" >> "$F_miss"
+    for i in $(seq 1 25); do
+        grep -q "F-missing-append" "$F_out" && break
+        sleep 0.2
+    done
+    kill "$F_pid" 2>/dev/null || true
+    wait "$F_pid" 2>/dev/null || true
+    if grep -q "F-exist-while-missing" "$F_out" \
+        && grep -q "F-missing-append" "$F_out" \
+        && grep -qF "has appeared;  following new file" "$F_err"; then
+        print_test_result "tail -F missing existing follows then both" "PASS"
+    else
+        print_test_result "tail -F missing existing follows then both" "FAIL" \
+            "Expected live appends while missing, then missing appends and GNU appeared diagnostic"
+    fi
+
+    # Test: tail -F two files rotate one still follows the other
+    local rot_a=$(create_temp_file $'rot-a-init\n')
+    local rot_b=$(create_temp_file $'rot-b-init\n')
+    local rot_out="$TEMP_DIR/mf_rot_stdout"
+    local rot_err="$TEMP_DIR/mf_rot_stderr"
+    "$binary" -F "$rot_a" "$rot_b" >"$rot_out" 2>"$rot_err" &
+    local rot2_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "rot-a-init" "$rot_out" && grep -q "rot-b-init" "$rot_out" && break
+        sleep 0.2
+    done
+    mv "$rot_a" "${rot_a}.1"
+    echo "rot-a-new" > "$rot_a"
+    echo "rot-b-append" >> "$rot_b"
+    for i in $(seq 1 25); do
+        grep -q "rot-b-append" "$rot_out" && grep -q "rot-a-new" "$rot_out" && break
+        sleep 0.2
+    done
+    kill "$rot2_pid" 2>/dev/null || true
+    wait "$rot2_pid" 2>/dev/null || true
+    if grep -q "rot-b-append" "$rot_out" && grep -q "rot-a-new" "$rot_out"; then
+        print_test_result "tail -F two files rotate one still follows the other" "PASS"
+    else
+        print_test_result "tail -F two files rotate one still follows the other" "FAIL" \
+            "Expected appends to the unrotated file and the replacement of the rotated file"
+    fi
+
+    # Test: tail -f duplicate operands both emit
+    local dup_a=$(create_temp_file $'dup-init\n')
+    local dup_out="$TEMP_DIR/mf_dup_stdout"
+    local dup_err="$TEMP_DIR/mf_dup_stderr"
+    "$binary" -f "$dup_a" "$dup_a" >"$dup_out" 2>"$dup_err" &
+    local dup_pid=$!
+    for i in $(seq 1 25); do
+        grep -q "dup-init" "$dup_out" && break
+        sleep 0.2
+    done
+    echo "dup-append" >> "$dup_a"
+    for i in $(seq 1 25); do
+        grep -q "dup-append" "$dup_out" && break
+        sleep 0.2
+    done
+    kill "$dup_pid" 2>/dev/null || true
+    wait "$dup_pid" 2>/dev/null || true
+    local dup_count
+    dup_count=$(grep -c "dup-append" "$dup_out" || true)
+    local dup_needle=$'\n==> '"$dup_a"$' <==\ndup-append'
+    if [[ "$dup_count" -eq 2 ]] && [[ "$(cat "$dup_out")" == *"$dup_needle"* ]]; then
+        print_test_result "tail -f duplicate operands both emit" "PASS"
+    else
+        print_test_result "tail -f duplicate operands both emit" "FAIL" \
+            "Expected dup-append twice with a switch header immediately before the second copy"
+    fi
+
     # Test: tail -f -r is an error (mutually exclusive)
     local mutual_file=$(create_temp_file "test")
     if "$binary" -f -r "$mutual_file" 2>/dev/null; then

@@ -21,6 +21,9 @@ const assert = std.debug.assert;
 /// Buffer size for I/O operations - matches typical file system block size for optimal performance
 const BUFFER_SIZE = 8192;
 
+/// Hard cap on real (non-`-`) follow operands. Counted before any file I/O.
+const follow_files_max: u32 = 256;
+
 /// Command-line arguments for tail
 ///
 /// Field order is GNU tail's own `longopts[]` order, because that is the
@@ -82,6 +85,60 @@ const TailOptions = struct {
         return file_count > 1;
     }
 };
+
+/// Formats a GNU follow switch header into `buf`. Stub returns empty so the
+/// form test fails until the implementer writes `\n==> {path} <==\n`.
+fn formatFollowSwitchHeader(buf: []u8, path: []const u8) []const u8 {
+    assert(buf.len >= 16);
+    assert(path.len < buf.len);
+    _ = path;
+    return buf[0..0];
+}
+
+/// Whether a follow chunk needs a switch header, and whether `last_output_slot`
+/// should move. Stub returns false and never updates the slot so slot-change
+/// tests fail until GNU `check_fspec` lands.
+fn followHeaderNeeded(
+    show_headers: bool,
+    last_output_slot: *?u32,
+    new_slot: u32,
+    chunk_len: u32,
+) bool {
+    assert(new_slot < follow_files_max);
+    const last_in_range = last_output_slot.* == null or
+        last_output_slot.*.? < follow_files_max;
+    assert(last_in_range);
+    _ = show_headers;
+    _ = chunk_len;
+    return false;
+}
+
+/// Parses packed `inotify_event` records into watch descriptors. Stub returns
+/// 0 so the walk test fails until the implementer visits every record.
+fn parseInotifyWatchDescriptors(buf: []const u8, out_wds: []i32) u32 {
+    assert(out_wds.len > 0);
+    assert(out_wds.len <= follow_files_max);
+    _ = buf;
+    return 0;
+}
+
+/// Maps one watch descriptor onto every slot that holds it. Stub returns 0 so
+/// duplicate-operand / hard-link fan-out tests fail until dispatch lands.
+fn followSlotsForWatchDescriptor(slot_wds: []const i32, wd: i32, out_slots: []u32) u32 {
+    assert(slot_wds.len > 0);
+    assert(out_slots.len >= slot_wds.len);
+    _ = wd;
+    return 0;
+}
+
+/// Whether `inotify_rm_watch` should run after a slot drops a wd. Stub never
+/// removes, so the last-slot test fails until refcount logic lands.
+fn followInotifyShouldRemoveWatch(remaining_slots_with_wd: u32) bool {
+    assert(remaining_slots_with_wd <= follow_files_max);
+    const not_unbounded = remaining_slots_with_wd != std.math.maxInt(u32);
+    assert(not_unbounded);
+    return false;
+}
 
 /// Returns true when byte is a valid line delimiter (NUL or newline). Used to
 /// keep delimiter precondition asserts free of compound boolean expressions.
@@ -2596,6 +2653,111 @@ test "tail: -f with nonexistent file returns error" {
         &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), result);
+}
+
+test "tail follow switch header uses GNU form" {
+    var buf: [64]u8 = undefined;
+    const header = formatFollowSwitchHeader(&buf, "foo/bar");
+    try testing.expectEqualStrings("\n==> foo/bar <==\n", header);
+    try testing.expect(header.len > 0);
+}
+
+test "tail follow switch header is omitted when quiet" {
+    var last: ?u32 = 0;
+    try testing.expect(!followHeaderNeeded(false, &last, 1, 8));
+    // Not-quiet plus a slot change still needs a header, so a always-false
+    // stub cannot satisfy this test.
+    try testing.expect(followHeaderNeeded(true, &last, 1, 8));
+}
+
+test "tail follow switch header is needed when the slot changes" {
+    var last: ?u32 = 0;
+    try testing.expect(followHeaderNeeded(true, &last, 1, 4));
+    last = 0;
+    try testing.expect(!followHeaderNeeded(true, &last, 0, 4));
+    // Duplicate operands: two slots, same path, still a slot change.
+    last = 0;
+    try testing.expect(followHeaderNeeded(true, &last, 1, 4));
+    last = 2;
+    try testing.expect(!followHeaderNeeded(true, &last, 1, 0));
+    try testing.expectEqual(@as(?u32, 2), last);
+}
+
+test "tail follow switch header after last positional" {
+    // Last positional is slot B (index 1), including a failed open.
+    var last: ?u32 = 1;
+    try testing.expect(!followHeaderNeeded(true, &last, 1, 5));
+    try testing.expect(followHeaderNeeded(true, &last, 0, 5));
+    // Last positional is stdin (slot 1); first follow file is slot 0.
+    last = 1;
+    try testing.expect(followHeaderNeeded(true, &last, 0, 5));
+}
+
+test "tail follow rejects more than follow_files_max files" {
+    const io = testing.io;
+    const missing = "/tmp/vibeutils_tail_cap_missing";
+    const file_count: u32 = follow_files_max + 1;
+    var args_buf: [follow_files_max + 2][]const u8 = undefined;
+    args_buf[0] = "-f";
+    var i: u32 = 0;
+    while (i < file_count) : (i += 1) {
+        args_buf[i + 1] = missing;
+    }
+    const args = args_buf[0 .. file_count + 1];
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runTail(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    const stderr = stderr_aw.writer.buffered();
+    try testing.expect(
+        std.mem.find(u8, stderr, "cannot follow more than 256 files") != null,
+    );
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr, "cannot open") == null);
+}
+
+test "tail follow inotify buffer walks every record" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const Event = std.os.linux.inotify_event;
+    var raw: [2]Event align(@alignOf(Event)) = .{
+        .{ .wd = 3, .mask = 2, .cookie = 0, .len = 0 },
+        .{ .wd = 5, .mask = 2, .cookie = 0, .len = 0 },
+    };
+    var wds: [2]i32 = undefined;
+    const n = parseInotifyWatchDescriptors(std.mem.asBytes(&raw), &wds);
+    try testing.expectEqual(@as(u32, 2), n);
+    try testing.expectEqual(@as(i32, 3), wds[0]);
+    try testing.expectEqual(@as(i32, 5), wds[1]);
+}
+
+test "tail follow wd fans out to every matching slot" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const slot_wds = [_]i32{ 7, 7 };
+    var out: [2]u32 = undefined;
+    const n = followSlotsForWatchDescriptor(&slot_wds, 7, &out);
+    try testing.expectEqual(@as(u32, 2), n);
+    try testing.expectEqual(@as(u32, 0), out[0]);
+    try testing.expectEqual(@as(u32, 1), out[1]);
+}
+
+test "tail follow inotify rm_watch waits for last slot" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Two slots share wd 7; releasing slot 0 leaves one reference.
+    try testing.expect(!followInotifyShouldRemoveWatch(1));
+    try testing.expect(followInotifyShouldRemoveWatch(0));
 }
 
 /// Test helper for processing a file from a directory
