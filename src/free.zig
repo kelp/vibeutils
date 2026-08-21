@@ -844,7 +844,12 @@ fn reportInvalidWhen(
         error.InvalidColor => parsed.color.?,
         error.InvalidBar => parsed.bar.?,
     };
-    std.debug.assert(value.len != 0);
+    // Empty `--color=` / `--bar=` is valid argparse and still an invalid WHEN.
+    // Do not assert on argv length; print the same diagnostic as bogus WHEN.
+    switch (err) {
+        error.InvalidColor => std.debug.assert(parsed.color != null),
+        error.InvalidBar => std.debug.assert(parsed.bar != null),
+    }
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
