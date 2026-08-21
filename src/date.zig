@@ -1831,3 +1831,54 @@ test "date #159: -- then dash operand is an invalid date" {
         stderr_aw.writer.buffered(),
     );
 }
+
+test "date #177: -- then two formats is extra operand" {
+    // GNU date 9.4: `date -- +%Y +%m` reports extra operand '+%m'.
+    // Current post-`--` parser overwrites format and prints the month.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "+%Y", "+%m" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand '+%m'",
+    ) != null);
+}
+
+test "date #177: two formats without -- is extra operand" {
+    // Same GNU rule without `--`: `date +%Y +%m` is extra operand '+%m'.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "+%Y", "+%m" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand '+%m'",
+    ) != null);
+}

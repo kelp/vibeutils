@@ -9489,3 +9489,38 @@ test "find #159: -- path -name matches a dash-named file" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") == null);
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
+
+test "find #177: path then -- is an unknown predicate" {
+    // GNU findutils 4.9: `--` is a delimiter only in the leading
+    // -H/-L/-P prefix, before any start path. `find . --` therefore
+    // treats `--` as an expression. Current code still skips `--`
+    // after a path has been collected.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "--" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, err, "--") != null);
+}
