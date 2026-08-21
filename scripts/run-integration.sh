@@ -165,6 +165,16 @@ fi
 # the checkout stays root-owned.
 chmod -R a+rX "$PROJECT_ROOT/zig-out" "$PROJECT_ROOT/tests" 2>/dev/null || true
 
+# The #150 contract test mkdir's zig-out/bin as root before invoking
+# this script. A root-owned install dir makes the next `zig build` in
+# the same checkout fail with AccessDenied. Hand zig-out back to the
+# checkout owner; a+rX above still lets the demoted user read it.
+if [ -d "$PROJECT_ROOT/zig-out" ]; then
+    repo_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT")"
+    chown -R "$repo_ugid" "$PROJECT_ROOT/zig-out" || true
+fi
+
 echo "integration: dropping to '$TEST_USER' so permission-denied tests are meaningful"
 
 # Some tests create files with relative paths, so the working directory has
