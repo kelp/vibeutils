@@ -23,6 +23,66 @@ test_du() {
     echo "hello world" > "$tmpdir/file1.txt"
     echo "test data here" > "$tmpdir/subdir/file2.txt"
 
+    # Exercise size-mode resolution against one allocated (non-sparse) file.
+    local human_file="$tmpdir/allocated.bin"
+    dd if=/dev/zero of="$human_file" bs=1024 count=2 2>/dev/null
+
+    check_du_size_mode() {
+        local name="$1"
+        local expected="$2"
+        shift 2
+        local mode_output mode_size
+        mode_output=$("$binary" "$@" "$human_file" 2>/dev/null)
+        mode_size=$(printf '%s\n' "$mode_output" | awk -F '	' 'NR == 1 {print $1}')
+
+        case "$expected" in
+            binary)
+                if [[ "$mode_size" =~ ^[0-9]+(\.[0-9]+)?[KMGTPE]$ ]]; then
+                    print_test_result "$name" "PASS"
+                else
+                    print_test_result "$name" "FAIL" \
+                        "Expected binary human size field, got '$mode_size' in '$mode_output'"
+                fi
+                ;;
+            si)
+                if [[ "$mode_size" =~ ^[0-9]+(\.[0-9]+)?kB$ ]]; then
+                    print_test_result "$name" "PASS"
+                else
+                    print_test_result "$name" "FAIL" \
+                        "Expected SI human size field, got '$mode_size' in '$mode_output'"
+                fi
+                ;;
+            numeric)
+                if [[ "$mode_size" =~ ^[0-9]+$ ]]; then
+                    print_test_result "$name" "PASS"
+                else
+                    print_test_result "$name" "FAIL" \
+                        "Expected numeric size field, got '$mode_size' in '$mode_output'"
+                fi
+                ;;
+        esac
+    }
+
+    check_du_size_mode "du defaults to binary human-readable size" binary
+    check_du_size_mode "du -k overrides human default" numeric -k
+    check_du_size_mode "du -m overrides human default" numeric -m
+    check_du_size_mode "du -g overrides human default" numeric -g
+    check_du_size_mode "du -b overrides human default" numeric -b
+    check_du_size_mode "du --bytes overrides human default" numeric --bytes
+    check_du_size_mode "du --block-size=1 overrides human default" numeric --block-size=1
+    check_du_size_mode "du --block-size 1 overrides human default" numeric --block-size 1
+    check_du_size_mode "du -B 1 overrides human default" numeric -B 1
+    check_du_size_mode "du -B1 overrides human default" numeric -B1
+    check_du_size_mode "du --si uses decimal suffix" si --si
+    check_du_size_mode "du -h -k uses last size mode" numeric -h -k
+    check_du_size_mode "du -k -h uses last size mode" binary -k -h
+    check_du_size_mode "du -kh uses last clustered size mode" binary -kh
+    check_du_size_mode "du -hk uses last clustered size mode" numeric -hk
+    check_du_size_mode "du --si -k uses last size mode" numeric --si -k
+    check_du_size_mode "du -k --si uses last size mode" si -k --si
+    check_du_size_mode "du -k -- stops size-mode scan" numeric -k --
+    unset -f check_du_size_mode
+
     # Default output should produce non-empty output
     local output
     output=$("$binary" "$tmpdir" 2>/dev/null)

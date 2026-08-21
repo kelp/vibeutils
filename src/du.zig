@@ -1383,6 +1383,136 @@ fn printVersion(writer: *std.Io.Writer) void {
 // TESTS
 // ============================================================================
 
+const TestDuSizeKind = enum {
+    binary_human,
+    si_human,
+    numeric,
+};
+
+fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
+    const file = try tmp_dir.dir.createFile(io, "allocated.bin", .{});
+    defer file.close(io);
+    const data = [_]u8{'x'} ** 2048;
+    try file.writeStreamingAll(io, &data);
+
+    const path = try tmp_dir.dir.realPathFileAlloc(io, "allocated.bin", testing.allocator);
+    std.debug.assert(path.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(path));
+    return path;
+}
+
+fn testRunDuSizeField(
+    io: std.Io,
+    args: []const []const u8,
+) ![]u8 {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(args[args.len - 1].len > 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const output = stdout_aw.writer.buffered();
+    const tab = std.mem.indexOfScalar(u8, output, '\t') orelse
+        return error.MissingDuSizeField;
+    try testing.expect(tab > 0);
+    return testing.allocator.dupe(u8, output[0..tab]);
+}
+
+fn testExpectDuSizeKind(
+    io: std.Io,
+    args: []const []const u8,
+    expected: TestDuSizeKind,
+) !void {
+    const field = try testRunDuSizeField(io, args);
+    defer testing.allocator.free(field);
+    try testing.expect(field.len > 0);
+
+    switch (expected) {
+        .binary_human => {
+            try testing.expect(std.mem.endsWith(u8, field, "K"));
+            try testing.expect(!std.mem.endsWith(u8, field, "kB"));
+        },
+        .si_human => {
+            try testing.expect(std.mem.endsWith(u8, field, "kB"));
+            try testing.expect(!std.mem.endsWith(u8, field, "K"));
+        },
+        .numeric => {
+            for (field) |byte| try testing.expect(std.ascii.isDigit(byte));
+            try testing.expect(std.mem.indexOfAny(u8, field, "KMGTPEkB") == null);
+        },
+    }
+}
+
+test "du defaults allocated file output to binary human-readable size" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    try testExpectDuSizeKind(io, &.{path}, .binary_human);
+}
+
+test "du explicit size overrides keep output numeric" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_][]const []const u8{
+        &.{ "-k", path },
+        &.{ "-m", path },
+        &.{ "-g", path },
+        &.{ "-b", path },
+        &.{ "--bytes", path },
+        &.{ "--block-size=1", path },
+        &.{ "--block-size", "1", path },
+        &.{ "-B", "1", path },
+        &.{ "-B1", path },
+    };
+    for (cases) |args| try testExpectDuSizeKind(io, args, .numeric);
+}
+
+test "du --si prints an allocated file with a decimal suffix" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    try testExpectDuSizeKind(io, &.{ "--si", path }, .si_human);
+}
+
+test "du size modes use argv last-wins order and stop at double dash" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_]struct {
+        args: []const []const u8,
+        expected: TestDuSizeKind,
+    }{
+        .{ .args = &.{ "-h", "-k", path }, .expected = .numeric },
+        .{ .args = &.{ "-k", "-h", path }, .expected = .binary_human },
+        .{ .args = &.{ "-kh", path }, .expected = .binary_human },
+        .{ .args = &.{ "-hk", path }, .expected = .numeric },
+        .{ .args = &.{ "--si", "-k", path }, .expected = .numeric },
+        .{ .args = &.{ "-k", "--si", path }, .expected = .si_human },
+        .{ .args = &.{ "-k", "--", path }, .expected = .numeric },
+    };
+    for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
+}
+
 test "parseBlockSize - pure numeric" {
     try testing.expectEqual(@as(?u64, 512), parseBlockSize("512"));
     try testing.expectEqual(@as(?u64, 1024), parseBlockSize("1024"));

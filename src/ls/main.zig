@@ -1228,6 +1228,158 @@ fn testStageDisplayEnvOverrides() []const common.env.Override {
     return saved;
 }
 
+fn testCreateLsAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
+    const file = try tmp_dir.dir.createFile(io, "allocated.bin", .{});
+    defer file.close(io);
+    const data = [_]u8{'x'} ** 2048;
+    try file.writeStreamingAll(io, &data);
+    const one_hour_ago = common.file.currentTimestampNanoseconds() -
+        3600 * @as(i128, std.time.ns_per_s);
+    try file.setTimestamps(io, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = one_hour_ago } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = one_hour_ago } },
+    });
+
+    const path = try tmp_dir.dir.realPathFileAlloc(io, "allocated.bin", testing.allocator);
+    std.debug.assert(path.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(path));
+    return path;
+}
+
+fn testRunLsOutput(io: std.Io, args: []const []const u8) ![]u8 {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(args[args.len - 1].len > 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
+    return testing.allocator.dupe(u8, stdout_aw.writer.buffered());
+}
+
+fn testLsLongSizeField(output: []const u8) []const u8 {
+    std.debug.assert(output.len > 0);
+    var fields = std.mem.tokenizeAny(u8, output, " \t\n");
+    for (0..4) |_| _ = fields.next() orelse unreachable;
+    const size = fields.next() orelse unreachable;
+    std.debug.assert(size.len > 0);
+    return size;
+}
+
+test "ls -l defaults an allocated file to binary human-readable size" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-l", path });
+    defer testing.allocator.free(output);
+    const size = testLsLongSizeField(output);
+    try testing.expectEqualStrings("2.0K", size);
+    try testing.expect(std.mem.endsWith(u8, size, "K"));
+}
+
+test "ls -l human default keeps the clock-style date" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-l", path });
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.indexOfScalar(u8, output, ':') != null);
+    try testing.expect(std.mem.find(u8, output, "ago") == null);
+    try testing.expect(std.mem.find(u8, output, "just now") == null);
+}
+
+test "ls -lk forms override the implicit human size with kilobytes" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_][]const []const u8{
+        &.{ "-lk", path },
+        &.{ "-l", "-k", path },
+    };
+    for (cases) |args| {
+        const output = try testRunLsOutput(io, args);
+        defer testing.allocator.free(output);
+        try testing.expectEqualStrings("2", testLsLongSizeField(output));
+    }
+}
+
+test "ls -lhk and -lkh keep explicit human-readable sizes" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_][]const []const u8{
+        &.{ "-lhk", path },
+        &.{ "-lkh", path },
+    };
+    for (cases) |args| {
+        const output = try testRunLsOutput(io, args);
+        defer testing.allocator.free(output);
+        try testing.expectEqualStrings("2.0K", testLsLongSizeField(output));
+    }
+}
+
+test "ls -lh keeps the explicit relative date style" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-lh", path });
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.find(u8, output, "hour") != null);
+    try testing.expect(std.mem.find(u8, output, "ago") != null);
+}
+
+test "ls -s without long format keeps a numeric block field" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-s", path });
+    defer testing.allocator.free(output);
+    var fields = std.mem.tokenizeAny(u8, output, " \t\n");
+    const blocks = fields.next() orelse return error.MissingBlockField;
+    for (blocks) |byte| try testing.expect(std.ascii.isDigit(byte));
+    try testing.expect(std.mem.indexOfAny(u8, blocks, "KMGTPE") == null);
+    try testing.expect(std.mem.endsWith(u8, output, "allocated.bin\n"));
+}
+
 test "ls prints a subdirectory operand exactly as given, not its basename (short format)" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
