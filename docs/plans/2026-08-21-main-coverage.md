@@ -63,10 +63,14 @@ Extract `runWithStreamingFiles` from `utilityMain` in
 - Same `runFn` contract as `utilityMain`.
 - Takes explicit `stdout_file` / `stderr_file`
   (`std.Io.File`), not process-global stdout.
+- `args[0]` is the program name; strip it the same way
+  `utilityMain` does (`args[1..]`). Assert `args.len >= 1`.
 - Allocates `[8192]u8` stdout and stderr buffers.
 - Wraps each file with `writerStreaming`.
-- Calls `runFn`, then `stdout.flush()` and
-  `stderr.flush()`, then returns the exit code.
+- Calls `runFn`. On `runFn` error, print to stderr,
+  `stderr.flush()`, return 1 (same as today's
+  `utilityMain` catch). On success, `stdout.flush()`
+  and `stderr.flush()`, then return the exit code.
 - Does **not** call `std.process.exit`.
 - Keep the existing `stdout_buffer.len ==
   stderr_buffer.len` assert, plus `== 8192`.
@@ -83,14 +87,22 @@ extract into env.
 
 ### Box 2 — Shell: compiled-binary I/O init
 
-New `tests/tools/main_io_test.sh`, invoked once from
-`run_all_utility_tests` (the `just it` path CI runs).
-Do not add `tests/utilities/main_io_test.sh` (there is
-no `main_io` binary; the runner would skip it).
+New `tests/tools/main_io_test.sh`. Invoke it once from
+`tests/integration.sh` on the all-utilities path, next
+to `help_consistency_checks.sh` (the existing
+cross-cutting hook). Do not add
+`tests/utilities/main_io_test.sh` (there is no
+`main_io` binary; the runner would skip it).
+
+Export `test_main_io` as the entry function. Missing
+file is FAIL, not a skip. Fold its `print_test_summary`
+status into `overall_result`. The sourced file must
+`return`, never `exit`, so a failure cannot abort the
+rest of `just it`.
 
 PATH stays pinned to `zig-out/bin`. Spawn
-`"$BIN_DIR/echo"` / `"$BIN_DIR/env"`, never the
-unqualified names. Wrap every spawn in
+`"$BIN_DIR/echo"` / `"$BIN_DIR/pwd"` / `"$BIN_DIR/env"`,
+never the unqualified names. Wrap every spawn in
 `run_with_limit`. Stdin is `/dev/null`.
 
 Locked cases:
@@ -99,10 +111,27 @@ Locked cases:
 | --- | --- | --- |
 | short stdout | `echo hi` | payload `< 8192` survives process exit (flush) |
 | long stdout | `echo` of 9000 bytes | full payload, including the tail after a full 8KB buffer |
-| stderr flush | `echo --not-a-flag` | stderr is non-empty after exit |
+| stderr flush | `pwd --not-a-flag` | stderr is non-empty after exit (`unrecognized option`) |
 | custom main | `env --help` | env's own 8KB `writerStreaming` + flush, not `utilityMain` |
 
+Do **not** use `echo --not-a-flag`. GNU and vibeutils
+`echo` treat unknown tokens as operands; `runEcho`
+never writes `stderr_writer`, so that case cannot pin
+flush. `pwd` uses `utilityMain` and prints
+`unrecognized option` on stderr.
+
 Do not iterate all 48 binaries. That matrix is `### 1`.
+
+## Review revision (round 1)
+
+Grok and Bugbot both flagged the locked stderr case.
+`echo --not-a-flag` is an operand, not a diagnostic.
+Replaced with `pwd --not-a-flag`. Hook moved to
+`tests/integration.sh` beside help-consistency.
+`runWithStreamingFiles` now states the argv0 contract
+and that the `runFn` error path flushes stderr before
+returning 1.
+
 
 ## Out of scope
 
@@ -134,9 +163,13 @@ TDD split (test-writer ≠ implementer):
    - `tests/tools/main_io_test.sh` with the four locked
      cases. Proven RED against a sabotaged
      `utilityMain` that omits `stdout.flush()`: `echo
-     hi` writes nothing (Linux and macOS). `env --help`
-     stays GREEN under that sabotage (own `main`);
-     sabotage env's flush separately, uncommitted.
+     hi` writes nothing (Linux and macOS). The `pwd`
+     stderr case goes RED if `stderr.flush()` is
+     omitted on the success path after `runPwd` returns
+     1 (the diagnostic is buffered). `env --help`
+     stays GREEN under `utilityMain` sabotage (own
+     `main`); sabotage env's flush separately,
+     uncommitted.
 2. **Implementer** extracts `runWithStreamingFiles`,
    points `utilityMain` at it, hooks the shell suite
    from `run_all_utility_tests`, checks the two TODO
