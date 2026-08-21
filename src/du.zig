@@ -1,8 +1,8 @@
 //! du - estimate file space usage
 //!
 //! The du utility displays the disk usage of files and directories.
-//! By default it reports disk usage in 1024-byte blocks for each
-//! directory argument and its subdirectories.
+//! By default it reports disk usage in human-readable 1024-based
+//! units. `-k` / `--block-size` restore numeric block counts.
 //!
 //! This implementation follows GNU coreutils du behavior.
 
@@ -88,7 +88,7 @@ const DuOptions = struct {
         },
         .human_readable = .{
             .short = 'h',
-            .desc = "Print sizes in human readable format (1K, 234M, 2G)",
+            .desc = "Print sizes in human readable format (default; 1K, 234M, 2G)",
         },
         .kilobytes = .{ .short = 'k', .desc = "Like --block-size=1K" },
         .gigabytes = .{ .short = 'g', .desc = "Like --block-size=1G" },
@@ -203,6 +203,114 @@ fn resolveDerefMode(args: []const []const u8) DereferenceMode {
         }
     }
     return mode;
+}
+
+/// KEEP default vs last explicit size flag on argv. Independent argparse
+/// bools do not record order, so `du -k -h` and `du -h -k` look the same
+/// in DuOptions; this scan matches GNU last-wins the way resolveDerefMode
+/// does for -P/-H/-L.
+const SizeDisplay = enum { human_1024, human_si, numeric };
+
+fn resolveSizeMode(args: []const []const u8) SizeDisplay {
+    // CLI argv is tiny; the bound is the scan's explicit ceiling.
+    assert(args.len < 65536);
+    var mode: SizeDisplay = .human_1024;
+    var saw_size_flag = false;
+    var i: usize = 0;
+    while (i < args.len) {
+        const arg = args[i];
+        i += 1;
+        if (std.mem.eql(u8, arg, "--")) break;
+        if (arg.len < 2 or arg[0] != '-') continue;
+        if (arg[1] == '-') {
+            switch (applySizeModeLong(arg, &mode)) {
+                .no => {},
+                .yes => saw_size_flag = true,
+                .yes_skip_next => {
+                    saw_size_flag = true;
+                    if (i < args.len) i += 1;
+                },
+            }
+        } else if (applySizeModeCluster(arg, &mode, &saw_size_flag) and i < args.len) {
+            i += 1;
+        }
+    }
+    if (!saw_size_flag) assert(mode == .human_1024);
+    return mode;
+}
+
+const SizeModeLongHit = enum { no, yes, yes_skip_next };
+
+fn applySizeModeLong(arg: []const u8, mode: *SizeDisplay) SizeModeLongHit {
+    assert(arg.len >= 3);
+    assert(arg[0] == '-' and arg[1] == '-');
+    const body = arg[2..];
+    if (std.mem.eql(u8, body, "human-readable")) {
+        mode.* = .human_1024;
+        return .yes;
+    }
+    if (std.mem.eql(u8, body, "si")) {
+        mode.* = .human_si;
+        return .yes;
+    }
+    if (std.mem.eql(u8, body, "bytes")) {
+        mode.* = .numeric;
+        return .yes;
+    }
+    if (std.mem.eql(u8, body, "block-size")) {
+        mode.* = .numeric;
+        return .yes_skip_next;
+    }
+    if (std.mem.startsWith(u8, body, "block-size=")) {
+        mode.* = .numeric;
+        return .yes;
+    }
+    return .no;
+}
+
+/// Returns true when `-B` consumed no attached SIZE and the next argv
+/// token is the value.
+fn applySizeModeCluster(arg: []const u8, mode: *SizeDisplay, saw: *bool) bool {
+    assert(arg.len >= 2);
+    assert(arg[0] == '-' and arg[1] != '-');
+    var consume_next = false;
+    var j: usize = 1;
+    while (j < arg.len) : (j += 1) {
+        switch (arg[j]) {
+            'h' => {
+                mode.* = .human_1024;
+                saw.* = true;
+            },
+            'k', 'm', 'g', 'b' => {
+                mode.* = .numeric;
+                saw.* = true;
+            },
+            'B' => {
+                mode.* = .numeric;
+                saw.* = true;
+                if (j + 1 < arg.len) break;
+                consume_next = true;
+            },
+            else => {},
+        }
+    }
+    return consume_next;
+}
+
+fn applySizeDisplay(config: *DuConfig, mode: SizeDisplay) void {
+    assert(config.block_size != 0);
+    switch (mode) {
+        .human_1024 => {
+            config.human_readable = true;
+            config.si = false;
+        },
+        .human_si => {
+            config.human_readable = true;
+            config.si = true;
+        },
+        .numeric => config.human_readable = false,
+    }
+    if (mode == .numeric) assert(!config.human_readable);
 }
 
 /// Parse a threshold value string, supporting optional sign and size suffixes.
@@ -1145,8 +1253,9 @@ pub fn runDu(
     }
 
     const deref_mode = resolveDerefMode(args);
-    const config = resolveConfig(allocator, opts, deref_mode) catch |err|
+    var config = resolveConfig(allocator, opts, deref_mode) catch |err|
         return runDu_resolveConfigError(allocator, stderr, opts, err);
+    applySizeDisplay(&config, resolveSizeMode(args));
 
     // Initialize styling based on resolved display config
     const style = runDu_initStyle(allocator, stdout, config);
@@ -1343,7 +1452,7 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) void {
         \\  -d, --max-depth=N     print the total for a directory only if it is N
         \\                          or fewer levels below the command line argument
         \\  -g                    like --block-size=1G
-        \\  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
+        \\  -h, --human-readable  print sizes in human readable format (default)
         \\  -H, --dereference-args  dereference only command-line symlink arguments
         \\  -I PATTERN            exclude files matching PATTERN
         \\  -k                    like --block-size=1K

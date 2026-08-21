@@ -1283,11 +1283,9 @@ full design.
 - [x] Integrated in ls, grep, du, and help output
 - [x] `--color=auto` checks isatty(stdout) in ls
 - [x] `df`: human-readable by default (`df.zig:88`)
-- [ ] `du`: human-readable by default (currently `du.zig:33`
-      defaults `human_readable = false`)
-- [ ] `ls -l`: human-readable by default (currently
-      `ls/main.zig:27` defaults `human_readable = false`)
-- [ ] Explicit flags always override
+- [x] `du`: human-readable by default
+- [x] `ls -l`: human-readable by default
+- [x] Explicit flags always override
 
 ### 3a. Command Linter Warnings ✓
 - [x] chown: warn when argument looks like octal mode

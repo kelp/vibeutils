@@ -37,3 +37,7 @@
 | --inodes | -- | -- | -- | yes | -- | WONT |
 | --time | -- | -- | -- | yes | -- | WONT |
 | --time-style | -- | -- | -- | yes | -- | WONT |
+
+KEEP default (not a flag): bare `du` prints 1024-based human-readable
+sizes, matching `df`. `-k` / `-m` / `-g` / `-b` / `--block-size`
+restore numeric counts. GNU flag semantics are unchanged.

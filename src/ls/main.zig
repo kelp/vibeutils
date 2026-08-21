@@ -83,7 +83,7 @@ const LsArgs = struct {
         .long_format = .{ .short = 'l', .desc = "Use a long listing format" },
         .human_readable = .{
             .short = 'h',
-            .desc = "With -l, print sizes in human readable format",
+            .desc = "With -l, print sizes in human readable format (default)",
         },
         .kilobytes = .{ .short = 'k', .desc = "With -l, print sizes in kilobytes" },
         .one_per_line = .{ .short = '1', .desc = "List one file per line" },
@@ -413,12 +413,15 @@ fn lsMain_buildOptions(
     // Detect terminal status for icons and colors
     const is_terminal = std.c.isatty(std.Io.File.stdout().handle) != 0;
 
+    const long_format = lsMain_isLongFormat(args);
+    const human_readable = lsMain_keepHumanReadable(args, long_format);
+
     // Create options struct by consolidating all parsed arguments
     return LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
-        .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
-        .human_readable = args.human_readable,
+        .long_format = long_format,
+        .human_readable = human_readable,
         .kilobytes = args.kilobytes,
         .one_per_line = args.one_per_line,
         .directory = args.directory,
@@ -459,6 +462,20 @@ fn lsMain_buildOptions(
         .thousands_grouping = args.thousands_grouping,
         .terminal_width = args.output_width,
     };
+}
+
+fn lsMain_isLongFormat(args: LsArgs) bool {
+    return args.long_format or args.omit_owner or args.omit_group or args.numeric_ids;
+}
+
+/// KEEP default: long listings are human-readable unless -k is set
+/// without an explicit -h. Do not default the argparse field: that
+/// would also switch time_style to relative.
+fn lsMain_keepHumanReadable(args: LsArgs, long_format: bool) bool {
+    const human_readable = args.human_readable or (long_format and !args.kilobytes);
+    std.debug.assert(!(args.human_readable and !human_readable));
+    std.debug.assert(!long_format or human_readable or args.kilobytes);
+    return human_readable;
 }
 
 /// List all path operands, returning whether any listing error occurred.
@@ -742,7 +759,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -L, --follow-all-symlinks  follow all symbolic links
         \\      --git=WHEN             when to show git status (valid: always, auto, never)
         \\      --group-directories-first  group directories before files
-        \\  -h, --human-readable       with -l, print sizes in human readable format
+        \\  -h, --human-readable       with -l, print sizes in human readable format (default)
         \\      --icons=WHEN           when to show icons (valid: always, auto, never)
         \\  -k, --kilobytes            with -l, print sizes in kilobytes
         \\  -l, --long-format          use a long listing format
