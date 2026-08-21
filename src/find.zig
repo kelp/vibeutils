@@ -9748,3 +9748,47 @@ test "find #181: -name --help -maxdepth 1 stays at depth 1" {
     try testing.expect(std.mem.find(u8, out, "--help") != null);
     try testing.expect(std.mem.find(u8, out, "deep") == null);
 }
+
+// GNU findutils 4.9: `-depth` inside `-exec` argv is a command
+// argument, not the global. `find DIR -exec true -depth \; -print`
+// stays pre-order (root first). Current prescan sets depth_first.
+test "find #182: -exec true -depth stays pre-order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "a", .default_dir);
+    var a = try tmp.dir.openDir(testing.io, "a", .{});
+    try a.createDir(testing.io, "b", .default_dir);
+    var b = try a.openDir(testing.io, "b", .{});
+    const nested_file = try b.createFile(testing.io, "file.txt", .{});
+    nested_file.close(testing.io);
+    b.close(testing.io);
+    a.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const nested = try std.fmt.allocPrint(allocator, "{s}/a/b/file.txt", .{dir_path});
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-exec", "true", "-depth", ";", "-print" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
+    const dir_pos = std.mem.indexOf(u8, out, dir_path);
+    const file_pos = std.mem.indexOf(u8, out, nested);
+    try testing.expect(dir_pos != null);
+    try testing.expect(file_pos != null);
+    try testing.expect(dir_pos.? < file_pos.?);
+}
