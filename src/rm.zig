@@ -577,8 +577,8 @@ fn removeFiles_handleIsDir_reportDeleteDir(
             allocator,
             stderr_writer,
             "rm",
-            "cannot remove '{s}': Directory not empty",
-            .{file},
+            "cannot remove '{s}': Directory not empty{s}",
+            .{ file, common.maybeHint(dir_err, file, .write) orelse "" },
         ),
         error.AccessDenied => common.printErrorWithProgram(
             allocator,

@@ -33,6 +33,9 @@
   BSD defines none (#93).
 
 ### Changed
+- **TTY stderr may append a parenthetical hint** on
+  `Permission denied` (`cat`, `cp`) and `Directory not
+  empty` (`rmdir`, `rm -d`). Piped stderr stays GNU-shaped.
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,

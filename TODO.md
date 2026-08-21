@@ -1330,8 +1330,8 @@ full design.
 - [ ] Only when stderr is a TTY
 
 ### 7. Smarter Error Messages
-- [ ] Permission denied with actionable hint
-- [ ] Directory not empty with `rm -r` suggestion
+- [x] Permission denied with actionable hint
+- [x] Directory not empty with `rm -r` suggestion
 
 ## Testing Improvements (Post-Issue #5 Analysis)
 

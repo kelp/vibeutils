@@ -284,12 +284,16 @@ fn handleError(
         return;
     }
 
+    const suffix = switch (err) {
+        error.DirNotEmpty => common.maybeHint(err, path, .write) orelse "",
+        else => "",
+    };
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
         "rmdir",
-        "failed to remove '{s}': {s}",
-        .{ path, common.posixErrorString(err) },
+        "failed to remove '{s}': {s}{s}",
+        .{ path, common.posixErrorString(err), suffix },
     );
 }
 

@@ -198,6 +198,27 @@ fn runCat_processStdin(
 /// Opens and streams a regular file through processInput, reporting any error to
 /// stderr. Returns true on error (the caller ORs this into has_error). Single-caller
 /// helper for runCat.
+fn reportCatPathError(
+    allocator: std.mem.Allocator,
+    stderr: *std.Io.Writer,
+    file_path: []const u8,
+    err: anyerror,
+) void {
+    std.debug.assert(file_path.len > 0);
+    std.debug.assert(!std.mem.eql(u8, file_path, "-"));
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        "cat",
+        "{s}: {s}{s}",
+        .{
+            file_path,
+            common.posixErrorString(err),
+            common.maybeHint(err, file_path, .read) orelse "",
+        },
+    );
+}
+
 fn runCat_processFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -212,13 +233,7 @@ fn runCat_processFile(
     // GNU cat prints this operand unquoted ("cat: x: No such file or
     // directory"); keep parity.
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(err) },
-        );
+        reportCatPathError(allocator, stderr, file_path, err);
         return true;
     };
     defer file.close(io);
@@ -227,25 +242,13 @@ fn runCat_processFile(
     // opened handle turns out to be a directory, so stat it up front and
     // report error.IsDir through the normal path instead of the raw name.
     const stat = file.stat(io) catch |err| {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(err) },
-        );
+        reportCatPathError(allocator, stderr, file_path, err);
         return true;
     };
     if (stat.kind == .directory) {
         // GNU cat prints this operand unquoted ("cat: x: Is a directory");
         // keep parity.
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(error.IsDir) },
-        );
+        reportCatPathError(allocator, stderr, file_path, error.IsDir);
         return true;
     }
     // Negative space: directories were rejected above, so a regular read

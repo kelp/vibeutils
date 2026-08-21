@@ -262,14 +262,28 @@ pub fn printErrorWithProgram(
 /// Whether a diagnostic suffix is for a read or a write.
 pub const HintOp = enum { read, write };
 
-/// Suffix for a TTY diagnostic, or null. Returns null until call sites
-/// are wired; the overlay still gates `maybeHint`.
+/// Suffix for a TTY diagnostic, or null.
 pub fn actionableHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
     std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
     std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
-    std.debug.assert(operand.len < std.Io.Dir.max_path_bytes or operand.len >= std.Io.Dir.max_path_bytes);
     return switch (err) {
+        error.DirNotEmpty => " (use rm -r to remove recursively)",
+        error.AccessDenied => ownedModeHint(operand, op),
         else => null,
+    };
+}
+
+fn ownedModeHint(operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    if (std.c.geteuid() == 0) return null;
+    const info = file.FileInfo.lstat(operand) catch return null;
+    if (info.uid != @as(u32, @intCast(std.c.geteuid()))) return null;
+    std.debug.assert(info.uid == @as(u32, @intCast(std.c.geteuid())));
+    const owner_read = info.mode & 0o400 != 0;
+    const owner_write = info.mode & 0o200 != 0;
+    return switch (op) {
+        .read => if (!owner_read) " (file is not readable)" else null,
+        .write => if (!owner_write) " (file is not writable)" else null,
     };
 }
 
@@ -490,13 +504,17 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     try testing.expect(scanned >= 48);
 }
 
-test "maybeHint is null until wired even with overlay on" {
+test "maybeHint DirNotEmpty suffix follows overlay" {
     const testing = std.testing;
     const saved = env.test_stderr_hints;
     defer env.test_stderr_hints = saved;
-    env.test_stderr_hints = true;
+    env.test_stderr_hints = false;
     try testing.expect(maybeHint(error.DirNotEmpty, "src", .write) == null);
-    try testing.expect(maybeHint(error.AccessDenied, "x", .read) == null);
+    env.test_stderr_hints = true;
+    try testing.expectEqualStrings(
+        " (use rm -r to remove recursively)",
+        maybeHint(error.DirNotEmpty, "src", .write).?,
+    );
 }
 
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {

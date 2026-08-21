@@ -602,8 +602,12 @@ fn copySingleFile_resolve(
             allocator,
             stderr_writer,
             "cp",
-            "cannot stat '{s}': {s}",
-            .{ source, common.posixErrorString(err) },
+            "cannot stat '{s}': {s}{s}",
+            .{
+                source,
+                common.posixErrorString(err),
+                common.maybeHint(err, source, .read) orelse "",
+            },
         );
         return null;
     };
@@ -1006,8 +1010,12 @@ fn copyRegularFile_simpleCopy(
             allocator,
             stderr_writer,
             "cp",
-            "cannot create '{s}': {s}",
-            .{ dest_path, common.posixErrorString(err) },
+            "cannot create '{s}': {s}{s}",
+            .{
+                dest_path,
+                common.posixErrorString(err),
+                common.maybeHint(err, dest_path, .write) orelse "",
+            },
         );
         return false;
     };
@@ -1060,8 +1068,12 @@ fn copyInPlace(
             allocator,
             stderr_writer,
             "cp",
-            "cannot open '{s}' for writing: {s}",
-            .{ dest_path, common.posixErrorString(err) },
+            "cannot open '{s}' for writing: {s}{s}",
+            .{
+                dest_path,
+                common.posixErrorString(err),
+                common.maybeHint(err, dest_path, .write) orelse "",
+            },
         );
         return error.DestinationNotWritable;
     };
