@@ -552,6 +552,16 @@ test_stub_flag_argparse_short0_read() {
         "$FIXTURES/stub-flag/negative-short0" stub-flag
 }
 
+test_stub_flag_multiline_init_read() {
+    echo -e "${CYAN}Testing stub-flag read inside a multi-line init method...${NC}"
+    # live_flag is in meta (argparse-written) and read only inside
+    # PlantedOptions.init, whose `{` is not on the `fn init(` line.
+    # classify() currently STRUCT_SKIP's that body, so the scanner
+    # reports src/initly/main.zig::live_flag as a stub. It must not.
+    expect_no_findings "stub-flag multiline init read" \
+        "$FIXTURES/stub-flag/negative-method-init" stub-flag
+}
+
 test_unscannable() {
     echo -e "${CYAN}Testing unscannable...${NC}"
     # An unscannable unit is counted in total and new, so a unit that stops
@@ -735,6 +745,7 @@ main() {
     test_stub_flag_argparse_read
     test_stub_flag_argparse_short0_unread
     test_stub_flag_argparse_short0_read
+    test_stub_flag_multiline_init_read
     test_parse_only_test
     test_unscannable
     test_check_selection_excludes
