@@ -1128,8 +1128,9 @@ test "cat permission hint follows stderr hint overlay" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
+    // Create readable so realpath works on macOS (EACCES on mode 000), then chmod.
     const file = try tmp.dir.createFile(testing.io, "secret.txt", .{
-        .permissions = std.Io.File.Permissions.fromMode(0o000),
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
     });
     try file.writeStreamingAll(testing.io, "secret");
     file.close(testing.io);
@@ -1139,6 +1140,10 @@ test "cat permission hint follows stderr hint overlay" {
         testing.allocator,
     );
     defer testing.allocator.free(file_path);
+    const file_path_z = try testing.allocator.dupeZ(u8, file_path);
+    defer testing.allocator.free(file_path_z);
+    if (std.c.chmod(file_path_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(file_path_z, 0o644);
     const args = [_][]const u8{file_path};
 
     common.env.test_stderr_hints = false;

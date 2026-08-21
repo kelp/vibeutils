@@ -5455,9 +5455,14 @@ test "cp unreadable source appends readable-file hint" {
 
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.createFile("source.txt", "secret", 0o000);
+    // Create readable so realpath works on macOS (EACCES on mode 000), then chmod.
+    try test_dir.createFile("source.txt", "secret", 0o644);
     const source_path = try test_dir.getPath("source.txt");
     defer testing.allocator.free(source_path);
+    const source_z = try testing.allocator.dupeZ(u8, source_path);
+    defer testing.allocator.free(source_z);
+    if (std.c.chmod(source_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(source_z, 0o644);
     const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const dest_path = try std.fmt.allocPrint(
