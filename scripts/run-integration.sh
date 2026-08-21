@@ -118,6 +118,16 @@ release_test_user_lock() {
     USER_LOCK_KIND=""
 }
 
+# Announce before the lock wait. The #150 contract test redirects this
+# script to a file and SIGKILLs at 20s; a fully-buffered echo would then
+# vanish and that test would report the runner never started. python3
+# write+flush is a write(2); the echo fallback is for hosts without it.
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import sys; sys.stderr.write("integration: provisioning\n"); sys.stderr.flush()'
+else
+    echo "integration: provisioning '$TEST_USER'" >&2
+fi
+
 if ! acquire_test_user_lock; then
     echo "integration: timed out waiting to provision '$TEST_USER'" >&2
     run_isolated_and_exit "$@"
