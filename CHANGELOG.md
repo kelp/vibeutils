@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Documentation
+- **Rewrite `docs/INTEGRATION_TESTING.md` to match the tree.** The
+  old page described `tests/integration/{lib,utils}/`, `init_framework`,
+  and `exec_utility`, none of which exist. The real layout is
+  `tests/integration.sh` plus `tests/utilities/` and `tests/lib/`,
+  entered only through `scripts/run-integration.sh`. The wave2-walker
+  workflow now tells agents to use that wrapper rather than
+  `bash tests/integration.sh` as root (#152).
 - **Add the `land-todo-slice` agent skill.** Operating procedure
   for landing one `TODO.md` heading as one draft PR: choose the
   slice, write a plan, review it with three models, implement
