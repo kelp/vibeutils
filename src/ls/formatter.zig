@@ -1057,10 +1057,11 @@ fn allocatedBlocks512(entry: Entry) u64 {
 }
 
 /// GNU's default `ls -l` total: 1024-byte units via howmany(st_blocks, 2).
+/// Shift-or-odd avoids overflowing `n + 1` when `n` is `u64` max.
 fn gnuKiBTotal(blocks_512: u64) u64 {
-    const kib = @divFloor(blocks_512 + 1, 2);
-    std.debug.assert(kib <= blocks_512 or blocks_512 == 0);
-    std.debug.assert(blocks_512 <= 1 or kib >= 1);
+    const kib = (blocks_512 >> 1) + (blocks_512 & 1);
+    std.debug.assert(kib >= @divFloor(blocks_512, 2));
+    std.debug.assert(blocks_512 == 0 or kib >= 1);
     return kib;
 }
 
@@ -1081,7 +1082,9 @@ fn writeLongFormatTotal(
         try writer.print("total {s}\n", .{human});
         return;
     }
-    try writer.print("total {d}\n", .{gnuKiBTotal(blocks_512)});
+    const kib = gnuKiBTotal(blocks_512);
+    std.debug.assert(kib >= @divFloor(blocks_512, 2));
+    try writer.print("total {d}\n", .{kib});
 }
 
 /// Print entries in columnar format sorted across rows (-x flag)
@@ -1148,7 +1151,12 @@ pub fn printEntries(
     // -s without -l still uses calculateDisplayBlocks (512, or 1024 with -k).
     if (options.long_format) {
         for (entries) |entry| {
-            total_blocks += allocatedBlocks512(entry);
+            // Saturate: a wrapped sum would print a too-small total.
+            total_blocks = std.math.add(
+                u64,
+                total_blocks,
+                allocatedBlocks512(entry),
+            ) catch std.math.maxInt(u64);
         }
     } else if (options.show_blocks) {
         for (entries) |entry| {
