@@ -3,7 +3,7 @@
 //! This module provides `utilityMain`, a composite wrapper that standardizes:
 //! - Arena allocator setup
 //! - Process argument parsing
-//! - 8KB buffered stdout/stderr writers
+//! - 8KB buffered stdout and unbuffered stderr writers
 //! - Calling the run function
 //! - Flushing buffers
 //! - Exiting with the returned code
@@ -39,8 +39,8 @@ pub fn utilityMain(
 
     // Parse process arguments
     const args = init.minimal.args.toSlice(allocator) catch |err| {
-        var stderr_buf: [256]u8 = undefined;
-        var stderr_w = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
+        var stderr_buffer: [0]u8 = .{};
+        var stderr_w = lib.unbufferedStderr(io, &stderr_buffer);
         const stderr = &stderr_w.interface;
         stderr.print(
             "error: failed to allocate arguments: {s}\n",
@@ -54,18 +54,17 @@ pub fn utilityMain(
     // has at least one element; the args[1..] slice below depends on this.
     std.debug.assert(args.len >= 1);
 
-    // Set up 8KB buffered writers for stdout and stderr
+    // Buffer stdout for throughput while keeping stderr immediately visible.
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
+    var stderr_buffer: [0]u8 = .{};
+    var stderr_writer = lib.unbufferedStderr(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    // Keep the documented "8KB buffered stdout/stderr" intent in sync: a future
-    // edit must change both buffer sizes together, not just one.
-    std.debug.assert(stdout_buffer.len == stderr_buffer.len);
+    std.debug.assert(stdout_buffer.len == 8192);
+    std.debug.assert(stderr_writer.interface.buffer.len == 0);
 
     // Call the run function (skip program name: args[1..])
     const exit_code = runFn(allocator, io, args[1..], stdout, stderr) catch |err| {
