@@ -82,9 +82,10 @@ Extract `runWithStreamingFiles` from `utilityMain` in
 `runWithStreamingFiles` with `File.stdout()` /
 `File.stderr()`, then `process.exit`. It is a
 modified function, so it keeps **two** asserts of
-its own (`args.len >= 1` and `args[0].len > 0`),
-not only the ones that moved into the extract.
-Keep `runWithBufferedIO` unchanged for
+its own: `args.len >= 1`, and both file handles
+`>= 0`. Do **not** assert `args[0].len > 0` —
+empty `argv[0]` is legal and must not trap in
+debug. Keep `runWithBufferedIO` unchanged for
 Allocating-writer tests. Function bodies stay
 ≤ 70 lines.
 
@@ -158,6 +159,25 @@ Round 2 (Grok, Sol, Fable all REQUEST CHANGES):
    (omit `stderr.flush()`; `pwd --not-a-flag` loses
    the diagnostic).
 
+Round 3 (Sol still REQUEST CHANGES; Grok+Fable
+APPROVE):
+
+6. **No `args[0].len > 0`.** Empty argv[0] is
+   legal. `utilityMain`'s second assert is both
+   file handles `>= 0`.
+7. **Source-scan cannot live in `main.zig`.**
+   Needles in the test strings would self-satisfy.
+   Scan production `main.zig` from `lib.zig` / a
+   sibling lint, skipping tests/comments/strings.
+8. **Catch-branch assertions** are locked for the
+   follow-up Zig tests (exit 1, stderr persisted,
+   stdout not flushed). `pwd --not-a-flag` is not
+   that branch. Prove those tests RED after they
+   exist.
+9. **TODO boxes** are checked in the implementer
+   commit, not in the same commit as the hook.
+   Docs below match that.
+
 ## Tests
 
 TDD split (test-writer ≠ implementer).
@@ -170,13 +190,17 @@ TDD split (test-writer ≠ implementer).
 - Hook in `tests/integration.sh` (all-utilities
   path only). Own this file. Do not leave the hook
   for the implementer.
-- Zig source-scan in `src/common/main.zig` (same
-  hole-close style as the issue #5 `writer(` lint):
-  the file must contain `[8192]u8`,
-  `writerStreaming`, `stdout.flush()`, and
+- Zig source-scan in a file that is **not**
+  `src/common/main.zig` (put it in `src/common/lib.zig`
+  next to the issue #5 `writer(` lint, or a tiny
+  `main_io_lint.zig` force-imported from `lib.zig`).
+  Scan production `main.zig` only: skip `test "`
+  bodies, comments, and string literals so the scan
+  cannot self-satisfy. Needles: `[8192]u8`,
+  `writerStreaming`, `stdout.flush()`,
   `stderr.flush()`. GREEN on current `utilityMain`.
   After the extract those needles still live in
-  this file (`runWithStreamingFiles`).
+  production `runWithStreamingFiles`.
 
 Do **not** call `runWithStreamingFiles` in this
 commit — the symbol does not exist yet, and a
@@ -199,16 +223,33 @@ Revert every sabotage. Never commit it.
 
 Extract `runWithStreamingFiles`, point `utilityMain`
 at it, keep both functions within Tiger caps and
-two-assert. Check the two TODO boxes. Add the
+two-assert. Check the two TODO boxes **in this
+commit** (the extract is what completes the slice;
+the hook landed earlier still unchecked). Add the
 `TESTING_STRATEGY.md` note. Does not edit the shell
-assertions, the Zig scan needles, or the
-integration.sh hook.
+assertions, the Zig scan, or the integration.sh
+hook.
 
 File-backed Zig tests that *call*
-`runWithStreamingFiles` (short write, >8192 write,
-uncaught error with no stdout flush) are a
-**test-writer follow-up** after the symbol exists.
-They are not the first RED.
+`runWithStreamingFiles` are a **test-writer
+follow-up** after the symbol exists. They are not
+the first RED. Locked assertions for that
+follow-up:
+
+- short write: file contains the payload (flush)
+- write `> 8192`: full payload including the tail
+- uncaught `runFn` error: exit code `1`, stderr
+  file contains the diagnostic (flushed), stdout
+  file does **not** contain a pending short write
+  (this path must not flush stdout)
+
+`pwd --not-a-flag` is the success-path stderr
+flush (runFn returns 1). It does **not** cover
+the `catch` branch; the follow-up Zig uncaught-
+error test does. After those tests exist, prove
+them RED by sabotaging the catch path (skip
+stderr flush, or flush stdout on error), then
+revert.
 
 Existing `lib.zig` issue #5 `writer(` lint stays. Do
 not treat that grep as this slice. Existing
@@ -251,5 +292,6 @@ One short section in `docs/TESTING_STRATEGY.md` under
 File System Testing / a new "main() I/O init" note:
 unit tests of `runUtil` do not cover writer setup;
 `runWithStreamingFiles` and `tests/tools/main_io_test.sh`
-do. Check both TODO boxes in the same commit as the
-hook.
+do. Check both TODO boxes in the implementer
+commit (the extract), not in the test-writer hook
+commit.
