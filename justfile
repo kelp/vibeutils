@@ -305,6 +305,15 @@ test-host-path:
 test-run-integration: build
     @bash tests/tools/run-integration_test.sh
 
+# Coverage oracle for POSIX I/O contracts (TODO ### 2). Needs
+# tests/lib/posix_io.sh (implementer) and zig-out/bin for the
+# inline cat/env wait-tests — the oracle runs `just build` if
+# those binaries are missing. Lives in tests/tools/, which
+# test_runner.sh does not glob. Not hooked into `just it`; that
+# hook is the implementer's.
+test-posix-io:
+    @bash tests/tools/posix_io_test.sh
+
 # Stage-1 audit pre-pass over every unit in build/utils.zig. A finding
 # already recorded in scripts/audit-baseline.tsv is BASELINED; anything
 # else is NEW and fails. Plain sh + awk, so it needs no Zig toolchain.
