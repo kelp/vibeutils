@@ -224,4 +224,52 @@ test_free() {
         print_test_result "free -s 1 -c 1 sets seconds interval" "FAIL" \
             "Expected exit 0, got: $exit_code"
     fi
+
+    echo -e "${CYAN}Testing --color and --bar flags...${NC}"
+
+    local color_help
+    color_help=$("$binary" --help 2>/dev/null)
+    if [[ "$color_help" == *"--color=WHEN"* && "$color_help" == *"--bar=WHEN"* ]]; then
+        print_test_result "free --help lists --color=WHEN and --bar=WHEN" "PASS"
+    else
+        print_test_result "free --help lists --color=WHEN and --bar=WHEN" "FAIL" \
+            "Help missing --color=WHEN/--bar=WHEN"
+    fi
+
+    # --color=always emits CSI; a default pipe does not. Scrub ambient
+    # NO_COLOR so --color=always can actually colorize.
+    local always_out default_out
+    always_out=$(env -u NO_COLOR "$binary" --color=always 2>/dev/null)
+    default_out=$("$binary" 2>/dev/null)
+    if [[ "$always_out" == *$'\033'* && "$default_out" != *$'\033'* ]]; then
+        print_test_result "free --color=always emits CSI; default pipe does not" "PASS"
+    else
+        print_test_result "free --color=always emits CSI; default pipe does not" "FAIL" \
+            "always missing ESC or default pipe leaked ESC"
+    fi
+
+    # NO_COLOR wins over --color=always (ls guard).
+    local nocolor_out
+    nocolor_out=$(NO_COLOR=1 "$binary" --color=always 2>/dev/null)
+    if [[ "$nocolor_out" != *$'\033'* ]]; then
+        print_test_result "free NO_COLOR overrides --color=always" "PASS"
+    else
+        print_test_result "free NO_COLOR overrides --color=always" "FAIL" \
+            "Found ESC despite NO_COLOR=1"
+    fi
+
+    # --bar=always emits U+2588/U+2591 through a pipe; default pipe does not.
+    local bar_out
+    bar_out=$("$binary" --bar=always 2>/dev/null)
+    if [[ "$bar_out" == *$'\xe2\x96\x88'* || "$bar_out" == *$'\xe2\x96\x91'* ]]; then
+        if [[ "$default_out" != *$'\xe2\x96\x88'* && "$default_out" != *$'\xe2\x96\x91'* ]]; then
+            print_test_result "free --bar=always emits bar bytes through a pipe" "PASS"
+        else
+            print_test_result "free --bar=always emits bar bytes through a pipe" "FAIL" \
+                "Default pipe also contained bar glyphs"
+        fi
+    else
+        print_test_result "free --bar=always emits bar bytes through a pipe" "FAIL" \
+            "No U+2588/U+2591 in --bar=always output"
+    fi
 }
