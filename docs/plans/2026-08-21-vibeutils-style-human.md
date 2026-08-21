@@ -188,3 +188,6 @@ letters inside those values.
 Valued longs with a separate token (`--threshold -4k`,
 `--ignore-pattern -k`) skip that token the same way; attached
 `--threshold=-4k` is already safe because it is one argv word.
+Unique GNU prefixes (`--thresh`, `--human-r`, `--blo`) resolve
+against the full DuOptions long set, matching argparse, then
+classify the canonical name.

@@ -265,40 +265,107 @@ fn resolveSizeMode(args: []const []const u8) SizeDisplay {
 
 const SizeModeLongHit = enum { no, yes, yes_skip_next, skip_next };
 
+/// Hyphenated long spellings argparse knows for DuOptions. Unique-prefix
+/// resolution must use this full set so `--s` stays ambiguous, matching GNU.
+const du_long_flags = [_][]const u8{
+    "all",
+    "bytes",
+    "total",
+    "max-depth",
+    "human-readable",
+    "kilobytes",
+    "gigabytes",
+    "megabytes",
+    "dereference",
+    "dereference-args",
+    "no-dereference",
+    "no-follow",
+    "report-errors",
+    "summarize",
+    "separate-dirs",
+    "one-file-system",
+    "apparent-size",
+    "block-size",
+    "count-links",
+    "ignore-pattern",
+    "threshold",
+    "si",
+    "help",
+    "version",
+    "color",
+    "icons",
+};
+
 fn applySizeModeLong(arg: []const u8, mode: *SizeDisplay) SizeModeLongHit {
     assert(arg.len >= 3);
     assert(arg[0] == '-');
     assert(arg[1] == '-');
     const body = arg[2..];
-    if (std.mem.eql(u8, body, "human-readable")) {
+    const has_eq = std.mem.indexOfScalar(u8, body, '=') != null;
+    const canonical = resolveDuLongName(body) orelse return .no;
+    if (std.mem.eql(u8, canonical, "human-readable")) {
         mode.* = .human_1024;
         return .yes;
     }
-    if (std.mem.eql(u8, body, "si")) {
+    if (std.mem.eql(u8, canonical, "si")) {
         mode.* = .human_si;
         return .yes;
     }
-    if (std.mem.eql(u8, body, "bytes")) {
+    if (std.mem.eql(u8, canonical, "bytes")) {
         mode.* = .bytes;
         return .yes;
     }
-    if (std.mem.eql(u8, body, "block-size")) {
-        mode.* = .custom_block;
-        return .yes_skip_next;
-    }
-    if (std.mem.startsWith(u8, body, "block-size=")) {
-        mode.* = .custom_block;
+    if (std.mem.eql(u8, canonical, "kilobytes")) {
+        mode.* = .kilobytes;
         return .yes;
     }
-    if (isValuedLongWithoutEquals(body)) return .skip_next;
+    if (std.mem.eql(u8, canonical, "megabytes")) {
+        mode.* = .megabytes;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "gigabytes")) {
+        mode.* = .gigabytes;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "block-size")) {
+        mode.* = .custom_block;
+        return if (has_eq) .yes else .yes_skip_next;
+    }
+    if (has_eq) return .no;
+    if (isValuedLongName(canonical)) return .skip_next;
     return .no;
 }
 
-/// Valued longs whose next argv token is an operand, not a flag cluster.
-/// `--threshold -4k` is a real GNU form (negative SIZE); the `k` is not `-k`.
-fn isValuedLongWithoutEquals(body: []const u8) bool {
+/// Exact match first, then the unique GNU prefix, same order as argparse.
+fn resolveDuLongName(body: []const u8) ?[]const u8 {
     assert(body.len > 0);
-    if (std.mem.indexOfScalar(u8, body, '=') != null) return false;
+    const name = if (std.mem.indexOfScalar(u8, body, '=')) |eq| body[0..eq] else body;
+    if (name.len == 0) return null;
+    for (du_long_flags) |long| {
+        if (std.mem.eql(u8, long, name)) return long;
+    }
+    var match: ?[]const u8 = null;
+    var count: u32 = 0;
+    const bound: u32 = du_long_flags.len;
+    var i: u32 = 0;
+    while (i < bound) : (i += 1) {
+        const long = du_long_flags[i];
+        if (std.mem.startsWith(u8, long, name)) {
+            count += 1;
+            match = long;
+        }
+    }
+    if (count == 1) {
+        assert(match != null);
+        return match;
+    }
+    assert(count != 1);
+    return null;
+}
+
+fn isValuedLongName(canonical: []const u8) bool {
+    assert(canonical.len > 0);
+    assert(std.mem.indexOfScalar(u8, canonical, '=') == null);
     const names = [_][]const u8{
         "threshold",
         "ignore-pattern",
@@ -307,10 +374,7 @@ fn isValuedLongWithoutEquals(body: []const u8) bool {
         "icons",
     };
     for (names) |name| {
-        if (std.mem.eql(u8, body, name)) {
-            assert(std.mem.indexOfScalar(u8, body, '=') == null);
-            return true;
-        }
+        if (std.mem.eql(u8, canonical, name)) return true;
     }
     return false;
 }
