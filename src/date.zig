@@ -38,6 +38,7 @@ const DateOptions = struct {
     v_adjust: ?[]const u8 = null,
     help: bool = false,
     version: bool = false,
+    extra_operand: ?[]const u8 = null,
 };
 
 /// Parse command-line arguments manually (date has unusual flag semantics)
@@ -51,15 +52,20 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
 
         if (arg.len == 0) continue;
 
-        // Format string starts with +
+        // Format string starts with +. GNU rejects a second format as
+        // extra operand (quoted), both with and without a preceding `--`.
         if (arg[0] == '+') {
+            if (opts.format != null) {
+                err_msg = parseArgs_setExtraOperand(&opts, arg);
+                break;
+            }
             opts.format = arg[1..];
             continue;
         }
 
         // Not a flag
         if (arg[0] != '-') {
-            err_msg = "extra operand";
+            err_msg = parseArgs_setExtraOperand(&opts, arg);
             break;
         }
 
@@ -99,9 +105,18 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
     return .{ .opts = opts, .err = err_msg };
 }
 
+/// Record `operand` as GNU's extra-operand token and return the err tag
+/// parseArgs / runDate use to select the quoted diagnostic.
+fn parseArgs_setExtraOperand(opts: *DateOptions, operand: []const u8) []const u8 {
+    std.debug.assert(opts.extra_operand == null);
+    opts.extra_operand = operand;
+    std.debug.assert(opts.extra_operand != null);
+    return "extra operand";
+}
+
 /// Drain argv after a POSIX `--`. Remaining `+FORMAT` tokens are formats;
 /// anything else is a date string (GNU `date -- -1` is an invalid date,
-/// not an unrecognized option).
+/// not an unrecognized option). A second format is extra operand.
 fn parseArgs_afterDashDash(
     args: []const []const u8,
     i: *usize, // tiger:allow:usize-arch cursor indexes args slice
@@ -113,10 +128,11 @@ fn parseArgs_afterDashDash(
     while (i.* < args.len) : (i.* += 1) {
         const rest = args[i.*];
         if (rest.len > 0 and rest[0] == '+') {
+            if (opts.format != null) return parseArgs_setExtraOperand(opts, rest);
             opts.format = rest[1..];
             continue;
         }
-        if (opts.date_string != null) return "extra operand";
+        if (opts.date_string != null) return parseArgs_setExtraOperand(opts, rest);
         opts.date_string = rest;
     }
     return null;
@@ -704,6 +720,28 @@ fn runDate_brokenDownTime(secs: i64, utc: bool, tm: *time.c_tm) bool {
     return time.localtime_r(&time_secs, tm) != null;
 }
 
+/// GNU quotes the extra operand: `date: extra operand '+%m'`.
+fn runDate_printParseErr(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    opts: DateOptions,
+    err_msg: []const u8,
+) void {
+    std.debug.assert(err_msg.len > 0);
+    if (std.mem.eql(u8, err_msg, "extra operand")) {
+        std.debug.assert(opts.extra_operand != null);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "extra operand '{s}'",
+            .{opts.extra_operand.?},
+        );
+        return;
+    }
+    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+}
+
 /// GNU quotes the date string: `date: invalid date '-1'`.
 fn runDate_printTsErr(
     allocator: Allocator,
@@ -738,7 +776,7 @@ pub fn runDate(
     // Parse arguments
     const parsed = parseArgs(args);
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        runDate_printParseErr(allocator, stderr_writer, parsed.opts, err_msg);
         return @intFromEnum(common.ExitCode.general_error);
     }
     const opts = parsed.opts;

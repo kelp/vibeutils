@@ -629,9 +629,9 @@ fn parseArgs_collectLeadingGlobals(
     var seen_end_of_options = false;
     while (expr_start < args.len) {
         const arg = args[expr_start];
-        if (!seen_end_of_options and std.mem.eql(u8, arg, "--")) {
-            // First `--` ends only the leading -H/-L/-P options. A later
-            // `--` is an expression token (GNU: unknown predicate).
+        if (!seen_end_of_options and start_paths.items.len == 0 and std.mem.eql(u8, arg, "--")) {
+            // `--` ends only the leading -H/-L/-P options, and only
+            // before any start path. `find . --` is an unknown predicate.
             seen_end_of_options = true;
             expr_start += 1;
         } else if (!seen_end_of_options and

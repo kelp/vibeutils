@@ -114,7 +114,12 @@
   match GNU: `--` stops option parsing, a leading `--` with nothing
   after it is a missing operand for printf, a second `--` is still a
   predicate for find and an unrecognized operand for dd, and date
-  treats a following dash-token as a date string (#159).
+  treats a following dash-token as a date string. `--` is a delimiter
+  for find only before any start path (`find . --` is an unknown
+  predicate). After `dd --`, `--help`/`--version` are unrecognized
+  operands, and the first invalid token — including an unknown
+  `key=value` — is the one named. Two format operands (`date +%Y +%m`)
+  are extra operand, quoted (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not

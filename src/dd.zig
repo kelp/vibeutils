@@ -240,11 +240,13 @@ fn parseOperands(args: []const []const u8) !DdConfig {
     var seen_end_of_options = false;
 
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
+        // `--help`/`--version` are options, not operands, and only
+        // before `--`. GNU: `dd -- --help` is unrecognized `--help`.
+        if (!seen_end_of_options and std.mem.eql(u8, arg, "--help")) {
             config.help = true;
             return config;
         }
-        if (std.mem.eql(u8, arg, "--version")) {
+        if (!seen_end_of_options and std.mem.eql(u8, arg, "--version")) {
             config.version = true;
             return config;
         }
@@ -640,20 +642,40 @@ fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
     return null;
 }
 
-/// First argv token that is not `--`, `--help`, `--version`, or `key=value`.
-/// Used to quote GNU's `unrecognized operand '…'` after parseOperands fails.
+/// True when `arg` is `key=value` whose key is not a dd operand.
+/// Probes applyKeyValue on a throwaway config so parseOperands keeps
+/// its existing `try parseOperands(&args)` test signature.
+fn operandKeyIsUnknown(arg: []const u8) bool {
+    std.debug.assert(arg.len > 0);
+    const eq_pos = std.mem.indexOfScalar(u8, arg, '=') orelse return false;
+    std.debug.assert(eq_pos < arg.len);
+    var dummy = DdConfig{};
+    parseOperands_applyKeyValue(&dummy, arg[0..eq_pos], arg[eq_pos + 1 ..]) catch |err| {
+        return err == error.UnknownOperand;
+    };
+    return false;
+}
+
+/// First argv token that would make parseOperands return UnknownOperand.
+/// Skips the delimiter `--` and pre-delimiter `--help`/`--version`;
+/// names an unknown `key=value` ahead of a later bare token (GNU 9.4).
 fn findUnknownOperand(args: []const []const u8) ?[]const u8 {
     var seen_end_of_options = false;
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) continue;
-        if (std.mem.eql(u8, arg, "--version")) continue;
-        if (!seen_end_of_options and std.mem.eql(u8, arg, "--")) {
-            seen_end_of_options = true;
+        if (!seen_end_of_options) {
+            if (std.mem.eql(u8, arg, "--help")) continue;
+            if (std.mem.eql(u8, arg, "--version")) continue;
+            if (std.mem.eql(u8, arg, "--")) {
+                seen_end_of_options = true;
+                continue;
+            }
+        }
+        if (std.mem.indexOfScalar(u8, arg, '=') != null and
+            !operandKeyIsUnknown(arg))
+        {
             continue;
         }
-        if (std.mem.indexOfScalar(u8, arg, '=') != null) continue;
         std.debug.assert(arg.len > 0);
-        std.debug.assert(std.mem.indexOfScalar(u8, arg, '=') == null);
         return arg;
     }
     return null;
