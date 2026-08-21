@@ -10,6 +10,12 @@
   green.
 
 ### Added
+- **`free` colors the used column and can draw a usage bar.**
+  `--color=WHEN` (always/auto/never) wraps the Mem and Swap used
+  fields green below 70%, yellow below 90%, and red otherwise.
+  `--bar=WHEN` appends df's 10-cell usage-bar widget.
+  `NO_COLOR` and `TERM=dumb` still kill color, including with
+  `--color=always`. Default WHEN is `auto`.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so

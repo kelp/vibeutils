@@ -615,13 +615,13 @@ For each utility:
 - [x] Test: Hide swap information (-s, --no-swap)
 - [x] Test: Continuous monitoring (-c, --count with interval)
 - [x] Test: Wide format (-w) for better readability
-- [ ] Test: Color-coded memory usage levels (green/yellow/red)
+- [x] Test: Color-coded memory usage levels (green/yellow/red)
 - [x] Test: Cross-platform support (Linux /proc/meminfo, macOS vm_stat)
 - [x] Implement: Linux memory parsing (/proc/meminfo)
 - [x] Implement: macOS memory info via syscalls (host_statistics64)
 - [x] Implement: Human-readable size formatting
-- [ ] Implement: Color-coded output with terminal detection
-- [ ] Implement: Inline usage bar (parallels df's --bar)
+- [x] Implement: Color-coded output with terminal detection
+- [x] Implement: Inline usage bar (parallels df's --bar)
 - [x] Implement: Continuous monitoring with refresh
 - [x] Man page: Write concise man page with examples
 
