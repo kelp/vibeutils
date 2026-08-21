@@ -89,17 +89,35 @@ Exact suffixes (byte-for-byte):
 
 | Error | Who | Condition | Suffix |
 | --- | --- | --- | --- |
-| `DirNotEmpty` | `rm`, `rmdir` (including `rm -d`) | stderr hints enabled | ` (use rm -r to remove recursively)` |
-| `AccessDenied` | `cp` destination (create/truncate/open-write) | hints on, not root, `lstat` ok, `st_uid == euid`, owner-write bit **off** | ` (file is not writable)` |
-| `AccessDenied` | `cat` operand or `cp` source (open-read) | hints on, not root, `lstat` ok, `st_uid == euid`, owner-read bit **off** | ` (file is not readable)` |
+| `DirNotEmpty` | `rmdir`, and `rm -d` only | stderr hints enabled | ` (use rm -r to remove recursively)` |
+| `AccessDenied` | `cp` destination open-for-write / create in `src/cp.zig` | hints on, not root, `lstat` ok, `st_uid == euid`, owner-write bit **off** | ` (file is not writable)` |
+| `AccessDenied` | `cat` operand; `cp` source `cannot stat` in `copySingleFile_resolve` | hints on, not root, `lstat` ok, `st_uid == euid`, owner-read bit **off** | ` (file is not readable)` |
+
+Do **not** hint `DirNotEmpty` on `rm -r`. Recursive
+delete already requested `-r`; leftover not-empty (a
+child failed, parent still populated) is a different
+cause. Wrong hint is worse than none.
 
 Do **not** attach a write hint to `rm` / `rmdir`
 `AccessDenied`. Unlink and `rmdir(2)` need write+search
 on the **parent**, not owner-write on the operand. An
 owned `chmod 000` file in a writable directory is
 removable; `rm` without `-f` prompts, then deletes.
-Hinting `(file is not writable)` on a parent-dir `EACCES`
-would be the wrong cause.
+
+Default `cp` types the source with `getFileTypeAtomic`
+→ `FileInfo.stat`, which **opens** the file. Owned
+`chmod 000` source fails as `cannot stat '%s': Permission
+denied` in `copySingleFile_resolve`, not later
+`cannot open`. Wire the read hint on that `cannot stat`
+arm. Optional TOCTOU `cannot open` on the source may
+use the same helper; do not treat it as the chmod-000
+path.
+
+`cp -p`/`-a`/`--preserve` copies through
+`src/common/file_ops.zig`. That helper is also used by
+`mv`. **Out of scope this slice** — do not edit
+`file_ops.zig`. Preserve copies keep the GNU line with
+no suffix.
 
 If `lstat` fails, uid is not ours, or the mode bit that
 matches the **open** already allows the op (denial is
@@ -111,7 +129,8 @@ Examples (hints enabled):
 ```
 rmdir: failed to remove 'src': Directory not empty (use rm -r to remove recursively)
 rm: cannot remove 'src': Directory not empty (use rm -r to remove recursively)
-cp: cannot create regular file 'readonly.txt': Permission denied (file is not writable)
+cp: cannot open 'readonly.txt' for writing: Permission denied (file is not writable)
+cp: cannot stat 'secret.txt': Permission denied (file is not readable)
 cat: secret.txt: Permission denied (file is not readable)
 ```
 
@@ -132,12 +151,19 @@ No new `src/common/` module.
   `op`. Ownership/mode via `FileInfo.lstat` + `geteuid()`.
   No `getpwuid`. Under 70 lines, two asserts, no recursion,
   no `@panic` on user paths.
-- Call sites: `rm.zig` / `rmdir.zig` **only** for
-  `DirNotEmpty`. `cat.zig` / `cp.zig` for `AccessDenied`
-  with the matching `HintOp`. Do not grow
-  `runCat_processFile` (already 70 lines) or
-  `removeFiles_removeOne` (already over) in place —
-  extract the diagnostic into a helper under 70 lines.
+- `maybeHint(err, path, op)` in `lib.zig` wraps
+  `stderrHintsEnabled`, the root check (permission
+  only), and `actionableHint`, so a call site cannot
+  forget the seam. Callers always append
+  `maybeHint(...) orelse ""`.
+- Call sites: `rmdir.zig` for `DirNotEmpty`; `rm.zig`
+  only the **non-recursive** `-d` `DirNotEmpty` arm
+  (not the `rm -r` walker). `cat.zig` / `cp.zig` for
+  `AccessDenied` with the matching `HintOp`. Do not
+  grow `runCat_processFile` (70 lines) in place —
+  extract the diagnostic. `removeFiles_removeOne` does
+  not print `DirNotEmpty`; do not grow it for this
+  slice.
 
 Do not change `posixErrorString` or make
 `printErrorWithProgram` auto-append hints.
@@ -150,13 +176,14 @@ not a valid RED.
 
 1. **Seam (implementer, behavior-preserving).** Add
    `stderrHintsEnabled` (prod = isTty(stderr); tests =
-   overlay or false) and `actionableHint` that always
-   returns null. No call-site wiring. Existing suites
-   stay GREEN. Prove the overlay with transient sabotage
-   (force `true` in a probe that expects no suffix today,
-   confirm nothing changes because the helper is unused;
-   then a tiny test that `stderrHintsEnabled()` follows
-   the overlay). Do not commit the sabotage.
+   overlay or false) and `actionableHint` / `maybeHint`
+   that always return null. No call-site wiring.
+   Existing suites stay GREEN. Prove red-ability of the
+   overlay unit test by transiently breaking
+   `stderrHintsEnabled` (ignore the overlay / invert it),
+   confirming that test goes RED, then revert. Do not
+   mutate the assertion to “prove” RED. Do not commit
+   the sabotage.
 2. **Tests (test-writer).** RED on emitted stderr/exit
    once call sites are expected to append. Fail for
    missing suffix, not compile errors.
@@ -171,30 +198,41 @@ color leak cannot break exact match.
 
 1. `rmdir DIR` non-empty, overlay false/default:
    exact GNU line, no `(`; exit 1. Characterization
-   of today’s string (sabotage-prove by mutating the
-   expected suffix).
+   of today’s string. Prove teeth later by sabotaging
+   the implementation (inject a suffix), not by editing
+   the expected string.
 2. Same, overlay true: GNU line plus exact
    ` (use rm -r to remove recursively)`; exit 1. This
    is the DirNotEmpty RED.
 3. `rm -d DIR` non-empty, overlay true: rm’s
    `cannot remove` line plus the same suffix.
-4. **Removed.** Do not test `rm` of `chmod 000` for a
-   write hint.
+4. `rm -r DIR` leftover `DirNotEmpty` (non-empty after
+   a failed child, or a fixture that still yields
+   `Directory not empty` with `-r`): overlay true, GNU
+   line, **no** `(`. Do not hint “use rm -r” after `-r`.
 5. Owned `chmod 000` file, `cat`, overlay true:
    `(file is not readable)`; overlay false: no suffix.
    Skip if root.
-6. Owned mode-0444 dest, `cp` overwrite/create, overlay
-   true: GNU create/open line plus
-   `(file is not writable)`; overlay false: no suffix.
-   Skip if root.
+6. Owned mode-0444 **existing** dest, `cp` overwrite,
+   overlay true: current prefix
+   `cannot open '{s}' for writing: Permission denied`
+   plus `(file is not writable)`; overlay false: no
+   suffix. Skip if root. This is not `cannot create`.
 7. Owned `chmod 000` source, `cp src dest`, overlay
-   true: `(file is not readable)`. Skip if root.
-8. `AccessDenied` whose operand mode already allows the
-   op (writable dest whose **parent** is 555): overlay
-   true, **no** suffix. Constructible without a foreign
-   uid. Skip if root.
-9. Integration `rmdir` / `rm -d` on a non-empty dir
-   (piped stderr): no parenthetical.
+   true: `cannot stat '{s}': Permission denied` plus
+   `(file is not readable)`. Skip if root.
+8. Dest **absent**, parent 555, overlay true: `cp`
+   fails (`cannot create` / cannot write the new
+   name); `lstat` of the dest fails, so **no** suffix.
+   Skip if root. This pins “lstat fail → no hint”,
+   not “mode already allows”.
+9. Integration piped stderr: `rmdir` / `rm -d` on a
+   non-empty dir, no parenthetical.
+10. Integration **pty** stderr via
+    `run_with_stderr_tty` (`tests/lib/common.sh`):
+    `rmdir` on a non-empty dir **does** contain the
+    exact DirNotEmpty suffix. This is the production
+    `isatty(stderr)` path, not the test overlay.
 
 Do not rewrite existing GNU-prefix assertions.
 
@@ -205,6 +243,8 @@ Do not rewrite existing GNU-prefix assertions.
 - Fuzzy “did you mean”
 - `printHintWithProgram` rewrite / `cp` overwrite isatty
 - Permission hints on `rm`/`rmdir` `AccessDenied`
+- `DirNotEmpty` hint on `rm -r`
+- `src/common/file_ops.zig` / `cp -p`/`-a` preserve copies
 - New flags; other utilities (`mv`, `mkdir`, `touch`)
 - Exit codes; fakeroot-specific DAC
 - `## Bugs` ls-pipe; testing-improvement headings
