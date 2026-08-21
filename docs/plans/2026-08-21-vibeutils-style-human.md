@@ -22,109 +22,152 @@ land.
 ## In scope
 
 Match the `df` KEEP default already recorded in this heading
-(`src/df.zig`: `human_readable = true`). That default is
-**unconditional** — not TTY-gated and not `VIBEUTILS_STYLE`-gated.
-`VIBEUTILS_STYLE=plain` still leaves `df` human-readable; `du` and
-`ls -l` follow the same rule.
+(`src/df.zig`: human-readable sizes unless an explicit size-mode
+flag says otherwise). The KEEP default is **unconditional** — not
+TTY-gated and not `VIBEUTILS_STYLE`-gated. `VIBEUTILS_STYLE=plain`
+still leaves `df` human-readable; `du` and `ls -l` follow that
+rule.
 
-### `du`
+Do **not** default argparse `human_readable` fields to `true`.
+That would be “as if `-h` was typed” and would leak `ls -h`’s
+relative time style. Apply the KEEP default **after** parse, and
+keep a separate “user passed `-h` / `--human-readable`” bit for
+`ls` time style.
 
-- Change `DuOptions.human_readable` default to `true`.
-- Help text: `-h` is the default, same wording family as
-  `docs/specs/df-vibeutils.txt` (`print sizes in powers of 1024
-  (default)`).
-- After argparse, apply last-wins size-mode overrides so an
-  explicit size flag turns human-readable **off**:
-  `-k`, `-m`, `-g`, `-b` / `--bytes`, `--block-size=SIZE`.
-- `--si` keeps human-readable on (base 1000), as today.
-- `-h` / `--human-readable` turns it back on if a prior override
-  cleared it. argparse already last-wins independent bools; the
-  post-parse step must still clear human-readable when a block-size
-  flag is set, matching `df` (`-k` / `-P` clear `human_readable`).
+### `du` size mode (argv last-wins)
 
-### `ls -l`
+`du` uses shared argparse. Independent bools do not record order
+across flags, so `du -k` and `du -k -h` would look the same if we
+only inspected `DuOptions`. `df` last-wins because its parser
+walks argv. `du` already has the same pattern for `-P`/`-H`/`-L`
+in `resolveDerefMode`.
 
-- Default `human_readable` **on for long listings only** (`-l`,
-  `-g`, `-n`, `-o`). Short listings do not print a size column, so
-  they are unchanged.
-- `-k` / `--kilobytes` must win over the new default: clear
-  `human_readable` so the existing kilobyte branch in
-  `src/ls/formatter.zig` runs. Today `if (human_readable) … else if
-  (kilobytes)` prefers human when both are true.
-- Do **not** treat the default as “as if `-h` was typed.” Explicit
-  `-h` currently also switches `time_style` to `.relative`
-  (`lsMain_resolveTimeStyle`). That coupling stays on the **flag**,
-  not on the default. Bare `ls -l` keeps the default time style and
-  only changes the size column.
+Add `resolveSizeMode(args)` that scans argv once with bound
+`args.len`:
+
+- Stop at `--`.
+- Short clusters: each of `h`, `k`, `m`, `g`, `b` is a size-mode
+  event (last char in the cluster wins among them).
+- Long: `--human-readable`, `--si`, `--bytes`, `--block-size=SIZE`,
+  and `--block-size` followed by `SIZE` if that form is accepted
+  today.
+- No size-mode flag → KEEP default: human, powers of 1024.
+- Last event wins: `-h` / `--human-readable` → human 1024;
+  `--si` → human 1000; `-k`/`-m`/`-g`/`-b`/`--bytes`/`--block-size`
+  → not human, use that scale.
+
+Do not share this helper in `src/common/`. `df` / `du` / `ls` flag
+sets differ. Two runtime asserts in the helper (default human when
+argv has no size flag; last `-k` clears human).
+
+Update the file comment (it still says 1024-byte blocks by
+default), help text, `man/man1/du.1` (same “by default …
+human-readable … `-k` restores 1024-byte blocks” family as
+`df.1`), and `docs/specs/du-vibeutils.txt`. Flag matrix unchanged;
+add a KEEP-default sentence there so auditors do not treat the
+default as a GNU mismatch.
+
+`ls` `--block-size` is WONT. Do not mention it as an `ls` override.
+
+### `ls -l` size mode
+
+KEEP default: long listings (`-l`, `-g`, `-n`, `-o`) print human
+sizes (powers of 1024).
+
+`-k` / `--kilobytes` suppresses that **implicit** default so the
+existing kilobyte branch in `src/ls/formatter.zig` runs.
+
+Explicit `-h` / `--human-readable` always keeps human sizes, even
+when `-k` is also present. Clusters `-lhk` and `-lkh` are both
+human. Do not change today’s formatter rule that human beats
+kilobytes when both option bits are true; set the bits so that
+rule matches this policy (`human_readable` true unless `-k` is set
+and `-h` is not).
+
+Explicit `-h` still selects relative `time_style`. Bare `ls -l`
+does **not**.
+
+`ls -s` without `-l` stays numeric. This slice is `ls -l` only.
+
+Update help, `man/man1/ls.1`, and `docs/specs/ls-vibeutils.txt`.
+`-k` here is kilobytes in this implementation, not “POSIX bytes.”
+`--block-size` stays WONT.
 
 ### Specs and docs
 
-- No new flags. `-h` stays MUST in `docs/specs/du-flags.md` and
-  `docs/specs/ls-flags.md`.
-- Update `docs/specs/du-vibeutils.txt` and `docs/specs/ls-vibeutils.txt`
-  so `-h` is documented as the default, with `-k` / `--block-size`
-  restoring POSIX numbers.
-- `CHANGELOG.md` under Unreleased: user-visible default change.
+- No new flags. `-h` stays MUST. Do not invent
+  `--no-human-readable`.
+- `CHANGELOG.md` Unreleased: user-visible KEEP default.
 - Check the three TODO boxes.
 
 ### Tests (TDD; test agent first)
 
-Prove RED against current defaults (`human_readable = false`).
+Behavior, not argparse fields. Fixtures must be allocated files
+large enough that human form is not a bare integer. Assert the
+size field, not “any suffix on the line.” `ls -l shows sizes` in
+`ls_test.sh` greps `[0-9]+`; that still matches `1.0K` — do not
+treat it as coverage of this default.
 
 `du` (unit + `tests/utilities/du_test.sh`):
 
-1. Bare `du` on a file larger than 1024 bytes emits a unit suffix
-   (`K`/`M`/…), not a raw block count.
-2. `du -k` on the same file emits an integer block count (no
-   suffix).
-3. `du --block-size=1` emits bytes (no suffix).
-4. `du -h -k` / `du -k -h`: last flag wins.
+1. Bare `du` on a file >1024 bytes emits a 1024-based unit suffix.
+2. Each override is not human: `-k`, `-m`, `-g`, `-b`/`--bytes`,
+   `--block-size=1` (and `--block-size 1` if accepted).
+3. `--si` emits a 1000-based suffix.
+4. Last-wins on argv: `du -h -k` not human; `du -k -h` human;
+   clustered `-kh` / `-hk`; `--si` vs `-k` order; `--` stops the
+   scan.
+5. Existing GNU/POSIX numeric goldens pass `-k` (or
+   `--block-size`); do not skip them.
 
-`ls` (unit in `src/ls/main.zig` or formatter tests +
-`tests/utilities/ls_test.sh`):
+`ls` (option-resolution / `runLs` + `tests/utilities/ls_test.sh`):
 
-1. Bare `ls -l` on a file larger than 1024 bytes uses a human size
-   (`1.0K` / `1K` style already used by `-h`).
-2. `ls -lk` (or `-l -k`) uses the kilobyte branch, not human.
-3. Explicit `-h` still selects relative time style; bare `ls -l`
-   does **not**.
-4. Non-`-l` listings are unchanged.
+1. Bare `ls -l` human size column; date column is the default
+   clock style, not relative.
+2. `ls -lk` / `ls -l -k` kilobyte size column.
+3. `ls -lhk` and `ls -lkh` human sizes.
+4. `ls -lh` relative date column (existing `-h` coupling).
+5. `ls -s` without `-l` stays numeric.
 
-Existing tests that assert GNU/POSIX numeric sizes from bare `du`
-or `ls -l` must pass `-k` (or `--block-size`) instead of being
-deleted. Do not weaken GNU comparison tests by skipping them.
+New default tests are classic RED. Override and
+unchanged-output tests that already pass need transient sabotage
+during TDD to prove they can fail; do not commit the sabotage.
 
 ## Out of scope
 
-- `### 4. Color-Coded Numeric Output` (`du` color vs largest entry)
+- `### 4. Color-Coded Numeric Output`
 - `### 5. tree Utility`
 - `### 6. Progress Feedback`
 - `### 7. Smarter Error Messages`
 - LS_COLORS (#187), BSD vmactions (#188)
 - Gating human-readable on TTY or `VIBEUTILS_STYLE`
-- Changing `df` (already done)
+- Changing `df`
 - Inventing `--no-human-readable`
+- Implementing `ls --block-size` (WONT)
 
 ## Spec impact
 
-Design-note only in the vibeutils help texts. Flag matrices
-unchanged. GNU remains the reference for **flag** semantics; the
+Design-note in vibeutils help, man pages, and the two
+`*-vibeutils.txt` files, plus a KEEP-default sentence on the
+matrices. GNU remains the reference for **flag** semantics; the
 **default** is a KEEP divergence already shipped for `df`.
 
 ## Risks
 
-- Scripts that parse `ls -l` / `du` columns for raw numbers break
-  the same way `df` already did. That is the TODO. Document it in
-  the changelog.
-- Filter-stdin: neither util reads stdin as a data filter; no hang
-  risk from this change.
-- Privileged tests: none.
-- macOS signed `st_dev`: not touched.
-- Tiger Style: keep override resolution in a helper under 70 lines;
-  two asserts (human on by default; `-k` clears it).
-- `ls -h` relative time must not leak onto the default, or `ls -l`
-  goldens for the date column all move.
+- Scripts that parse `ls -l` / `du` for raw numbers break the same
+  way `df` already did. Changelog says so.
+- Neither util reads stdin as a data filter.
+- No privileged tests. No `st_dev` path.
+- Tiger Style: argv loop bound `args.len`; helper ≤70 lines; two
+  asserts in the helper (not only in tests).
+- `ls -h` relative time must not leak onto the default.
 
 ## Plan review history
 
-Round 1: pending.
+Round 1: Grok, GPT, and Fable REQUEST CHANGES. argparse bools do
+not last-wins across flags; do not default `human_readable` on
+the args struct; `ls --block-size` is WONT; man pages required;
+`ls -s` is not a size column of `-l`; explicit `-h` beats `-k`
+on `ls` without an argv scan.
+
+This revision locks those.
