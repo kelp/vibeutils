@@ -700,7 +700,7 @@ fn lsMain_partitionOperands(
             try failed.append(allocator, path);
             continue;
         };
-        var entry = Entry{
+        const entry = Entry{
             .name = path,
             .kind = stat.kind,
             .stat = stat,
