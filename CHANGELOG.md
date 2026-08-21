@@ -113,6 +113,12 @@
 
 ### Fixed
 
+- **`ls -l` `total` now uses GNU's 1024-byte default, and empty
+  directories print `total 0`.** The line previously summed raw
+  512-byte `st_blocks` (twice GNU) and omitted the header when a
+  directory had no visible entries. `-k` matches that 1024-byte
+  total; `-h` humanizes the allocated size. `--block-size` stays
+  WONT (#160).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not
