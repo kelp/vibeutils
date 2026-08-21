@@ -2285,7 +2285,7 @@ test "printEntries: -ls block-size prefix width is independent of nlink/owner/gr
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
-    const fmt = "total 21\n" ++
+    const fmt = "total 11\n" ++
         BLOCK_1 ++ PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++
         SIZE_3 ++ "{s} m\n" ++
         BLOCK_20 ++ PERM_DIR ++ NLINK_12 ++ OWNER_ROOT ++ "{s}" ++
