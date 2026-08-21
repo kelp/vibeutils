@@ -1198,7 +1198,10 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
 /// most one. We are exact everywhere, so our digit can differ from GNU's above
 /// that bound (issue #144).
 fn calcUsagePercent(used: u64, total: u64) u8 {
-    return calcUsagePercent128(@as(u128, used), @as(u128, total));
+    const result = calcUsagePercent128(@as(u128, used), @as(u128, total));
+    std.debug.assert(result <= 100);
+    std.debug.assert(total != 0 or result == 0);
+    return result;
 }
 
 /// Same ceiling percent as calcUsagePercent, for --total byte sums that
@@ -1209,15 +1212,20 @@ fn calcUsagePercent128(used: u128, total: u128) u8 {
     const pct = @divTrunc(scaled, total) +
         @intFromBool(@rem(scaled, total) != 0);
     const result: u8 = @intCast(@min(pct, 100));
+    std.debug.assert(result <= 100);
     std.debug.assert((result == 0) == (used == 0));
     return result;
 }
 
 fn formatPercent(buf: []u8, used: u64, total: u64) []const u8 {
-    return formatPercent128(buf, @as(u128, used), @as(u128, total));
+    std.debug.assert(buf.len >= 2);
+    const rendered = formatPercent128(buf, @as(u128, used), @as(u128, total));
+    std.debug.assert(rendered.len > 0);
+    return rendered;
 }
 
 fn formatPercent128(buf: []u8, used: u128, total: u128) []const u8 {
+    std.debug.assert(buf.len >= 2);
     if (total == 0) return "-";
     const pct = calcUsagePercent128(used, total);
     std.debug.assert(pct <= 100);
@@ -1891,8 +1899,9 @@ fn printFsRow_inodes(stdout: *std.Io.Writer, fs: *const FsInfo, opts: DfOptions)
     }
 }
 
-// Multiply-accumulate block totals into byte sums (shared by printTotal and
-// printTotalDynamic). Push fors down: the parent keeps no loop of its own.
+// Multiply-accumulate block totals into byte sums (shared by
+// printTotalDynamic and outputSumTotals). Push fors down: the parent
+// keeps no loop of its own.
 fn printTotal_sumBytes(
     filesystems: []const FsInfo,
     sum_total: *u128,
