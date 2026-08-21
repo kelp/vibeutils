@@ -70,9 +70,10 @@ run_isolated_and_exit() {
 
 # The #150 contract test mkdir's zig-out/bin as root. A root-owned
 # install dir makes the next `zig build` in the same checkout fail with
-# AccessDenied. Hand zig-out back to the checkout owner. Skip when the
-# owner already matches: `chown -R` over a just-built zig-out/bin is
-# enough to blow the contract test's 20s run_with_limit.
+# AccessDenied. Hand the bin dir back to the checkout owner. Never walk
+# the whole zig-out tree: a recursive chown after `just test` blows the
+# contract test's 20s run_with_limit (ARM and ubuntu-latest both lost
+# the lock-waiter to SIGKILL before it could print).
 restore_zig_out_owner() {
     [ "$(id -u)" -eq 0 ] || return 0
     [ -d "$PROJECT_ROOT/zig-out" ] || return 0
@@ -81,15 +82,14 @@ restore_zig_out_owner() {
         stat -f '%u:%g' "$PROJECT_ROOT")" || return 0
     out_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out" 2>/dev/null ||
         stat -f '%u:%g' "$PROJECT_ROOT/zig-out")" || return 0
-    if [ -d "$PROJECT_ROOT/zig-out/bin" ]; then
-        bin_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out/bin" 2>/dev/null ||
-            stat -f '%u:%g' "$PROJECT_ROOT/zig-out/bin")" || return 0
-        [ "$out_ugid" = "$repo_ugid" ] && [ "$bin_ugid" = "$repo_ugid" ] && return 0
-    else
-        [ "$out_ugid" = "$repo_ugid" ] && return 0
-    fi
-    chown -R "$repo_ugid" "$PROJECT_ROOT/zig-out" || true
-    chmod -R u+w "$PROJECT_ROOT/zig-out" || true
+    [ "$out_ugid" = "$repo_ugid" ] ||
+        chown "$repo_ugid" "$PROJECT_ROOT/zig-out" || true
+    [ -d "$PROJECT_ROOT/zig-out/bin" ] || return 0
+    bin_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out/bin" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT/zig-out/bin")" || return 0
+    [ "$bin_ugid" = "$repo_ugid" ] && return 0
+    chown -R "$repo_ugid" "$PROJECT_ROOT/zig-out/bin" || true
+    chmod -R u+w "$PROJECT_ROOT/zig-out/bin" || true
 }
 
 # Not root, or explicitly told not to demote: run the suite directly.
@@ -103,10 +103,11 @@ if ! command -v setpriv >/dev/null 2>&1; then
 fi
 
 # Announce before any chown or lock wait so a SIGKILL'd runner still
-# greps as having started. `|| true` so a missing or broken python3
-# cannot abort the demotion path under `set -e`.
-python3 -c 'import sys; sys.stderr.write("integration: provisioning\n"); sys.stderr.flush()' \
-    2>/dev/null \
+# greps as having started. write(2) is unbuffered; do not wrap this in
+# `2>/dev/null` — that discarded the line on CI, and the lock-waiter
+# then looked like it never executed (#150). `|| true` so a missing
+# python3 cannot abort the demotion path under `set -e`.
+python3 -c 'import os; os.write(2, b"integration: provisioning\n")' \
     || echo "integration: provisioning '$TEST_USER'" >&2 \
     || true
 
@@ -153,6 +154,11 @@ release_test_user_lock() {
     USER_LOCK_KIND=""
 }
 
+# A set -e abort between acquire and the explicit release would otherwise
+# hold the lock until this process dies, and the sibling's flock -w 15
+# plus the 20s SIGKILL leaves it with nothing to grep.
+trap 'release_test_user_lock' EXIT
+
 if ! acquire_test_user_lock; then
     echo "integration: timed out waiting to provision '$TEST_USER'" >&2
     run_isolated_and_exit "$@"
@@ -187,8 +193,13 @@ fi
 
 # The test user needs to read the binaries and the test scripts, but never
 # to write inside the tree — everything it creates goes under $TMPDIR — so
-# the checkout stays root-owned.
-chmod -R a+rX "$PROJECT_ROOT/zig-out" "$PROJECT_ROOT/tests" 2>/dev/null || true
+# the checkout stays root-owned. Do not recurse into zig-out: a just-built
+# tree is already a+rX, and walking it contends with the sibling runner
+# under the same 20s budget.
+chmod a+rX "$PROJECT_ROOT/zig-out" "$PROJECT_ROOT/zig-out/bin" \
+    2>/dev/null || true
+chmod a+rX "$PROJECT_ROOT/zig-out/bin"/* 2>/dev/null || true
+chmod -R a+rX "$PROJECT_ROOT/tests" 2>/dev/null || true
 restore_zig_out_owner
 
 echo "integration: dropping to '$TEST_USER' so permission-denied tests are meaningful"
