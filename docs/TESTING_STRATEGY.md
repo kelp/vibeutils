@@ -189,7 +189,9 @@ make test-privileged-local
 
 Use `common.test_dir.TestDir` for isolation. Pass absolute
 paths from `getPath` / `getBasePath` into the utility under
-test so parallel tests do not share a process cwd.
+test so parallel tests do not share a process cwd. Use
+`join` for a dest that does not exist yet (`getPath`
+realpaths and fails if the name is missing).
 
 ```zig
 test "file operations" {

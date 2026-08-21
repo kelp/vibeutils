@@ -297,39 +297,6 @@ fn handleError(
 
 const TestDir = common.test_dir.TestDir;
 
-fn rmdirJoin(td: *TestDir, rel: []const u8) ![]u8 {
-    std.debug.assert(rel.len > 0);
-    std.debug.assert(!std.fs.path.isAbsolute(rel));
-    const base = try td.getBasePath();
-    defer testing.allocator.free(base);
-    return try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base, rel });
-}
-
-/// rmdir -p walks every dirname until `/` or `.`. An absolute sandbox path
-/// therefore continues into `/tmp` after the fixture is gone and fails.
-/// Relative operands with cwd at the sandbox stop at `.` (GNU `rmdir -p a/b/c`).
-/// `chdirToBase` is not allowlisted in this file, so tests fchdir the sandbox fd.
-fn rmdirEnterSandbox(td: *TestDir) !std.Io.Dir {
-    const io = testing.io;
-    const handle = td.dir().handle;
-    std.debug.assert(handle >= 0);
-    std.debug.assert(handle != std.posix.AT.FDCWD);
-    var saved = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    errdefer saved.close(io);
-    if (std.c.fchdir(handle) != 0) return error.Unexpected;
-    return saved;
-}
-
-fn rmdirLeaveSandbox(saved: *std.Io.Dir) void {
-    const io = testing.io;
-    std.debug.assert(saved.handle >= 0);
-    std.debug.assert(saved.handle != std.posix.AT.FDCWD);
-    if (std.c.fchdir(saved.handle) != 0) {
-        @panic("failed to restore test cwd");
-    }
-    saved.close(io);
-}
-
 test "rmdir: remove empty directory" {
     const io = testing.io;
     const allocator = testing.allocator;
@@ -471,8 +438,8 @@ test "rmdir: remove with parents" {
     defer td.deinit();
     try td.createDirPath("parents/sub/deep");
 
-    var saved = try rmdirEnterSandbox(&td);
-    defer rmdirLeaveSandbox(&saved);
+    var saved = try td.chdirToBase();
+    defer TestDir.restoreCwd(&saved);
 
     const dirs = [_][]const u8{"parents/sub/deep"};
     const options = RmdirOptions{
@@ -548,7 +515,7 @@ test "rmdir: error on non-existent directory" {
 
     var td = TestDir.init(allocator);
     defer td.deinit();
-    const dest = try rmdirJoin(&td, "nonexistent_directory");
+    const dest = try td.join("nonexistent_directory");
     defer allocator.free(dest);
 
     const dirs = [_][]const u8{dest};

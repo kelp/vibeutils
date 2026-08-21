@@ -440,21 +440,13 @@ fn createPathComponents_appendComponent(
 
 const TestDir = common.test_dir.TestDir;
 
-fn sandboxJoin(td: *TestDir, rel: []const u8) ![]u8 {
-    std.debug.assert(rel.len > 0);
-    std.debug.assert(!std.fs.path.isAbsolute(rel));
-    const base = try td.getBasePath();
-    defer testing.allocator.free(base);
-    return try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base, rel });
-}
-
 test "mkdir creates single directory" {
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_dir");
+    const dest = try test_dir.join("test_dir");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{dest};
@@ -472,7 +464,7 @@ test "mkdir with parents flag creates directory tree" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_parent/test_child");
+    const dest = try test_dir.join("test_parent/test_child");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-p", dest };
@@ -490,7 +482,7 @@ test "mkdir with verbose flag prints creation messages" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_verbose");
+    const dest = try test_dir.join("test_verbose");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-v", dest };
@@ -514,7 +506,7 @@ test "mkdir with mode flag sets permissions" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_mode");
+    const dest = try test_dir.join("test_mode");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-m", "755", dest };
@@ -654,7 +646,7 @@ test "mkdir combines parents and verbose flags" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_combo/sub/deep");
+    const dest = try test_dir.join("test_combo/sub/deep");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-pv", dest };
@@ -670,11 +662,11 @@ test "mkdir handles multiple directories" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const d1 = try sandboxJoin(&test_dir, "test_multi1");
+    const d1 = try test_dir.join("test_multi1");
     defer testing.allocator.free(d1);
-    const d2 = try sandboxJoin(&test_dir, "test_multi2");
+    const d2 = try test_dir.join("test_multi2");
     defer testing.allocator.free(d2);
-    const d3 = try sandboxJoin(&test_dir, "test_multi3");
+    const d3 = try test_dir.join("test_multi3");
     defer testing.allocator.free(d3);
 
     const args = [_][]const u8{ d1, d2, d3 };
@@ -696,7 +688,7 @@ test "mkdir handles paths with double slashes" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_slashes//sub//deep");
+    const dest = try test_dir.join("test_slashes//sub//deep");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-p", dest };
@@ -704,7 +696,7 @@ test "mkdir handles paths with double slashes" {
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    const opened_path = try sandboxJoin(&test_dir, "test_slashes/sub/deep");
+    const opened_path = try test_dir.join("test_slashes/sub/deep");
     defer testing.allocator.free(opened_path);
     var opened = try std.Io.Dir.cwd().openDir(io, opened_path, .{});
     opened.close(io);
@@ -716,7 +708,7 @@ test "mkdir handles paths with dot components" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_dots/../test_dots/./sub");
+    const dest = try test_dir.join("test_dots/../test_dots/./sub");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-p", dest };
@@ -724,7 +716,7 @@ test "mkdir handles paths with dot components" {
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    const opened_path = try sandboxJoin(&test_dir, "test_dots/sub");
+    const opened_path = try test_dir.join("test_dots/sub");
     defer testing.allocator.free(opened_path);
     var opened = try std.Io.Dir.cwd().openDir(io, opened_path, .{});
     opened.close(io);
@@ -736,7 +728,7 @@ test "mkdir verbose with parents shows directory creation" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_verbose_parents/new_child");
+    const dest = try test_dir.join("test_verbose_parents/new_child");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-pv", dest };
@@ -755,7 +747,7 @@ test "mkdir with mode applies to all created directories with -p" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_mode_parents/sub/deep");
+    const dest = try test_dir.join("test_mode_parents/sub/deep");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-pm", "755", dest };
@@ -773,11 +765,11 @@ test "mkdir -pv prints each intermediate directory" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_pv_each/a/b");
+    const dest = try test_dir.join("test_pv_each/a/b");
     defer testing.allocator.free(dest);
-    const p0 = try sandboxJoin(&test_dir, "test_pv_each");
+    const p0 = try test_dir.join("test_pv_each");
     defer testing.allocator.free(p0);
-    const p1 = try sandboxJoin(&test_dir, "test_pv_each/a");
+    const p1 = try test_dir.join("test_pv_each/a");
     defer testing.allocator.free(p1);
 
     const args = [_][]const u8{ "-pv", dest };
@@ -799,9 +791,9 @@ test "mkdir -pm sets mode on leaf only (GNU behavior)" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_pm_mode/sub/deep");
+    const dest = try test_dir.join("test_pm_mode/sub/deep");
     defer testing.allocator.free(dest);
-    const mid = try sandboxJoin(&test_dir, "test_pm_mode/sub");
+    const mid = try test_dir.join("test_pm_mode/sub");
     defer testing.allocator.free(mid);
 
     const args = [_][]const u8{ "-pm", "700", dest };
@@ -826,11 +818,11 @@ test "mkdir -pm applies mode to leaf only, not parents (GNU behavior)" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_pm_all_levels/mid/leaf");
+    const dest = try test_dir.join("test_pm_all_levels/mid/leaf");
     defer testing.allocator.free(dest);
-    const root = try sandboxJoin(&test_dir, "test_pm_all_levels");
+    const root = try test_dir.join("test_pm_all_levels");
     defer testing.allocator.free(root);
-    const mid = try sandboxJoin(&test_dir, "test_pm_all_levels/mid");
+    const mid = try test_dir.join("test_pm_all_levels/mid");
     defer testing.allocator.free(mid);
 
     const args = [_][]const u8{ "-pm", "700", dest };
@@ -858,7 +850,7 @@ test "mkdir -p handles absolute-like paths" {
 
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const deep_path = try sandboxJoin(&test_dir, "abs_test/sub/dir");
+    const deep_path = try test_dir.join("abs_test/sub/dir");
     defer testing.allocator.free(deep_path);
 
     const args = [_][]const u8{ "-p", deep_path };
@@ -876,7 +868,7 @@ test "mkdir -p with trailing slashes" {
     defer stdout_aw.deinit();
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    const dest = try sandboxJoin(&test_dir, "test_trailing/sub/");
+    const dest = try test_dir.join("test_trailing/sub/");
     defer testing.allocator.free(dest);
 
     const args = [_][]const u8{ "-p", dest };
@@ -884,7 +876,7 @@ test "mkdir -p with trailing slashes" {
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    const opened_path = try sandboxJoin(&test_dir, "test_trailing/sub");
+    const opened_path = try test_dir.join("test_trailing/sub");
     defer testing.allocator.free(opened_path);
     var opened = try std.Io.Dir.cwd().openDir(io, opened_path, .{});
     opened.close(io);

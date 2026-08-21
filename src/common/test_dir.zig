@@ -25,7 +25,7 @@
 //! - File and directory creation with optional mode settings
 //! - Symbolic link creation and target verification
 //! - Content verification helpers
-//! - Absolute path resolution via getPath/getBasePath (parallel-test safe)
+//! - Absolute path resolution via getPath/getBasePath/join (parallel-test safe)
 
 const std = @import("std");
 const testing = std.testing;
@@ -78,6 +78,16 @@ pub const TestDir = struct {
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const len = try self.tmp_dir.dir.realPath(io, &buf);
         return try self.allocator.dupe(u8, buf[0..len]);
+    }
+
+    /// Join a relative name onto the sandbox without requiring it to exist.
+    /// `getPath` realpaths and fails for a dest that has not been created yet.
+    pub fn join(self: *TestDir, rel: []const u8) ![]u8 {
+        std.debug.assert(rel.len > 0);
+        std.debug.assert(!std.fs.path.isAbsolute(rel));
+        const base = try self.getBasePath();
+        defer self.allocator.free(base);
+        return try std.fs.path.join(self.allocator, &.{ base, rel });
     }
 
     /// Create a file with specified content and optional mode
@@ -278,6 +288,17 @@ test "TestDir: createUniqueFile returns a distinct basename" {
     try testing.expect(name.len > 0);
     try testing.expect(!std.mem.eql(u8, name, "base"));
     try test_dir.expectFileContent(name, "unique-body");
+}
+
+test "TestDir: join builds an absolute dest that need not exist" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const dest = try test_dir.join("missing/child");
+    defer testing.allocator.free(dest);
+    try testing.expect(std.fs.path.isAbsolute(dest));
+    try testing.expect(std.mem.endsWith(u8, dest, "missing/child"));
+    try testing.expect(!test_dir.fileExists("missing/child"));
 }
 
 test "TestDir: getPath(\".\") is the sandbox root" {
