@@ -197,10 +197,11 @@ coverage:
 clean:
     zig build clean
 
-# Install utilities to zig-out/bin/
+# Install utilities to zig-out/bin/ and man pages to zig-out/share/man/man1/
 install:
     zig build -Doptimize=ReleaseSafe
     @echo "Binaries installed to: zig-out/bin/"
+    @echo "Man pages installed to: zig-out/share/man/man1/"
 
 # --- Utility Execution ---
 

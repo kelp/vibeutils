@@ -1111,7 +1111,7 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] **Release automation**: release.sh extracts notes from CHANGELOG.md and updates GitHub release
 - [x] **Cachix binary cache**: Explicit push via `nix build --print-out-paths | cachix push`
 - [x] **Weekly flake update**: CI updates flake.lock and pushes fresh builds to Cachix
-- [ ] Add install targets for man pages
+- [x] Add install targets for man pages
 
 ### Documentation
 - [x] Man page style guide (OpenBSD-inspired):

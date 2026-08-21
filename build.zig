@@ -1,5 +1,6 @@
 const std = @import("std");
 const utils = @import("build/utils.zig");
+const man = @import("build/man.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -91,6 +92,9 @@ pub fn build(b: *std.Build) void {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Abort build configuration
     };
+
+    // Install man pages alongside the utility binaries.
+    man.addInstall(b);
 
     // Add additional build steps
     addFormatSteps(b);

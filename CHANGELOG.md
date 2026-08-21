@@ -10,6 +10,11 @@
   green.
 
 ### Added
+- **`zig build` now installs man pages under `share/man/man1`.**
+  The default install step copies `man/man1/<name>.1` for every
+  utility (including `[.1`) next to the binaries, so
+  `zig build --prefix /usr/local` ships documentation without Nix.
+  A missing page fails configuration instead of being skipped.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so
