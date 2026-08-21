@@ -523,9 +523,15 @@ fn lsMain_listOperandGroups(
     std.debug.assert(paths.len > 1);
 
     var files: std.ArrayList(Entry) = .empty;
-    defer files.deinit(allocator);
+    defer {
+        for (files.items) |*entry| entry.freeAclDump(allocator);
+        files.deinit(allocator);
+    }
     var dirs: std.ArrayList(Entry) = .empty;
-    defer dirs.deinit(allocator);
+    defer {
+        for (dirs.items) |*entry| entry.freeAclDump(allocator);
+        dirs.deinit(allocator);
+    }
     var failed: std.ArrayList([]const u8) = .empty;
     defer failed.deinit(allocator);
 
@@ -694,7 +700,7 @@ fn lsMain_partitionOperands(
             try failed.append(allocator, path);
             continue;
         };
-        const entry = Entry{
+        var entry = Entry{
             .name = path,
             .kind = stat.kind,
             .stat = stat,
@@ -706,11 +712,19 @@ fn lsMain_partitionOperands(
                 common.file.hasExtendedAcl(path, stat.kind, true),
         };
         // -d lists a directory operand as an ordinary entry, so it sorts and
-        // prints with the files and never gets a "dir:" header.
+        // prints with the files and never gets a "dir:" header. Only that
+        // file group is a long-format row, so only it needs the dump.
         if (stat.kind == .directory and !options.directory) {
             try dirs.append(allocator, entry);
         } else {
             try files.append(allocator, entry);
+            core.entryAttachAclDump(
+                allocator,
+                &files.items[files.items.len - 1],
+                path,
+                true,
+                options,
+            );
         }
     }
 
@@ -954,6 +968,8 @@ fn listSingleFileEntry(
         .has_acl = options.long_format and
             common.file.hasExtendedAcl(path, stat.kind, true),
     }};
+    defer entries[0].freeAclDump(allocator);
+    core.entryAttachAclDump(allocator, &entries[0], path, true, options);
 
     lsMain_resolveOperandGitStatus(io, &entries, options, git_context);
     try formatter.printOperandSection(allocator, &entries, writer, options, style);

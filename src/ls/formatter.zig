@@ -632,12 +632,14 @@ fn printLongFormatEntryAligned(
         try printLongFormatEntryAligned_symlinkTarget(style, writer, target);
     }
     try writer.writeByte('\n');
-    try printLongFormatAclDump(allocator, entry, writer, options);
+    try printLongFormatAclDump(entry, writer, options);
 }
 
 /// After a long-format line, dump the POSIX ACL when `-e` is set.
+/// Only the dump captured at probe time is printed: `entry.name` is a
+/// basename in directory listings, so a cwd fallback would attach the
+/// wrong file's ACL to this row.
 fn printLongFormatAclDump(
-    allocator: std.mem.Allocator,
     entry: Entry,
     writer: anytype,
     options: LsOptions,
@@ -645,13 +647,7 @@ fn printLongFormatAclDump(
     std.debug.assert(options.long_format);
     if (!options.show_acls) return;
     if (!entry.has_acl) return;
-    if (entry.acl_dump) |dump| {
-        std.debug.assert(dump.len > 0);
-        try writer.writeAll(dump);
-        return;
-    }
-    const dump = common.file.allocAclDump(allocator, entry.name, true) orelse return;
-    defer allocator.free(dump);
+    const dump = entry.acl_dump orelse return;
     std.debug.assert(dump.len > 0);
     try writer.writeAll(dump);
 }

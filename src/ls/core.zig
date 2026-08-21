@@ -142,14 +142,31 @@ fn applyAclMarkers(
             stat.kind,
             options.follow_all_symlinks,
         );
-        if (options.show_acls and entry.has_acl) {
-            entry.acl_dump = common.file.allocAclDump(
-                allocator,
-                full,
-                options.follow_all_symlinks,
-            );
-        }
+        entryAttachAclDump(
+            allocator,
+            entry,
+            full,
+            options.follow_all_symlinks,
+            options,
+        );
     }
+}
+
+/// Attach a textual access-ACL dump captured against `path`.
+/// `path` is the inode path passed to getxattr — the operand or the
+/// parent/name join — never a listing basename that could collide with cwd.
+pub fn entryAttachAclDump(
+    allocator: std.mem.Allocator,
+    entry: *Entry,
+    path: []const u8,
+    follow: bool,
+    options: LsOptions,
+) void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(entry.acl_dump == null);
+    if (!options.show_acls) return;
+    if (!entry.has_acl) return;
+    entry.acl_dump = common.file.allocAclDump(allocator, path, follow);
 }
 
 /// Sort entries according to the provided options
