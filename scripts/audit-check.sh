@@ -367,13 +367,17 @@ function classify(   i, c, ld, f, r, m, t, ch, file) {
         }
         gdepth += brace_delta(c);
         if (in_sfn && gdepth > sfn_base) sfn_entered = 1;
-        # A brace-less `fn init(` line is still at sfn_base, so clearing
-        # in_sfn there skipped the whole method body and hid real reads
-        # (cut --complement). Wait until the body has opened.
+        # Brace-less `fn init(` stays at sfn_base with no `{`, so we must
+        # not clear until the body has opened (cut --complement). A
+        # one-line method opens and closes on the same line, netting back
+        # to sfn_base without ever going strictly above it; the `{` is
+        # that body, so treat it as entered and fall through to clear.
+        if (in_sfn && !sfn_entered && gdepth <= sfn_base && index(c, "{") > 0)
+            sfn_entered = 1;
         if (in_sfn && sfn_entered && gdepth <= sfn_base) {
             in_sfn = 0; sfn_entered = 0;
         }
-        if (mode != "" && gdepth <= 0) { mode = ""; in_sfn = 0; }
+        if (mode != "" && gdepth <= 0) { mode = ""; in_sfn = 0; sfn_entered = 0; }
         if (gdepth < 0) gdepth = 0;
     }
 }
