@@ -67,6 +67,9 @@ pub const help = @import("help.zig");
 /// Shared color functions for size-based coloring
 pub const colors = @import("colors.zig");
 
+/// GNU LS_COLORS parsing and lookup
+pub const ls_colors = @import("ls_colors.zig");
+
 /// Test directory utilities for managing temporary file systems in tests
 pub const test_dir = @import("test_dir.zig");
 
@@ -734,6 +737,7 @@ test {
     _ = @import("glob.zig");
     _ = @import("help.zig");
     _ = @import("icons.zig");
+    _ = @import("ls_colors.zig");
     _ = @import("main.zig");
     _ = @import("mode.zig");
     _ = @import("path.zig");

@@ -435,6 +435,20 @@ test_ls() {
         print_test_result "ls truecolor icons emit RGB sequences" "FAIL" "No 38;2; truecolor sequence found in output"
     fi
 
+    echo -e "${CYAN}Testing LS_COLORS directory override...${NC}"
+
+    local ls_colors_dir=$(create_temp_dir)
+    mkdir -p "$ls_colors_dir/blue_dir"
+    local ls_colors_output
+    ls_colors_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=01;34' "$binary" --color=always -1 "$ls_colors_dir" 2>/dev/null)
+    if [[ "$ls_colors_output" == *"01;34"* ]]; then
+        print_test_result "ls honors LS_COLORS directory SGR" "PASS"
+    else
+        print_test_result "ls honors LS_COLORS directory SGR" "FAIL" \
+            "Expected 01;34 in output: '$ls_colors_output'"
+    fi
+
     echo -e "${CYAN}Testing NO_COLOR suppresses escape sequences...${NC}"
 
     # With NO_COLOR=1, no escape sequences should appear at all.

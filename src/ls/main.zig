@@ -1228,6 +1228,216 @@ fn testStageDisplayEnvOverrides() []const common.env.Override {
     return saved;
 }
 
+fn testLsColorsEnv(ls_colors: ?[]const u8) [7]common.env.Override {
+    std.debug.assert(test_env_overrides.len == 6);
+    std.debug.assert(test_env_overrides[5].value == null);
+    return .{
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+        .{ .key = "VIBEUTILS_COLOR", .value = null },
+        .{ .key = "VIBEUTILS_ICONS", .value = null },
+        .{ .key = "LS_ICONS", .value = null },
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "LS_COLORS", .value = ls_colors },
+    };
+}
+
+test "ls overlays LS_COLORS directory SGR onto the compiled palette" {
+    const staged = testLsColorsEnv("di=01;34");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "blue_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "01;34") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "blue_dir") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[0m") != null);
+}
+
+test "ls color never suppresses LS_COLORS escape sequences" {
+    const staged = testLsColorsEnv("di=01;34");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "plain_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=never", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "plain_dir") != null);
+}
+
+test "ls without LS_COLORS keeps the compiled directory color" {
+    const staged = testLsColorsEnv(null);
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "default_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[94m") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "01;34") == null);
+}
+
+test "ls invalid LS_COLORS diagnoses and disables name coloring" {
+    const staged = testLsColorsEnv("zz=01");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "invalid_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const stderr_output = stderr_aw.writer.buffered();
+    const diagnosed =
+        std.mem.indexOf(u8, stderr_output, "unparsable value for LS_COLORS") != null or
+        std.mem.indexOf(u8, stderr_output, "unrecognized prefix") != null;
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(diagnosed);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "\x1b[") == null);
+}
+
+test "ls long symlink target uses LS_COLORS regular file SGR" {
+    const staged = testLsColorsEnv("fi=01;33");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "target.txt", .{});
+        file.close(io);
+    }
+    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-l", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+    const arrow_pos = std.mem.indexOf(u8, output, "->");
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(arrow_pos != null);
+    try testing.expect(std.mem.indexOf(u8, output[arrow_pos.? + 2 ..], "01;33") != null);
+}
+
+test "ls directory type LS_COLORS beats a matching suffix" {
+    const staged = testLsColorsEnv("*.zip=01;31:di=01;34");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "foo.zip");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "01;34") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "01;31") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "foo.zip") != null);
+}
+
 test "ls prints a subdirectory operand exactly as given, not its basename (short format)" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
