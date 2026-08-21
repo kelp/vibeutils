@@ -1236,8 +1236,8 @@ fn testCreateLsAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
     const one_hour_ago = common.file.currentTimestampNanoseconds() -
         3600 * @as(i128, std.time.ns_per_s);
     try file.setTimestamps(io, .{
-        .access_timestamp = .{ .new = .{ .nanoseconds = one_hour_ago } },
-        .modify_timestamp = .{ .new = .{ .nanoseconds = one_hour_ago } },
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(one_hour_ago) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(one_hour_ago) } },
     });
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
