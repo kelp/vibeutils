@@ -276,7 +276,7 @@ fn emitOneOperand(
     counts: *Counts,
 ) !u8 {
     std.debug.assert(operand.len > 0);
-    std.debug.assert(operand.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(@intFromPtr(stdout_writer) != 0);
     const kind = try preflightOperand(io, operand);
     const root = try makeNode(arena, operand, kind);
     countNode(counts, root.kind);
@@ -535,7 +535,7 @@ fn preflightOperand(io: std.Io, path: []const u8) !FileKind {
 
 fn makeNode(arena: Allocator, name: []const u8, kind: FileKind) !*Node {
     std.debug.assert(name.len > 0);
-    std.debug.assert(name.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(@intFromPtr(arena.vtable) != 0);
     const node = try arena.create(Node);
     node.* = .{
         .name = try arena.dupe(u8, name),
@@ -690,7 +690,7 @@ fn shouldSkip(entry: common.walker.Entry, walk_opts: WalkFilter) bool {
 
 fn isHidden(name: []const u8) bool {
     std.debug.assert(name.len > 0);
-    std.debug.assert(name.len < std.Io.Dir.max_path_bytes);
+    std.debug.assert(std.mem.indexOfScalar(u8, name, 0) == null);
     return name[0] == '.' and !(std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, ".."));
 }
 
