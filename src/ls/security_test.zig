@@ -8,6 +8,7 @@
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const entry_collector = @import("entry_collector.zig");
 const types = @import("types.zig");
 
@@ -64,10 +65,10 @@ test "CycleDetector - basic same-directory detection" {
     var detector = common.directory.CycleDetector.init(&visited);
 
     // Create a temporary directory to test with
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{});
     defer test_dir.close(testing.io);
 
     // First visit should return false (not a cycle)
@@ -81,10 +82,10 @@ test "CycleDetector - basic same-directory detection" {
 
 test "CycleDetector - real device ID extraction" {
     // Test that we actually get device IDs from fstat(), not hardcoded values
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{});
     defer test_dir.close(testing.io);
 
     const fs_id = try common.directory.FileSystemId.fromDir(test_dir);
@@ -98,10 +99,10 @@ test "CycleDetector - real device ID extraction" {
 
 // Test that symlink processing handles errors gracefully through the public API
 test "Symlink processing - error handling via metadata enhancement" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{});
     defer test_dir.close(testing.io);
 
     // Create an entry that appears to be a symlink but doesn't exist as a target
@@ -134,12 +135,12 @@ test "Symlink processing - error handling via metadata enhancement" {
 test "Cycle detection - performance with nested directories" {
     // Test that cycle detection doesn't significantly impact performance
     // when traversing a reasonable directory structure with no actual cycles
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a nested directory structure: root/subdir1/subdir2/subdir3
-    try tmp_dir.dir.createDir(testing.io, "subdir1", .default_dir);
-    var subdir1 = try tmp_dir.dir.openDir(testing.io, "subdir1", .{});
+    try tmp_dir.dir().createDir(testing.io, "subdir1", .default_dir);
+    var subdir1 = try tmp_dir.dir().openDir(testing.io, "subdir1", .{});
     defer subdir1.close(testing.io);
 
     try subdir1.createDir(testing.io, "subdir2", .default_dir);
@@ -155,7 +156,7 @@ test "Cycle detection - performance with nested directories" {
         var name_buf: [32]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "file{d}.txt", .{i}) catch unreachable;
 
-        const file1 = try tmp_dir.dir.createFile(testing.io, name, .{});
+        const file1 = try tmp_dir.dir().createFile(testing.io, name, .{});
         file1.close(testing.io);
 
         const file2 = try subdir1.createFile(testing.io, name, .{});
@@ -179,7 +180,7 @@ test "Cycle detection - performance with nested directories" {
     const start = common.file.currentTimestampNanoseconds();
 
     // Simulate recursive traversal by checking each directory level
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{});
     defer test_dir.close(testing.io);
 
     const dir1_cycle = try detector.checkAndMarkVisited(test_dir);

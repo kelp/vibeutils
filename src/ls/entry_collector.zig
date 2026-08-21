@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const glob = common.glob;
 const types = @import("types.zig");
 
@@ -414,17 +415,17 @@ test "entry_collector - needsMetadata" {
 }
 
 test "entry_collector - collectFilteredEntries basic" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     // Create test files
-    const file1 = try tmp_dir.dir.createFile(testing.io, "visible.txt", .{});
+    const file1 = try tmp_dir.dir().createFile(testing.io, "visible.txt", .{});
     file1.close(testing.io);
-    const file2 = try tmp_dir.dir.createFile(testing.io, ".hidden", .{});
+    const file2 = try tmp_dir.dir().createFile(testing.io, ".hidden", .{});
     file2.close(testing.io);
 
     // Test without showing hidden files
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
     var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{});
@@ -439,17 +440,17 @@ test "entry_collector - collectFilteredEntries basic" {
 }
 
 test "entry_collector - collectFilteredEntries with all option" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     // Create test files
-    const file1 = try tmp_dir.dir.createFile(testing.io, "visible.txt", .{});
+    const file1 = try tmp_dir.dir().createFile(testing.io, "visible.txt", .{});
     file1.close(testing.io);
-    const file2 = try tmp_dir.dir.createFile(testing.io, ".hidden", .{});
+    const file2 = try tmp_dir.dir().createFile(testing.io, ".hidden", .{});
     file2.close(testing.io);
 
     // Test with showing all files
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
     var entries = try collectFilteredEntries(
@@ -478,17 +479,17 @@ test "entry_collector - collectFilteredEntries with all option" {
 }
 
 test "entry_collector - hide_backups filters tilde files" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
-    const f1 = try tmp_dir.dir.createFile(testing.io, "file.txt", .{});
+    const f1 = try tmp_dir.dir().createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp_dir.dir.createFile(testing.io, "file.txt~", .{});
+    const f2 = try tmp_dir.dir().createFile(testing.io, "file.txt~", .{});
     f2.close(testing.io);
-    const f3 = try tmp_dir.dir.createFile(testing.io, "backup~", .{});
+    const f3 = try tmp_dir.dir().createFile(testing.io, "backup~", .{});
     f3.close(testing.io);
 
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
     var entries = try collectFilteredEntries(
@@ -508,19 +509,19 @@ test "entry_collector - hide_backups filters tilde files" {
 }
 
 test "entry_collector - ignore_pattern filters matching files" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
-    const f1 = try tmp_dir.dir.createFile(testing.io, "readme.md", .{});
+    const f1 = try tmp_dir.dir().createFile(testing.io, "readme.md", .{});
     f1.close(testing.io);
-    const f2 = try tmp_dir.dir.createFile(testing.io, "main.c", .{});
+    const f2 = try tmp_dir.dir().createFile(testing.io, "main.c", .{});
     f2.close(testing.io);
-    const f3 = try tmp_dir.dir.createFile(testing.io, "test.c", .{});
+    const f3 = try tmp_dir.dir().createFile(testing.io, "test.c", .{});
     f3.close(testing.io);
-    const f4 = try tmp_dir.dir.createFile(testing.io, "notes.txt", .{});
+    const f4 = try tmp_dir.dir().createFile(testing.io, "notes.txt", .{});
     f4.close(testing.io);
 
-    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    var test_dir = try tmp_dir.dir().openDir(testing.io, ".", .{ .iterate = true });
     defer test_dir.close(testing.io);
 
     var entries = try collectFilteredEntries(

@@ -15,6 +15,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 const assert = std.debug.assert;
 
@@ -1860,18 +1861,18 @@ fn processInputByLines_lastN(
 
 test "tail outputs default 10 lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     // Create test file with 15 lines
     const content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n" ++
         "line9\nline10\nline11\nline12\nline13\nline14\nline15\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, .{});
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, .{});
 
     try testing.expectEqualStrings(
         "line6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n",
@@ -1881,142 +1882,142 @@ test "tail outputs default 10 lines" {
 
 test "tail with -n 5 outputs last 5 lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 5 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("line3\nline4\nline5\nline6\nline7\n", aw.writer.buffered());
 }
 
 test "tail with -n 0 outputs nothing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 0 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail with -c 10 outputs last 10 bytes" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "abcdefghijklmnopqrstuvwxyz";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 10 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("qrstuvwxyz", aw.writer.buffered());
 }
 
 test "tail with -c 0 outputs nothing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "some content here";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 0 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail handles line count larger than file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 100 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("line1\nline2\nline3\n", aw.writer.buffered());
 }
 
 test "tail handles byte count larger than file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "small";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 100 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("small", aw.writer.buffered());
 }
 
 test "tail handles empty file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "empty.txt", "");
+    try tmp_dir.createFile("empty.txt", "", null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    try testTailFile(io, tmp_dir.dir, "empty.txt", &aw.writer, .{});
+    try testTailFile(io, tmp_dir.dir(), "empty.txt", &aw.writer, .{});
 
     try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail handles file with no final newline" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3"; // no final newline
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 2 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("line2\nline3", aw.writer.buffered());
 }
 
 test "tail handles very long lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     // Create a line longer than typical buffer sizes
     var long_line_buf: [5000]u8 = undefined;
@@ -2030,13 +2031,13 @@ test "tail handles very long lines" {
     );
     defer testing.allocator.free(content);
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 2 };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}\nshort2\n", .{long_line});
     defer testing.allocator.free(expected);
@@ -2084,46 +2085,46 @@ test "tail with -v always shows headers" {
 
 test "tail handles non-existent file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    const result = testTailFile(io, tmp_dir.dir, "nonexistent.txt", &aw.writer, .{});
+    const result = testTailFile(io, tmp_dir.dir(), "nonexistent.txt", &aw.writer, .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "tail with -z handles zero-terminated lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\x00line2\x00line3\x00";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 2, .zero_terminated = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("line2\x00line3\x00", aw.writer.buffered());
 }
 
 test "tail with binary file in byte mode" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const binary_content = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE, 0xFD, 0xFC };
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "binary.txt", &binary_content);
+    try tmp_dir.createFile("binary.txt", &binary_content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 4 };
-    try testTailFile(io, tmp_dir.dir, "binary.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "binary.txt", &aw.writer, options);
 
     const expected = [_]u8{ 0xFF, 0xFE, 0xFD, 0xFC };
     try testing.expectEqualSlices(u8, &expected, aw.writer.buffered());
@@ -2150,17 +2151,17 @@ test "parseNumericArg with plus prefix" {
 
 test "tail -n +1 outputs entire file (from-beginning)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 1, .from_beginning = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     // +1 means skip 0 lines, output everything
     try testing.expectEqualStrings("line1\nline2\nline3\nline4\nline5\n", aw.writer.buffered());
@@ -2168,17 +2169,17 @@ test "tail -n +1 outputs entire file (from-beginning)" {
 
 test "tail -n +3 skips first 2 lines (from-beginning)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 3, .from_beginning = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     // +3 means skip first 2 lines, output from line 3 onward
     try testing.expectEqualStrings("line3\nline4\nline5\n", aw.writer.buffered());
@@ -2186,17 +2187,17 @@ test "tail -n +3 skips first 2 lines (from-beginning)" {
 
 test "tail -n +NUM larger than file outputs nothing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 100, .from_beginning = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     // +100 on a 2-line file: skip 99 lines, nothing left
     try testing.expectEqualStrings("", aw.writer.buffered());
@@ -2204,17 +2205,17 @@ test "tail -n +NUM larger than file outputs nothing" {
 
 test "tail -n +NUM detected via runTail arg parsing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     // Get the real path for the file
-    const path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(path);
 
     const args = [_][]const u8{ "-n", "+3", path };
@@ -2317,16 +2318,16 @@ test "tail with invalid byte count" {
 
 test "tail with obsolete -NUM syntax" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-2", file_path };
@@ -2417,19 +2418,19 @@ test "tail: -b flag is parsed" {
 
 test "tail: -b 2 shows last 1024 bytes" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with 2048 bytes (4 blocks of 512)
     var content: [2048]u8 = undefined;
     @memset(content[0..1024], 'A');
     @memset(content[1024..2048], 'B');
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", &content);
+    try tmp_dir.createFile("test.txt", &content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-b", "2", file_path };
@@ -2444,20 +2445,20 @@ test "tail: -b 2 shows last 1024 bytes" {
 
 test "tail: -b +2 shows from byte 512 onwards" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with 1536 bytes (3 blocks of 512)
     var content: [1536]u8 = undefined;
     @memset(content[0..512], 'A');
     @memset(content[512..1024], 'B');
     @memset(content[1024..1536], 'C');
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", &content);
+    try tmp_dir.createFile("test.txt", &content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -b +2 means starting from block 2 (byte 512), output the rest
@@ -2477,16 +2478,16 @@ test "tail: -b +2 shows from byte 512 onwards" {
 
 test "tail: -b with file shorter than block count shows everything" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "short file content";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -b 10 = 5120 bytes, much larger than the file
@@ -2506,51 +2507,51 @@ test "tail: -r flag is parsed" {
 
 test "tail: -r reverses all lines of a file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = null, .reverse = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("line5\nline4\nline3\nline2\nline1\n", aw.writer.buffered());
 }
 
 test "tail: -r -n 3 reverses last 3 lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = 3, .reverse = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("line5\nline4\nline3\n", aw.writer.buffered());
 }
 
 test "tail: -r on single-line file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
 
     const content = "only line\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
 
     const options = TailOptions{ .line_count = null, .reverse = true };
-    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
+    try testTailFile(io, tmp_dir.dir(), "test.txt", &aw.writer, options);
 
     try testing.expectEqualStrings("only line\n", aw.writer.buffered());
 }
@@ -2560,13 +2561,13 @@ test "tail: -f and -r are mutually exclusive" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "content\n");
+    var tmp_dir = TestDir.init(allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.createFile("test.txt", "content\n", null);
 
     // Build an absolute path for the test file
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const abs_path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const abs_path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const abs_path = path_buf[0..abs_path_len];
 
     const args = [_][]const u8{ "-f", "-r", abs_path };

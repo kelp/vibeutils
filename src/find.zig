@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const glob = common.glob;
 const testing = std.testing;
 const builtin = @import("builtin");
@@ -4340,16 +4341,16 @@ test "find: basic directory search" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "world.md", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "world.md", .{});
     f2.close(testing.io);
-    try tmp.dir.createDir(testing.io, "subdir", .default_dir);
+    try tmp.dir().createDir(testing.io, "subdir", .default_dir);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4375,15 +4376,15 @@ test "find: -name filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "world.md", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "world.md", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4408,14 +4409,14 @@ test "find: -type filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
-    try tmp.dir.createDir(testing.io, "mydir", .default_dir);
+    try tmp.dir().createDir(testing.io, "mydir", .default_dir);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Find only files
     {
@@ -4460,17 +4461,17 @@ test "find: -empty" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "empty.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "empty.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "notempty.txt", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "notempty.txt", .{});
     try f2.writeStreamingAll(testing.io, "content");
     f2.close(testing.io);
-    try tmp.dir.createDir(testing.io, "emptydir", .default_dir);
+    try tmp.dir().createDir(testing.io, "emptydir", .default_dir);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4496,18 +4497,18 @@ test "find: -maxdepth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "top.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "top.txt", .{});
     f1.close(testing.io);
-    try tmp.dir.createDir(testing.io, "sub", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    try tmp.dir().createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "sub", .{});
     const f2 = try sub.createFile(testing.io, "deep.txt", .{});
     f2.close(testing.io);
     sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4533,15 +4534,15 @@ test "find: -not / !" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "keep.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "skip.log", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "skip.log", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4566,17 +4567,17 @@ test "find: -or operator" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "a.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "a.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "b.md", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "b.md", .{});
     f2.close(testing.io);
-    const f3 = try tmp.dir.createFile(testing.io, "c.log", .{});
+    const f3 = try tmp.dir().createFile(testing.io, "c.log", .{});
     f3.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4601,15 +4602,15 @@ test "find: parentheses grouping" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "a.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "a.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "b.md", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "b.md", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4634,13 +4635,13 @@ test "find: -print0" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4709,18 +4710,18 @@ test "find: -mindepth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "top.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "top.txt", .{});
     f1.close(testing.io);
-    try tmp.dir.createDir(testing.io, "sub", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    try tmp.dir().createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "sub", .{});
     const f2 = try sub.createFile(testing.io, "deep.txt", .{});
     f2.close(testing.io);
     sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4745,13 +4746,13 @@ test "find: -delete" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "deleteme.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "deleteme.txt", .{});
     f1.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4767,7 +4768,7 @@ test "find: -delete" {
     );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const stat = tmp.dir.statFile(testing.io, "deleteme.txt", .{});
+    const stat = tmp.dir().statFile(testing.io, "deleteme.txt", .{});
     try testing.expect(stat == error.FileNotFound);
 }
 
@@ -4776,15 +4777,15 @@ test "find: -iname" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "Hello.TXT", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "Hello.TXT", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "world.txt", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "world.txt", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4809,16 +4810,16 @@ test "find: -size filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "small.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "small.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "medium.txt", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "medium.txt", .{});
     try f2.writeStreamingAll(testing.io, "a" ** 2048);
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4843,19 +4844,19 @@ test "find: -perm filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "rw.txt", .{
+    const f1 = try tmp.dir().createFile(testing.io, "rw.txt", .{
         .permissions = @enumFromInt(0o644),
     });
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "rwx.txt", .{
+    const f2 = try tmp.dir().createFile(testing.io, "rwx.txt", .{
         .permissions = @enumFromInt(0o755),
     });
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4884,18 +4885,18 @@ test "find: -path matches full path pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "subdir", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "subdir", .{});
+    try tmp.dir().createDir(testing.io, "subdir", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "subdir", .{});
     const f1 = try sub.createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
     sub.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "other.txt", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "other.txt", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4923,23 +4924,23 @@ test "find: -prune prevents descending into directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a directory to skip and one to keep
-    try tmp.dir.createDir(testing.io, "skip_me", .default_dir);
-    var skip_dir = try tmp.dir.openDir(testing.io, "skip_me", .{});
+    try tmp.dir().createDir(testing.io, "skip_me", .default_dir);
+    var skip_dir = try tmp.dir().openDir(testing.io, "skip_me", .{});
     const f1 = try skip_dir.createFile(testing.io, "hidden.txt", .{});
     f1.close(testing.io);
     skip_dir.close(testing.io);
 
-    try tmp.dir.createDir(testing.io, "keep_me", .default_dir);
-    var keep_dir = try tmp.dir.openDir(testing.io, "keep_me", .{});
+    try tmp.dir().createDir(testing.io, "keep_me", .default_dir);
+    var keep_dir = try tmp.dir().openDir(testing.io, "keep_me", .{});
     const f2 = try keep_dir.createFile(testing.io, "visible.txt", .{});
     f2.close(testing.io);
     keep_dir.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4967,16 +4968,16 @@ test "find: -depth lists directory contents before directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "adir", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "adir", .{});
+    try tmp.dir().createDir(testing.io, "adir", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "adir", .{});
     const f1 = try sub.createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
     sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5009,15 +5010,15 @@ test "find: -path with non-matching pattern returns no results" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "world.md", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "world.md", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5047,13 +5048,13 @@ test "find: -atime +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5077,13 +5078,13 @@ test "find: -ctime +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5107,13 +5108,13 @@ test "find: -links 99 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "single.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "single.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5137,13 +5138,13 @@ test "find: -nouser matches nothing for normal files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "owned.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "owned.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5168,13 +5169,13 @@ test "find: -xdev is accepted without error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5202,16 +5203,16 @@ test "find: -d is alias for -depth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "adir", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "adir", .{});
+    try tmp.dir().createDir(testing.io, "adir", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "adir", .{});
     const f1 = try sub.createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
     sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5241,13 +5242,13 @@ test "find: -f specifies explicit search path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f1.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5271,13 +5272,13 @@ test "find: -x is alias for -xdev" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5301,17 +5302,17 @@ test "find: -X warns about xargs-unsafe filenames" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a file with a space in its name (xargs-problematic)
-    const f1 = try tmp.dir.createFile(testing.io, "has space.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "has space.txt", .{});
     f1.close(testing.io);
     // Create a normal file
-    const f2 = try tmp.dir.createFile(testing.io, "safe.txt", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "safe.txt", .{});
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5341,13 +5342,13 @@ test "find: -mmin matches recently modified files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "fresh.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "fresh.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5371,13 +5372,13 @@ test "find: -mmin +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5400,13 +5401,13 @@ test "find: -inum matches file by inode number" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "target.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "target.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Get the inode number of target.txt
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "target.txt" });
@@ -5436,13 +5437,13 @@ test "find: -inum with non-matching inode returns nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5470,13 +5471,13 @@ test "find: -amin -5 matches recently accessed files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "accessed.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "accessed.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5500,13 +5501,13 @@ test "find: -amin +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5529,13 +5530,13 @@ test "find: -cmin -5 matches recently changed files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "changed.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "changed.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5558,13 +5559,13 @@ test "find: -cmin +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5587,14 +5588,14 @@ test "find: -anewer matches files accessed after reference" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create reference file first
-    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    const ref = try tmp.dir().createFile(testing.io, "old_ref.txt", .{});
     ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Set the reference file's mtime to the past so newly created files
     // will have a later access time
@@ -5613,7 +5614,7 @@ test "find: -anewer matches files accessed after reference" {
     _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
     // Create the test file (will have current atime)
-    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "newer.txt", .{});
     f.close(testing.io);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5638,14 +5639,14 @@ test "find: -cnewer matches files changed after reference" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create reference file first
-    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    const ref = try tmp.dir().createFile(testing.io, "old_ref.txt", .{});
     ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Set the reference file's mtime to the past
     const past = blk: {
@@ -5663,7 +5664,7 @@ test "find: -cnewer matches files changed after reference" {
     _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
     // Create test file (will have current ctime)
-    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "newer.txt", .{});
     f.close(testing.io);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5710,13 +5711,13 @@ test "find: -execdir runs command in file directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "testfile.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "testfile.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5739,13 +5740,13 @@ test "find: -ls produces listing output" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "listed.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "listed.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5772,13 +5773,13 @@ test "find: -fstype is accepted without error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5801,13 +5802,13 @@ test "find: -flags is accepted without error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5834,13 +5835,13 @@ test "find: -P global option accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5863,13 +5864,13 @@ test "find: -E global option accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5892,13 +5893,13 @@ test "find: -s global option accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5921,16 +5922,16 @@ test "find: -ipath case-insensitive path matching" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "SubDir", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "SubDir", .{});
+    try tmp.dir().createDir(testing.io, "SubDir", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "SubDir", .{});
     const f = try sub.createFile(testing.io, "File.TXT", .{});
     f.close(testing.io);
     sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5954,13 +5955,13 @@ test "find: -iwholename is alias for -ipath" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "Test.TXT", .{});
+    const f = try tmp.dir().createFile(testing.io, "Test.TXT", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -5983,13 +5984,13 @@ test "find: -regex matches full path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6012,13 +6013,13 @@ test "find: -iregex matches case-insensitively" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6041,13 +6042,13 @@ test "find: -Bmin stub accepted (always true)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Birth time is optional on Linux (e.g. unavailable over a virtiofs
     // mount). Without it, -Bmin legitimately matches nothing, so skip
@@ -6076,13 +6077,13 @@ test "find: -Bnewer parses and evaluates" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6107,13 +6108,13 @@ test "find: -Btime evaluates birth time" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Birth time is optional on Linux (e.g. unavailable over a virtiofs
     // mount). Without it, -Btime legitimately matches nothing, so skip
@@ -6143,13 +6144,13 @@ test "find: -acl stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6173,18 +6174,18 @@ test "find: -depth N matches files at exact depth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "top.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "top.txt", .{});
     f1.close(testing.io);
-    try tmp.dir.createDir(testing.io, "sub", .default_dir);
-    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    try tmp.dir().createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir().openDir(testing.io, "sub", .{});
     const f2 = try sub.createFile(testing.io, "deep.txt", .{});
     f2.close(testing.io);
     sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // depth 1 should match top.txt and sub (not the root dir at depth 0)
     {
@@ -6231,13 +6232,13 @@ test "find: -gid matches numeric group ID" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Get the GID of the test file
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
@@ -6266,13 +6267,13 @@ test "find: -gid with non-matching GID returns nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6296,13 +6297,13 @@ test "find: -uid matches numeric user ID" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Get the UID of the test file
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
@@ -6331,13 +6332,13 @@ test "find: -uid with non-matching UID returns nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6361,13 +6362,13 @@ test "find: -ignore_readdir_race accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6390,13 +6391,13 @@ test "find: -noignore_readdir_race accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6419,13 +6420,13 @@ test "find: -noleaf accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6448,14 +6449,14 @@ test "find: -lname matches symlink target" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "target.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "target.txt", .{});
     f.close(testing.io);
-    try tmp.dir.symLink(testing.io, "target.txt", "link.txt", .{});
+    try tmp.dir().symLink(testing.io, "target.txt", "link.txt", .{});
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6480,14 +6481,14 @@ test "find: -ilname case-insensitive symlink target matching" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "Target.TXT", .{});
+    const f = try tmp.dir().createFile(testing.io, "Target.TXT", .{});
     f.close(testing.io);
-    try tmp.dir.symLink(testing.io, "Target.TXT", "link.txt", .{});
+    try tmp.dir().symLink(testing.io, "Target.TXT", "link.txt", .{});
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6511,13 +6512,13 @@ test "find: -mnewer is alias for -newer" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    const ref = try tmp.dir().createFile(testing.io, "old_ref.txt", .{});
     ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Set reference file mtime to the past
     const past = blk: {
@@ -6534,7 +6535,7 @@ test "find: -mnewer is alias for -newer" {
     var times = [2]std.posix.timespec{ past_ts, past_ts };
     _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
-    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "newer.txt", .{});
     f.close(testing.io);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -6558,13 +6559,13 @@ test "find: -mount is alias for -xdev" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6587,13 +6588,13 @@ test "find: -newerXY parses and evaluates" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6661,13 +6662,13 @@ test "find: -samefile matches files with same inode" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "original.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "original.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
     const orig_path = try std.fs.path.join(allocator, &.{ dir_path, "original.txt" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -6691,13 +6692,13 @@ test "find: -sparse stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6720,13 +6721,13 @@ test "find: -xattr stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6749,13 +6750,13 @@ test "find: -xattrname stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6778,13 +6779,13 @@ test "find: -printf stub accepted (prints like -print)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6807,13 +6808,13 @@ test "find: -false always evaluates to false" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6837,13 +6838,13 @@ test "find: -true always evaluates to true" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6867,13 +6868,13 @@ test "find: -false -o -true evaluates to true" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6896,13 +6897,13 @@ test "find: -regex rejects non-matching pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "hello.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6927,13 +6928,13 @@ test "find: -iregex rejects non-matching pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "hello.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -6966,14 +6967,14 @@ test "find: -size 1 matches 100-byte file (block rounding)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "small.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "small.txt", .{});
     try f.writeStreamingAll(testing.io, "x" ** 100);
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7001,14 +7002,14 @@ test "find: -size 2 matches 513-byte file (block rounding)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "medium.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "medium.txt", .{});
     try f.writeStreamingAll(testing.io, "x" ** 513);
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7037,18 +7038,18 @@ test "find: -size -2 excludes 513-byte file (block rounding)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "twoblk.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "twoblk.txt", .{});
     try f1.writeStreamingAll(testing.io, "x" ** 513);
     f1.close(testing.io);
 
-    const f2 = try tmp.dir.createFile(testing.io, "oneblk.txt", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "oneblk.txt", .{});
     try f2.writeStreamingAll(testing.io, "x" ** 100);
     f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7085,13 +7086,13 @@ test "find: -exec runs command and filters on exit code" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "target.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "target.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Test 1: -exec /usr/bin/true {} ; -print => file printed
     {
@@ -7148,13 +7149,13 @@ test "find: -user matches files by username" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "myfile.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "myfile.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Get the UID of the test file, then look up the username. The lookup runs
     // through common.user_group so this test does not reach into a find-local
@@ -7189,13 +7190,13 @@ test "find: -group matches files by group name" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "grpfile.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "grpfile.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Get the GID of the test file, then look up the group name. Same reason
     // as -user above: the shared module owns the libc binding, not find.
@@ -7229,13 +7230,13 @@ test "find: -nogroup matches nothing for normal files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "normalfile.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "normalfile.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7295,11 +7296,11 @@ test "find: -user resolves a name to its uid, not to its gid" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const f = try tmp.dir.createFile(testing.io, "foreign.txt", .{});
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    const f = try tmp.dir().createFile(testing.io, "foreign.txt", .{});
     f.close(testing.io);
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "foreign.txt" });
 
     // Bounded scan of the system account range for a uid/gid mismatch.
@@ -7345,11 +7346,11 @@ test "find: -group resolves a name to its gid, not to zero" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const f = try tmp.dir.createFile(testing.io, "foreigngrp.txt", .{});
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    const f = try tmp.dir().createFile(testing.io, "foreigngrp.txt", .{});
     f.close(testing.io);
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "foreigngrp.txt" });
 
     // Bounded scan of the system group range for any non-zero gid.
@@ -7428,14 +7429,14 @@ test "find: -newer matches files modified after reference" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create reference file first
-    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    const ref = try tmp.dir().createFile(testing.io, "old_ref.txt", .{});
     ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Set the reference file's mtime to the past so newly created files
     // will have a later modification time
@@ -7454,7 +7455,7 @@ test "find: -newer matches files modified after reference" {
     _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
     // Create the test file (will have current mtime)
-    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "newer.txt", .{});
     f.close(testing.io);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -7484,18 +7485,18 @@ test "find: -L follows symlinks to directories" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a real directory with a file
-    try tmp.dir.createDir(testing.io, "realdir", .default_dir);
-    const f = try tmp.dir.createFile(testing.io, "realdir/deep.txt", .{});
+    try tmp.dir().createDir(testing.io, "realdir", .default_dir);
+    const f = try tmp.dir().createFile(testing.io, "realdir/deep.txt", .{});
     f.close(testing.io);
 
     // Create a symlink to that directory
-    try tmp.dir.symLink(testing.io, "realdir", "linkdir", .{ .is_directory = true });
+    try tmp.dir().symLink(testing.io, "realdir", "linkdir", .{ .is_directory = true });
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Without -L, find should NOT descend into linkdir (it's a symlink)
     {
@@ -7558,18 +7559,18 @@ test "find: -H follows only command-line symlinks" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a real directory with a file
-    try tmp.dir.createDir(testing.io, "target", .default_dir);
-    const f = try tmp.dir.createFile(testing.io, "target/inner.txt", .{});
+    try tmp.dir().createDir(testing.io, "target", .default_dir);
+    const f = try tmp.dir().createFile(testing.io, "target/inner.txt", .{});
     f.close(testing.io);
 
     // Create a symlink to that directory at top level
-    try tmp.dir.symLink(testing.io, "target", "toplink", .{ .is_directory = true });
+    try tmp.dir().symLink(testing.io, "target", "toplink", .{ .is_directory = true });
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
     const link_path = try std.fs.path.join(allocator, &.{ dir_path, "toplink" });
 
     // With -H, passing the symlink as the starting path should follow it
@@ -7602,13 +7603,13 @@ test "find: -follow in expression position is accepted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
     f.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7636,17 +7637,17 @@ test "find: -a and -and operators combine predicates" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp.dir.createFile(testing.io, "hello.md", .{});
+    const f2 = try tmp.dir().createFile(testing.io, "hello.md", .{});
     f2.close(testing.io);
-    const f3 = try tmp.dir.createFile(testing.io, "world.txt", .{});
+    const f3 = try tmp.dir().createFile(testing.io, "world.txt", .{});
     f3.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Test -a (short form)
     {
@@ -7714,12 +7715,12 @@ test "find: walker: multi-level pre-order prints parents before their contents" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{a.txt, sub/{b.txt, deeper/{c.txt}}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     (try root.createFile(testing.io, "a.txt", .{})).close(testing.io);
     try root.createDir(testing.io, "sub", .default_dir);
@@ -7731,7 +7732,7 @@ test "find: walker: multi-level pre-order prints parents before their contents" 
     defer deeper.close(testing.io);
     (try deeper.createFile(testing.io, "c.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -7778,21 +7779,21 @@ test "find: walker: multiple path operands are each fully walked in argument ord
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // alpha/{inside_alpha.txt}  and  beta/{inside_beta.txt}
-    try tmp.dir.createDir(testing.io, "alpha", .default_dir);
-    var alpha = try tmp.dir.openDir(testing.io, "alpha", .{});
+    try tmp.dir().createDir(testing.io, "alpha", .default_dir);
+    var alpha = try tmp.dir().openDir(testing.io, "alpha", .{});
     defer alpha.close(testing.io);
     (try alpha.createFile(testing.io, "inside_alpha.txt", .{})).close(testing.io);
 
-    try tmp.dir.createDir(testing.io, "beta", .default_dir);
-    var beta = try tmp.dir.openDir(testing.io, "beta", .{});
+    try tmp.dir().createDir(testing.io, "beta", .default_dir);
+    var beta = try tmp.dir().openDir(testing.io, "beta", .{});
     defer beta.close(testing.io);
     (try beta.createFile(testing.io, "inside_beta.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const alpha_path = try std.fs.path.join(allocator, &.{ base, "alpha" });
     const beta_path = try std.fs.path.join(allocator, &.{ base, "beta" });
 
@@ -7830,12 +7831,12 @@ test "find: walker: -maxdepth 0 evaluates only the start operand" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    (try tmp.dir.createFile(testing.io, "child.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "child.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -7867,12 +7868,12 @@ test "find: walker: -maxdepth N under -depth evaluates depth N, never N+1" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{lvl1.txt, sub/{lvl2.txt}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     (try root.createFile(testing.io, "lvl1.txt", .{})).close(testing.io);
     try root.createDir(testing.io, "sub", .default_dir);
@@ -7880,7 +7881,7 @@ test "find: walker: -maxdepth N under -depth evaluates depth N, never N+1" {
     defer sub.close(testing.io);
     (try sub.createFile(testing.io, "lvl2.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -7918,12 +7919,12 @@ test "find: walker: -mindepth under -depth descends through shallow entries but 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{shallow.txt, sub/{deep.txt}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     (try root.createFile(testing.io, "shallow.txt", .{})).close(testing.io);
     try root.createDir(testing.io, "sub", .default_dir);
@@ -7931,7 +7932,7 @@ test "find: walker: -mindepth under -depth descends through shallow entries but 
     defer sub.close(testing.io);
     (try sub.createFile(testing.io, "deep.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -7969,17 +7970,17 @@ test "find: walker: -depth -delete empties then removes a matched directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // victim/{a.txt, b.txt}
-    try tmp.dir.createDir(testing.io, "victim", .default_dir);
-    var victim = try tmp.dir.openDir(testing.io, "victim", .{});
+    try tmp.dir().createDir(testing.io, "victim", .default_dir);
+    var victim = try tmp.dir().openDir(testing.io, "victim", .{});
     (try victim.createFile(testing.io, "a.txt", .{})).close(testing.io);
     (try victim.createFile(testing.io, "b.txt", .{})).close(testing.io);
     victim.close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const victim_path = try std.fs.path.join(allocator, &.{ base, "victim" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -7999,7 +8000,7 @@ test "find: walker: -depth -delete empties then removes a matched directory" {
     // The whole directory, including its files, must be gone. If children were
     // not deleted before the dir (wrong order), rmdir on a non-empty dir would
     // fail and victim would survive.
-    const victim_stat = tmp.dir.statFile(testing.io, "victim", .{});
+    const victim_stat = tmp.dir().statFile(testing.io, "victim", .{});
     try testing.expect(victim_stat == error.FileNotFound);
 }
 
@@ -8015,12 +8016,12 @@ test "find: walker: unreadable subdirectory errors, siblings still processed, ex
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{readable_sibling.txt, locked/{secret.txt}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     (try root.createFile(testing.io, "readable_sibling.txt", .{})).close(testing.io);
     try root.createDir(testing.io, "locked", .default_dir);
@@ -8028,7 +8029,7 @@ test "find: walker: unreadable subdirectory errors, siblings still processed, ex
     (try locked.createFile(testing.io, "secret.txt", .{})).close(testing.io);
     locked.close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     // chmod by absolute path (libc) reliably persists; restore in defer so
@@ -8071,19 +8072,19 @@ test "find: walker: under -depth an unreadable directory is itself still evaluat
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{locked/{secret.txt}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     try root.createDir(testing.io, "locked", .default_dir);
     var locked = try root.openDir(testing.io, "locked", .{});
     (try locked.createFile(testing.io, "secret.txt", .{})).close(testing.io);
     locked.close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     const locked_z = try std.fmt.allocPrintSentinel(allocator, "{s}/locked", .{root_path}, 0);
@@ -8121,12 +8122,12 @@ test "find: walker: -prune on a matched directory suppresses its whole subtree" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{prune_me/{deep/{burrowed.txt}}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     try root.createDir(testing.io, "prune_me", .default_dir);
     var prune_me = try root.openDir(testing.io, "prune_me", .{});
@@ -8136,7 +8137,7 @@ test "find: walker: -prune on a matched directory suppresses its whole subtree" 
     defer deep.close(testing.io);
     (try deep.createFile(testing.io, "burrowed.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -8170,19 +8171,19 @@ test "find: walker: -prune is a no-op under -depth (subtree still appears)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{prune_me/{burrowed.txt}}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     try root.createDir(testing.io, "prune_me", .default_dir);
     var prune_me = try root.openDir(testing.io, "prune_me", .{});
     defer prune_me.close(testing.io);
     (try prune_me.createFile(testing.io, "burrowed.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     // The classic prune-or-print expression. WITHOUT -depth this prunes the
@@ -8228,19 +8229,19 @@ test "find: walker: -s emits each directory's children in lexicographic order" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create children OUT of lexicographic order so a no-sort regression would
     // likely emit them in readdir (creation/inode) order and fail.
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     (try root.createFile(testing.io, "charlie.txt", .{})).close(testing.io);
     (try root.createFile(testing.io, "alpha.txt", .{})).close(testing.io);
     (try root.createFile(testing.io, "bravo.txt", .{})).close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -8276,18 +8277,18 @@ test "find: walker: -P does not descend a symlink-to-directory start operand" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // target/{behind.txt}, and operand_link -> target
-    try tmp.dir.createDir(testing.io, "target", .default_dir);
-    var target = try tmp.dir.openDir(testing.io, "target", .{});
+    try tmp.dir().createDir(testing.io, "target", .default_dir);
+    var target = try tmp.dir().openDir(testing.io, "target", .{});
     defer target.close(testing.io);
     (try target.createFile(testing.io, "behind.txt", .{})).close(testing.io);
-    tmp.dir.symLink(testing.io, "target", "operand_link", .{ .is_directory = true }) catch
+    tmp.dir().symLink(testing.io, "target", "operand_link", .{ .is_directory = true }) catch
         return error.SkipZigTest;
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const link_path = try std.fs.path.join(allocator, &.{ base, "operand_link" });
 
     // -P is the default; pass the symlink operand and list with -type l.
@@ -8339,18 +8340,18 @@ test "find: walker: -H follows operand symlink but evaluates inner symlinks as l
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // inner_target/{deep.txt} reachable only by following an inner symlink.
-    try tmp.dir.createDir(testing.io, "inner_target", .default_dir);
-    var inner_target = try tmp.dir.openDir(testing.io, "inner_target", .{});
+    try tmp.dir().createDir(testing.io, "inner_target", .default_dir);
+    var inner_target = try tmp.dir().openDir(testing.io, "inner_target", .{});
     defer inner_target.close(testing.io);
     (try inner_target.createFile(testing.io, "deep.txt", .{})).close(testing.io);
 
     // operand_target/{op_file.txt, inner_link -> ../inner_target}
-    try tmp.dir.createDir(testing.io, "operand_target", .default_dir);
-    var operand_target = try tmp.dir.openDir(testing.io, "operand_target", .{});
+    try tmp.dir().createDir(testing.io, "operand_target", .default_dir);
+    var operand_target = try tmp.dir().openDir(testing.io, "operand_target", .{});
     defer operand_target.close(testing.io);
     (try operand_target.createFile(testing.io, "op_file.txt", .{})).close(testing.io);
     operand_target.symLink(
@@ -8361,10 +8362,10 @@ test "find: walker: -H follows operand symlink but evaluates inner symlinks as l
     ) catch return error.SkipZigTest;
 
     // The operand itself is a symlink to operand_target.
-    tmp.dir.symLink(testing.io, "operand_target", "operand_link", .{ .is_directory = true }) catch
+    tmp.dir().symLink(testing.io, "operand_target", "operand_link", .{ .is_directory = true }) catch
         return error.SkipZigTest;
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const operand_link = try std.fs.path.join(allocator, &.{ base, "operand_link" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -8411,17 +8412,17 @@ test "find: walker: -L evaluates an inner symlink-to-file as its target type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/{real.txt, link_to_file -> real.txt}
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     (try root.createFile(testing.io, "real.txt", .{})).close(testing.io);
     root.symLink(testing.io, "real.txt", "link_to_file", .{}) catch return error.SkipZigTest;
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     // With -L, -type f matches BOTH the real file and the link (resolved type).
@@ -8473,24 +8474,24 @@ test "find: walker: -L descends two sibling symlinks pointing at the same direct
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // shared/{found.txt}, root/{link_a -> ../shared, link_b -> ../shared}
-    try tmp.dir.createDir(testing.io, "shared", .default_dir);
-    var shared = try tmp.dir.openDir(testing.io, "shared", .{});
+    try tmp.dir().createDir(testing.io, "shared", .default_dir);
+    var shared = try tmp.dir().openDir(testing.io, "shared", .{});
     defer shared.close(testing.io);
     (try shared.createFile(testing.io, "found.txt", .{})).close(testing.io);
 
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     root.symLink(testing.io, "../shared", "link_a", .{ .is_directory = true }) catch
         return error.SkipZigTest;
     root.symLink(testing.io, "../shared", "link_b", .{ .is_directory = true }) catch
         return error.SkipZigTest;
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -8526,16 +8527,16 @@ test "find: walker: -X never filters the depth-0 start operand" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // A directory whose own name contains a space (xargs-unsafe).
-    try tmp.dir.createDir(testing.io, "un safe", .default_dir);
-    var unsafe_dir = try tmp.dir.openDir(testing.io, "un safe", .{});
+    try tmp.dir().createDir(testing.io, "un safe", .default_dir);
+    var unsafe_dir = try tmp.dir().openDir(testing.io, "un safe", .{});
     (try unsafe_dir.createFile(testing.io, "inside.txt", .{})).close(testing.io);
     unsafe_dir.close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const operand_path = try std.fs.path.join(allocator, &.{ base, "un safe" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -8585,12 +8586,12 @@ test "find: walker-migration: -L reports filesystem loop without descending it" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // root/sub/{f.txt, up -> ..}  ("up" loops back to root, an ancestor).
-    try tmp.dir.createDir(testing.io, "root", .default_dir);
-    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    try tmp.dir().createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir().openDir(testing.io, "root", .{});
     defer root.close(testing.io);
     try root.createDir(testing.io, "sub", .default_dir);
     var sub = try root.openDir(testing.io, "sub", .{});
@@ -8598,7 +8599,7 @@ test "find: walker-migration: -L reports filesystem loop without descending it" 
     (try sub.createFile(testing.io, "f.txt", .{})).close(testing.io);
     sub.symLink(testing.io, "..", "up", .{ .is_directory = true }) catch return error.SkipZigTest;
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
     const loop_link_path = try std.fs.path.join(allocator, &.{ base, "root", "sub", "up" });
     // The path the junk descent produces: <root>/sub/up/sub. Its presence proves
@@ -8660,16 +8661,16 @@ test "find: evaluate: AND short-circuit suppresses right-side -print for non-mat
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // One file matches the -name test, one does not. Both exist on disk.
-    const matchf = try tmp.dir.createFile(testing.io, "match_aaa.txt", .{});
+    const matchf = try tmp.dir().createFile(testing.io, "match_aaa.txt", .{});
     matchf.close(testing.io);
-    const otherf = try tmp.dir.createFile(testing.io, "other_bbb.txt", .{});
+    const otherf = try tmp.dir().createFile(testing.io, "other_bbb.txt", .{});
     otherf.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -8696,16 +8697,16 @@ test "find: evaluate: OR short-circuit suppresses side-effecting right -print on
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // A file matching the left -name, and one that does not.
-    const matchf = try tmp.dir.createFile(testing.io, "left_zzz.txt", .{});
+    const matchf = try tmp.dir().createFile(testing.io, "left_zzz.txt", .{});
     matchf.close(testing.io);
-    const otherf = try tmp.dir.createFile(testing.io, "right_yyy.txt", .{});
+    const otherf = try tmp.dir().createFile(testing.io, "right_yyy.txt", .{});
     otherf.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -8735,15 +8736,15 @@ test "find: evaluate: -not inverts its operand and drives the following AND shor
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const matchf = try tmp.dir.createFile(testing.io, "skip_ccc.txt", .{});
+    const matchf = try tmp.dir().createFile(testing.io, "skip_ccc.txt", .{});
     matchf.close(testing.io);
-    const otherf = try tmp.dir.createFile(testing.io, "keep_ddd.txt", .{});
+    const otherf = try tmp.dir().createFile(testing.io, "keep_ddd.txt", .{});
     otherf.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -8771,16 +8772,16 @@ test "find: evaluate: implicit -print obeys flat -true and is suppressed by flat
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // A file AND a directory, so we prove -true prints non-file entries too --
     // distinct from the existing "-type f -true" test which filters to files.
-    const f = try tmp.dir.createFile(testing.io, "flat_eee.txt", .{});
+    const f = try tmp.dir().createFile(testing.io, "flat_eee.txt", .{});
     f.close(testing.io);
-    try tmp.dir.createDir(testing.io, "flat_dir", .default_dir);
+    try tmp.dir().createDir(testing.io, "flat_dir", .default_dir);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // -true wraps to and(true, print): everything (file and dir) is printed.
     {
@@ -8822,8 +8823,8 @@ test "find: evaluate: prune via out-param composed with -o suppresses pruned dir
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // A directory to prune (with a child) and a sibling file. Existing tests at
     // ~3943 and the walker prune tests use "-type f -print" on the right of -o;
@@ -8831,16 +8832,16 @@ test "find: evaluate: prune via out-param composed with -o suppresses pruned dir
     // That makes the assertion below ("the pruned dir's own name is absent")
     // load-bearing: it can only be absent because -o short-circuited on the
     // left (name+prune both true), never reaching the right -print for that dir.
-    try tmp.dir.createDir(testing.io, "prune_fff", .default_dir);
-    var pdir = try tmp.dir.openDir(testing.io, "prune_fff", .{});
+    try tmp.dir().createDir(testing.io, "prune_fff", .default_dir);
+    var pdir = try tmp.dir().openDir(testing.io, "prune_fff", .{});
     const child = try pdir.createFile(testing.io, "buried_ggg.txt", .{});
     child.close(testing.io);
     pdir.close(testing.io);
 
-    const sib = try tmp.dir.createFile(testing.io, "sibling_hhh.txt", .{});
+    const sib = try tmp.dir().createFile(testing.io, "sibling_hhh.txt", .{});
     sib.close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -8895,14 +8896,14 @@ test "find: parser: AND binds tighter than OR (A -o B -a C = A OR (B AND C))" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    (try tmp.dir.createFile(testing.io, "match_a.txt", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "match_bc.dat", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "match_b_only.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "match_a.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "match_bc.dat", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "match_b_only.txt", .{})).close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -8932,14 +8933,14 @@ test "find: parser: implicit AND binds tighter than OR (A -o B C = A OR (B AND C
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    (try tmp.dir.createFile(testing.io, "match_a.txt", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "match_bc.dat", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "match_b_only.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "match_a.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "match_bc.dat", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "match_b_only.txt", .{})).close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -8970,16 +8971,16 @@ test "find: parser: all 3 operands of an -o chain contribute; none dropped (A -o
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    (try tmp.dir.createFile(testing.io, "term_one.aaa", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "term_two.bbb", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "term_three.ccc", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "term_one.aaa", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "term_two.bbb", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "term_three.ccc", .{})).close(testing.io);
     // A decoy that matches NONE of the three predicates: must never appear.
-    (try tmp.dir.createFile(testing.io, "decoy.zzz", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "decoy.zzz", .{})).close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -9011,15 +9012,15 @@ test "find: parser: all 3 conjuncts of an implicit-AND chain apply; none dropped
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // all_three: starts "abc", contains "mid", ends ".dat" -> all three true.
-    (try tmp.dir.createFile(testing.io, "abc_mid_yes.dat", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "abc_mid_yes.dat", .{})).close(testing.io);
     // near_miss: starts "abc", contains "mid", but ends ".txt" -> C false.
-    (try tmp.dir.createFile(testing.io, "abc_mid_no.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "abc_mid_no.txt", .{})).close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -9052,14 +9053,14 @@ test "find: parser: -not negates only its operand then implicit-ANDs the rest" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    (try tmp.dir.createFile(testing.io, "keep_me.txt", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "skip_me.txt", .{})).close(testing.io);
-    try tmp.dir.createDir(testing.io, "keep_dir", .default_dir);
+    (try tmp.dir().createFile(testing.io, "keep_me.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "skip_me.txt", .{})).close(testing.io);
+    try tmp.dir().createDir(testing.io, "keep_dir", .default_dir);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -9091,13 +9092,13 @@ test "find: parser: -not -not P double-negates back to P" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    (try tmp.dir.createFile(testing.io, "target_xyz.txt", .{})).close(testing.io);
-    (try tmp.dir.createFile(testing.io, "other_qqq.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "target_xyz.txt", .{})).close(testing.io);
+    (try tmp.dir().createFile(testing.io, "other_qqq.txt", .{})).close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -9135,13 +9136,13 @@ test "find: parser: parentheses override AND-over-OR precedence" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "grp_a_dir", .default_dir);
-    (try tmp.dir.createFile(testing.io, "grp_b_file.txt", .{})).close(testing.io);
+    try tmp.dir().createDir(testing.io, "grp_a_dir", .default_dir);
+    (try tmp.dir().createFile(testing.io, "grp_b_file.txt", .{})).close(testing.io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const dir_path = try tmp.getBasePath();
 
     // Grouped form: ( name grp_a* -o name grp_b* ) -type f.
     var grouped_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -9188,10 +9189,10 @@ test "find: parser: trailing '(' with no ')' reports missing closing and exits 1
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    (try tmp.dir.createFile(testing.io, "anything.txt", .{})).close(testing.io);
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    (try tmp.dir().createFile(testing.io, "anything.txt", .{})).close(testing.io);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -9219,10 +9220,10 @@ test "find: parser: stray ')' in operand position errors with unknown predicate,
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    (try tmp.dir.createFile(testing.io, "anything.txt", .{})).close(testing.io);
-    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    (try tmp.dir().createFile(testing.io, "anything.txt", .{})).close(testing.io);
+    const dir_path = try tmp.getBasePath();
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -9256,16 +9257,16 @@ test "find: exprContainsDelete: -delete under -not still forces depth-first" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "notvictim", .default_dir);
-    var notvictim = try tmp.dir.openDir(testing.io, "notvictim", .{});
+    try tmp.dir().createDir(testing.io, "notvictim", .default_dir);
+    var notvictim = try tmp.dir().openDir(testing.io, "notvictim", .{});
     (try notvictim.createFile(testing.io, "x.txt", .{})).close(testing.io);
     (try notvictim.createFile(testing.io, "y.txt", .{})).close(testing.io);
     notvictim.close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const victim_path = try std.fs.path.join(allocator, &.{ base, "notvictim" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -9282,7 +9283,7 @@ test "find: exprContainsDelete: -delete under -not still forces depth-first" {
 
     // Whole populated directory gone -> depth-first was forced through the
     // .not_expr arm, so children were deleted before the dir.
-    const victim_stat = tmp.dir.statFile(testing.io, "notvictim", .{});
+    const victim_stat = tmp.dir().statFile(testing.io, "notvictim", .{});
     try testing.expect(victim_stat == error.FileNotFound);
 }
 
@@ -9295,16 +9296,16 @@ test "find: exprContainsDelete: -delete behind -o still forces depth-first" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(testing.io, "orvictim", .default_dir);
-    var orvictim = try tmp.dir.openDir(testing.io, "orvictim", .{});
+    try tmp.dir().createDir(testing.io, "orvictim", .default_dir);
+    var orvictim = try tmp.dir().openDir(testing.io, "orvictim", .{});
     (try orvictim.createFile(testing.io, "p.dat", .{})).close(testing.io);
     (try orvictim.createFile(testing.io, "q.dat", .{})).close(testing.io);
     orvictim.close(testing.io);
 
-    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const base = try tmp.getBasePath();
     const victim_path = try std.fs.path.join(allocator, &.{ base, "orvictim" });
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -9319,6 +9320,6 @@ test "find: exprContainsDelete: -delete behind -o still forces depth-first" {
     }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const victim_stat = tmp.dir.statFile(testing.io, "orvictim", .{});
+    const victim_stat = tmp.dir().statFile(testing.io, "orvictim", .{});
     try testing.expect(victim_stat == error.FileNotFound);
 }
