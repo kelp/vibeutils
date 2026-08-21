@@ -91,7 +91,6 @@ const TailOptions = struct {
 fn formatFollowSwitchHeader(buf: []u8, path: []const u8) []const u8 {
     assert(buf.len >= 16);
     assert(path.len < buf.len);
-    _ = path;
     return buf[0..0];
 }
 
