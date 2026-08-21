@@ -549,6 +549,7 @@ fn lsMain_listOperandGroups(
         lsMain_printFileOperands(
             io,
             files.items,
+            dirs.items,
             writer,
             stderr_writer,
             options,
@@ -579,6 +580,7 @@ fn lsMain_listOperandGroups(
 fn lsMain_printFileOperands(
     io: std.Io,
     files: []Entry,
+    dirs: []const Entry,
     writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
     options: LsOptions,
@@ -600,8 +602,33 @@ fn lsMain_printFileOperands(
         return err;
     };
 
+    // GNU sizes -l columns from every operand, then extracts directories
+    // (#166). Directory listings still measure only their own contents.
+    const column_peers = try lsMain_concatOperandPeers(allocator, files, dirs);
+    defer allocator.free(column_peers);
+
     lsMain_resolveOperandGitStatus(io, files, options, git_context);
-    try formatter.printOperandSection(allocator, files, writer, options, style);
+    try formatter.printOperandSection(allocator, files, writer, options, style, column_peers);
+}
+
+/// Files, then directories, in that order: the same grouping GNU measures
+/// before it prints the file-operand section. The slice is a copy, so later
+/// directory listings can still own the original dir entries.
+fn lsMain_concatOperandPeers(
+    allocator: std.mem.Allocator,
+    files: []const Entry,
+    dirs: []const Entry,
+) ![]Entry {
+    std.debug.assert(files.len > 0);
+    const n = files.len + dirs.len;
+    std.debug.assert(n >= files.len);
+    const peers = try allocator.alloc(Entry, n);
+    @memcpy(peers[0..files.len], files);
+    if (dirs.len > 0) {
+        @memcpy(peers[files.len..], dirs);
+    }
+    std.debug.assert(peers.len == n);
+    return peers;
 }
 
 /// Sort one operand group the way directory contents are sorted, except that
@@ -951,7 +978,7 @@ fn listSingleFileEntry(
     }};
 
     lsMain_resolveOperandGitStatus(io, &entries, options, git_context);
-    try formatter.printOperandSection(allocator, &entries, writer, options, style);
+    try formatter.printOperandSection(allocator, &entries, writer, options, style, &entries);
 }
 
 /// Look up the git status of each operand in a group, leaving every entry at

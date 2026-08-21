@@ -33,6 +33,13 @@
   BSD defines none (#93).
 
 ### Changed
+- **`ls -l` sizes mixed file-and-directory operands the way GNU does.**
+  The file-operand lines were padded from the remaining files only,
+  after directories had already been split out, so `ls -l file dir`
+  under-padded nlink, owner, group and size whenever a directory
+  operand was wider. Those columns now measure every command-line
+  operand together; each directory listing still sizes itself from
+  its own contents (#166).
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,
