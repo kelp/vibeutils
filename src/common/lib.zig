@@ -490,10 +490,10 @@ test "utility entry points keep stderr unbuffered" {
     defer violations.deinit(testing.allocator);
 
     var scanned: u32 = 0;
-    for (paths) |path| {
+    for (paths) |source_path| {
         const content = try src_dir.readFileAlloc(
             io,
-            path,
+            source_path,
             testing.allocator,
             .limited(1024 * 1024),
         );
@@ -502,7 +502,7 @@ test "utility entry points keep stderr unbuffered" {
 
         for (needles) |needle| {
             if (std.mem.find(u8, content, needle) == null) continue;
-            try violations.appendSlice(testing.allocator, path);
+            try violations.appendSlice(testing.allocator, source_path);
             try violations.appendSlice(testing.allocator, ": contains ");
             try violations.appendSlice(testing.allocator, needle);
             try violations.append(testing.allocator, '\n');
