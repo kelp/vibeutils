@@ -1743,9 +1743,12 @@ test "du size-mode scan ignores block size threshold and ignore option values" {
         .{ .args = &.{ "-t1k", path }, .expected = .binary_human },
         .{ .args = &.{ "-t", "1k", path }, .expected = .binary_human },
         .{ .args = &.{ "-Ifoo-k", path }, .expected = .binary_human },
+        .{ .args = &.{ "--thresh", "-4k", path }, .expected = .binary_human },
         .{ .args = &.{ "--threshold", "-4k", path }, .expected = .binary_human },
         .{ .args = &.{ "--threshold=-4k", path }, .expected = .binary_human },
         .{ .args = &.{ "--ignore-pattern", "-k", path }, .expected = .binary_human },
+        .{ .args = &.{ "-k", "--human-r", path }, .expected = .binary_human },
+        .{ .args = &.{ "--blo", "1", path }, .expected = .numeric },
     };
     for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
 }
