@@ -147,6 +147,10 @@ run_preflight() {
         "$FIXTURES/stub-flag/positive-argparse" \
         "$FIXTURES/stub-flag/negative-argparse" \
         src/reflectly/helper.zig "opts.unused_flag"
+    require_one_added_line_dirs "stub-flag/short0" \
+        "$FIXTURES/stub-flag/positive-short0" \
+        "$FIXTURES/stub-flag/negative-short0" \
+        src/longly/helper.zig "opts.unread_flag"
 
     # toothless-assert flips one line rather than adding one.
     require_single_differing_file toothless-assert tests/utilities/toothy_test.sh
@@ -531,6 +535,23 @@ test_stub_flag_argparse_read() {
         "$FIXTURES/stub-flag/negative-argparse" stub-flag
 }
 
+test_stub_flag_argparse_short0_unread() {
+    echo -e "${CYAN}Testing house long-only argparse stub (.short = 0)...${NC}"
+    # unread_flag's meta is `.short = 0` with no `.long`. Counting only
+    # character `.short` or explicit `.long` as argparse writes misses
+    # every long-only flag this repo actually ships.
+    expect_one_new_finding "stub-flag argparse short0 unread" \
+        "$FIXTURES/stub-flag/positive-short0" stub-flag \
+        "src/longly/main.zig::unread_flag" 0
+}
+
+test_stub_flag_argparse_short0_read() {
+    echo -e "${CYAN}Testing house long-only argparse flag that is read...${NC}"
+    # Same `.short = 0` meta, but helper.zig reads opts.unread_flag.
+    expect_no_findings "stub-flag argparse short0 read" \
+        "$FIXTURES/stub-flag/negative-short0" stub-flag
+}
+
 test_unscannable() {
     echo -e "${CYAN}Testing unscannable...${NC}"
     # An unscannable unit is counted in total and new, so a unit that stops
@@ -712,6 +733,8 @@ main() {
     test_stub_flag_cross_file_read
     test_stub_flag_argparse_unread
     test_stub_flag_argparse_read
+    test_stub_flag_argparse_short0_unread
+    test_stub_flag_argparse_short0_read
     test_parse_only_test
     test_unscannable
     test_check_selection_excludes
