@@ -20,17 +20,20 @@ real (non-`-`) positional, not only the last one.
 - Switch headers use **slot identity**, not pathname identity.
   GNU `tail -f a a` prints a header before each operand's
   appended chunk even though the paths are equal. Track
-  `last_output_slot`: stdin is a sentinel; each follow-set
-  member is a distinct slot. Same slot twice → no header.
-  Different slots, even with the same path → header.
+  `last_output_slot`: every positional is a slot (`-` is a
+  stdin sentinel). Same slot twice → no header. Different
+  slots, even with the same path → header.
 - Header text stays GNU `\n==> {path} <==\n` (leading newline).
   For stdin, the dump already uses `==> standard input <==`.
-- Seed `last_output_slot` from the **last operand that was
-  successfully dumped**, including empty files and `-`. Do not
-  seed "no slot" (that would header the first follow event even
-  when it is the same slot as the last dump). If the last dump
-  was stdin, the first follow chunk from any real slot needs a
-  header.
+  Print a switch header only when the follow chunk is
+  **non-empty**; only then update `last_output_slot` (GNU
+  `check_fspec`).
+- Seed `last_output_slot` from the **last positional**, including
+  failed opens, empty files, and `-`. GNU reprints a header
+  for `tail -f a missing` when `a` later grows (last operand
+  failed, so `a` is a different slot). `tail -f missing a`
+  then append to `a` does **not** reprint. Do not seed "no
+  slot".
 - `-q` / `--quiet`: no switch headers. Reuse
   `TailOptions.shouldShowHeaders`; verbose already beats quiet.
   `shouldShowHeaders` keeps using **operand count** (including
@@ -80,15 +83,20 @@ unopenable path and drop files that GNU keeps following.
 ### `-F` multiplex (no wait-forever)
 
 Missing and replaced slots stay inactive. Active slots keep
-getting events. Retry inactive slots on a **1-second wait
-timeout** (`poll` on the inotify fd; `timespec` on `kevent`)
-even when no watcher event arrives. That timeout is an internal
-bound, not `--sleep-interval` (that flag stays WONT).
+getting events. The inotify/`kevent` wait still uses a
+**1-second timeout** so a quiet set of files wakes the loop.
+That timeout is an internal bound, not `--sleep-interval`.
 
-On timeout, for each inactive `-F` slot, try `openFile`. On
-success, register a watch, set `last_pos = 0`, print the existing
-replaced diagnostic when the inode changed, and read. Bound the
-slot scan by `follow_files_max`.
+Do **not** retry inactive `-F` slots only when the wait returns
+0: a busy sibling would starve appear/rotate. On every loop
+wake (event or timeout), if at least one second has elapsed
+since the last inactive scan, try `openFile` on each inactive
+`-F` slot. Bound that scan by `follow_files_max`.
+
+On success, register a watch, set `last_pos = 0`, print the
+existing replaced diagnostic when the inode changed, and read.
+Plain `-f` is descriptor-follow: do **not** deactivate a slot
+on `DELETE_SELF` / `MOVE_SELF` / `NOTE.DELETE` / `NOTE.RENAME`.
 
 Rotate one of two followed files: the other file must still
 deliver appends during the wait.
@@ -105,6 +113,9 @@ deliver appends during the wait.
   between slots). Parse **every** `inotify_event` in the read
   buffer; one `read` can deliver several records. Bound the
   record walk and the per-wd fan-out by `follow_files_max`.
+  `inotify_rm_watch` only when **no remaining slot** still
+  references that wd. Rotating one of two hard-linked names
+  must not drop the watch for the other.
 
 ### Cap diagnostic
 
@@ -159,10 +170,12 @@ Unit (`src/tail.zig`):
 3. `tail follow switch header is needed when the slot changes` —
    last slot A, new data from slot B → true; same slot A → false.
    Two slots with the same path → true (duplicate operands).
-4. `tail follow switch header is not needed after last dump slot` —
-   last dump slot B, follow data from B → false (guards a
-   "no slot" seed). Last dump stdin sentinel, follow slot 0 →
-   true.
+   Empty follow chunk → false and `last_output_slot` unchanged.
+4. `tail follow switch header after last positional` — last
+   positional is slot B (even if B failed to open), follow data
+   from B → false; follow data from earlier slot A → true
+   (`tail -f a missing` reprints for `a`). Last positional
+   stdin, follow slot 0 → true. Guards a "no slot" seed.
 5. `tail follow rejects more than follow_files_max files` —
    `runTail` with `-f` and 257 **nonexistent** operands (repeat
    one missing path). Finite RED: today's code follows the last
@@ -177,7 +190,10 @@ Unit (`src/tail.zig`):
 7. `tail follow wd fans out to every matching slot` — given two
    slots sharing wd 7, dispatch returns both slot indexes. Covers
    duplicate operands and hard-linked inodes.
-8. Existing `tail: -f flag is parsed`, `tail: -f with nonexistent
+8. `tail follow inotify rm_watch waits for last slot` — two slots
+   share wd 7; releasing slot 0 does not call `rm_watch`;
+   releasing slot 1 does. RED-able helper, not the follow loop.
+9. Existing `tail: -f flag is parsed`, `tail: -f with nonexistent
    file gives error` / `returns error` stay green (exit 1).
 
 Integration (`tests/utilities/tail_test.sh`): background `tail
@@ -187,38 +203,41 @@ Integration (`tests/utilities/tail_test.sh`): background `tail
 poll for expected output with a bounded loop, then `kill` that
 PID. PATH stays `zig-out/bin`.
 
-9. `tail -f two files sees appends to both` — start `tail -f a
-   b`, append a line to `a` and to `b`, both lines appear in
-   stdout. No "multiple-file follow not yet supported" on
-   stderr.
-10. `tail -f two files prints switch headers` — after initial
+10. `tail -f two files sees appends to both` — start `tail -f a
+    b`, append a line to `a` and to `b`, both lines appear in
+    stdout. No "multiple-file follow not yet supported" on
+    stderr.
+11. `tail -f two files prints switch headers` — after initial
     dump, append to the **first** file; the appended line is
     **immediately** preceded by `\n==> …a <==\n`. A leftover
     dump header for `a` must not satisfy this.
-11. `tail -f two files omits switch header for last dump file` —
-    after dumping `a` then `b`, append to `b`; the new line
-    appears and is **not** immediately preceded by
-    `\n==> …b <==\n`. Teeth: unit test 4 (null-seed sabotage),
-    not RED against last-file-only.
-12. `tail -fq two files omits switch headers` — append to the
+12. `tail -f two files omits switch header for last dump file` —
+    after dumping **non-empty** `a` then **non-empty** `b`,
+    append to `b`; the new line appears and is **not**
+    immediately preceded by `\n==> …b <==\n`. An empty `b`
+    would leave the dump header glued to the append. Teeth:
+    unit test 4, not RED against last-file-only.
+13. `tail -fq two files omits switch headers` — append to the
     **first** (non-last) file so the test is RED on last-file-only
     follow, and stdout has no `==>`.
-13. `tail -f missing existing follows the live file` — named
+14. `tail -f missing existing follows the live file` — named
     case: operands `missing existing`. Open error for missing
     still prints; appends to the live file appear; process does
     not exit before the append.
-14. `tail -f existing missing follows the live file` — named
+15. `tail -f existing missing follows the live file` — named
     case: operands `existing missing`. Same live-file follow.
-15. `tail -F missing existing follows then both` — live file
+    First follow chunk from `existing` **does** need a switch
+    header (last positional failed).
+16. `tail -F missing existing follows then both` — live file
     delivers appends while the other path is still missing; after
     the missing path appears, appends to it appear too.
-16. `tail -F two files rotate one still follows the other` —
+17. `tail -F two files rotate one still follows the other` —
     rotate `a`; appends to `b` still appear; `a`'s replacement is
     followed.
-17. `tail -f duplicate operands both emit` — `tail -f a a`; an
+18. `tail -f duplicate operands both emit` — `tail -f a a`; an
     append appears twice **and** the second copy is immediately
     preceded by a switch header for `a`.
-18. Existing single-file `-f` / `-F` rotation tests stay green.
+19. Existing single-file `-f` / `-F` rotation tests stay green.
 
 Prove RED against the current last-file-only loop for tests that
 the last-file loop can fail. Characterization tests of already-
@@ -261,8 +280,13 @@ immediately before the appended line), GPT REQUEST CHANGES
 (slot identity vs path; inotify hard-link/wd; extra helper
 tests), Fable APPROVE.
 
-This revision: slot identity; 257 nonexistent paths for a
-finite cap RED; immediate-precede header assertion; inotify
-inode/wd correction; synthetic multi-record parser + wd fan-out
-unit tests; two named missing/existing cases; no invented
-"appeared" diagnostic; local gates named.
+Round 3: Grok REQUEST CHANGES (seed last positional even on
+failed open; `-F` retry must not wait for a quiet timeout),
+GPT REQUEST CHANGES (`inotify_rm_watch` shared-wd lifetime),
+Fable APPROVE.
+
+This revision: seed last positional including failures;
+non-empty chunk before updating the slot; `-F` inactive scan
+on elapsed 1s every wake; plain `-f` keeps the descriptor on
+delete/rename; `rm_watch` only at wd refcount 0; helper test
+for that refcount; last-dump integration files are non-empty.
