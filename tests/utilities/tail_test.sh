@@ -271,7 +271,7 @@ test_tail() {
     kill "$hdr_pid" 2>/dev/null || true
     wait "$hdr_pid" 2>/dev/null || true
     local hdr_needle=$'\n==> '"$hdr_a"$' <==\nappend-first-only'
-    if [[ "$(cat "$hdr_out")" == *"$hdr_needle"* ]]; then
+    if [[ "$(<"$hdr_out")" == *"$hdr_needle"* ]]; then
         print_test_result "tail -f two files prints switch headers" "PASS"
     else
         print_test_result "tail -f two files prints switch headers" "FAIL" \
@@ -298,7 +298,7 @@ test_tail() {
     wait "$last_pid" 2>/dev/null || true
     local last_bad=$'\n==> '"$last_b"$' <==\nappend-last-only'
     if grep -q "append-last-only" "$last_out" \
-        && [[ "$(cat "$last_out")" != *"$last_bad"* ]]; then
+        && [[ "$(<"$last_out")" != *"$last_bad"* ]]; then
         print_test_result "tail -f two files omits switch header for last dump file" "PASS"
     else
         print_test_result "tail -f two files omits switch header for last dump file" "FAIL" \
@@ -377,7 +377,7 @@ test_tail() {
     wait "$em_pid" 2>/dev/null || true
     local em_needle=$'\n==> '"$exist_first"$' <==\nexist-first-append'
     if grep -q "exist-first-append" "$em_out" \
-        && [[ "$(cat "$em_out")" == *"$em_needle"* ]] \
+        && [[ "$(<"$em_out")" == *"$em_needle"* ]] \
         && grep -q "cannot open '$miss_second'" "$em_err"; then
         print_test_result "tail -f existing missing follows the live file" "PASS"
     else
@@ -465,7 +465,7 @@ test_tail() {
     local dup_count
     dup_count=$(grep -c "dup-append" "$dup_out" || true)
     local dup_needle=$'\n==> '"$dup_a"$' <==\ndup-append'
-    if [[ "$dup_count" -eq 2 ]] && [[ "$(cat "$dup_out")" == *"$dup_needle"* ]]; then
+    if [[ "$dup_count" -eq 2 ]] && [[ "$(<"$dup_out")" == *"$dup_needle"* ]]; then
         print_test_result "tail -f duplicate operands both emit" "PASS"
     else
         print_test_result "tail -f duplicate operands both emit" "FAIL" \

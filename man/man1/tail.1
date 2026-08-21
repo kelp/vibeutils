@@ -28,9 +28,9 @@ Output appended data as the file grows.
 Every real file operand is followed, not only the last one.
 When switching from one operand to another,
 .Nm
-prints a GNU-style header
-.Pq Sq \n==> file <==\n
-before the new chunk.
+prints a header
+.Pq Sq ==> file <==
+preceded by a blank line.
 At most 256 real files may be followed; more is an error.
 Uses kqueue on macOS and inotify on Linux.
 .It Fl F

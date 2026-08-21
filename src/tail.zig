@@ -187,7 +187,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
         \\  -q, --quiet, --silent    never output headers giving file names
         \\  -v, --verbose            always output headers giving file names
         \\  -z, --zero-terminated    use NUL as line delimiter, not newline
-        \\  -f, --follow             output appended data as the file grows
+        \\  -f, --follow             output appended data as each file grows
         \\  -F                       same as --follow --retry
         \\      --help               display this help and exit
         \\      --version            output version information and exit
@@ -626,13 +626,15 @@ fn runTail_rejectFollowCap(
 ) !?u8 {
     assert(positionals.len > 0);
     const real_n = runTail_countRealFiles(positionals);
+    assert(real_n <= @as(u32, @intCast(positionals.len)));
     if (real_n <= follow_files_max) return null;
+    assert(real_n > follow_files_max);
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
         "tail",
-        "cannot follow more than 256 files",
-        .{},
+        "cannot follow more than {d} files",
+        .{follow_files_max},
     );
     return @intFromEnum(common.ExitCode.general_error);
 }
@@ -948,6 +950,7 @@ fn followSlot_printCannotOpen(
     err: anyerror,
 ) void {
     assert(path.len <= std.Io.Dir.max_path_bytes);
+    assert(!std.mem.eql(u8, path, "-"));
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
@@ -1028,6 +1031,7 @@ fn followSet_collectSlots(
     assert(options.follow);
     const max: u32 = @intCast(positionals.len);
     var n: u32 = 0;
+    errdefer followSet_closeSlots(allocator, io, slots[0..n]);
     var i: u32 = 0;
     while (i < max and n < follow_files_max) : (i += 1) {
         if (std.mem.eql(u8, positionals[i], "-")) continue;
@@ -1063,6 +1067,7 @@ fn followSet_closeSlots(
         }
         allocator.free(slots[i].path_z);
     }
+    assert(i == @as(u32, @intCast(slots.len)));
 }
 
 /// Count remaining slots that still hold `wd`.
@@ -1082,6 +1087,7 @@ fn followInotifyMask() u32 {
     const mask = std.os.linux.IN.MODIFY |
         std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF;
     assert(mask != 0);
+    assert((mask & std.os.linux.IN.MODIFY) != 0);
     return mask;
 }
 
@@ -1103,6 +1109,7 @@ fn followSet_addWatch(ctx: *FollowCtx, slot: *FollowedFile) !void {
 /// Register a kqueue VNODE filter on the slot's current fd.
 fn followSlot_addKqueueWatch(slot: *FollowedFile, kq: std.c.fd_t) !void {
     assert(slot.active);
+    assert(kq >= 0);
     const file = slot.file orelse return error.Unexpected;
     var changelist = [1]std.c.Kevent{.{
         .ident = @as(usize, @intCast(file.handle)), // tiger:allow:usize-arch kevent ident type
@@ -1147,6 +1154,7 @@ fn followSet_deactivate(ctx: *FollowCtx, slot: *FollowedFile) void {
 /// Write a switch header when needed, then stream bytes past `last_pos`.
 fn followSet_emitChunk(ctx: *FollowCtx, slot: *FollowedFile) !void {
     assert(slot.active);
+    assert(ctx.slot_count > 0);
     const file = slot.file orelse return;
     const new_end = file.length(ctx.io) catch return;
     const grew = new_end > slot.last_pos;
@@ -1167,6 +1175,7 @@ fn followSet_emitChunk(ctx: *FollowCtx, slot: *FollowedFile) !void {
 /// that raced the dump-to-watch window.
 fn followSet_emitAllActive(ctx: *FollowCtx) !void {
     assert(ctx.slot_count <= follow_files_max);
+    assert(ctx.slots.len >= ctx.slot_count);
     var i: u32 = 0;
     while (i < ctx.slot_count) : (i += 1) {
         if (!ctx.slots[i].active) continue;
@@ -1215,6 +1224,7 @@ fn followSet_tryActivate(ctx: *FollowCtx, slot: *FollowedFile) !void {
 /// Try `openFile` on each inactive `-F` slot. Bounded by `follow_files_max`.
 fn followSet_scanInactive(ctx: *FollowCtx) !void {
     assert(ctx.slot_count <= follow_files_max);
+    assert(ctx.options.follow);
     if (!ctx.options.follow_retry) return;
     var i: u32 = 0;
     while (i < ctx.slot_count) : (i += 1) {
@@ -1227,6 +1237,7 @@ fn followSet_scanInactive(ctx: *FollowCtx) !void {
 /// on a busy sibling that keeps the wait returning events.
 fn followSet_maybeScan(ctx: *FollowCtx, last_scan_ns: *i128) !void {
     assert(ctx.slot_count > 0);
+    assert(ctx.slot_count <= follow_files_max);
     if (!ctx.options.follow_retry) return;
     const now = std.Io.Timestamp.now(ctx.io, .real).nanoseconds;
     if (now - last_scan_ns.* < std.time.ns_per_s) return;
@@ -1275,6 +1286,7 @@ fn followSet_checkNameFollow(ctx: *FollowCtx, slot: *FollowedFile) !void {
 fn followSet_handleSlot(ctx: *FollowCtx, slot: *FollowedFile) !void {
     if (!slot.active) return;
     assert(slot.file != null);
+    assert(slot.slot < follow_files_max);
     if (ctx.options.follow_retry) {
         try followSet_checkNameFollow(ctx, slot);
         if (!slot.active) return;
@@ -1318,6 +1330,7 @@ fn followSet_dispatchInotify(ctx: *FollowCtx, buf: []const u8) !void {
 /// Read pending inotify events and dispatch them. A short read is not fatal.
 fn followSet_readInotify(ctx: *FollowCtx) !void {
     assert(ctx.watch.is_inotify);
+    assert(ctx.watch.fd >= 0);
     var event_buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
     const bytes_read = std.posix.read(ctx.watch.fd, &event_buf) catch return;
     if (bytes_read == 0) return;
@@ -1330,6 +1343,7 @@ fn followSet_dispatchKqueue(
     ident: usize, // tiger:allow:usize-arch kevent ident
 ) !void {
     assert(ctx.slot_count > 0);
+    assert(ctx.slot_count <= follow_files_max);
     var i: u32 = 0;
     while (i < ctx.slot_count) : (i += 1) {
         if (!ctx.slots[i].active) continue;
@@ -1357,6 +1371,7 @@ fn followSet_poll(fd: std.c.fd_t, timeout_ms: i32) bool {
 /// Register watches on every slot that opened during dump.
 fn followSet_watchAll(ctx: *FollowCtx) !void {
     assert(ctx.slot_count > 0);
+    assert(ctx.slot_count <= follow_files_max);
     var i: u32 = 0;
     while (i < ctx.slot_count) : (i += 1) {
         if (!ctx.slots[i].active) continue;
