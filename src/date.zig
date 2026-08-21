@@ -2051,3 +2051,53 @@ test "date #178: -- format then empty operand is extra" {
         "extra operand ''",
     ) != null);
 }
+
+test "date #179: -d then leftover bare operand lacks a leading +" {
+    // GNU date 9.4: once -d/--date set the date, a leftover non-+
+    // positional is not a date string. `date -d @0 foo` must error.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-d", "@0", "foo" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "the argument 'foo' lacks a leading '+'",
+    ) != null);
+}
+
+test "date #179: --date= then -- leftover bare operand lacks a leading +" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--date=@0", "--", "foo" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "the argument 'foo' lacks a leading '+'",
+    ) != null);
+}

@@ -9590,3 +9590,64 @@ test "find #178: path then -- --help is unknown predicate" {
     try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
     try testing.expect(std.mem.find(u8, err, "--") != null);
 }
+
+// GNU findutils 4.9: `--` is a -name pattern, then `--help` prints help.
+test "find #179: -name -- --help prints help" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "--", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), "Usage"));
+}
+
+// GNU findutils 4.9: `--` after -true is an unknown predicate.
+test "find #179: -true -- --help is unknown predicate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-true", "--", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, err, "--") != null);
+}
