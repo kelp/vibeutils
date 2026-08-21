@@ -632,6 +632,28 @@ fn printLongFormatEntryAligned(
         try printLongFormatEntryAligned_symlinkTarget(style, writer, target);
     }
     try writer.writeByte('\n');
+    try printLongFormatAclDump(allocator, entry, writer, options);
+}
+
+/// After a long-format line, dump the POSIX ACL when `-e` is set.
+fn printLongFormatAclDump(
+    allocator: std.mem.Allocator,
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+) !void {
+    std.debug.assert(options.long_format);
+    if (!options.show_acls) return;
+    if (!entry.has_acl) return;
+    if (entry.acl_dump) |dump| {
+        std.debug.assert(dump.len > 0);
+        try writer.writeAll(dump);
+        return;
+    }
+    const dump = common.file.allocAclDump(allocator, entry.name, true) orelse return;
+    defer allocator.free(dump);
+    std.debug.assert(dump.len > 0);
+    try writer.writeAll(dump);
 }
 
 /// Write " -> target" for a symlink, colored by the target's file type.

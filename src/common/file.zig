@@ -336,6 +336,150 @@ fn darwinHasExtendedAcl(path_z: [*:0]const u8, follow: bool) bool {
     return rc == 0;
 }
 
+const posix_acl_dump_entries_max: u32 = 32;
+const posix_acl_xattr_version: u32 = 2;
+const posix_acl_tag_user_obj: u16 = 0x01;
+const posix_acl_tag_user: u16 = 0x02;
+const posix_acl_tag_group_obj: u16 = 0x04;
+const posix_acl_tag_group: u16 = 0x08;
+const posix_acl_tag_mask: u16 = 0x10;
+const posix_acl_tag_other: u16 = 0x20;
+
+/// Allocate a getfacl-style dump of the POSIX access ACL on `path`.
+/// Null when none is stored or the platform has no POSIX ACL xattrs.
+/// Caller frees. Used by `ls -e`.
+pub fn allocAclDump(allocator: std.mem.Allocator, path: []const u8, follow: bool) ?[]u8 {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    if (comptime builtin.os.tag != .linux) return null;
+    var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(&path_buf);
+    return allocPosixAclDump(allocator, path_z, follow);
+}
+
+fn allocPosixAclDump(allocator: std.mem.Allocator, path_z: [*:0]const u8, follow: bool) ?[]u8 {
+    var blob: [4 + posix_acl_dump_entries_max * 8]u8 = undefined;
+    const rc: isize = @bitCast(if (follow)
+        std.os.linux.getxattr(path_z, acl_access_xattr.ptr, &blob, blob.len)
+    else
+        std.os.linux.lgetxattr(path_z, acl_access_xattr.ptr, &blob, blob.len));
+    if (rc < 4) return null;
+    const n: u32 = @intCast(rc);
+    std.debug.assert(n <= blob.len);
+    std.debug.assert(n >= 4);
+    return formatPosixAclBlob(allocator, blob[0..n]);
+}
+
+fn posixAclPermChars(perm: u16) [3]u8 {
+    return .{
+        if (perm & 4 != 0) @as(u8, 'r') else '-',
+        if (perm & 2 != 0) @as(u8, 'w') else '-',
+        if (perm & 1 != 0) @as(u8, 'x') else '-',
+    };
+}
+
+fn posixAclIdName(id: u32, buf: *[256]u8, group: bool) []const u8 {
+    if (group) {
+        const gr = user_group.getgrgid(@intCast(id)) orelse
+            return std.fmt.bufPrint(buf, "{d}", .{id}) catch "0";
+        const src = user_group.spanOrEmpty(gr.name);
+        const n = @min(src.len, buf.len);
+        @memcpy(buf[0..n], src[0..n]);
+        return buf[0..n];
+    }
+    const pw = user_group.getpwuid(@intCast(id)) orelse
+        return std.fmt.bufPrint(buf, "{d}", .{id}) catch "0";
+    const src = user_group.spanOrEmpty(pw.name);
+    const n = @min(src.len, buf.len);
+    @memcpy(buf[0..n], src[0..n]);
+    return buf[0..n];
+}
+
+fn appendPosixAclLine(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    tag: u16,
+    perm: u16,
+    id: u32,
+) !void {
+    const perms = posixAclPermChars(perm);
+    var name_buf: [256]u8 = undefined;
+    const line = switch (tag) {
+        posix_acl_tag_user_obj => try std.fmt.allocPrint(
+            allocator,
+            "user::{c}{c}{c}\n",
+            .{ perms[0], perms[1], perms[2] },
+        ),
+        posix_acl_tag_user => blk: {
+            const name = posixAclIdName(id, &name_buf, false);
+            break :blk try std.fmt.allocPrint(
+                allocator,
+                "user:{s}:{c}{c}{c}\n",
+                .{ name, perms[0], perms[1], perms[2] },
+            );
+        },
+        posix_acl_tag_group_obj => try std.fmt.allocPrint(
+            allocator,
+            "group::{c}{c}{c}\n",
+            .{ perms[0], perms[1], perms[2] },
+        ),
+        posix_acl_tag_group => blk: {
+            const name = posixAclIdName(id, &name_buf, true);
+            break :blk try std.fmt.allocPrint(
+                allocator,
+                "group:{s}:{c}{c}{c}\n",
+                .{ name, perms[0], perms[1], perms[2] },
+            );
+        },
+        posix_acl_tag_mask => try std.fmt.allocPrint(
+            allocator,
+            "mask::{c}{c}{c}\n",
+            .{ perms[0], perms[1], perms[2] },
+        ),
+        posix_acl_tag_other => try std.fmt.allocPrint(
+            allocator,
+            "other::{c}{c}{c}\n",
+            .{ perms[0], perms[1], perms[2] },
+        ),
+        else => return,
+    };
+    defer allocator.free(line);
+    try out.appendSlice(allocator, line);
+}
+
+fn formatPosixAclBlob(allocator: std.mem.Allocator, blob: []const u8) ?[]u8 {
+    std.debug.assert(blob.len >= 4);
+    const version = std.mem.readInt(u32, blob[0..4], .little);
+    if (version != posix_acl_xattr_version) return null;
+    const rest = blob[4..];
+    if (rest.len % 8 != 0) return null;
+    const count = rest.len / 8;
+    if (count == 0 or count > posix_acl_dump_entries_max) return null;
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const rec = rest[i * 8 ..][0..8];
+        const tag = std.mem.readInt(u16, rec[0..2], .little);
+        const perm = std.mem.readInt(u16, rec[2..4], .little);
+        const id = std.mem.readInt(u32, rec[4..8], .little);
+        appendPosixAclLine(allocator, &out, tag, perm, id) catch {
+            out.deinit(allocator);
+            return null;
+        };
+    }
+    if (out.items.len == 0) {
+        out.deinit(allocator);
+        return null;
+    }
+    return out.toOwnedSlice(allocator) catch {
+        out.deinit(allocator);
+        return null;
+    };
+}
+
 /// Format file permissions as a string (e.g., -rw-r--r--)
 pub fn formatPermissions(mode: std.posix.mode_t, kind: std.Io.File.Kind, buf: []u8) ![]const u8 {
     if (buf.len < 10) return error.BufferTooSmall;

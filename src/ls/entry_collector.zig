@@ -369,6 +369,9 @@ pub fn freeEntries(entries: []Entry, allocator: std.mem.Allocator) void {
         if (entry.symlink_target) |target| {
             allocator.free(target);
         }
+        if (entry.acl_dump) |dump| {
+            allocator.free(dump);
+        }
     }
 }
 

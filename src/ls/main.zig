@@ -136,7 +136,10 @@ const LsArgs = struct {
         },
         .hide_backups = .{ .short = 'B', .desc = "Do not list entries ending with ~" },
         .dired = .{ .short = 'D', .desc = "Generate output suitable for Emacs dired mode" },
-        .show_acls = .{ .short = 'e', .desc = "Display ACL information in long format" },
+        .show_acls = .{
+            .short = 'e',
+            .desc = "Display ACL information after each long-format line",
+        },
         .colorize = .{ .short = 'G', .desc = "Enable colorized output" },
         .ignore_pattern = .{
             .short = 'I',
@@ -417,7 +420,8 @@ fn lsMain_buildOptions(
     return LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
-        .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
+        .long_format = args.long_format or args.omit_owner or args.omit_group or
+            args.numeric_ids or args.show_acls,
         .human_readable = args.human_readable,
         .kilobytes = args.kilobytes,
         .one_per_line = args.one_per_line,
@@ -458,6 +462,7 @@ fn lsMain_buildOptions(
         .sort_by_extension = args.sort_by_extension,
         .thousands_grouping = args.thousands_grouping,
         .terminal_width = args.output_width,
+        .show_acls = args.show_acls,
     };
 }
 
@@ -730,7 +735,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --color=WHEN           when to use colors (valid: always, auto, never)
         \\  -,                         format file sizes with thousands grouping
         \\  -D                         generate output for Emacs dired mode (no-op)
-        \\  -e                         display ACL information (no-op)
+        \\  -e                         display ACL information after each long-format line
         \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
         \\  -f, --no-sort              do not sort; list in directory order (implies -a)

@@ -42,7 +42,7 @@ pub fn listDirectoryImplWithVisited(
 
     // The ACL probe takes a path rather than a dirfd, and this frame is the
     // innermost one that still knows the directory's path.
-    applyAclMarkers(entries.items, path, options);
+    applyAclMarkers(allocator, entries.items, path, options);
 
     // Sort entries based on options
     sortEntriesFromOptions(entries.items, options);
@@ -102,7 +102,12 @@ pub fn collectAndPrepareEntries(
 /// Skipped outside -l: GNU issues no xattr syscall at all in any other
 /// format, and a bare `ls` over a large tree would otherwise pay one probe
 /// per entry for a column it never prints.
-fn applyAclMarkers(entries: []Entry, dir_path: []const u8, options: LsOptions) void {
+fn applyAclMarkers(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    dir_path: []const u8,
+    options: LsOptions,
+) void {
     std.debug.assert(dir_path.len > 0);
     std.debug.assert(entries.len <= std.math.maxInt(u32));
     if (!options.long_format) return;
@@ -137,6 +142,13 @@ fn applyAclMarkers(entries: []Entry, dir_path: []const u8, options: LsOptions) v
             stat.kind,
             options.follow_all_symlinks,
         );
+        if (options.show_acls and entry.has_acl) {
+            entry.acl_dump = common.file.allocAclDump(
+                allocator,
+                full,
+                options.follow_all_symlinks,
+            );
+        }
     }
 }
 
@@ -277,7 +289,7 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
         },
     };
 
-    applyAclMarkers(&entries, dir_path, .{ .long_format = true });
+    applyAclMarkers(alloc, &entries, dir_path, .{ .long_format = true });
 
     try std.testing.expect(entries[0].has_acl);
     // Negative space: the marker has to come from the probe answering yes,

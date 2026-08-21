@@ -106,6 +106,11 @@
 
 ### Fixed
 
+- **`ls -e` dumps the ACL after each long-format line.** The flag
+  was parsed into `show_acls` and then ignored, and `--help` called
+  it a no-op. `-e` now implies `-l` (BSD) and prints a getfacl-style
+  POSIX ACL after a marked entry; a file with no stored ACL is
+  unchanged from `ls -l` (#147).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not
