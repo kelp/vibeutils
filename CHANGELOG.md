@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Documentation
+- **Add the `land-todo-slice` agent skill.** Operating procedure
+  for landing one `TODO.md` heading as one draft PR: choose the
+  slice, write a plan, review it with three models, implement
+  with red-green TDD, and drain review comments until CI is
+  green.
+
 ### Added
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
