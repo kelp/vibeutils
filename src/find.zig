@@ -543,10 +543,25 @@ const ParseError = error{
     StatError,
 };
 
+/// Global flags collected from the leading-globals scan and from
+/// expression-position `-maxdepth`/`-mindepth`.
+const GlobalFlags = struct {
+    maxdepth: ?u32 = null,
+    mindepth: u32 = 0,
+    depth_first: bool = false,
+    follow_symlinks: bool = false,
+    follow_cmdline_symlinks: bool = false,
+    xdev: bool = false,
+    xargs_safe: bool = false,
+    sorted: bool = false,
+    extended_regex: bool = false,
+};
+
 const ParseContext = struct {
     allocator: Allocator,
     error_msg: ?[]const u8 = null,
     extended_regex: bool = false,
+    flags: *GlobalFlags,
 
     fn setError(self: *ParseContext, comptime fmt: []const u8, fmt_args: anytype) void {
         self.error_msg = std.fmt.allocPrint(self.allocator, fmt, fmt_args) catch null;
@@ -599,21 +614,6 @@ fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
         allocator.destroy(regex);
     }
 }
-
-/// Global flags collected from the leading-globals scan, before expression
-/// args. Bundled into one struct so `parseArgs` stays small and the scan
-/// helper takes few arguments (Tiger Style inverse-hourglass).
-const GlobalFlags = struct {
-    maxdepth: ?u32 = null,
-    mindepth: u32 = 0,
-    depth_first: bool = false,
-    follow_symlinks: bool = false,
-    follow_cmdline_symlinks: bool = false,
-    xdev: bool = false,
-    xargs_safe: bool = false,
-    sorted: bool = false,
-    extended_regex: bool = false,
-};
 
 /// Scan leading global options and starting paths before the expression.
 /// Mutates `flags` and appends discovered paths to `start_paths`; returns the
@@ -691,80 +691,19 @@ fn parseArgs_collectLeadingGlobals(
     return expr_start;
 }
 
-/// Pre-scan expression args for depth/xdev globals (-maxdepth/-mindepth/-depth/
-/// -d/-xdev/-mount and the readdir-race no-ops), mutating `flags`. Keeps the
-/// error-emitting branches identical to the original inline loop.
-/// Parse the numeric argument to a depth flag (-maxdepth/-mindepth) at args[i].
-/// The value lives at args[i + 1]; reports a missing/invalid argument error.
-fn parseArgs_parseDepthArg(
-    allocator: Allocator,
-    args: []const []const u8,
-    i: usize, // tiger:allow:usize-arch slice index cursor
-    flag: []const u8,
-    stderr: anytype,
-) !u32 {
-    assert(i < args.len);
-    if (i + 1 >= args.len) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            prog_name,
-            "missing argument to '{s}'",
-            .{flag},
-        );
-        return error.MissingArgument;
-    }
-    return std.fmt.parseInt(u32, args[i + 1], 10) catch {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            prog_name,
-            "invalid argument '{s}' to '{s}'",
-            .{ args[i + 1], flag },
-        );
-        return error.InvalidExpression;
-    };
-}
-
-/// Predicates whose next argv token is an argument, not a predicate.
-/// The depth prescan must skip that token so `-name --help` does not
-/// look like predicate-position `--help`.
-fn parseArgs_prescanTakesArg(arg: []const u8) bool {
-    std.debug.assert(arg.len > 0);
-    const one_arg = [_][]const u8{
-        "-name",   "-iname",      "-path",   "-wholename",
-        "-ipath",  "-iwholename", "-ilname", "-lname",
-        "-type",   "-regex",      "-iregex", "-size",
-        "-perm",   "-amin",       "-cmin",   "-mmin",
-        "-atime",  "-ctime",      "-mtime",  "-user",
-        "-group",  "-uid",        "-gid",    "-printf",
-        "-fstype", "-links",      "-inum",   "-samefile",
-        "-anewer", "-cnewer",     "-newer",  "-used",
-    };
-    for (one_arg) |key| {
-        if (std.mem.eql(u8, arg, key)) return true;
-    }
-    std.debug.assert(!std.mem.eql(u8, arg, "-name"));
-    return false;
-}
-
+/// Pre-scan expression args for depth-first/xdev globals (`-depth`/`-d`/
+/// `-xdev`/`-mount` and the readdir-race no-ops). `-maxdepth`/`-mindepth`
+/// are captured during sequential expression parse so `--help` ordering
+/// and predicate arguments stay GNU-correct.
 fn parseArgs_prescanDepthGlobals(
-    allocator: Allocator,
     args: []const []const u8,
     expr_start: usize, // tiger:allow:usize-arch slice index cursor; Zig indexing requires usize
     flags: *GlobalFlags,
-    stderr: anytype,
-) !void {
+) void {
     assert(expr_start <= args.len);
     var i: usize = expr_start; // tiger:allow:usize-arch slice index cursor
     while (i < args.len) {
-        if (std.mem.eql(u8, args[i], "-maxdepth")) {
-            flags.maxdepth = try parseArgs_parseDepthArg(allocator, args, i, "-maxdepth", stderr);
-            i += 2;
-        } else if (std.mem.eql(u8, args[i], "-mindepth")) {
-            flags.mindepth = try parseArgs_parseDepthArg(allocator, args, i, "-mindepth", stderr);
-            i += 2;
-        } else if (std.mem.eql(u8, args[i], "-depth")) {
+        if (std.mem.eql(u8, args[i], "-depth")) {
             // Check if next arg is numeric: -depth N (exact depth match, not depth-first)
             if (i + 1 < args.len) {
                 if (std.fmt.parseInt(u32, args[i + 1], 10)) |_| {
@@ -791,20 +730,11 @@ fn parseArgs_prescanDepthGlobals(
         {
             // Accept as no-ops
             i += 1;
-        } else if (parseArgs_prescanTakesArg(args[i])) {
-            i += 2;
-        } else if (std.mem.eql(u8, args[i], "--help") or
-            std.mem.eql(u8, args[i], "--version"))
-        {
-            // Sequential GNU parse: predicate-position --help/--version
-            // must run before later -maxdepth validation. A `--help`
-            // consumed as a primary argument is skipped above.
-            break;
         } else {
             i += 1;
         }
     }
-    assert(i <= args.len);
+    assert(i == args.len);
     assert(i >= expr_start);
 }
 
@@ -817,6 +747,25 @@ fn parseArgs_wrapImplicitPrint(allocator: Allocator, final_expr: *Expression) !*
         .and_expr,
         .{ .binary = .{ .left = final_expr, .right = print_expr } },
     );
+}
+
+fn parseArgs_or(
+    allocator: Allocator,
+    args: []const []const u8,
+    stderr: anytype,
+    expr_start: usize, // tiger:allow:usize-arch
+    pos: *usize, // tiger:allow:usize-arch
+    has_action: *bool,
+    pctx: *ParseContext,
+) !*Expression {
+    std.debug.assert(pos.* == expr_start);
+    std.debug.assert(!has_action.*);
+    return parseOr(allocator, args, pos, has_action, pctx) catch |err| {
+        if (pctx.error_msg) |msg| {
+            common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
+        }
+        return err;
+    };
 }
 
 fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
@@ -835,18 +784,17 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     assert(start_paths.items.len >= 1);
 
     // Pre-scan for global options within expression args.
-    try parseArgs_prescanDepthGlobals(allocator, args, expr_start, &flags, stderr);
+    parseArgs_prescanDepthGlobals(args, expr_start, &flags);
 
     // Parse expression tree
     var pos: usize = expr_start;
     var has_action = false;
-    var pctx = ParseContext{ .allocator = allocator, .extended_regex = flags.extended_regex };
-    const expr = parseOr(allocator, args, &pos, &has_action, &pctx) catch |err| {
-        if (pctx.error_msg) |msg| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
-        }
-        return err;
+    var pctx = ParseContext{
+        .allocator = allocator,
+        .extended_regex = flags.extended_regex,
+        .flags = &flags,
     };
+    const expr = try parseArgs_or(allocator, args, stderr, expr_start, &pos, &has_action, &pctx);
 
     const final_expr = if (pos == expr_start)
         try allocExpr(allocator, .true_expr, .{ .none = {} })
@@ -1254,6 +1202,30 @@ fn parsePrimary_newerXYRefTime(
     };
 }
 
+/// Parse the numeric argument to `-maxdepth`/`-mindepth` at the current
+/// primary. Sets the GNU missing/invalid diagnostic on pctx.
+fn parsePrimary_takeDepth(
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor
+    flag: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!u32 {
+    assert(pos.* < args.len);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{flag});
+        return error.MissingArgument;
+    }
+    const raw = args[pos.*];
+    const val = std.fmt.parseInt(u32, raw, 10) catch {
+        pctx.setError("invalid argument '{s}' to '{s}'", .{ raw, flag });
+        return error.InvalidExpression;
+    };
+    pos.* += 1;
+    std.debug.assert(pos.* <= args.len);
+    return val;
+}
+
 /// Handle global-option and accepted-no-op predicates: -maxdepth/-mindepth,
 /// -depth, -d, -follow, -ignore_readdir_race, -noignore_readdir_race, -noleaf.
 /// Returns null when `arg` is not one of these (fall through to next group).
@@ -1262,12 +1234,16 @@ fn parsePrimary_globalsAndNoops(
     args: []const []const u8,
     pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
     arg: []const u8,
+    pctx: *ParseContext,
 ) ExprParseError!?*Expression {
     assert(pos.* < args.len);
     const entry_pos = pos.*;
-    // Skip global options already handled
-    if (std.mem.eql(u8, arg, "-maxdepth") or std.mem.eql(u8, arg, "-mindepth")) {
-        pos.* += 2;
+    if (std.mem.eql(u8, arg, "-maxdepth")) {
+        pctx.flags.maxdepth = try parsePrimary_takeDepth(args, pos, "-maxdepth", pctx);
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-mindepth")) {
+        pctx.flags.mindepth = try parsePrimary_takeDepth(args, pos, "-mindepth", pctx);
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
     if (std.mem.eql(u8, arg, "-depth")) {
@@ -1982,7 +1958,7 @@ fn parsePrimary(
     if (std.mem.eql(u8, arg, "--help")) return error.HelpRequested;
     if (std.mem.eql(u8, arg, "--version")) return error.VersionRequested;
 
-    if (try parsePrimary_globalsAndNoops(allocator, args, pos, arg)) |e| return e;
+    if (try parsePrimary_globalsAndNoops(allocator, args, pos, arg, pctx)) |e| return e;
     if (try parsePrimary_namePathType(allocator, args, pos, arg, pctx)) |e| return e;
     if (try parsePrimary_sizeEmptyPerm(allocator, args, pos, arg, pctx)) |e| return e;
     if (try parsePrimary_timeCompare(allocator, args, pos, arg, pctx)) |e| return e;
