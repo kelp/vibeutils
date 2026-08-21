@@ -41,9 +41,22 @@ Add man-page install to the **default** install step:
 - `just install` documents that man pages land under
   `zig-out/share/man/man1/` as well as binaries under
   `zig-out/bin/`.
+- `just test-man-install` runs the contract tests (same
+  pattern as `just test-tiger-check`).
+- Wire that recipe into CI: `.github/workflows/test.yml`
+  after `just build` (the test job already builds; the
+  man-install test needs a Debug `zig build` prefix). Do
+  not add a new workflow.
 - Leave `flake.nix` `installPhase` `cp` in place this slice
   (idempotent overwrite). Removing it is a follow-up, not
   this heading.
+
+**`build.zig` (recorded 2/3):** CLAUDE.md "don't edit
+`build.zig`" is utility registration via `build/utils.zig`.
+This heading *is* an install-target change. A one-line
+`man.addInstall(b)` hook plus `build/man.zig` is the
+exception. GPT asked to revise the architecture contract
+instead; declined as out of scope for this slice.
 
 `CHANGELOG.md` Unreleased / Added: `zig build` installs
 man pages under `share/man/man1`. User-visible for anyone
@@ -78,8 +91,8 @@ not globbed by `test_runner.sh`):
    `<prefix>/share/man/man1/ls.1` exists and is non-empty.
 2. `man install installs a page per utility` — every
    `utilities` name has `<prefix>/share/man/man1/<name>.1`,
-   including `[.1` and `test.1`. Count matches the man
-   directory (48 pages today).
+   including `[.1` and `test.1`. Installed count equals
+   `man/man1/*.1` count (do not hardcode 48).
 3. `man install page is the repo source` — installed
    `ls.1` is byte-identical to `man/man1/ls.1` (no
    mandoc rewrite).
@@ -87,6 +100,9 @@ not globbed by `test_runner.sh`):
 RED: today `zig build` does not create
 `zig-out/share/man/man1/ls.1`. Prove that with the test
 before adding the install hook.
+
+CI must invoke `just test-man-install` (GPT round-1). A
+`just` recipe that CI never calls is a silent skip.
 
 Do not add Zig unit tests inside `src/` (this is build
 graph behavior).
