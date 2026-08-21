@@ -302,18 +302,20 @@ buffer is unbuffered and `flush` is a no-op.
 
 **Production change.** Add
 `common.unbufferedStderr(io: std.Io, buffer: *[0]u8)`
-(name may vary; one helper, two call sites) that
+(name may vary; one helper, three call sites) that
 returns `std.Io.File.stderr().writerStreaming(io, buffer)`.
 Callers pass a local `var buf: [0]u8 = .{};` —
 `&[0]u8{}` is the locked shape, not `&.{}`.
 
-Call sites:
+Call sites (three):
 
 - `src/common/main.zig` `utilityMain` success path
 - `src/common/main.zig` arg-allocation failure path
-  (today a 256-byte buffer then flush; that path
-  must use the same zero-length helper)
+  (today a 256-byte buffer then flush)
 - `src/env.zig` custom `main()` (today 8192)
+
+Callers use `var buf: [0]u8 = .{};` and pass `&buf`.
+The helper takes `*[0]u8`.
 
 Leave stdout at 8192. Drop the assertion that stdout
 and stderr buffer lengths are equal; replace it with
@@ -367,8 +369,9 @@ before `source posix_io.sh`:
 Accumulate until `clearing environment` is visible
 and `poll()` is still `None`. Current `main` RED:
 `select_ready=False elapsed=2.002 still_running=True
-data=b''`. Kill the child after the assertion so the
-oracle does not wait the full 5s.
+data=b''`. After the assertion, kill the **process group**
+(env and the `sleep 5` child) so sleep is not
+orphaned and the oracle does not wait the full 5s.
 
 These two wait-tests are the representatives, not 48.
 The utility-agnostic box is contracts 1, 2, 4 plus
@@ -531,8 +534,8 @@ Do not skip a failing wait-test. Do not weaken it to
   wait-test, which holds stdin open on purpose and
   closes it before the 2s wait bound.
 - **Leftover-file scans.** Scratch dir and dest names
-  must not contain a utility name. Always `rm -rf` on
-  EXIT.
+must not contain a utility name. `rm -rf` at
+`test_posix_io`'s single return; no EXIT trap.
 - **`src/common/` boundary.** `main.zig` plus a small
   helper/lint in `lib.zig`, and `env.zig`'s custom
   main. Do not touch `file_ops.zig`.
@@ -551,22 +554,23 @@ Do not skip a failing wait-test. Do not weaken it to
 
 ## TDD sequence
 
-1. Plan consensus (this file, after round-2 review).
+1. Plan consensus (this file; round-3 3/3 APPROVE).
 2. Test-writer: oracle including the inline cat
-   wait-test. No production Zig. No harness bodies
-   that make the wait-test pass.
+   **and env** wait-tests (both before `source`). No
+   production Zig. No harness bodies that make the
+   wait-tests pass.
 3. Prove RED: `bash tests/tools/posix_io_test.sh`
-   fails because `select` timed out while cat was
-   still running (right reason). Coverage may also
-   fail; that is extra, not instead.
+   fails because `select` timed out while cat (and
+   env -v sleep) was still running (right reason).
+   Coverage may also fail; that is extra, not instead.
 4. Implementer: helper + unbuffer + source lint,
    harness, `test_runner.sh` hook, docs, TODO,
    CHANGELOG. Do not edit the oracle's assertions
    or the wait-test Python.
 5. Prove GREEN: `bash tests/tools/posix_io_test.sh`
-   (wait-test now sees `posix-io-missing` while cat
-   is blocked), `just fmt-check`, `zig build test`
-   (lint + `main.zig` unit tests), `just it-util cat`,
+   (both wait-tests see their markers while the
+   child is still running), `just fmt-check`,
+   `zig build test`, `just it-util cat`,
    `just it-util echo`, `just it-util yes`,
    `just it-util true`, `just it-util false`,
    `just it-util '['`, `just it-util env`,
