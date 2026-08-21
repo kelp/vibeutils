@@ -195,16 +195,32 @@ TDD split (test-writer ≠ implementer):
 2. **Implementer** adds `tests/lib/fd_modes.sh`, the
    per-util table, and the `run_utility_tests` hook.
    Does not edit the oracle's assertions.
-3. **Sabotage (uncommitted, mandatory both streams):**
-   Temporarily change `utilityMain` stdout to `writer(`
-   instead of `writerStreaming(`, run the echo append
-   case, confirm RED (marker overwritten). Revert.
-   Then change stderr the same way, run
-   `ls` of a missing path with `>> file 2>&1`, confirm
-   RED on the marker, revert, confirm GREEN. Never
-   commit the mutation. `env` sabotage is its own
-   `main()`, not `utilityMain`; out of scope unless env
-   is the oracle.
+3. **Sabotage (uncommitted, mandatory):**
+   Issue #5 is macOS-specific: `File.writer()` uses
+   `pwritev` at offset 0 and ignores `O_APPEND`. On
+   Linux, `writer()` still appends, so mutating
+   `utilityMain` to `writer(` **will not** go RED here
+   or on ubuntu CI. Do not treat that mutation as the
+   Linux proof.
+
+   Linux-capable teeth (this agent, ubuntu CI):
+
+   - Coverage oracle: empty fixture table → RED.
+   - Append assertion: point the harness at a
+     known-bad command that `lseek(0)` then writes
+     over the seed (a one-off Python snippet, never
+     committed). Confirm RED (file no longer starts
+     with `EXISTING\n`). Point it at real `echo
+     fd-mode` → GREEN.
+   - Stderr dual-append: same seek-0 overwrite on a
+     command that writes stderr, for `>> file 2>&1`.
+
+   macOS (CI `macos-26`, optional locally): also
+   temporarily change `utilityMain` stdout/stderr to
+   `writer(`, run echo / `ls` missing-path, confirm
+   RED, revert. Never commit the mutation. `env`
+   sabotage is its own `main()`; out of scope unless
+   env is the oracle.
 
 Existing `echo_test.sh` issue #5 case stays. Do not
 delete it.
