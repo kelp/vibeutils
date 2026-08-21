@@ -2,8 +2,8 @@ const std = @import("std");
 
 pub const parallel_workers_max: u32 = 8;
 
-const wait_iterations_max: u32 = 1_000_000;
-const worker_wait_iterations_max: u32 = 10_000_000;
+const wait_iterations_max: u32 = 50_000_000;
+const worker_wait_iterations_max: u32 = 200_000_000;
 
 pub fn runBounded(
     io: std.Io,
