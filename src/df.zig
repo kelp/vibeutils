@@ -4101,6 +4101,69 @@ test "printTotalDynamic - percent ceils above the threshold (issue #144)" {
     try testing.expect(std.mem.find(u8, row, "50%") == null);
 }
 
+// Issue #158: `df --total` accumulates byte counts in u64. Two filesystems of
+// 1e19 bytes sum to 2e19, past u64max (16 EiB). Distinct from #144, whose
+// vectors stay at 4e17 bytes so a failure there is the percentage multiply,
+// not the sums. makeFsInfo halves used/avail, so used+avail overflows here
+// too; the next test isolates that add so a Size-only fix still goes red.
+test "printTotalDynamic - size sum past 16 EiB (issue #158)" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // Products fit in u64; only the SUM wraps. `-B 1` with human off keeps
+    // the printed Size equal to the byte total, so the assertion is 2e19
+    // rather than a wrapped 1K-block count.
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 10_000_000_000_000_000_000, 1);
+    const fs2 = makeFsInfo("/dev/disk2s1", "/home", 10_000_000_000_000_000_000, 1);
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.human_readable = false;
+    opts.block_size = 1;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    const items = [_]FsInfo{ fs1, fs2 };
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
+    const row = aw.writer.buffered();
+    // The true sum is 2e19; wrapping u64 yields 1553255926290458384.
+    try testing.expect(std.mem.find(u8, row, "20000000000000000000") != null);
+    try testing.expect(std.mem.find(u8, row, "1553255926290458384") == null);
+}
+
+test "printTotalDynamic - used plus avail past 16 EiB (issue #158)" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // Size stays at 200 bytes so printTotal_sumBytes does not wrap. Each
+    // used/avail is 9e18, so the column sums fit and only
+    // `sum_used + sum_avail` (3.6e19) overflows. Equal used and avail make
+    // the true percentage 50%; wrapping the add prints "-" and feeding Size
+    // to the percent (a Size-only fix) clamps to 100%.
+    var fs1 = makeFsInfo("/dev/disk1s1", "/", 100, 1);
+    fs1.used_blocks = 9_000_000_000_000_000_000;
+    fs1.avail_blocks = 9_000_000_000_000_000_000;
+    var fs2 = makeFsInfo("/dev/disk2s1", "/home", 100, 1);
+    fs2.used_blocks = 9_000_000_000_000_000_000;
+    fs2.avail_blocks = 9_000_000_000_000_000_000;
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.human_readable = false;
+    opts.block_size = 1;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    const items = [_]FsInfo{ fs1, fs2 };
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
+    const row = aw.writer.buffered();
+    try testExpectTokens(&.{
+        "total",
+        "200",
+        "18000000000000000000",
+        "18000000000000000000",
+        "50%",
+        "-",
+    }, row);
+    try testing.expect(std.mem.find(u8, row, "100%") == null);
+}
+
 test "printHeaderDynamic - full mode shows Usage column" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
@@ -5395,6 +5458,47 @@ test "outputTotalCellText - pcent above the overflow threshold (issue #144)" {
         .avail_bytes = 198_000_000_000_000_000,
     };
     try testing.expectEqualStrings("51%", outputTotalCellText(&buf, .pcent, ceils, opts));
+}
+
+// Issue #158: --output --total stores the same byte sums in OutputTotals, so
+// a printTotalDynamic-only widen still wraps here. `-B 1` makes Size the
+// byte total; wrapping u64 prints 1553255926290458384 instead of 2e19.
+test "outputSumTotals - size sum past 16 EiB (issue #158)" {
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 10_000_000_000_000_000_000, 1);
+    const fs2 = makeFsInfo("/dev/disk2s1", "/home", 10_000_000_000_000_000_000, 1);
+    const items = [_]FsInfo{ fs1, fs2 };
+    const totals = outputSumTotals(&items);
+    var size_buf: [64]u8 = undefined;
+    var used_buf: [64]u8 = undefined;
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.human_readable = false;
+    opts.block_size = 1;
+    try testing.expectEqualStrings(
+        "20000000000000000000",
+        outputTotalCellText(&size_buf, .size, totals, opts),
+    );
+    try testing.expectEqualStrings(
+        "10000000000000000000",
+        outputTotalCellText(&used_buf, .used, totals, opts),
+    );
+}
+
+test "outputTotalCellText - pcent used plus avail past 16 EiB (issue #158)" {
+    var buf: [64]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = 1;
+    // Size stays in range so only the pcent add overflows. Equal used and
+    // avail make the true percentage 50%; wrapping the add yields "-" and
+    // saturating it to u64max yields ~55%.
+    const totals = OutputTotals{
+        .size_bytes = 200,
+        .used_bytes = 10_000_000_000_000_000_000,
+        .avail_bytes = 10_000_000_000_000_000_000,
+    };
+    try testing.expectEqualStrings("50%", outputTotalCellText(&buf, .pcent, totals, opts));
+    try testing.expectEqualStrings("200", outputTotalCellText(&buf, .size, totals, opts));
 }
 
 test "runDf - output rejects an unknown field" {
