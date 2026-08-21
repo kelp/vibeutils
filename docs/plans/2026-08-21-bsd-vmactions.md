@@ -33,13 +33,20 @@ Add `.github/workflows/bsd.yml`:
 - Three **independent** jobs (not a matrix; no `fail-fast` key):
   FreeBSD, OpenBSD, NetBSD. A red job fails the workflow.
 - FreeBSD via `vmactions/freebsd-vm` pinned to
-  `83b151f58c6047089f4c80eb5ba2039d158ce093` (`v1`).
+  `c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e` (`v1.4.2`).
 - OpenBSD via `vmactions/openbsd-vm` pinned to
-  `e6c68b637a12e83519688d115d57d5b0b53923cd` (`v1`).
+  `9a8e4351a4a0dc6238e7c69276dcbf6c03bea576` (`v1.3.6`).
 - NetBSD via `vmactions/netbsd-vm` pinned to
-  `00081e82b14bc40114eb97f32b4455306828516b` (`v1`).
+  `e04aec09540429f9cebb0e7941f7cd0c0fc3b44f` (`v1.3.6`).
 - Pin like other workflows (`checkout@de0fac2e…` plus SHA comments).
   Do not use floating `@v1` tags.
+- Do **not** pin current `v1` / v1.5.3: those declare
+  `using: node24`. GitHub rejects third-party node24
+  `action.yml` at parse (`startup_failure`, zero jobs;
+  runs 32502582357 and 32503154809). Last node20 tags are
+  freebsd `v1.4.2`, openbsd/netbsd `v1.3.6`. Official
+  `actions/*` node24 is fine. `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`
+  still upgrades these node20 actions at runtime.
 - `usesh: true` on each VM.
 - Install Zig **0.16.0** from ziglang.org inside `prepare` (official
   `x86_64-freebsd` / `x86_64-openbsd` / `x86_64-netbsd` tarballs). Do
@@ -85,7 +92,8 @@ Required, not optional: `tests/tools/bsd-workflow_test.sh` plus
 asserts:
 
 1. `.github/workflows/bsd.yml` exists.
-2. It contains the three pinned SHAs above (not `@v1` unpinned).
+2. It contains `uses: vmactions/<os>-vm@<sha>` for the three
+   node20 SHAs above (not comment-only, not floating `@v1`).
 3. It installs Zig 0.16.0.
 4. `runs-on: ubuntu-latest` appears.
 5. No `continue-on-error`.

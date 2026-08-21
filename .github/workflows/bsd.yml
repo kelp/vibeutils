@@ -20,13 +20,19 @@ concurrency:
 # Official Zig 0.16.0 tarballs, not mlugg/setup-zig: that action is
 # Linux/macOS only and cannot run inside the BSD guest. Jobs are
 # independent (no matrix) so a red OS is a real workflow failure.
+#
+# Pin vmactions to the last node20 releases. v1 / v1.5.3 declare
+# using: node24; GitHub rejects that in third-party action.yml at
+# workflow parse (startup_failure, zero jobs). Official actions/*
+# node24 is fine. FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 still upgrades
+# these node20 actions at runtime.
 
 permissions:
   contents: read
 
 jobs:
-  # Host-side sanity job so a vmactions parse/allowlist failure still
-  # leaves one job in the graph instead of a zero-job startup_failure.
+  # Host-side pin-check so a guest-image failure still leaves a
+  # Linux job in the graph.
   workflow-ok:
     timeout-minutes: 5
     runs-on: ubuntu-latest
@@ -39,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: vmactions/freebsd-vm@83b151f58c6047089f4c80eb5ba2039d158ce093  # v1
+      - uses: vmactions/freebsd-vm@c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e  # v1.4.2
         with:
           usesh: true
           prepare: |
@@ -61,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: vmactions/openbsd-vm@e6c68b637a12e83519688d115d57d5b0b53923cd  # v1
+      - uses: vmactions/openbsd-vm@9a8e4351a4a0dc6238e7c69276dcbf6c03bea576  # v1.3.6
         with:
           usesh: true
           prepare: |
@@ -83,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: vmactions/netbsd-vm@00081e82b14bc40114eb97f32b4455306828516b  # v1
+      - uses: vmactions/netbsd-vm@e04aec09540429f9cebb0e7941f7cd0c0fc3b44f  # v1.3.6
         with:
           usesh: true
           prepare: |
