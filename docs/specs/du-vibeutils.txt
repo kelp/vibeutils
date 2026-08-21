@@ -22,7 +22,7 @@ Summarize disk usage of the set of FILEs, recursively for directories.
 
 Display values are in units of the first available SIZE from --block-size,
 and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
-Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
+By default sizes are human-readable (powers of 1024). Use -k for 1024-byte blocks.
 
 SIZE is an integer and optional unit (example: 10K is 10*1024).
 Units are K, M, G, T, P, E (powers of 1024) or KB, MB, ... (powers of 1000).

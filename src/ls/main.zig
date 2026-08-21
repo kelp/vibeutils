@@ -465,7 +465,12 @@ fn lsMain_buildOptions(
 }
 
 fn lsMain_isLongFormat(args: LsArgs) bool {
-    return args.long_format or args.omit_owner or args.omit_group or args.numeric_ids;
+    const long = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids;
+    if (args.long_format) std.debug.assert(long);
+    if (!args.long_format and !args.omit_owner and !args.omit_group and !args.numeric_ids) {
+        std.debug.assert(!long);
+    }
+    return long;
 }
 
 /// KEEP default: long listings are human-readable unless -k is set
@@ -473,8 +478,10 @@ fn lsMain_isLongFormat(args: LsArgs) bool {
 /// would also switch time_style to relative.
 fn lsMain_keepHumanReadable(args: LsArgs, long_format: bool) bool {
     const human_readable = args.human_readable or (long_format and !args.kilobytes);
-    std.debug.assert(!(args.human_readable and !human_readable));
-    std.debug.assert(!long_format or human_readable or args.kilobytes);
+    if (args.human_readable) std.debug.assert(human_readable);
+    if (args.kilobytes) {
+        if (!args.human_readable) std.debug.assert(!human_readable);
+    }
     return human_readable;
 }
 
@@ -1281,7 +1288,7 @@ fn testRunLsOutput(io: std.Io, args: []const []const u8) ![]u8 {
         &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
+    try testing.expect(stderr_aw.writer.buffered().len == 0);
     return testing.allocator.dupe(u8, stdout_aw.writer.buffered());
 }
 
