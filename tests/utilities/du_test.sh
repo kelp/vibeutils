@@ -81,6 +81,9 @@ test_du() {
     check_du_size_mode "du -t1k ignores threshold value for size mode" binary -t1k
     check_du_size_mode "du -t 1k ignores threshold value for size mode" binary -t 1k
     check_du_size_mode "du -Ifoo-k ignores pattern for size mode" binary -Ifoo-k
+    check_du_size_mode "du --threshold -4k ignores threshold value for size mode" binary --threshold -4k
+    check_du_size_mode "du --threshold=-4k ignores threshold value for size mode" binary --threshold=-4k
+    check_du_size_mode "du --ignore-pattern -k ignores pattern for size mode" binary --ignore-pattern -k
     check_du_size_mode "du --si uses decimal suffix" si --si
     check_du_size_mode "du -h -k uses last size mode" numeric -h -k
     check_du_size_mode "du -k -h uses last size mode" binary -k -h
