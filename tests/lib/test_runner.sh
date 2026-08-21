@@ -112,12 +112,12 @@ list_available_utilities() {
             fi
         done
     else
-        echo "  No binaries found. Run 'make build' first."
+        echo "  No binaries found. Run 'just build' first."
     fi
     
     echo -e "\n${CYAN}Usage:${NC}"
-    echo "  make it UTIL=<utility>    # Test specific utility"
-    echo "  make it                   # Test all utilities"
+    echo "  just it-util <utility>    # Test specific utility"
+    echo "  just it                   # Test all utilities"
 }
 
 # Run tests for all utilities

@@ -40,8 +40,9 @@ The entry function is `test_<util>` (`test_bracket` for `[`).
 
 **Never run `bash tests/integration.sh` directly.** It is the suite.
 It prepends `zig-out/bin` to `PATH` and does no privilege dropping.
-As uid 0, roughly two dozen "permission denied" assertions pass for
-the wrong reason — root bypasses DAC — and look like product bugs.
+As uid 0, roughly two dozen "permission denied" operations succeed,
+so the assertions fail for a reason that has nothing to do with the
+code — root bypasses DAC — and look like product bugs.
 
 Always go through the wrapper:
 
@@ -57,12 +58,12 @@ scripts/run-integration.sh tee
    is root and `setpriv` exists. `VIBEUTILS_NO_DEMOTE=1` skips this.
 2. Runs the suite from a private working directory (#125), so two
    concurrent `just it` invocations cannot share relative fixtures.
-3. Then execs `tests/integration.sh` with the same arguments.
+3. Then runs `tests/integration.sh` with the same arguments. The
+   wrapper does not `exec`: replacing the process would skip the
+   throwaway-cwd cleanup.
 
-CI and `just it` both use the wrapper. Workflow prompts that tell an
-agent to run `bash tests/integration.sh` must use the wrapper instead
-(`.claude/workflows/wave2-walker.js` is the one that previously did
-not).
+CI and `just it` both use the wrapper. Workflow prompts must use that
+wrapper rather than `bash tests/integration.sh`.
 
 On Cursor Cloud the image exports `NO_COLOR=1`. vibeutils honors that
 even over `--color=always`, so color-sensitive cases fail unless the
@@ -104,8 +105,9 @@ Helpers in `tests/lib/common.sh` (not `assert_equals` / `exec_utility`):
 
 `BIN_DIR` is set by `tests/integration.sh` and exported. PATH is pinned
 to `zig-out/bin` so a forgotten `$binary` still tests this build, not
-the system one. Fixture setup that needs Darwin `chmod +a` or GNU
-`timeout` must go through `host` so it cannot see `zig-out/bin`.
+the system one. Fixture setup that needs Darwin `chmod +a` must go
+through `host` so it cannot see `zig-out/bin`. Do not call host
+`timeout(1)` — macOS CI has none; use `run_with_limit`.
 
 ## PATH and the binary under test
 
@@ -124,10 +126,10 @@ Stdin-Dependent Testing".
 
 ## Tooling tests
 
-Scripts that test the repo's own shell (`audit-check`, `tiger-check`,
-`run-integration.sh`, host-PATH wrappers) live in `tests/tools/` and
-are invoked from their GitHub workflows, not from `just it`. They are
-not per-utility suites.
+Scripts that test the repo's own shell live in `tests/tools/`.
+`audit-check`, `tiger-check`, and `host_path` run from GitHub
+workflows; `run-integration_test.sh` is `just test-run-integration`.
+None of them run from `just it`.
 
 ## Running
 
@@ -165,14 +167,13 @@ away from root.
 
 ```
 just it-util tee            # one utility, full log
-bash -x tests/utilities/tee_test.sh
-# does not work: the file is sourced and expects common.sh + BIN_DIR
 ```
 
-To trace a single file, run the wrapper; it sources the test. Failed
-commands print as `Failed command:` next to the assertion. Temp files
-live in the session `TEMP_DIR` inside the wrapper's throwaway cwd and
-are removed when the run exits.
+Do not run `bash -x tests/utilities/tee_test.sh` by itself: the file is
+sourced and expects `common.sh` plus `BIN_DIR`. The wrapper sources it.
+Failed commands print as `Failed command:` next to the assertion. Temp
+files live in the session `TEMP_DIR` inside the wrapper's throwaway cwd
+and are removed when the run exits.
 
 ## See also
 
