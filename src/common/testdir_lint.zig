@@ -15,7 +15,7 @@ pub const listed_files_min: u32 = 39;
 /// Loop bounds. Tiger Style forbids unbounded iteration.
 const files_max: u32 = 64;
 const bytes_max: u32 = 2 * 1024 * 1024;
-const allowlist_len: u32 = 28;
+const allowlist_len: u32 = 29;
 
 /// Heading order, then `mv`, then `src/ls/*.zig` sorted. Last path is
 /// `src/ls/types.zig` so a single-violation fixture cannot skip the tail.
@@ -66,8 +66,9 @@ const AllowlistedBody = struct {
     name: []const u8,
 };
 
-/// Residual cwd-behavior tests (plan decision 3). After GREEN every body
-/// here contains `chdirToBase(` and every `chdirToBase(` sits in one of these.
+/// Residual cwd-behavior tests (plan decision 3; 29 bodies). After GREEN
+/// every body here contains `chdirToBase(` and every `chdirToBase(` sits in
+/// one of these.
 const chdir_allowlist = [_]AllowlistedBody{
     .{
         .path = "src/grep.zig",
@@ -195,6 +196,7 @@ const chdir_allowlist = [_]AllowlistedBody{
         .name = "ls -s sizes the operand block field across all operands, not " ++
             "per operand",
     },
+    .{ .path = "src/rmdir.zig", .name = "rmdir: remove with parents" },
     .{ .path = "src/ls/main.zig", .name = "AclFixture.init" },
 };
 
@@ -1271,6 +1273,38 @@ test "allowlisted body missing chdirToBase is RED" {
     defer report.deinit(testing.allocator);
 
     const n = try scanOne(testing.allocator, "src/grep.zig", source, &report);
+    try testing.expect(n >= 1);
+    try testing.expect(std.mem.find(u8, report.items, "missing chdirToBase(") != null);
+}
+
+test "chdirToBase in rmdir remove-with-parents body is clean" {
+    const source =
+        \\test "rmdir: remove with parents" {
+        \\    const saved = try test_dir.chdirToBase();
+        \\    _ = saved;
+        \\}
+        \\
+    ;
+    var report: std.ArrayListUnmanaged(u8) = .empty;
+    defer report.deinit(testing.allocator);
+
+    const n = try scanOne(testing.allocator, "src/rmdir.zig", source, &report);
+    try testing.expectEqual(@as(u32, 0), n);
+    try testing.expectEqualStrings("", report.items);
+}
+
+test "rmdir remove-with-parents missing chdirToBase is RED" {
+    const source =
+        \\test "rmdir: remove with parents" {
+        \\    const x = 1;
+        \\    _ = x;
+        \\}
+        \\
+    ;
+    var report: std.ArrayListUnmanaged(u8) = .empty;
+    defer report.deinit(testing.allocator);
+
+    const n = try scanOne(testing.allocator, "src/rmdir.zig", source, &report);
     try testing.expect(n >= 1);
     try testing.expect(std.mem.find(u8, report.items, "missing chdirToBase(") != null);
 }
