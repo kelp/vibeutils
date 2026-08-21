@@ -41,11 +41,12 @@ real (non-`-`) positional, not only the last one.
 - `-v` / `--verbose`: headers enabled even for one file, but a
   switch still requires a **slot** change, so one slot never
   reprints.
-- `-F`: per-file rotation/reopen. Diagnostics stay the existing
-  ones: `cannot open '{s}' for reading` (initial miss),
+- `-F`: per-file rotation/reopen. Diagnostics:
+  `cannot open '{s}' for reading` (initial miss),
   `'{s}' has become inaccessible` (gone during follow),
+  `'{s}' has appeared;  following new file` (inactive slot's
+  first successful open — GNU, two spaces after the semicolon),
   `'{s}' has been replaced;  following new file` (inode change).
-  Do not invent an "appeared" message.
 - Truncation detection stays per file.
 - Hard cap `follow_files_max = 256`. Count real (non-`-`)
   positionals **before any file I/O**. More than 256 with `-f` /
@@ -68,7 +69,8 @@ unopenable path and drop files that GNU keeps following.
   open error for `missing` still prints during the dump.
 - `-F`: keep unopenable paths as **inactive** slots (appear-wait).
   Print `cannot open` once when the slot is first seen missing
-  (same as today's single-file `-F`). Do not call today's
+  (same as today's single-file `-F`). When the first later
+  `openFile` succeeds, print the GNU appeared diagnostic. Do not call today's
   wait-forever helpers (`followFile_openInitial` /
   `followFile_waitForReappear`) from the multiplex loop — those
   stall every other file.
@@ -230,7 +232,8 @@ PID. PATH stays `zig-out/bin`.
     header (last positional failed).
 16. `tail -F missing existing follows then both` — live file
     delivers appends while the other path is still missing; after
-    the missing path appears, appends to it appear too.
+    the missing path appears, appends to it appear too, and
+    stderr contains `'…' has appeared;  following new file`.
 17. `tail -F two files rotate one still follows the other` —
     rotate `a`; appends to `b` still appear; `a`'s replacement is
     followed.
@@ -285,8 +288,8 @@ failed open; `-F` retry must not wait for a quiet timeout),
 GPT REQUEST CHANGES (`inotify_rm_watch` shared-wd lifetime),
 Fable APPROVE.
 
-This revision: seed last positional including failures;
-non-empty chunk before updating the slot; `-F` inactive scan
-on elapsed 1s every wake; plain `-f` keeps the descriptor on
-delete/rename; `rm_watch` only at wd refcount 0; helper test
-for that refcount; last-dump integration files are non-empty.
+Round 4: Grok APPROVE, Fable APPROVE, GPT REQUEST CHANGES
+(GNU `-F` `has appeared` diagnostic). Accepted: match GNU on
+the new multiplex appear path; test 16 asserts the two-space
+message. Existing single-file `-F` tests still pass if the
+extra line is present.
