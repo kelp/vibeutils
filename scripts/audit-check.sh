@@ -54,7 +54,9 @@
 # CHECK COVERAGE AND ITS LIMITS
 #   stub-flag, unscannable, matrix-drift, toothless-assert,
 #   test-only-code and path-shadow are complete for the shapes this repo
-#   actually uses.
+#   actually uses. stub-flag treats an Args/Options/Config field
+#   declaration as a write (argparse fills those reflectively) and
+#   counts reads across every .zig file in a subdirectory unit.
 #
 #   parse-only-test SHIPS DELIBERATELY INCOMPLETE. There is no reliable
 #   mechanical link from a shell test to the struct field it exercises,
@@ -106,8 +108,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# The Zig source scanner. Reads ONE .zig file from stdin. Variables:
-#   FILE   display path used in keys and output
+# The Zig source scanner. Reads a unit from stdin: either one file, or
+# several files concatenated with `###FILE <relpath>` markers so a
+# subdirectory unit (src/ls/main.zig plus src/ls/*.zig) is one scope.
+# Variables:
+#   FILE   fallback display path (the manifest entry); markers override
 # Emits, to stdout:
 #   ROW <TAB> <check> <TAB> <key> <TAB> <detail>   a finding
 #   F   <TAB> <field> <TAB> <writes> <TAB> <reads> field table
@@ -117,10 +122,9 @@ EOF
 # The field/meta facts are consumed by the matrix-drift pass, which must
 # resolve a spec row to a parser field without re-parsing the source.
 #
-# Whole-file buffering (not tiger-check's single pass) is required: a
-# field's reads must be counted across the ENTIRE file before the field
-# can be judged, and the struct that declares it may appear after its
-# first use.
+# Whole-unit buffering is required: a field's reads must be counted
+# across every file of the unit before the field can be judged, and the
+# struct that declares it may live in a different file from the read.
 # ---------------------------------------------------------------------------
 SRC_AWK='
 # Blank out // comments and string/char literal contents so identifier
@@ -254,14 +258,24 @@ BEGIN {
 {
     line = $0;
     sub(/\r$/, "", line);
+    if (line ~ /^###FILE /) {
+        FILE = substr(line, 9);
+        RAW[NR] = "";
+        CODE[NR] = "";
+        FILE_AT[NR] = FILE;
+        IS_MARK[NR] = 1;
+        next;
+    }
     RAW[NR] = line;
     CODE[NR] = strip_cs(line);
+    FILE_AT[NR] = FILE;
 }
 
 END {
     n_lines = NR;
     classify();
     count_refs();
+    entry = (ENTRY != "") ? ENTRY : FILE;
     if (TOTREF == 0 && n_fields > 0) {
         # No field of any args struct is referenced through a known
         # receiver. Rather than silently reporting "no stubs", widen to a
@@ -270,29 +284,36 @@ END {
         for (f in W) delete W[f];
         for (f in R) delete R[f];
         count_refs();
-        printf "ROW\t%s\t%s::%s\t%s\n", "unscannable", FILE,
+        printf "ROW\t%s\t%s::%s\t%s\n", "unscannable", entry,
             "no-receiver", "args-struct fields are never referenced through a known receiver";
     }
     if (n_structs == 0) {
         print "NOSTRUCT";
-        printf "ROW\t%s\t%s::%s\t%s\n", "unscannable", FILE,
+        printf "ROW\t%s\t%s::%s\t%s\n", "unscannable", entry,
             "no-args-struct", "no `const <Name>(Args|Options|Opts|Config) = struct` to build a field table from";
     }
     report();
 }
 
 # Mark test blocks and args-struct spans, and harvest the field table
-# plus the meta short/long mappings.
-function classify(   i, c, ld, f, r, m, t, ch) {
-    gdepth = 0; mode = ""; n_structs = 0; n_fields = 0; cur_meta = ""; first_test = 0;
+# plus the meta short/long mappings. `###FILE` markers start a new file
+# inside the same unit, so depth and mode do not leak across siblings.
+function classify(   i, c, ld, f, r, m, t, ch, file) {
+    gdepth = 0; mode = ""; n_structs = 0; n_fields = 0; cur_meta = ""; 
     in_sfn = 0; sfn_base = 0;
     for (i = 1; i <= n_lines; i++) {
+        if (IS_MARK[i]) {
+            mode = ""; gdepth = 0; in_sfn = 0; cur_meta = "";
+            continue;
+        }
         c = CODE[i];
+        file = FILE_AT[i];
+        if (file == "") file = FILE;
         ld = gdepth;
         if (mode == "" && ld == 0) {
             if (c ~ /^test[ \t]*[\{"]/) {
                 mode = "test";
-                if (first_test == 0) first_test = i;
+                if (!(file in FIRST_TEST)) FIRST_TEST[file] = i;
             } else if (c ~ /^(pub[ \t]+)?const[ \t]+[A-Za-z_][A-Za-z0-9_]*(Args|Options|Opts|Config)[ \t]*=[ \t]*struct[ \t]*\{/) {
                 mode = "struct"; n_structs++; cur_meta = "";
             }
@@ -312,11 +333,12 @@ function classify(   i, c, ld, f, r, m, t, ch) {
                     in_sfn = 1; sfn_base = ld; STRUCT_SKIP[i] = 1;
                 }
             }
-            if (ld == 1 && RAW[i] ~ /^[ \t]*[a-z_][A-Za-z0-9_]*[ \t]*:/) {
+            if (!in_sfn && ld == 1 && RAW[i] ~ /^[ \t]*[a-z_][A-Za-z0-9_]*[ \t]*:/) {
                 f = RAW[i];
                 sub(/^[ \t]*/, "", f); sub(/[ \t]*:.*$/, "", f);
                 if (f != "positionals" && !(f in FIELD)) {
                     FIELD[f] = 1; FIELD_ORDER[++n_fields] = f;
+                    FIELD_FILE[f] = file;
                 }
             }
             if (ld >= 2) {
@@ -346,9 +368,10 @@ function classify(   i, c, ld, f, r, m, t, ch) {
     }
 }
 
-function count_refs(   i, nm, ispub, hdr) {
+function count_refs(   i, nm, ispub, hdr, file, first) {
     TOTREF = 0;
     for (i = 1; i <= n_lines; i++) {
+        if (IS_MARK[i]) continue;
         if (!STRUCT_SKIP[i]) scan_refs(i, CODE[i]);
         if (AGNOSTIC) continue;
         if (IS_STRUCT[i]) continue;
@@ -357,11 +380,14 @@ function count_refs(   i, nm, ispub, hdr) {
             nm = hdr;
             sub(/.*fn[ \t]+/, "", nm);
             sub(/[ \t]*\(.*/, "", nm);
+            file = FILE_AT[i];
+            if (file == "") file = FILE;
+            first = (file in FIRST_TEST) ? FIRST_TEST[file] : 0;
             if (CODE[i] ~ /(^|[^A-Za-z0-9_])(pub|export|extern)[ \t]/) {
                 PUBFN[nm] = 1;
             } else if (IS_TEST[i]) {
                 PUBFN[nm] = 1;
-            } else if (first_test > 0 && i > first_test) {
+            } else if (first > 0 && i > first) {
                 # Declared below the file`s first test block, i.e. in the
                 # test section. A helper written FOR the tests is not a
                 # production path that decayed into a test-only one, which
@@ -369,21 +395,34 @@ function count_refs(   i, nm, ispub, hdr) {
                 PUBFN[nm] = 1;
             } else if (!(nm in FNDEF)) {
                 FNDEF[nm] = i; FN_ORDER[++n_fns] = nm;
+                FN_FILE[nm] = file;
             }
         }
         scan_uses(i, CODE[i]);
     }
 }
 
-function report(   k, f, nm) {
+function field_in_meta(f,   k) {
+    for (k in META_SHORT) if (META_SHORT[k] == f) return 1;
+    for (k in META_LONG) if (META_LONG[k] == f) return 1;
+    return 0;
+}
+
+function report(   k, f, nm, src) {
     for (k = 1; k <= n_fields; k++) {
         f = FIELD_ORDER[k];
+        # Argparse fills meta-listed fields reflectively, so the
+        # declaration is itself a write. Requiring an `opts.f =` line hid
+        # every stub that argparse populated and nothing read (#157).
+        if (field_in_meta(f)) W[f]++;
         printf "F\t%s\t%d\t%d\n", f, W[f] + 0, R[f] + 0;
         if (W[f] + 0 > 0 && R[f] + 0 == 0) {
-            printf "ROW\t%s\t%s::%s\t%s\n", "stub-flag", FILE, f,
+            src = FIELD_FILE[f];
+            if (src == "") src = FILE;
+            printf "ROW\t%s\t%s::%s\t%s\n", "stub-flag", src, f,
                 "written at the parse site, never read outside tests (writes=" (W[f] + 0) ")";
             if (TESTPARSED[f] + 0 > 0) {
-                printf "ROW\t%s\t%s::%s\t%s\n", "parse-only-test", FILE, f,
+                printf "ROW\t%s\t%s::%s\t%s\n", "parse-only-test", src, f,
                     "only assertion is parsed.opts." f " in a test block; no behaviour is pinned";
             }
         }
@@ -394,7 +433,9 @@ function report(   k, f, nm) {
         nm = FN_ORDER[k];
         if (nm in PUBFN) continue;
         if (NCALL[nm] + 0 == 0 && TCALL[nm] + 0 > 0) {
-            printf "ROW\t%s\t%s::%s\t%s\n", "test-only-code", FILE, nm,
+            src = FN_FILE[nm];
+            if (src == "") src = FILE;
+            printf "ROW\t%s\t%s::%s\t%s\n", "test-only-code", src, nm,
                 "private fn whose only call sites are inside test blocks (test calls=" (TCALL[nm] + 0) ")";
         }
     }
@@ -965,18 +1006,54 @@ facts_name() {
 # ---------------------------------------------------------------------------
 # Pass 1 — Zig sources, deduplicated by path. `test` and `[` share
 # src/test.zig; scanning it twice would double-count every finding in it.
+#
+# A unit whose manifest path lives in a subdirectory is one scope: every
+# .zig file in that directory is concatenated (with ###FILE markers) so
+# stub-flag and test-only-code count reads and call sites across siblings
+# (#146). A top-level src/<util>.zig is still one file.
 # ---------------------------------------------------------------------------
+concat_unit() {
+    # $1 = relative manifest path. Writes the concatenated unit to stdout.
+    # Returns 1 when the entry file itself cannot be read.
+    _cpath=$1
+    _cdir=$(dirname "$_cpath")
+    if [ ! -r "$ROOT/$_cpath" ]; then
+        return 1
+    fi
+    if [ "$_cdir" = "src" ] || [ "$_cdir" = "." ]; then
+        printf '###FILE %s\n' "$_cpath"
+        cat "$ROOT/$_cpath"
+        return 0
+    fi
+    _clist=$WORKDIR/list.$(facts_name "$_cpath")
+    # A literal unmatched glob means the directory has no .zig files.
+    set -- "$ROOT/$_cdir"/*.zig
+    if [ ! -e "$1" ]; then
+        return 1
+    fi
+    printf '%s\n' "$@" | LC_ALL=C sort >"$_clist"
+    while IFS= read -r _csrc; do
+        [ -n "$_csrc" ] || continue
+        _crel="$_cdir/${_csrc##*/}"
+        printf '###FILE %s\n' "$_crel"
+        cat "$_csrc"
+        printf '\n'
+    done <"$_clist"
+    return 0
+}
+
 awk -F'\t' '!seen[$2]++' "$UNITS" | while IFS="$TAB" read -r name path; do
     [ -n "$path" ] || continue
-    src="$ROOT/$path"
     fname=$(facts_name "$path")
-    if [ ! -r "$src" ]; then
+    unit_src="$WORKDIR/src/$fname"
+    mkdir -p "$WORKDIR/src"
+    if ! concat_unit "$path" >"$unit_src"; then
         emit_row unscannable "$path::missing-source" \
             "build/utils.zig lists this path but it cannot be read"
         : >"$WORKDIR/facts/$fname"
         continue
     fi
-    awk -v FILE="$path" "$SRC_AWK" <"$src" >"$WORKDIR/facts/$fname"
+    awk -v FILE="$path" -v ENTRY="$path" "$SRC_AWK" <"$unit_src" >"$WORKDIR/facts/$fname"
     grep "^ROW$TAB" "$WORKDIR/facts/$fname" | cut -f2- >>"$ROWS"
 done
 
@@ -997,7 +1074,11 @@ while IFS="$TAB" read -r name path; do
             "no flag matrix for this utility, so no matrix row can be checked"
         continue
     fi
-    awk -v SPEC="$spec" -v SRCFILE="$ROOT/$path" "$SPEC_AWK" \
+    # Literal flag lookups must see every file of a subdirectory unit,
+    # not just the manifest entry point (#146).
+    srcfile="$WORKDIR/src/$fname"
+    [ -r "$srcfile" ] || srcfile="$ROOT/$path"
+    awk -v SPEC="$spec" -v SRCFILE="$srcfile" "$SPEC_AWK" \
         "$WORKDIR/facts/$fname" "$ROOT/$spec" | cut -f2- >>"$ROWS"
 done <"$UNITS"
 
