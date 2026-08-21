@@ -417,7 +417,13 @@ fn calcUsagePercent(used: u64, total: u64) u8 {
 fn writeUsageSgr(writer: *std.Io.Writer, percent: u8) !void {
     std.debug.assert(percent <= 100);
     const code: u8 = if (percent < 70) 32 else if (percent < 90) 33 else 31;
-    std.debug.assert(code == 31 or code == 32 or code == 33);
+    if (percent < 70) {
+        std.debug.assert(code == 32);
+    } else if (percent < 90) {
+        std.debug.assert(code == 33);
+    } else {
+        std.debug.assert(code == 31);
+    }
     try writer.print("\x1b[{d}m", .{code});
 }
 
@@ -470,14 +476,14 @@ fn formatUsageBar(buf: []u8, percent: u8) []const u8 {
     return buf[0..pos];
 }
 
-fn barIsOn(render: RenderOptions) bool {
-    const on = switch (render.bar) {
+fn barIsOn(opts: RenderOptions) bool {
+    const on = switch (opts.bar) {
         .always => true,
         .never => false,
-        .auto => render.icons == .on,
+        .auto => opts.icons == .on,
     };
-    std.debug.assert(render.bar != .never or !on);
-    std.debug.assert(render.bar != .always or on);
+    std.debug.assert(opts.bar != .never or !on);
+    std.debug.assert(opts.bar != .always or on);
     return on;
 }
 
@@ -508,6 +514,7 @@ fn printMemRow(
     const used_b = if (is_swap) info.swap_used else info.used;
     const total_b = if (is_swap) info.swap_total else info.total;
     const percent = calcUsagePercent(used_b, total_b);
+    std.debug.assert(percent <= 100);
     try writer.print("{s:<6}", .{label});
 
     if (is_swap) {
@@ -615,10 +622,14 @@ fn resolveRenderOptions(allocator: Allocator, parsed: FreeArgs) RenderResolveErr
         return error.InvalidBar;
     const display = common.display_config.DisplayConfig.resolve(allocator);
     const killed = colorKillSwitchOn();
+    // `--color=auto` follows the real stdout TTY, not DisplayConfig.color.
+    // VIBEUTILS_COLOR=always / VIBEUTILS_STYLE=always would otherwise leak
+    // ANSI into pipes (CLAUDE.md isatty guard). Kill switches still apply.
+    const stdout_tty = common.env.isTty(std.Io.File.stdout().handle);
     const color = switch (color_when) {
         .never => false,
         .always => !killed,
-        .auto => display.color == .on,
+        .auto => stdout_tty and !killed,
     };
     if (killed) std.debug.assert(!color);
     if (color_when == .never) std.debug.assert(!color);
