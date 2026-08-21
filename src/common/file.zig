@@ -336,7 +336,7 @@ fn darwinHasExtendedAcl(path_z: [*:0]const u8, follow: bool) bool {
     return rc == 0;
 }
 
-const posix_acl_dump_entries_max: u32 = 32;
+const posix_acl_dump_entries_max: u32 = 1024;
 const posix_acl_xattr_version: u32 = 2;
 const posix_acl_tag_user_obj: u16 = 0x01;
 const posix_acl_tag_user: u16 = 0x02;
@@ -360,16 +360,25 @@ pub fn allocAclDump(allocator: std.mem.Allocator, path: []const u8, follow: bool
 }
 
 fn allocPosixAclDump(allocator: std.mem.Allocator, path_z: [*:0]const u8, follow: bool) ?[]u8 {
-    var blob: [4 + posix_acl_dump_entries_max * 8]u8 = undefined;
-    const rc: isize = @bitCast(if (follow)
-        std.os.linux.getxattr(path_z, acl_access_xattr.ptr, &blob, blob.len)
+    var unused: [1]u8 = undefined;
+    const size_rc: isize = @bitCast(if (follow)
+        std.os.linux.getxattr(path_z, acl_access_xattr.ptr, &unused, 0)
     else
-        std.os.linux.lgetxattr(path_z, acl_access_xattr.ptr, &blob, blob.len));
-    if (rc < 4) return null;
-    const n: u32 = @intCast(rc);
-    std.debug.assert(n <= blob.len);
-    std.debug.assert(n >= 4);
-    return formatPosixAclBlob(allocator, blob[0..n]);
+        std.os.linux.lgetxattr(path_z, acl_access_xattr.ptr, &unused, 0));
+    if (size_rc < 4) return null;
+    const size: u32 = @intCast(size_rc);
+    const size_max: u32 = 4 + posix_acl_dump_entries_max * 8;
+    std.debug.assert(size >= 4);
+    if (size > size_max) return null;
+    const blob = allocator.alloc(u8, size) catch return null;
+    defer allocator.free(blob);
+    const rc: isize = @bitCast(if (follow)
+        std.os.linux.getxattr(path_z, acl_access_xattr.ptr, blob.ptr, blob.len)
+    else
+        std.os.linux.lgetxattr(path_z, acl_access_xattr.ptr, blob.ptr, blob.len));
+    if (rc != size_rc) return null;
+    std.debug.assert(rc >= 4);
+    return formatPosixAclBlob(allocator, blob);
 }
 
 fn posixAclPermChars(perm: u16) [3]u8 {
