@@ -5369,3 +5369,161 @@ test "issue 99 U2: fchmod EROFS maps to ReadOnlyFileSystem, not Unexpected" {
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "Read-only file system") != null);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "Unexpected error") == null);
 }
+
+test "cp existing read-only destination hint follows stderr hint overlay" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.createFile("source.txt", "new content", 0o644);
+    try test_dir.createFile("dest.txt", "old content", 0o444);
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+    const args = [_][]const u8{ source_path, dest_path };
+
+    common.env.test_stderr_hints = false;
+    var stderr_plain: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_plain.deinit();
+    const plain_exit = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_plain.writer,
+    );
+    const expected_plain = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot open '{s}' for writing: Permission denied\n",
+        .{dest_path},
+    );
+    defer testing.allocator.free(expected_plain);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), plain_exit);
+    try testing.expectEqualStrings(expected_plain, stderr_plain.writer.buffered());
+
+    common.env.test_stderr_hints = true;
+    var stderr_hints: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_hints.deinit();
+    const hints_exit = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_hints.writer,
+    );
+    const expected_hints = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot open '{s}' for writing: Permission denied" ++
+            " (file is not writable)\n",
+        .{dest_path},
+    );
+    defer testing.allocator.free(expected_hints);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), hints_exit);
+    try testing.expectEqualStrings(expected_hints, stderr_hints.writer.buffered());
+}
+
+test "cp unreadable source appends readable-file hint" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.createFile("source.txt", "secret", 0o000);
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/dest.txt",
+        .{base_path},
+    );
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot stat '{s}': Permission denied (file is not readable)\n",
+        .{source_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+}
+
+test "cp absent destination under unwritable parent has no file hint" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.createFile("source.txt", "content", 0o644);
+    try test_dir.createDir("locked");
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const parent_path = try test_dir.getPath("locked");
+    defer testing.allocator.free(parent_path);
+    const dest_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/dest.txt",
+        .{parent_path},
+    );
+    defer testing.allocator.free(dest_path);
+    const parent_path_z = try testing.allocator.dupeZ(u8, parent_path);
+    defer testing.allocator.free(parent_path_z);
+    if (std.c.chmod(parent_path_z.ptr, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(parent_path_z.ptr, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot create '{s}': Permission denied\n",
+        .{dest_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "(") == null);
+}

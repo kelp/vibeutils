@@ -1160,4 +1160,19 @@ test_rm() {
                 "Expected exit 0 and empty stderr, got exit=$npro_exit stderr='$npro_err'"
         fi
     done
+
+    # Redirected stderr is not a TTY, so rm -d keeps the exact GNU line.
+    local hint_pipe_dir="$TEMP_DIR/rm_hint_pipe"
+    mkdir -p "$hint_pipe_dir"
+    create_temp_file "content" "$hint_pipe_dir/file.txt"
+    local hp_cmd="" hp_out="" hp_err="" hp_exit=""
+    run_command hp_cmd hp_out hp_err hp_exit "$binary" -d "$hint_pipe_dir"
+    local hp_expected="rm: cannot remove '$hint_pipe_dir': Directory not empty"
+    if [[ $hp_exit -eq 1 && "$hp_err" == "$hp_expected" && "$hp_err" != *"("* ]]; then
+        print_test_result "rm -d piped stderr omits actionable hint" "PASS"
+    else
+        print_test_result "rm -d piped stderr omits actionable hint" "FAIL" \
+            "Expected exit 1 and exactly '$hp_expected', got exit=$hp_exit stderr='$hp_err'"
+    fi
+    rm -rf "$hint_pipe_dir"
 }

@@ -2498,3 +2498,94 @@ test "rm: recursive directory remover is deleted in favor of the bounded walker"
     // "delete the function and inline a new recursion" regression.
     try testing.expect(std.mem.find(u8, source, "walker") != null);
 }
+
+test "rm: -d non-empty directory appends recursive-removal hint" {
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(testing.io, "nonempty", .default_dir);
+    const file = try tmp.dir.createFile(testing.io, "nonempty/file.txt", .{});
+    file.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "nonempty",
+        testing.allocator,
+    );
+    defer testing.allocator.free(dir_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "-d", dir_path };
+    const exit_code = try runRm(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "rm: cannot remove '{s}': Directory not empty" ++
+            " (use rm -r to remove recursively)\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+}
+
+test "rm: -r leftover non-empty directory does not suggest -r" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(testing.io, "locked", .default_dir);
+    const file = try tmp.dir.createFile(testing.io, "locked/child.txt", .{});
+    file.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "locked",
+        testing.allocator,
+    );
+    defer testing.allocator.free(dir_path);
+    if (std.c.chmod(dir_path.ptr, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(dir_path.ptr, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "-rfv", dir_path };
+    const exit_code = try runRm(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected_line = try std.fmt.allocPrint(
+        testing.allocator,
+        "rm: cannot remove '{s}': Directory not empty\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected_line);
+    const stderr = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expect(std.mem.find(u8, stderr, expected_line) != null);
+    try testing.expect(std.mem.find(u8, stderr, "(") == null);
+}

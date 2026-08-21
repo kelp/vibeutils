@@ -1112,3 +1112,67 @@ test "cat -E with multiple CRLF lines" {
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_aw.writer.buffered());
 }
+
+test "cat permission hint follows stderr hint overlay" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(testing.io, "secret.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o000),
+    });
+    try file.writeStreamingAll(testing.io, "secret");
+    file.close(testing.io);
+    const file_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "secret.txt",
+        testing.allocator,
+    );
+    defer testing.allocator.free(file_path);
+    const args = [_][]const u8{file_path};
+
+    common.env.test_stderr_hints = false;
+    var stderr_plain: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_plain.deinit();
+    const plain_exit = try runCat(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_plain.writer,
+    );
+    const expected_plain = try std.fmt.allocPrint(
+        testing.allocator,
+        "cat: {s}: Permission denied\n",
+        .{file_path},
+    );
+    defer testing.allocator.free(expected_plain);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), plain_exit);
+    try testing.expectEqualStrings(expected_plain, stderr_plain.writer.buffered());
+
+    common.env.test_stderr_hints = true;
+    var stderr_hints: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_hints.deinit();
+    const hints_exit = try runCat(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_hints.writer,
+    );
+    const expected_hints = try std.fmt.allocPrint(
+        testing.allocator,
+        "cat: {s}: Permission denied (file is not readable)\n",
+        .{file_path},
+    );
+    defer testing.allocator.free(expected_hints);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), hints_exit);
+    try testing.expectEqualStrings(expected_hints, stderr_hints.writer.buffered());
+}
