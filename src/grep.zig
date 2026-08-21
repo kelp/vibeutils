@@ -145,13 +145,13 @@ fn parseArgs(
             const flag = arg[2..];
             switch (try parseArgs_handleLong(allocator, io, &opts, flag, stderr_writer)) {
                 .ok => {},
-                .fail => return null,
+                .fail => return parseArgs_abort(&opts, allocator),
             }
         } else if (arg.len > 1 and arg[0] == '-') {
             // Short options
             switch (try parseArgs_handleShort(allocator, io, &opts, arg, args, &i, stderr_writer)) {
                 .ok => {},
-                .fail => return null,
+                .fail => return parseArgs_abort(&opts, allocator),
             }
         } else {
             // Operands are collected in order and the pattern slot is decided
@@ -162,6 +162,15 @@ fn parseArgs(
 
     try parseArgs_takePatternOperand(allocator, &opts);
     return opts;
+}
+
+/// Free opts and signal a reported argument error. `return null` does not
+/// run errdefer, so every `.fail` path has to deinit here (#164).
+fn parseArgs_abort(opts: *GrepOptions, allocator: Allocator) ?GrepOptions {
+    std.debug.assert(opts.files.items.len <= std.math.maxInt(u32));
+    std.debug.assert(opts.patterns.items.len <= std.math.maxInt(u32));
+    opts.deinit(allocator);
+    return null;
 }
 
 /// GNU takes the first operand as PATTERNS only when neither -e nor -f
@@ -2544,13 +2553,12 @@ fn runGrep_earlyExit(
         return @intFromEnum(common.ExitCode.success);
     }
     if (opts.patterns.items.len == 0 and !opts.pattern_source_given) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "no pattern specified\nTry 'grep --help' for more information.",
-            .{},
-        );
+        // GNU's missing-operand shape is a Usage line, not `grep: msg`
+        // (#162). printErrorWithProgram would prefix the program name.
+        stderr_writer.writeAll(
+            "Usage: grep [OPTION]... PATTERNS [FILE]...\n" ++
+                "Try 'grep --help' for more information.\n",
+        ) catch {};
         return @intFromEnum(common.ExitCode.serious_error);
     }
     // An empty pattern set can never match, so GNU exits 1 without opening any

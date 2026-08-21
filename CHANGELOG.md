@@ -33,6 +33,15 @@
   BSD defines none (#93).
 
 ### Changed
+- **`grep` with no pattern prints GNU's Usage line.** Bare `grep` and
+  `grep --` wrote `grep: no pattern specified`; GNU prints
+  `Usage: grep [OPTION]... PATTERNS [FILE]...` and the Try-help line,
+  with no program-name prefix. Exit 2 is unchanged (#162).
+- **`grep` frees parsed options on argument errors.** `parseArgs`
+  signals those errors with `return null`, which does not run
+  `errdefer`, so `--include`/`-e`/`--exclude` buffers leaked on the
+  next unrecognized flag. Every `.fail` path now deinits before
+  returning null (#164).
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,
