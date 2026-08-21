@@ -62,7 +62,7 @@ REQUEST CHANGES. Decisions, recorded here:
    call sites (comments mentioning the words are
    not hits; the call shape is the `(`).
 
-   Allowlist (28 bodies):
+   Allowlist (29 bodies; round-3 adds rmdir `-p`):
 
    `src/grep.zig` tests:
    - `walker-migration: recursive search with no operands searches the current directory`
@@ -98,6 +98,17 @@ REQUEST CHANGES. Decisions, recorded here:
    - `ls -C lays out multiple file operands in columns, not one per line`
    - `ls -s prints the block prefix for file operands and no total line`
    - `ls -s sizes the operand block field across all operands, not per operand`
+
+   `src/rmdir.zig` tests:
+   - `rmdir: remove with parents`
+
+     GNU `rmdir -p` walks every dirname until `/` or
+     `.`. An absolute sandbox path therefore continues
+     into `/tmp` after the fixture is gone. Relative
+     operands with cwd at the sandbox stop at `.`.
+     That is cwd-behavior, not a lint bypass. Use
+     `chdirToBase` / `restoreCwd`. Do **not** add a
+     local `fchdir` helper (`rmdirEnterSandbox`).
 
    `src/ls/main.zig` helper (not a test; the #147 ACL
    tests chdir through it):
