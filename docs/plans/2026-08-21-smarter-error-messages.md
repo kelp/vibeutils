@@ -210,6 +210,8 @@ color leak cannot break exact match.
    a failed child, or a fixture that still yields
    `Directory not empty` with `-r`): overlay true, GNU
    line, **no** `(`. Do not hint “use rm -r” after `-r`.
+   Skip if root (the failed-child fixture is a
+   permission denial).
 5. Owned `chmod 000` file, `cat`, overlay true:
    `(file is not readable)`; overlay false: no suffix.
    Skip if root.
@@ -253,9 +255,10 @@ Do not rewrite existing GNU-prefix assertions.
 
 No flag-matrix edit. KEEP house wording. `CHANGELOG.md`
 Unreleased. Check both `### 7` boxes. One-line
-DIAGNOSTICS note in `man/man1/rm.1`, `rmdir.1`, `cp.1`,
+DESCRIPTION note in `man/man1/rm.1`, `rmdir.1`, `cp.1`,
 and `cat.1` that TTY stderr may append a suggestion.
-No HISTORY.
+No new DIAGNOSTICS section unless `mandoc -T lint`
+stays clean. No HISTORY.
 
 ## Risks
 
@@ -266,8 +269,10 @@ No HISTORY.
 - Tiger: extract before growing 70-line functions.
 - Existing tests: default overlay off, so GNU exact
   matches stay. Restore overlay with `defer`.
-- Parent `EACCES` vs file mode: test 8 locks the
-  no-suffix rule.
+- Parent `EACCES` vs dest `lstat` fail: test 8 locks
+  no suffix when the dest does not exist under a 555
+  parent. Preserve copies (`file_ops.zig`) stay
+  unhinted.
 
 ## Implementation order after plan consensus
 
