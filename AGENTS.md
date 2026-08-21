@@ -43,6 +43,7 @@
 - Commits: Imperative, concise summaries; emojis allowed (e.g., `🐛 Fix ...`, `✨ Add ...`).
 - PRs: Include purpose, linked issues, user-facing changes, and test notes. Add before/after samples for CLI behavior when relevant.
 - Checks: Run `just fmt`, `just test`, and `just test-privileged-local` locally. Update docs/man or help text if flags/behavior change.
+- Landing a `TODO.md` item: load the `land-todo-slice` skill. One heading is one pull request. Do not skip plan review or the comment drain.
 
 ## Security & Configuration Tips
 - Do not implement “security theater.” Rely on filesystem permissions; avoid hardcoded protected paths.

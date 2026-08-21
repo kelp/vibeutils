@@ -263,6 +263,10 @@ implementation files.
 
 ## Where to Look
 
+- Landing one `TODO.md` heading → the
+  `land-todo-slice` skill (plan, three-model
+  review, TDD, draft PR, comment drain). One
+  heading is one pull request.
 - Implementing a new utility → the `new-util` skill
   (classification, TDD phases, template).
 - Writing Zig → the `zig-patterns` skill;
