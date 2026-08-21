@@ -237,13 +237,17 @@ assertion failures.
 12. `parallel runBounded caps workers at parallel_workers_max`
     — `std.testing.io`, request 64 workers, 16 jobs. A
     start-gate holds every worker in `work_fn` until
-    `parallel_workers_max` have entered. In-flight peak
-    **== 8**, not merely `≤ 8`. All 16 jobs run. **Do not
-    skip.** `std.testing.io` is `Io.Threaded`; if peak never
-    reaches 8, the test **fails** (sequential remainder is
-    not an excuse). Bounded wait: spin/wait loop cap so a
-    one-worker impl fails the assertion instead of hanging
-    the suite (Tiger: every loop has an upper bound).
+    `parallel_workers_max` have entered, then **keeps those
+    eight inside `work_fn` until either a ninth worker
+    enters or a bounded wait expires**. Then assert
+    in-flight peak **== 8** (a nine-worker impl that races
+    past 8 before the gate opens must still be caught).
+    All 16 jobs run. **Do not skip.** `std.testing.io` is
+    `Io.Threaded`; if peak never reaches 8, or peak exceeds
+    8, the test **fails**. Bounded wait: spin/wait loop cap
+    so a one-worker impl fails the assertion instead of
+    hanging the suite (Tiger: every loop has an upper
+    bound).
 13. `parallel runBounded returns the lowest job index error`
     — `n_workers = 4`, 4 jobs. Job 3's `work_fn` fails first
     (gate: job 3 proceeds before jobs 0–2). Jobs 1 and 3
@@ -308,6 +312,21 @@ stronger parallel, predecessor). Fable APPROVE.
 Round 2: all three REQUEST CHANGES on the Prove-RED
 paragraph claiming (1)–(7) fail. Grok+GPT also blocked on
 production-path `getWidth` wiring and a spawn-cap test that
-`≤ 8` cannot prove. This revision is that delta.
+`≤ 8` cannot prove.
 
-Re-run the three reviewers on this delta before any Zig.
+Round 3: Fable APPROVE. Grok REQUEST CHANGES — test 12 skip
+undoes the cap. GPT REQUEST CHANGES — predecessor gate,
+`ConcurrencyUnavailable` RED, spawn-cap skip. This
+revision: never skip test 12; add test 14 with
+`std.Io.failing`; bounded waits on gated tests. Predecessor
+deviation stays 2/3 (Grok+Fable accept; GPT retains).
+
+Round 4: Grok APPROVE. Fable APPROVE. GPT REQUEST CHANGES
+on test 12 proving a lower bound but not the upper cap.
+Folded: hold the first eight until a ninth is seen or the
+bounded wait expires, then assert peak == 8. Predecessor
+deviation remains the recorded 2/3 decision.
+
+Consensus for implementation: 2/3 approve; remaining GPT
+item is a test-contract nit folded above. No further plan
+round. Test-writer next.
