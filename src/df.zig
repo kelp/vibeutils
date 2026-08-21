@@ -4160,7 +4160,7 @@ test "printTotalDynamic - used plus avail past 16 EiB (issue #158)" {
         "18000000000000000000",
         "50%",
         "-",
-    }, row);
+    }, testFirstLine(row));
     try testing.expect(std.mem.find(u8, row, "100%") == null);
 }
 
