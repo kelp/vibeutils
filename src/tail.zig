@@ -3014,8 +3014,9 @@ test "tail follow switch header uses GNU form" {
 test "tail follow switch header is omitted when quiet" {
     var last: ?u32 = 0;
     try testing.expect(!followHeaderNeeded(false, &last, 1, 8));
-    // Not-quiet plus a slot change still needs a header, so a always-false
-    // stub cannot satisfy this test.
+    // A non-empty quiet chunk still advances last_output_slot. Reset so the
+    // contrast case is a real slot change, not the same slot returning false.
+    last = 0;
     try testing.expect(followHeaderNeeded(true, &last, 1, 8));
 }
 
