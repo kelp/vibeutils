@@ -246,8 +246,12 @@ fn resolveSizeMode(args: []const []const u8) SizeDisplay {
                 },
             }
         } else {
-            const consume_value = applySizeModeCluster(arg, &mode, &saw_size_flag);
-            last_was_k = shortClusterEndedInK(arg);
+            const consume_value = applySizeModeCluster(
+                arg,
+                &mode,
+                &saw_size_flag,
+                &last_was_k,
+            );
             if (consume_value and i < args_len) i += 1;
         }
     }
@@ -286,9 +290,15 @@ fn applySizeModeLong(arg: []const u8, mode: *SizeDisplay) SizeModeLongHit {
     return .no;
 }
 
-/// Returns true when `-B` consumed no attached SIZE and the next argv
-/// token is the value.
-fn applySizeModeCluster(arg: []const u8, mode: *SizeDisplay, saw: *bool) bool {
+/// Returns true when a value-taking short (`-B`/`-d`/`-I`/`-t`) has no
+/// attached argument, so the next argv token is the value. Size-mode
+/// letters after that point belong to the value, not the cluster.
+fn applySizeModeCluster(
+    arg: []const u8,
+    mode: *SizeDisplay,
+    saw: *bool,
+    last_was_k: *bool,
+) bool {
     assert(arg.len >= 2);
     assert(arg[0] == '-');
     assert(arg[1] != '-');
@@ -300,26 +310,36 @@ fn applySizeModeCluster(arg: []const u8, mode: *SizeDisplay, saw: *bool) bool {
             'h' => {
                 mode.* = .human_1024;
                 saw.* = true;
+                last_was_k.* = false;
             },
             'k' => {
                 mode.* = .kilobytes;
                 saw.* = true;
+                last_was_k.* = true;
             },
             'm' => {
                 mode.* = .megabytes;
                 saw.* = true;
+                last_was_k.* = false;
             },
             'g' => {
                 mode.* = .gigabytes;
                 saw.* = true;
+                last_was_k.* = false;
             },
             'b' => {
                 mode.* = .bytes;
                 saw.* = true;
+                last_was_k.* = false;
             },
             'B' => {
                 mode.* = .custom_block;
                 saw.* = true;
+                last_was_k.* = false;
+                if (j + 1 < arg_len) break;
+                consume_next = true;
+            },
+            'd', 'I', 't' => {
                 if (j + 1 < arg_len) break;
                 consume_next = true;
             },
@@ -327,19 +347,6 @@ fn applySizeModeCluster(arg: []const u8, mode: *SizeDisplay, saw: *bool) bool {
         }
     }
     return consume_next;
-}
-
-fn shortClusterEndedInK(arg: []const u8) bool {
-    assert(arg.len >= 2);
-    assert(arg[0] == '-');
-    var last: u8 = 0;
-    for (arg[1..]) |ch| {
-        switch (ch) {
-            'h', 'k', 'm', 'g', 'b', 'B' => last = ch,
-            else => {},
-        }
-    }
-    return last == 'k';
 }
 
 fn applySizeDisplay(config: *DuConfig, mode: SizeDisplay) void {

@@ -174,3 +174,13 @@ the args struct; `ls --block-size` is WONT; man pages required;
 on `ls` without an argv scan.
 
 This revision locks those.
+
+## Patch review (HEAD after 6361563)
+
+Round 1 on the implementation: Grok, GPT, and Fable REQUEST
+CHANGES. `shortClusterEndedInK` scanned attached `-B`/`-t`/`-I`
+values, so `du -B1k` Debug-panicked and `-t1k`/`-Ifoo-k` stole
+the KEEP default. Fold last-was-k into `applySizeModeCluster`,
+stop at valued shorts (`B`/`d`/`I`/`t`), and skip the next argv
+token when the value is not attached. Do not scan size-mode
+letters inside those values.
