@@ -42,6 +42,10 @@ const DateOptions = struct {
     /// First positional operand (`+FORMAT` or a date string). A second
     /// positional is extra_operand. Applied after the option scan.
     positional: ?[]const u8 = null,
+    /// True when date_string came from a positional, not `--date`/`-d`.
+    /// GNU obsolete set-date does not use parse_datetime (`date -- @0`
+    /// is invalid, while `date -d @0` is epoch).
+    positional_date: bool = false,
 };
 
 /// Parse command-line arguments manually (date has unusual flag semantics)
@@ -120,6 +124,8 @@ fn parseArgs_applyPositional(opts: *DateOptions) ?[]const u8 {
         return "lacks plus";
     }
     opts.date_string = tok;
+    opts.positional_date = true;
+    std.debug.assert(opts.positional_date);
     return null;
 }
 
@@ -316,6 +322,12 @@ fn parseArgs_takeValue(
 /// Resolve the timestamp to use based on options
 fn resolveTimestamp(io: std.Io, opts: DateOptions) TimestampResult {
     if (opts.date_string) |ds| {
+        // Positional dates are GNU obsolete set-date, not `--date`.
+        // `@0` is epoch only with `-d`; a leftover positional is invalid.
+        if (opts.positional_date) {
+            std.debug.assert(opts.date_string != null);
+            return .{ .secs = 0, .ns = 0, .err = "invalid date" };
+        }
         // Parse @EPOCH format
         if (ds.len > 0 and ds[0] == '@') {
             const epoch_str = ds[1..];

@@ -769,11 +769,17 @@ fn parseArgs_prescanDepthGlobals(
         {
             // Accept as no-ops
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--help") or
+            std.mem.eql(u8, args[i], "--version"))
+        {
+            // Sequential GNU parse: predicate-position --help/--version
+            // must run before later -maxdepth validation.
+            break;
         } else {
             i += 1;
         }
     }
-    assert(i == args.len);
+    assert(i <= args.len);
     assert(i >= expr_start);
 }
 
