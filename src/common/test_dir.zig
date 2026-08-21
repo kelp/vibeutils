@@ -29,6 +29,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const test_utils = @import("test_utils.zig");
 
 /// Test directory helper for managing temporary file systems in tests
 pub const TestDir = struct {
@@ -48,8 +49,21 @@ pub const TestDir = struct {
         self.tmp_dir.cleanup();
     }
 
-    /// Get the absolute path of a file in the temp directory
+    /// The sandbox directory handle. Callers that need iterate/openFile/access
+    /// reach through this rather than wrapping every Dir method.
+    pub fn dir(self: *TestDir) std.Io.Dir {
+        const handle = self.tmp_dir.dir.handle;
+        std.debug.assert(handle >= 0);
+        std.debug.assert(handle != std.posix.AT.FDCWD);
+        return self.tmp_dir.dir;
+    }
+
+    /// Get the absolute path of a file in the temp directory.
+    /// `"."` is the sandbox root itself (same as `getBasePath`).
     pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
+        if (std.mem.eql(u8, name, ".")) {
+            return self.getBasePath();
+        }
         const io = testing.io;
         // realPathFileAlloc returns [:0]u8 (sentinel-terminated); dupe strips the
         // sentinel so callers can free via allocator.free([]u8) without size mismatch.
@@ -87,6 +101,53 @@ pub const TestDir = struct {
     pub fn createDir(self: *TestDir, name: []const u8) !void {
         const io = testing.io;
         try self.tmp_dir.dir.createDir(io, name, .default_dir);
+    }
+
+    /// Create nested directories; parents that do not exist are created too.
+    pub fn createDirPath(self: *TestDir, name: []const u8) !void {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(!std.fs.path.isAbsolute(name));
+        try self.tmp_dir.dir.createDirPath(testing.io, name);
+    }
+
+    /// Create a uniquely named file and return the allocated basename.
+    pub fn createUniqueFile(self: *TestDir, base: []const u8, content: []const u8) ![]u8 {
+        std.debug.assert(base.len > 0);
+        std.debug.assert(std.mem.indexOfScalar(u8, base, '/') == null);
+        return try test_utils.createUniqueTestFile(
+            testing.io,
+            self.tmp_dir.dir,
+            self.allocator,
+            base,
+            content,
+        );
+    }
+
+    /// Change process cwd to the sandbox. Returns a handle to the prior cwd.
+    /// Allowlisted cwd-behavior tests only; restore with `restoreCwd`.
+    pub fn chdirToBase(self: *TestDir) !std.Io.Dir {
+        const io = testing.io;
+        var saved = try std.Io.Dir.cwd().openDir(io, ".", .{});
+        errdefer saved.close(io);
+
+        const tmp_abs = try self.getBasePath();
+        defer self.allocator.free(tmp_abs);
+        std.debug.assert(tmp_abs.len > 0);
+        std.debug.assert(std.fs.path.isAbsolute(tmp_abs));
+        try std.Io.Threaded.chdir(tmp_abs);
+
+        return saved;
+    }
+
+    /// Restore process cwd from a handle returned by `chdirToBase`, then close
+    /// it. Panics on failure so a later test cannot run in a deleted sandbox.
+    pub fn restoreCwd(saved: *std.Io.Dir) void {
+        const io = testing.io;
+        std.debug.assert(saved.handle >= 0);
+        std.debug.assert(saved.handle != std.posix.AT.FDCWD);
+        std.process.setCurrentDir(io, saved.*) catch
+            @panic("failed to restore test cwd");
+        saved.close(io);
     }
 
     /// Create a symbolic link
@@ -188,4 +249,62 @@ test "TestDir: file with mode" {
     // Check user permissions (works without privileges)
     const user_perms: u32 = @intCast(stat.permissions.toMode() & 0o700);
     try testing.expectEqual(@as(u32, 0o600), user_perms);
+}
+
+test "TestDir: dir() is a real sandbox fd" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const sandbox = test_dir.dir();
+    try testing.expect(sandbox.handle >= 0);
+    try testing.expect(sandbox.handle != std.posix.AT.FDCWD);
+}
+
+test "TestDir: createDirPath makes nested parents" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDirPath("a/b/c");
+    try testing.expect(test_dir.fileExists("a/b/c"));
+    try testing.expect(!test_dir.fileExists("a/b/missing"));
+}
+
+test "TestDir: createUniqueFile returns a distinct basename" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const name = try test_dir.createUniqueFile("base", "unique-body");
+    defer testing.allocator.free(name);
+    try testing.expect(name.len > 0);
+    try testing.expect(!std.mem.eql(u8, name, "base"));
+    try test_dir.expectFileContent(name, "unique-body");
+}
+
+test "TestDir: getPath(\".\") is the sandbox root" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const via_dot = try test_dir.getPath(".");
+    defer testing.allocator.free(via_dot);
+    const via_base = try test_dir.getBasePath();
+    defer testing.allocator.free(via_base);
+    try testing.expect(std.fs.path.isAbsolute(via_dot));
+    try testing.expectEqualStrings(via_base, via_dot);
+}
+
+test "TestDir: chdirToBase moves cwd and restoreCwd returns" {
+    const io = testing.io;
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("marker.txt", "cwd-marker", null);
+    try testing.expectError(
+        error.FileNotFound,
+        std.Io.Dir.cwd().access(io, "marker.txt", .{}),
+    );
+
+    var saved = try test_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved);
+
+    try std.Io.Dir.cwd().access(io, "marker.txt", .{});
 }
