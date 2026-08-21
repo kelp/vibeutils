@@ -96,7 +96,10 @@ since the last inactive scan, try `openFile` on each inactive
 `-F` slot. Bound that scan by `follow_files_max`.
 
 On success, register a watch, set `last_pos = 0`, print the
-existing replaced diagnostic when the inode changed, and read.
+GNU appeared diagnostic on the first successful open of a
+slot that was missing (once per appear transition, not every
+retry tick), print the replaced diagnostic when the inode
+changed, and read.
 Plain `-f` is descriptor-follow: do **not** deactivate a slot
 on `DELETE_SELF` / `MOVE_SELF` / `NOTE.DELETE` / `NOTE.RENAME`.
 
@@ -233,7 +236,8 @@ PID. PATH stays `zig-out/bin`.
 16. `tail -F missing existing follows then both` — live file
     delivers appends while the other path is still missing; after
     the missing path appears, appends to it appear too, and
-    stderr contains `'…' has appeared;  following new file`.
+    stderr contains the literal two-space substring
+    `has appeared;  following new file`.
 17. `tail -F two files rotate one still follows the other` —
     rotate `a`; appends to `b` still appear; `a`'s replacement is
     followed.
@@ -288,8 +292,6 @@ failed open; `-F` retry must not wait for a quiet timeout),
 GPT REQUEST CHANGES (`inotify_rm_watch` shared-wd lifetime),
 Fable APPROVE.
 
-Round 4: Grok APPROVE, Fable APPROVE, GPT REQUEST CHANGES
-(GNU `-F` `has appeared` diagnostic). Accepted: match GNU on
-the new multiplex appear path; test 16 asserts the two-space
-message. Existing single-file `-F` tests still pass if the
-extra line is present.
+Round 5: Grok APPROVE, GPT APPROVE, Fable APPROVE. Consensus.
+Nits folded here: appear once per transition; test 16 greps the
+two-space substring. No further plan round.
