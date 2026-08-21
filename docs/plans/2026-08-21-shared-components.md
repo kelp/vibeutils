@@ -116,12 +116,13 @@ Contracts:
   Job errors are **not** the group return (`Group` discards
   them). Store them in an atomic slot via a wrapper.
 - If `Group.concurrent` returns `error.ConcurrencyUnavailable`
-  mid-spawn, await already-started workers, then finish
-  remaining jobs on the caller. Do not leak tasks.
-  `std.testing.io` is threaded, so this remainder path is
-  not injected in unit tests. Still required in the impl
-  (`-fsingle-threaded`). No `std.Io.failing` test in this
-  slice (Grok: do not add; GPT wanted one — 2/3 skip).
+  mid-spawn, await already-started workers (no-op when none
+  started: `Group.await` returns immediately if `token` is
+  null — do **not** call into `std.Io.failing`'s
+  `unreachableGroupAwait`), then finish remaining jobs on
+  the caller. Do not leak tasks. `-fsingle-threaded` uses
+  this path. Tested with `std.Io.failing`, whose
+  `groupConcurrent` returns `error.ConcurrencyUnavailable`.
 - First error is the error from the **lowest failing job
   index**, even if a higher index failed first. Later
   failures are discarded. All started workers still join.
@@ -146,7 +147,6 @@ Files: `src/common/terminal.zig`, `src/common/parallel.zig`,
 - Changing `cp`/`mv`/`dd` to copy in parallel
 - `sort --parallel` actually spawning workers
 - Tiger Style CI job (deferred heading)
-- Injected `ConcurrencyUnavailable` tests
 
 ## Spec impact
 
@@ -235,21 +235,27 @@ assertion failures.
     caller-remainder path also peaks at 1; either way the
     peak must be 1, not 0 and not 3.
 12. `parallel runBounded caps workers at parallel_workers_max`
-    — request 64 workers, 16 jobs. A start-gate / barrier
-    holds every worker in `work_fn` until `parallel_workers_max`
-    have entered (or until a short timeout if
-    `ConcurrencyUnavailable` forced a sequential remainder).
-    When spawn succeeds: in-flight peak **== 8**, not merely
-    `≤ 8`, and all 16 jobs run. When spawn is unavailable:
-    skip the peak==8 assertion (`error.SkipZigTest` on that
-    half) but still require all 16 jobs. Sequential-only
-    must not count as proving the cap.
+    — `std.testing.io`, request 64 workers, 16 jobs. A
+    start-gate holds every worker in `work_fn` until
+    `parallel_workers_max` have entered. In-flight peak
+    **== 8**, not merely `≤ 8`. All 16 jobs run. **Do not
+    skip.** `std.testing.io` is `Io.Threaded`; if peak never
+    reaches 8, the test **fails** (sequential remainder is
+    not an excuse). Bounded wait: spin/wait loop cap so a
+    one-worker impl fails the assertion instead of hanging
+    the suite (Tiger: every loop has an upper bound).
 13. `parallel runBounded returns the lowest job index error`
-    — 4 jobs. Job 3's `work_fn` fails first (gate: job 3
-    proceeds before jobs 0–2). Jobs 1 and 3 return distinct
-    errors. Result is **job 1's** error, not job 3's. Every
-    job is still attempted (atomic run-count == 4). All
-    workers joined (no hang).
+    — `n_workers = 4`, 4 jobs. Job 3's `work_fn` fails first
+    (gate: job 3 proceeds before jobs 0–2). Jobs 1 and 3
+    return distinct errors. Result is **job 1's** error, not
+    job 3's. Every job is still attempted (atomic run-count
+    == 4). All workers joined. Same bounded-wait rule as
+    (12): timeout → failed assertion, never a hang.
+14. `parallel runBounded finishes jobs when concurrency is
+    unavailable` — `runBounded(std.Io.failing, 8, ctx, fn, 5)`.
+    All 5 jobs run on the caller. `std.Io.failing.groupConcurrent`
+    returns `ConcurrencyUnavailable`. Must not reach
+    `unreachableGroupAwait` (await only if a worker started).
 
 ## Prove RED (this paragraph is the test-writer's contract)
 
@@ -258,12 +264,12 @@ The test-writer proves RED by running the stubbed tests:
 - **Pass** (characterization / current behavior): (1)–(4),
   (9), existing width/height tests. Do not claim these fail.
 - **Fail the assertion** (this slice's RED): (5), (6), (7),
-  (8) off-TTY, (10), (11), (12), (13). Right reason for
-  (5)–(8): 0 leaked through. Right reason for (10)–(13):
-  jobs did not run, peak was not 8, or the error was not
-  the lowest index. Not a compile error. (8) may skip on a
-  TTY; (12)'s peak==8 half may skip if concurrent spawn is
-  unavailable.
+  (8) off-TTY, (10), (11), (12), (13), (14). Right reason
+  for (5)–(8): 0 leaked through. Right reason for
+  (10)–(14): jobs did not run, peak was not 8, the error
+  was not the lowest index, or `std.Io.failing` did not
+  finish jobs on the caller. Not a compile error. (8) may
+  skip on a TTY. (12) must **not** skip.
 
 ## Risks
 
@@ -277,8 +283,11 @@ The test-writer proves RED by running the stubbed tests:
   incorrect. Atomics are allowed without `Io`. Group
   callbacks swallow errors; the atomic slot is mandatory.
 - **ConcurrencyUnavailable:** sequential remainder on the
-  caller after joining started workers. Not unit-tested via
-  a fake Io in this slice.
+  caller after joining started workers. RED via
+  `std.Io.failing` (test 14). Do not `await` a group that
+  never started on that Io (`unreachableGroupAwait`).
+- **Gated tests (12, 13):** bounded wait; timeout is a
+  failed assertion, not `SkipZigTest`, not a hang.
 - **macOS:** ioctl `TIOCGWINSZ` is the existing path; do not
   `@intCast` signed fields that can have the high bit set
   (`ws.col` is unsigned).
