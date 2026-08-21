@@ -322,9 +322,10 @@ fn sgrForDirectory(table: *const Table, mode: ?u32) ?[]const u8 {
     if (mode) |m| {
         const sticky = (m & constants.STICKY_BIT) != 0;
         const owrite = (m & other_write_bit) != 0;
-        if (sticky and owrite) return table.lookupType("tw");
-        if (owrite) return table.lookupType("ow");
-        if (sticky) return table.lookupType("st");
+        // GNU skips an indicator when that key is uncolored / absent.
+        if (sticky and owrite) if (table.lookupType("tw")) |sgr| return sgr;
+        if (owrite) if (table.lookupType("ow")) |sgr| return sgr;
+        if (sticky) if (table.lookupType("st")) |sgr| return sgr;
     }
     return table.lookupType("di");
 }
@@ -338,11 +339,19 @@ fn sgrForRegularFile(
     std.debug.assert(@intFromPtr(table) != 0);
     std.debug.assert(name.len > 0);
     if (mode) |m| {
-        if (m & constants.SETUID_BIT != 0) return table.lookupType("su");
-        if (m & constants.SETGID_BIT != 0) return table.lookupType("sg");
-        if (m & constants.EXECUTE_BIT != 0) return table.lookupType("ex");
+        if (m & constants.SETUID_BIT != 0) {
+            if (table.lookupType("su")) |sgr| return sgr;
+        }
+        if (m & constants.SETGID_BIT != 0) {
+            if (table.lookupType("sg")) |sgr| return sgr;
+        }
+        if (m & constants.EXECUTE_BIT != 0) {
+            if (table.lookupType("ex")) |sgr| return sgr;
+        }
     }
-    if (nlink > 1) return table.lookupType("mh");
+    if (nlink > 1) {
+        if (table.lookupType("mh")) |sgr| return sgr;
+    }
     if (table.lookupSuffix(name)) |sgr| return sgr;
     return table.lookupType("fi");
 }
