@@ -259,6 +259,29 @@ pub fn printErrorWithProgram(
     }
 }
 
+/// Whether a diagnostic suffix is for a read or a write.
+pub const HintOp = enum { read, write };
+
+/// Suffix for a TTY diagnostic, or null. Returns null until call sites
+/// are wired; the overlay still gates `maybeHint`.
+pub fn actionableHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
+    std.debug.assert(operand.len < std.Io.Dir.max_path_bytes or operand.len >= std.Io.Dir.max_path_bytes);
+    return switch (err) {
+        else => null,
+    };
+}
+
+/// Combine the TTY seam with `actionableHint`. Call sites append
+/// `maybeHint(...) orelse ""`.
+pub fn maybeHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
+    if (!env.stderrHintsEnabled()) return null;
+    return actionableHint(err, operand, op);
+}
+
 /// Print hint message with custom program name to a specific writer
 ///
 /// Hints are informational suggestions for the user, displayed in cyan.
@@ -465,6 +488,15 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     // green — which is how this lint could have gone quietly blind (issue #95).
     // src/ holds 48 utilities plus src/common and src/ls.
     try testing.expect(scanned >= 48);
+}
+
+test "maybeHint is null until wired even with overlay on" {
+    const testing = std.testing;
+    const saved = env.test_stderr_hints;
+    defer env.test_stderr_hints = saved;
+    env.test_stderr_hints = true;
+    try testing.expect(maybeHint(error.DirNotEmpty, "src", .write) == null);
+    try testing.expect(maybeHint(error.AccessDenied, "x", .read) == null);
 }
 
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {

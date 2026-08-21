@@ -106,3 +106,37 @@ pub fn isTty(fd: std.posix.fd_t) bool {
         return std.c.isatty(fd) != 0;
     }
 }
+
+/// Test-only override for `stderrHintsEnabled`. `null` means “default
+/// off in tests.” Production builds never read this.
+pub var test_stderr_hints: ?bool = null;
+
+/// Whether TTY-only diagnostic suffixes should fire.
+///
+/// Production uses process stderr's isatty. Tests default off so exact
+/// GNU error strings stay stable; set `test_stderr_hints` to force.
+pub fn stderrHintsEnabled() bool {
+    if (builtin.is_test) {
+        if (test_stderr_hints) |forced| {
+            std.debug.assert(forced == true or forced == false);
+            return forced;
+        }
+        return false;
+    }
+    const fd = std.Io.File.stderr().handle;
+    std.debug.assert(fd == std.Io.File.stderr().handle);
+    return isTty(fd);
+}
+
+const testing = std.testing;
+
+test "stderrHintsEnabled follows test overlay and defaults off" {
+    const saved = test_stderr_hints;
+    defer test_stderr_hints = saved;
+    test_stderr_hints = null;
+    try testing.expectEqual(false, stderrHintsEnabled());
+    test_stderr_hints = true;
+    try testing.expectEqual(true, stderrHintsEnabled());
+    test_stderr_hints = false;
+    try testing.expectEqual(false, stderrHintsEnabled());
+}
