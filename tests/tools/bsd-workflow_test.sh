@@ -38,13 +38,13 @@ WORKFLOW_CONTENT="$(<"$WORKFLOW")"
 
 require_text \
     "FreeBSD vmaction is not pinned to the locked SHA" \
-    "83b151f58c6047089f4c80eb5ba2039d158ce093"
+    "uses: vmactions/freebsd-vm@c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e"
 require_text \
     "OpenBSD vmaction is not pinned to the locked SHA" \
-    "e6c68b637a12e83519688d115d57d5b0b53923cd"
+    "uses: vmactions/openbsd-vm@9a8e4351a4a0dc6238e7c69276dcbf6c03bea576"
 require_text \
     "NetBSD vmaction is not pinned to the locked SHA" \
-    "00081e82b14bc40114eb97f32b4455306828516b"
+    "uses: vmactions/netbsd-vm@e04aec09540429f9cebb0e7941f7cd0c0fc3b44f"
 require_text "workflow does not install Zig 0.16.0" "0.16.0"
 require_text "workflow does not use an Ubuntu host runner" \
     "runs-on: ubuntu-latest"
