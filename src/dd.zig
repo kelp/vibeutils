@@ -646,8 +646,8 @@ fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
 /// Probes applyKeyValue on a throwaway config so parseOperands keeps
 /// its existing `try parseOperands(&args)` test signature.
 fn operandKeyIsUnknown(arg: []const u8) bool {
-    std.debug.assert(arg.len > 0);
     const eq_pos = std.mem.indexOfScalar(u8, arg, '=') orelse return false;
+    std.debug.assert(arg.len > 0);
     std.debug.assert(eq_pos < arg.len);
     var dummy = DdConfig{};
     parseOperands_applyKeyValue(&dummy, arg[0..eq_pos], arg[eq_pos + 1 ..]) catch |err| {
@@ -659,6 +659,7 @@ fn operandKeyIsUnknown(arg: []const u8) bool {
 /// First argv token that would make parseOperands return UnknownOperand.
 /// Skips the delimiter `--` and pre-delimiter `--help`/`--version`;
 /// names an unknown `key=value` ahead of a later bare token (GNU 9.4).
+/// Empty argv (`dd ''`) is a real operand: GNU quotes it as `''`.
 fn findUnknownOperand(args: []const []const u8) ?[]const u8 {
     var seen_end_of_options = false;
     for (args) |arg| {
@@ -675,7 +676,7 @@ fn findUnknownOperand(args: []const []const u8) ?[]const u8 {
         {
             continue;
         }
-        std.debug.assert(arg.len > 0);
+        std.debug.assert(seen_end_of_options or !std.mem.eql(u8, arg, "--"));
         return arg;
     }
     return null;
@@ -688,7 +689,9 @@ fn runDd_printUnknownOperand(
 ) void {
     std.debug.assert(args.len > 0);
     if (findUnknownOperand(args)) |name| {
-        std.debug.assert(name.len > 0);
+        // GNU quotes an empty operand as `''`; do not require name.len > 0.
+        std.debug.assert(std.mem.indexOfScalar(u8, name, '=') == null or
+            operandKeyIsUnknown(name));
         common.printErrorWithProgram(
             allocator,
             stderr,

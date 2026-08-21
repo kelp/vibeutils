@@ -4030,6 +4030,48 @@ fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
 // Entry points
 // ============================================================================
 
+/// True when `arg` would be collected as a start path, not an expression
+/// or a leading -H/-L/-P option. Mirrors parseArgs_collectLeadingGlobals.
+fn runFind_isStartPath(arg: []const u8) bool {
+    if (arg.len == 0) return true;
+    if (std.mem.eql(u8, arg, "(") or std.mem.eql(u8, arg, "!")) return false;
+    std.debug.assert(arg.len > 0);
+    if (arg[0] == '-' and !std.mem.eql(u8, arg, "-")) return false;
+    return true;
+}
+
+/// Honor `--help`/`--version` anywhere GNU still treats them as options.
+/// After a start path, `--` is an unknown predicate, so later `--help`
+/// must not win (`find . -- --help`). Before any path, `--` is only the
+/// delimiter (`find -- --help` still prints help).
+fn runFind_helpOrVersion(
+    allocator: Allocator,
+    args: []const []const u8,
+    stdout: anytype,
+) ?u8 {
+    var seen_path = false;
+    var seen_delim = false;
+    for (args) |arg| {
+        if (!seen_delim and !seen_path and std.mem.eql(u8, arg, "--")) {
+            seen_delim = true;
+            continue;
+        }
+        if (seen_path and std.mem.eql(u8, arg, "--")) break;
+        if (std.mem.eql(u8, arg, "--help")) {
+            std.debug.assert(arg.len == 6);
+            printHelp(allocator, stdout);
+            return @intFromEnum(common.ExitCode.success);
+        }
+        if (std.mem.eql(u8, arg, "--version")) {
+            std.debug.assert(arg.len == 9);
+            printVersion(stdout);
+            return @intFromEnum(common.ExitCode.success);
+        }
+        if (runFind_isStartPath(arg)) seen_path = true;
+    }
+    return null;
+}
+
 pub fn runFind(
     allocator: Allocator,
     io: std.Io,
@@ -4037,17 +4079,7 @@ pub fn runFind(
     stdout: anytype,
     stderr: anytype,
 ) anyerror!u8 {
-    // Handle --help and --version before expression parsing
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
-            printHelp(allocator, stdout);
-            return @intFromEnum(common.ExitCode.success);
-        }
-        if (std.mem.eql(u8, arg, "--version")) {
-            printVersion(stdout);
-            return @intFromEnum(common.ExitCode.success);
-        }
-    }
+    if (runFind_helpOrVersion(allocator, args, stdout)) |code| return code;
 
     const config = parseArgs(allocator, args, stderr) catch {
         return @intFromEnum(common.ExitCode.general_error);

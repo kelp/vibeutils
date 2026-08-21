@@ -39,6 +39,9 @@ const DateOptions = struct {
     help: bool = false,
     version: bool = false,
     extra_operand: ?[]const u8 = null,
+    /// First positional operand (`+FORMAT` or a date string). A second
+    /// positional is extra_operand. Applied after the option scan.
+    positional: ?[]const u8 = null,
 };
 
 /// Parse command-line arguments manually (date has unusual flag semantics)
@@ -50,23 +53,10 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        if (arg.len == 0) continue;
-
-        // Format string starts with +. GNU rejects a second format as
-        // extra operand (quoted), both with and without a preceding `--`.
-        if (arg[0] == '+') {
-            if (opts.format != null) {
-                err_msg = parseArgs_setExtraOperand(&opts, arg);
-                break;
-            }
-            opts.format = arg[1..];
+        if (arg.len == 0 or arg[0] != '-') {
+            err_msg = parseArgs_takePositional(&opts, arg);
+            if (err_msg != null) break;
             continue;
-        }
-
-        // Not a flag
-        if (arg[0] != '-') {
-            err_msg = parseArgs_setExtraOperand(&opts, arg);
-            break;
         }
 
         // Long options
@@ -102,7 +92,29 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
         }
     }
 
+    if (err_msg == null) parseArgs_applyPositional(&opts);
     return .{ .opts = opts, .err = err_msg };
+}
+
+/// Record the first positional, or tag a second one as GNU extra operand.
+fn parseArgs_takePositional(opts: *DateOptions, tok: []const u8) ?[]const u8 {
+    std.debug.assert(opts.extra_operand == null);
+    if (opts.positional != null) return parseArgs_setExtraOperand(opts, tok);
+    opts.positional = tok;
+    std.debug.assert(opts.positional != null);
+    return null;
+}
+
+/// Map the first positional onto format (`+…`) or date_string. `--date`
+/// already stored in date_string is left alone (option, not positional).
+fn parseArgs_applyPositional(opts: *DateOptions) void {
+    std.debug.assert(opts.extra_operand == null);
+    const tok = opts.positional orelse return;
+    if (tok.len > 0 and tok[0] == '+') {
+        opts.format = tok[1..];
+        return;
+    }
+    if (opts.date_string == null) opts.date_string = tok;
 }
 
 /// Record `operand` as GNU's extra-operand token and return the err tag
@@ -114,9 +126,8 @@ fn parseArgs_setExtraOperand(opts: *DateOptions, operand: []const u8) []const u8
     return "extra operand";
 }
 
-/// Drain argv after a POSIX `--`. Remaining `+FORMAT` tokens are formats;
-/// anything else is a date string (GNU `date -- -1` is an invalid date,
-/// not an unrecognized option). A second format is extra operand.
+/// Drain argv after a POSIX `--`. Every remaining token is a positional
+/// operand, including empty strings and dash-tokens (`date -- -1`).
 fn parseArgs_afterDashDash(
     args: []const []const u8,
     i: *usize, // tiger:allow:usize-arch cursor indexes args slice
@@ -126,14 +137,7 @@ fn parseArgs_afterDashDash(
     std.debug.assert(std.mem.eql(u8, args[i.*], "--"));
     i.* += 1;
     while (i.* < args.len) : (i.* += 1) {
-        const rest = args[i.*];
-        if (rest.len > 0 and rest[0] == '+') {
-            if (opts.format != null) return parseArgs_setExtraOperand(opts, rest);
-            opts.format = rest[1..];
-            continue;
-        }
-        if (opts.date_string != null) return parseArgs_setExtraOperand(opts, rest);
-        opts.date_string = rest;
+        if (parseArgs_takePositional(opts, args[i.*])) |msg| return msg;
     }
     return null;
 }
