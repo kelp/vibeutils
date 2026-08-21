@@ -82,8 +82,11 @@ fi
 # that passwd no longer has, and setpriv then dies with "uid N not
 # found" (issue #150). flock(1) is Linux; mkdir is the macOS fallback.
 # Hold the lock only for provisioning, never for the suite itself.
-USER_LOCK_FILE="${TMPDIR:-/tmp}/vibeutils-useradd-${TEST_USER}.lock"
-USER_LOCK_DIR="${TMPDIR:-/tmp}/vibeutils-useradd-${TEST_USER}.lockdir"
+# The path is always /tmp, not $TMPDIR: useradd is machine-global, so
+# two runners that share VIBEUTILS_TEST_USER but not TMPDIR must still
+# serialize. /tmp is 1777, so an unprivileged runner can create the lock.
+USER_LOCK_FILE="/tmp/vibeutils-useradd-${TEST_USER}.lock"
+USER_LOCK_DIR="/tmp/vibeutils-useradd-${TEST_USER}.lockdir"
 USER_LOCK_KIND=""
 
 acquire_test_user_lock() {
