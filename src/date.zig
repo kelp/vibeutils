@@ -92,7 +92,7 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
         }
     }
 
-    if (err_msg == null) parseArgs_applyPositional(&opts);
+    if (err_msg == null) err_msg = parseArgs_applyPositional(&opts);
     return .{ .opts = opts, .err = err_msg };
 }
 
@@ -105,16 +105,22 @@ fn parseArgs_takePositional(opts: *DateOptions, tok: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Map the first positional onto format (`+…`) or date_string. `--date`
-/// already stored in date_string is left alone (option, not positional).
-fn parseArgs_applyPositional(opts: *DateOptions) void {
+/// Map the first positional onto format (`+…`) or date_string. A leftover
+/// non-`+` token after `--date`/`-r` is GNU "lacks a leading '+'".
+fn parseArgs_applyPositional(opts: *DateOptions) ?[]const u8 {
     std.debug.assert(opts.extra_operand == null);
-    const tok = opts.positional orelse return;
+    const tok = opts.positional orelse return null;
     if (tok.len > 0 and tok[0] == '+') {
         opts.format = tok[1..];
-        return;
+        return null;
     }
-    if (opts.date_string == null) opts.date_string = tok;
+    if (opts.date_string != null or opts.reference_file != null) {
+        opts.extra_operand = tok;
+        std.debug.assert(opts.extra_operand != null);
+        return "lacks plus";
+    }
+    opts.date_string = tok;
+    return null;
 }
 
 /// Record `operand` as GNU's extra-operand token and return the err tag
@@ -739,6 +745,19 @@ fn runDate_printParseErr(
             stderr_writer,
             prog_name,
             "extra operand '{s}'",
+            .{opts.extra_operand.?},
+        );
+        return;
+    }
+    if (std.mem.eql(u8, err_msg, "lacks plus")) {
+        std.debug.assert(opts.extra_operand != null);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "the argument '{s}' lacks a leading '+';\n" ++
+                "when using an option to specify date(s), any non-option\n" ++
+                "argument must be a format string beginning with '+'",
             .{opts.extra_operand.?},
         );
         return;

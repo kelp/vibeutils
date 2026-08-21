@@ -901,6 +901,8 @@ const ExprParseError = error{
     UnmatchedParen,
     StatError,
     OutOfMemory,
+    HelpRequested,
+    VersionRequested,
 };
 
 /// Binary operators and the paren sentinel held on the shunting-yard operator
@@ -1942,6 +1944,12 @@ fn parsePrimary(
     }
     const arg = args[pos.*];
     assert(pos.* < args.len);
+
+    // GNU treats `--help`/`--version` as options in predicate position,
+    // not as unknown predicates. As a primary argument they are consumed
+    // by that primary (`-name --help`) and never reach this check.
+    if (std.mem.eql(u8, arg, "--help")) return error.HelpRequested;
+    if (std.mem.eql(u8, arg, "--version")) return error.VersionRequested;
 
     if (try parsePrimary_globalsAndNoops(allocator, args, pos, arg)) |e| return e;
     if (try parsePrimary_namePathType(allocator, args, pos, arg, pctx)) |e| return e;
@@ -4030,46 +4038,25 @@ fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
 // Entry points
 // ============================================================================
 
-/// True when `arg` would be collected as a start path, not an expression
-/// or a leading -H/-L/-P option. Mirrors parseArgs_collectLeadingGlobals.
-fn runFind_isStartPath(arg: []const u8) bool {
-    if (arg.len == 0) return true;
-    if (std.mem.eql(u8, arg, "(") or std.mem.eql(u8, arg, "!")) return false;
-    std.debug.assert(arg.len > 0);
-    if (arg[0] == '-' and !std.mem.eql(u8, arg, "-")) return false;
-    return true;
-}
-
-/// Honor `--help`/`--version` anywhere GNU still treats them as options.
-/// After a start path, `--` is an unknown predicate, so later `--help`
-/// must not win (`find . -- --help`). Before any path, `--` is only the
-/// delimiter (`find -- --help` still prints help).
-fn runFind_helpOrVersion(
+/// Map parseArgs failures: `--help`/`--version` in predicate position
+/// print help/version on stdout (GNU sequential parse). Other errors
+/// already wrote stderr inside parseArgs.
+fn runFind_afterParseErr(
     allocator: Allocator,
-    args: []const []const u8,
     stdout: anytype,
-) ?u8 {
-    var seen_path = false;
-    var seen_delim = false;
-    for (args) |arg| {
-        if (!seen_delim and !seen_path and std.mem.eql(u8, arg, "--")) {
-            seen_delim = true;
-            continue;
-        }
-        if (seen_path and std.mem.eql(u8, arg, "--")) break;
-        if (std.mem.eql(u8, arg, "--help")) {
-            std.debug.assert(arg.len == 6);
-            printHelp(allocator, stdout);
-            return @intFromEnum(common.ExitCode.success);
-        }
-        if (std.mem.eql(u8, arg, "--version")) {
-            std.debug.assert(arg.len == 9);
-            printVersion(stdout);
-            return @intFromEnum(common.ExitCode.success);
-        }
-        if (runFind_isStartPath(arg)) seen_path = true;
+    err: anyerror,
+) u8 {
+    if (err == error.HelpRequested) {
+        printHelp(allocator, stdout);
+        return @intFromEnum(common.ExitCode.success);
     }
-    return null;
+    if (err == error.VersionRequested) {
+        printVersion(stdout);
+        return @intFromEnum(common.ExitCode.success);
+    }
+    std.debug.assert(err != error.HelpRequested);
+    std.debug.assert(err != error.VersionRequested);
+    return @intFromEnum(common.ExitCode.general_error);
 }
 
 pub fn runFind(
@@ -4079,10 +4066,8 @@ pub fn runFind(
     stdout: anytype,
     stderr: anytype,
 ) anyerror!u8 {
-    if (runFind_helpOrVersion(allocator, args, stdout)) |code| return code;
-
-    const config = parseArgs(allocator, args, stderr) catch {
-        return @intFromEnum(common.ExitCode.general_error);
+    const config = parseArgs(allocator, args, stderr) catch |err| {
+        return runFind_afterParseErr(allocator, stdout, err);
     };
     assert(config.start_paths.len > 0);
 

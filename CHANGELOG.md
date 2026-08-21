@@ -120,8 +120,10 @@
   operands, and the first invalid token — including an unknown
   `key=value` or an empty `''` — is the one named. Date collects
   positionals: a second operand is extra (quoted), a single non-`+`
-  token is a date string. After a find start path, `--` is an unknown
-  predicate even if `--help` follows (`find . -- --help`) (#159).
+  token is a date string. A leftover non-`+` positional after `--date`
+  or `-r` is GNU "lacks a leading '+'". After a find start path, `--`
+  is an unknown predicate (`find . -- --help`); `--help` in predicate
+  position still prints help (`find . -name -- --help`) (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not
