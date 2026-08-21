@@ -4,28 +4,874 @@ const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 
-/// List a directory as a tree. Implementation is filled in after RED tests.
+const Allocator = std.mem.Allocator;
+const FileKind = std.Io.File.Kind;
+
+const prog_name = "tree";
+const branch_mid = "├── ";
+const branch_end = "└── ";
+const pipe_pad = "│   ";
+const space_pad = "    ";
+const args_len_max: u32 = 1 << 20;
+const ignore_alts_max: u32 = 256;
+const walk_entries_max: u64 = 1 << 24;
+
+const When = enum { always, auto, never };
+
+const TreeArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    all: bool = false,
+    directories_only: bool = false,
+    level: ?[]const u8 = null,
+    ignore: ?[]const u8 = null,
+    color: ?[]const u8 = null,
+    icons: ?[]const u8 = null,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .all = .{ .short = 'a', .desc = "Include hidden entries" },
+        .directories_only = .{
+            .short = 'd',
+            .desc = "List directories only",
+        },
+        .level = .{
+            .short = 'L',
+            .desc = "Descend only depth N",
+            .value_name = "N",
+        },
+        .ignore = .{
+            .short = 'I',
+            .desc = "Exclude names matching PATTERN",
+            .value_name = "PATTERN",
+        },
+        .color = .{
+            .short = 0,
+            .desc = "When to use color (always, auto, never)",
+            .value_name = "WHEN",
+        },
+        .icons = .{
+            .short = 0,
+            .desc = "When to show icons (always, auto, never)",
+            .value_name = "WHEN",
+        },
+    };
+};
+
+const Node = struct {
+    name: []const u8,
+    kind: FileKind,
+    children: std.ArrayListUnmanaged(*Node) = .empty,
+};
+
+const WalkFilter = struct {
+    all: bool,
+    directories_only: bool,
+    max_level: ?u16,
+    ignore_patterns: []const []const u8,
+};
+
+const Counts = struct {
+    directories: u32 = 0,
+    files: u32 = 0,
+};
+
+const TreeStyle = common.style.Style(*std.Io.Writer);
+
 pub fn runTree(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     io: std.Io,
     args: []const []const u8,
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !u8 {
-    _ = io;
-    _ = allocator;
-    // A later argv scan walks every token; keep that walk bounded.
-    std.debug.assert(args.len < 1 << 20);
+    std.debug.assert(args.len < args_len_max);
     std.debug.assert(@intFromPtr(stdout_writer) != 0);
     std.debug.assert(@intFromPtr(stderr_writer) != 0);
-    return @intFromEnum(common.ExitCode.success);
+    var arena_inst = std.heap.ArenaAllocator.init(allocator);
+    defer arena_inst.deinit();
+    return runTreeArena(
+        allocator,
+        arena_inst.allocator(),
+        io,
+        args,
+        stdout_writer,
+        stderr_writer,
+    );
 }
 
 pub fn main(init: std.process.Init) noreturn {
     common.utilityMain(init, runTree);
 }
 
-// === Tests (appended by the test-writer; do not implement behavior here) ===
+fn runTreeArena(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(args.len < args_len_max);
+    std.debug.assert(@intFromPtr(stdout_writer) != 0);
+    var diag: common.argparse.ArgParser.Diagnostic = .{};
+    const parsed = common.argparse.ArgParser.parseWithDiagnostic(
+        TreeArgs,
+        gpa,
+        args,
+        &diag,
+    ) catch |err| {
+        return reportParseError(gpa, stderr_writer, err);
+    };
+    defer gpa.free(parsed.positionals);
+
+    if (parsed.help) {
+        try printHelp(gpa, stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+    if (parsed.version) {
+        try stdout_writer.print("{s} ({s}) {s}\n", .{
+            prog_name,
+            common.name,
+            common.version,
+        });
+        return @intFromEnum(common.ExitCode.success);
+    }
+    return runTreeConfigured(
+        gpa,
+        arena,
+        io,
+        args,
+        parsed,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+fn runTreeConfigured(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    parsed: TreeArgs,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(args.len < args_len_max);
+    std.debug.assert(@intFromPtr(stdout_writer) != 0);
+    const max_level = parseLevelArg(parsed.level) catch {
+        common.printErrorWithProgram(
+            gpa,
+            stderr_writer,
+            prog_name,
+            "invalid -L value",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+    const color_when = parseWhenArg(parsed.color) catch {
+        common.printErrorWithProgram(
+            gpa,
+            stderr_writer,
+            prog_name,
+            "invalid --color value",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+    const icon_when = parseWhenArg(parsed.icons) catch {
+        common.printErrorWithProgram(
+            gpa,
+            stderr_writer,
+            prog_name,
+            "invalid --icons value",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+    var display = common.display_config.DisplayConfig.resolve(gpa);
+    applyColorWhen(&display, color_when);
+    applyIconWhen(&display, icon_when);
+    const walk_opts = WalkFilter{
+        .all = parsed.all,
+        .directories_only = parsed.directories_only,
+        .max_level = max_level,
+        .ignore_patterns = try collectIgnorePatterns(arena, args),
+    };
+    if (parsed.ignore != null) {
+        std.debug.assert(walk_opts.ignore_patterns.len > 0);
+    }
+    return emitTrees(
+        gpa,
+        arena,
+        io,
+        parsed.positionals,
+        walk_opts,
+        display,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+fn emitTrees(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    positionals: []const []const u8,
+    walk_opts: WalkFilter,
+    display: common.display_config.DisplayConfig,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(positionals.len < args_len_max);
+    std.debug.assert(@intFromPtr(stdout_writer) != 0);
+    const operands: []const []const u8 = if (positionals.len == 0)
+        &.{"."}
+    else
+        positionals;
+    std.debug.assert(operands.len >= 1);
+    var counts: Counts = .{};
+    var status: u8 = @intFromEnum(common.ExitCode.success);
+    var style = try makeStyle(gpa, stdout_writer, display);
+    for (operands) |operand| {
+        std.debug.assert(operand.len > 0);
+        const tree_status = emitOneOperand(
+            gpa,
+            arena,
+            io,
+            operand,
+            walk_opts,
+            display,
+            &style,
+            stdout_writer,
+            stderr_writer,
+            &counts,
+        ) catch |err| {
+            reportPathError(gpa, stderr_writer, operand, err);
+            status = @intFromEnum(common.ExitCode.general_error);
+            continue;
+        };
+        if (tree_status != 0) status = tree_status;
+    }
+    try writeSummary(stdout_writer, counts, walk_opts.directories_only);
+    try stdout_writer.flush();
+    return status;
+}
+
+fn emitOneOperand(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    operand: []const u8,
+    walk_opts: WalkFilter,
+    display: common.display_config.DisplayConfig,
+    style: *TreeStyle,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    counts: *Counts,
+) !u8 {
+    std.debug.assert(operand.len > 0);
+    std.debug.assert(operand.len < std.Io.Dir.max_path_bytes);
+    const kind = try preflightOperand(io, operand);
+    const root = try makeNode(arena, operand, kind);
+    countNode(counts, root.kind);
+    var status: u8 = 0;
+    if (kind == .directory) {
+        status = try walkDirectory(
+            gpa,
+            arena,
+            io,
+            operand,
+            root,
+            walk_opts,
+            stderr_writer,
+            counts,
+        );
+    }
+    try printTree(root, display, style, stdout_writer);
+    return status;
+}
+
+fn reportParseError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    err: anyerror,
+) u8 {
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
+    std.debug.assert(@intFromPtr(stderr_writer) != 0);
+    const msg: []const u8 = switch (err) {
+        error.UnknownFlag => "unrecognized option",
+        error.MissingValue => "option requires an argument",
+        error.InvalidValue => "invalid option value",
+        else => "invalid argument",
+    };
+    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{msg});
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+fn reportPathError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    path: []const u8,
+    err: anyerror,
+) void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(@intFromPtr(stderr_writer) != 0);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "{s}: {s}",
+        .{ path, common.posixErrorString(err) },
+    );
+}
+
+fn parseWhenArg(value: ?[]const u8) !?When {
+    const text = value orelse return null;
+    std.debug.assert(text.len > 0);
+    if (std.mem.eql(u8, text, "always")) return .always;
+    if (std.mem.eql(u8, text, "auto")) return .auto;
+    if (std.mem.eql(u8, text, "never")) return .never;
+    return error.InvalidValue;
+}
+
+fn parseLevelArg(value: ?[]const u8) !?u16 {
+    const text = value orelse return null;
+    std.debug.assert(text.len > 0);
+    if (text[0] == '-' or text[0] == '+') return error.InvalidValue;
+    const parsed = std.fmt.parseInt(u32, text, 10) catch return error.InvalidValue;
+    if (parsed > std.math.maxInt(u16)) return error.InvalidValue;
+    return @intCast(parsed);
+}
+
+fn applyColorWhen(
+    display: *common.display_config.DisplayConfig,
+    when: ?When,
+) void {
+    std.debug.assert(@intFromPtr(display) != 0);
+    if (when) |mode| {
+        switch (mode) {
+            .always => display.color = .on,
+            .never => display.color = .off,
+            .auto => {},
+        }
+    }
+    if (common.env.getEnv("NO_COLOR") != null) display.color = .off;
+    if (common.env.getEnv("TERM")) |term| {
+        if (std.mem.eql(u8, term, "dumb")) display.color = .off;
+    }
+}
+
+fn applyIconWhen(
+    display: *common.display_config.DisplayConfig,
+    when: ?When,
+) void {
+    std.debug.assert(@intFromPtr(display) != 0);
+    if (when) |mode| {
+        switch (mode) {
+            .always => display.icons = .on,
+            .never => display.icons = .off,
+            .auto => {},
+        }
+    }
+}
+
+fn makeStyle(
+    allocator: Allocator,
+    writer: *std.Io.Writer,
+    display: common.display_config.DisplayConfig,
+) !TreeStyle {
+    std.debug.assert(@intFromPtr(writer) != 0);
+    const detected = common.style.TerminalColorMode.detect(allocator) catch .basic;
+    const color_mode: TreeStyle.ColorMode = if (display.color == .on)
+        (if (detected == .none) .basic else detected)
+    else
+        .none;
+    std.debug.assert(display.color == .off or color_mode != .none);
+    return .{ .color_mode = color_mode, .writer = writer };
+}
+
+fn collectIgnorePatterns(
+    arena: Allocator,
+    args: []const []const u8,
+) ![]const []const u8 {
+    std.debug.assert(args.len < args_len_max);
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
+    var i: u32 = 0;
+    while (i < args.len) : (i += 1) {
+        std.debug.assert(i < args.len);
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) break;
+        i = try collectIgnoreAt(arena, args, i, &list);
+    }
+    return list.items;
+}
+
+fn collectIgnoreAt(
+    arena: Allocator,
+    args: []const []const u8,
+    i: u32,
+    list: *std.ArrayListUnmanaged([]const u8),
+) !u32 {
+    std.debug.assert(i < args.len);
+    std.debug.assert(args.len < args_len_max);
+    const arg = args[i];
+    if (std.mem.startsWith(u8, arg, "--ignore=")) {
+        try list.append(arena, arg["--ignore=".len..]);
+        return i;
+    }
+    if (std.mem.eql(u8, arg, "--ignore")) {
+        return try takeNextPattern(arena, args, i, list);
+    }
+    if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
+        return try collectIgnoreCluster(arena, args, i, list);
+    }
+    return i;
+}
+
+fn takeNextPattern(
+    arena: Allocator,
+    args: []const []const u8,
+    i: u32,
+    list: *std.ArrayListUnmanaged([]const u8),
+) !u32 {
+    std.debug.assert(i < args.len);
+    std.debug.assert(i + 1 < args.len);
+    try list.append(arena, args[i + 1]);
+    return i + 1;
+}
+
+fn collectIgnoreCluster(
+    arena: Allocator,
+    args: []const []const u8,
+    i: u32,
+    list: *std.ArrayListUnmanaged([]const u8),
+) !u32 {
+    std.debug.assert(i < args.len);
+    const arg = args[i];
+    std.debug.assert(arg.len > 1);
+    var j: u32 = 1;
+    while (j < arg.len) : (j += 1) {
+        std.debug.assert(j < arg.len);
+        const ch = arg[j];
+        if (ch == 'I') return try takeClusterValue(arena, args, i, j, list);
+        if (ch == 'L') return skipClusterValue(args, i, j);
+        if (ch == '=') return i;
+    }
+    return i;
+}
+
+fn takeClusterValue(
+    arena: Allocator,
+    args: []const []const u8,
+    i: u32,
+    j: u32,
+    list: *std.ArrayListUnmanaged([]const u8),
+) !u32 {
+    std.debug.assert(i < args.len);
+    std.debug.assert(j < args[i].len);
+    const arg = args[i];
+    if (j + 1 < arg.len) {
+        var value = arg[j + 1 ..];
+        if (value.len > 0 and value[0] == '=') value = value[1..];
+        try list.append(arena, value);
+        return i;
+    }
+    return try takeNextPattern(arena, args, i, list);
+}
+
+fn skipClusterValue(args: []const []const u8, i: u32, j: u32) u32 {
+    std.debug.assert(i < args.len);
+    std.debug.assert(j < args[i].len);
+    if (j + 1 < args[i].len) return i;
+    if (i + 1 < args.len) return i + 1;
+    return i;
+}
+
+fn preflightOperand(io: std.Io, path: []const u8) !FileKind {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(path.len < std.Io.Dir.max_path_bytes);
+    const info = try common.file.FileInfo.lstat(path);
+    if (info.kind == .directory) {
+        var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+        dir.close(io);
+    }
+    return info.kind;
+}
+
+fn makeNode(arena: Allocator, name: []const u8, kind: FileKind) !*Node {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(name.len < std.Io.Dir.max_path_bytes);
+    const node = try arena.create(Node);
+    node.* = .{
+        .name = try arena.dupe(u8, name),
+        .kind = kind,
+        .children = .empty,
+    };
+    return node;
+}
+
+fn countNode(counts: *Counts, kind: FileKind) void {
+    std.debug.assert(@intFromPtr(counts) != 0);
+    if (kind == .directory) {
+        counts.directories += 1;
+    } else {
+        counts.files += 1;
+    }
+}
+
+fn walkDirectory(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    operand: []const u8,
+    root: *Node,
+    walk_opts: WalkFilter,
+    stderr_writer: *std.Io.Writer,
+    counts: *Counts,
+) !u8 {
+    std.debug.assert(operand.len > 0);
+    std.debug.assert(root.kind == .directory);
+    var walker = try common.walker.Walker.init(gpa, .{
+        .sort_children = true,
+        .symlinks = .no_follow,
+        .order = .pre,
+    });
+    defer walker.deinit(io);
+    try walker.addRoot(operand);
+    var parents: std.ArrayListUnmanaged(*Node) = .empty;
+    try parents.append(arena, root);
+    return drainWalker(
+        gpa,
+        arena,
+        io,
+        &walker,
+        &parents,
+        walk_opts,
+        stderr_writer,
+        counts,
+    );
+}
+
+fn drainWalker(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    walker: *common.walker.Walker,
+    parents: *std.ArrayListUnmanaged(*Node),
+    walk_opts: WalkFilter,
+    stderr_writer: *std.Io.Writer,
+    counts: *Counts,
+) !u8 {
+    std.debug.assert(parents.items.len >= 1);
+    std.debug.assert(@intFromPtr(walker) != 0);
+    var status: u8 = 0;
+    var n: u64 = 0;
+    while (n < walk_entries_max) : (n += 1) {
+        const maybe = walker.next(io) catch |err| {
+            status = @intFromEnum(common.ExitCode.general_error);
+            reportWalkerError(gpa, stderr_writer, walker, err);
+            if (err == error.DepthLimitExceeded or err == error.EntryLimitExceeded) {
+                break;
+            }
+            continue;
+        };
+        const entry = maybe orelse break;
+        try consumeEntry(arena, walker, parents, walk_opts, entry, counts);
+    }
+    return status;
+}
+
+fn reportWalkerError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    walker: *common.walker.Walker,
+    err: anyerror,
+) void {
+    std.debug.assert(@intFromPtr(stderr_writer) != 0);
+    std.debug.assert(@intFromPtr(walker) != 0);
+    const path = walker.errorPath() orelse prog_name;
+    reportPathError(allocator, stderr_writer, path, err);
+}
+
+fn consumeEntry(
+    arena: Allocator,
+    walker: *common.walker.Walker,
+    parents: *std.ArrayListUnmanaged(*Node),
+    walk_opts: WalkFilter,
+    entry: common.walker.Entry,
+    counts: *Counts,
+) !void {
+    std.debug.assert(parents.items.len >= 1);
+    std.debug.assert(entry.basename.len > 0);
+    if (entry.depth == 0) {
+        if (walk_opts.max_level) |max| {
+            if (max == 0 and entry.kind == .directory) walker.pruneCurrent();
+        }
+        return;
+    }
+    if (shouldSkip(entry, walk_opts)) {
+        if (entry.kind == .directory) walker.pruneCurrent();
+        return;
+    }
+    const node = try makeNode(arena, entry.basename, entry.kind);
+    try attachChild(arena, parents, node, entry.depth, counts);
+    if (entry.kind == .directory) {
+        if (walk_opts.max_level) |max| {
+            if (entry.depth >= max) walker.pruneCurrent();
+        }
+    }
+}
+
+fn shouldSkip(entry: common.walker.Entry, walk_opts: WalkFilter) bool {
+    std.debug.assert(entry.basename.len > 0);
+    std.debug.assert(entry.depth > 0);
+    if (walk_opts.directories_only and entry.kind != .directory) return true;
+    if (!walk_opts.all and isHidden(entry.basename)) return true;
+    if (nameIgnored(entry.basename, walk_opts.ignore_patterns)) return true;
+    if (walk_opts.max_level) |max| {
+        if (entry.depth > max) return true;
+    }
+    return false;
+}
+
+fn isHidden(name: []const u8) bool {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(name.len < std.Io.Dir.max_path_bytes);
+    return name[0] == '.' and !(std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, ".."));
+}
+
+fn nameIgnored(name: []const u8, patterns: []const []const u8) bool {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(patterns.len < args_len_max);
+    for (patterns) |pattern| {
+        if (patternMatches(name, pattern)) return true;
+    }
+    return false;
+}
+
+fn patternMatches(name: []const u8, pattern: []const u8) bool {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(pattern.len < std.Io.Dir.max_path_bytes);
+    var alts: u32 = 0;
+    var it = std.mem.splitScalar(u8, pattern, '|');
+    while (alts < ignore_alts_max) : (alts += 1) {
+        const alt = it.next() orelse return false;
+        if (alt.len > 0 and common.glob.globMatch(alt, name)) return true;
+    }
+    return false;
+}
+
+fn attachChild(
+    arena: Allocator,
+    parents: *std.ArrayListUnmanaged(*Node),
+    node: *Node,
+    depth: u16,
+    counts: *Counts,
+) !void {
+    std.debug.assert(depth >= 1);
+    std.debug.assert(parents.items.len >= depth);
+    const parent = parents.items[depth - 1];
+    try parent.children.append(arena, node);
+    countNode(counts, node.kind);
+    if (node.kind == .directory) {
+        try setParentAtDepth(arena, parents, node, depth);
+    }
+}
+
+fn setParentAtDepth(
+    arena: Allocator,
+    parents: *std.ArrayListUnmanaged(*Node),
+    node: *Node,
+    depth: u16,
+) !void {
+    std.debug.assert(depth >= 1);
+    std.debug.assert(node.kind == .directory);
+    if (parents.items.len > depth) {
+        parents.items.len = depth;
+    }
+    while (parents.items.len < depth) {
+        try parents.append(arena, parents.items[parents.items.len - 1]);
+    }
+    if (parents.items.len == depth) {
+        try parents.append(arena, node);
+    } else {
+        parents.items[depth] = node;
+    }
+}
+
+const PrintFrame = struct {
+    node: *const Node,
+    next_child: u32,
+    is_last: bool,
+};
+
+fn printTree(
+    root: *const Node,
+    display: common.display_config.DisplayConfig,
+    style: *TreeStyle,
+    writer: *std.Io.Writer,
+) !void {
+    std.debug.assert(root.name.len > 0);
+    std.debug.assert(@intFromPtr(writer) != 0);
+    try writeEntry(root, display, style, writer);
+    try writer.writeByte('\n');
+    var frames: [1024]PrintFrame = undefined;
+    frames[0] = .{ .node = root, .next_child = 0, .is_last = true };
+    var sp: u16 = 1;
+    try printDescendants(&frames, &sp, display, style, writer);
+}
+
+fn printDescendants(
+    frames: *[1024]PrintFrame,
+    sp: *u16,
+    display: common.display_config.DisplayConfig,
+    style: *TreeStyle,
+    writer: *std.Io.Writer,
+) !void {
+    std.debug.assert(sp.* >= 1);
+    std.debug.assert(sp.* <= 1024);
+    var n: u64 = 0;
+    while (n < walk_entries_max and sp.* > 0) : (n += 1) {
+        const frame = &frames[sp.* - 1];
+        if (frame.next_child >= frame.node.children.items.len) {
+            sp.* -= 1;
+            continue;
+        }
+        const index = frame.next_child;
+        frame.next_child += 1;
+        const child = frame.node.children.items[index];
+        const is_last = index + 1 == frame.node.children.items.len;
+        try writeConnectors(frames[0..sp.*], is_last, writer);
+        try writeEntry(child, display, style, writer);
+        try writer.writeByte('\n');
+        if (child.children.items.len > 0) {
+            std.debug.assert(sp.* < 1024);
+            frames[sp.*] = .{ .node = child, .next_child = 0, .is_last = is_last };
+            sp.* += 1;
+        }
+    }
+}
+
+fn writeConnectors(
+    frames: []const PrintFrame,
+    child_is_last: bool,
+    writer: *std.Io.Writer,
+) !void {
+    std.debug.assert(frames.len >= 1);
+    std.debug.assert(frames.len <= 1024);
+    var depth: u16 = 1;
+    while (depth < frames.len) : (depth += 1) {
+        std.debug.assert(depth < frames.len);
+        try writer.writeAll(if (frames[depth].is_last) space_pad else pipe_pad);
+    }
+    try writer.writeAll(if (child_is_last) branch_end else branch_mid);
+}
+
+fn writeEntry(
+    node: *const Node,
+    display: common.display_config.DisplayConfig,
+    style: *TreeStyle,
+    writer: *std.Io.Writer,
+) !void {
+    std.debug.assert(node.name.len > 0);
+    std.debug.assert(@intFromPtr(writer) != 0);
+    if (display.icons == .on) try writeIcon(node, style, writer);
+    if (display.color == .on) try colorizeKind(node.kind, style);
+    try writer.writeAll(node.name);
+    if (display.color == .on) try style.reset();
+}
+
+fn writeIcon(node: *const Node, style: *TreeStyle, writer: *std.Io.Writer) !void {
+    std.debug.assert(node.name.len > 0);
+    std.debug.assert(@intFromPtr(writer) != 0);
+    const theme = common.icons.IconTheme{};
+    const icon = common.icons.getIcon(
+        &theme,
+        node.name,
+        node.kind == .directory,
+        node.kind == .sym_link,
+        false,
+    );
+    if (common.icons.getIconColorInfo(icon)) |c| {
+        switch (style.color_mode) {
+            .truecolor => try style.setRgb(c.r, c.g, c.b),
+            .extended => try style.set256(c.c256),
+            .basic => try style.setColor(c.basic),
+            .none => {},
+        }
+    }
+    try writer.print("{s} ", .{icon});
+    if (style.color_mode != .none) try style.reset();
+}
+
+fn colorizeKind(kind: FileKind, style: *TreeStyle) !void {
+    std.debug.assert(@intFromPtr(style) != 0);
+    std.debug.assert(@intFromPtr(style.writer) != 0);
+    switch (kind) {
+        .directory => {
+            try style.setBold();
+            try style.setColor(.blue);
+        },
+        .sym_link => {
+            try style.setBold();
+            try style.setColor(.cyan);
+        },
+        else => {},
+    }
+}
+
+fn writeSummary(
+    writer: *std.Io.Writer,
+    counts: Counts,
+    directories_only: bool,
+) !void {
+    std.debug.assert(@intFromPtr(writer) != 0);
+    try writer.writeByte('\n');
+    if (directories_only) {
+        try writer.print("{d} {s}\n", .{
+            counts.directories,
+            if (counts.directories == 1) "directory" else "directories",
+        });
+    } else {
+        try writer.print("{d} {s}, {d} {s}\n", .{
+            counts.directories,
+            if (counts.directories == 1) "directory" else "directories",
+            counts.files,
+            if (counts.files == 1) "file" else "files",
+        });
+    }
+}
+
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
+    std.debug.assert(@intFromPtr(writer) != 0);
+    std.debug.assert(prog_name.len > 0);
+    const text =
+        \\Usage: tree [OPTION]... [DIRECTORY]...
+        \\List contents of directories in a tree-like format.
+        \\
+        \\  -a, --all                 include hidden entries
+        \\  -d, --directories-only    list directories only
+        \\  -L, --level=N             descend only N levels
+        \\  -I, --ignore=PATTERN      exclude names matching PATTERN
+        \\      --color=WHEN          colorize output (always, auto, never)
+        \\      --icons=WHEN          show file-type icons (always, auto, never)
+        \\  -h, --help                display this help and exit
+        \\  -V, --version             output version information and exit
+        \\
+        \\WHEN defaults to 'auto'. Repeated -I patterns accumulate; '|'
+        \\separates alternatives. Directory symlinks are not followed.
+        \\
+    ;
+    try common.help.printColorized(allocator, writer, text);
+}
+
+test "tree: test section begins" {
+    try testing.expectEqual(@as(u8, 0), @intFromEnum(common.ExitCode.success));
+    try testing.expect(prog_name.len > 0);
+}
 
 const tree_test_env = [_]common.env.Override{
     .{ .key = "VIBEUTILS_STYLE", .value = null },

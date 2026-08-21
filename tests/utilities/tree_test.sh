@@ -174,7 +174,7 @@ test_tree() {
     run_command cmd out err exit_code \
         env NO_COLOR=1 TERM=xterm-256color "$binary" --icons=always "$root"
     tree_check "tree icons survive NO_COLOR and distinguish kinds" \
-        "$([[ $exit_code -eq 0 && "$out" == *$'\uf07b'* && "$out" == *$'\uf15b'* && "$out" != *$'\033'* ]] && echo true || echo false)" \
+        "$([[ $exit_code -eq 0 && "$out" == *$'\xef\x81\xbb'* && "$out" == *$'\xef\x85\x9b'* && "$out" != *$'\033'* ]] && echo true || echo false)" \
         "exit=$exit_code out='$out'"
     run_command cmd out err exit_code \
         env -u NO_COLOR TERM=xterm-256color "$binary" --color=always "$root"
@@ -199,7 +199,7 @@ test_tree() {
     local locked="$base/locked"
     mkdir "$locked"
     touch "$locked/secret"
-    if [[ $(id -u) -eq 0 ]]; then
+    if [[ "$EUID" -eq 0 ]]; then
         print_test_result "tree unreadable root reports a clean error" "SKIP" \
             "root bypasses discretionary access checks"
     else

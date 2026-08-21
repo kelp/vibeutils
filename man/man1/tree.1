@@ -1,0 +1,110 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt TREE 1
+.Os
+.Sh NAME
+.Nm tree
+.Nd list contents of a directory in a tree-like format
+.Sh SYNOPSIS
+.Nm
+.Op Fl adhV
+.Op Fl L Ar n
+.Op Fl I Ar pattern
+.Op Fl Fl all
+.Op Fl Fl directories-only
+.Op Fl Fl level Ns = Ns Ar n
+.Op Fl Fl ignore Ns = Ns Ar pattern
+.Op Fl Fl color Ns = Ns Ar when
+.Op Fl Fl icons Ns = Ns Ar when
+.Op Fl Fl help
+.Op Fl Fl version
+.Op Ar directory ...
+.Sh DESCRIPTION
+The
+.Nm
+utility lists the contents of each
+.Ar directory
+operand as a tree, using UTF-8 box-drawing connectors.
+Hidden names are omitted unless
+.Fl a
+is given.
+If no operand is supplied, the current directory is listed.
+.Pp
+A directory symbolic link is printed as a leaf and is not
+followed.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl a , Fl Fl all
+Include entries whose names begin with a period.
+.It Fl d , Fl Fl directories-only
+List directories only.
+The summary line then names directories and omits the file
+count.
+.It Fl L Ar n , Fl Fl level Ns = Ns Ar n
+Descend at most
+.Ar n
+levels below each operand.
+.Ar n
+of 0 prints only the operand (a house deviation from Baker
+.Nm tree ,
+which rejects
+.Fl L 0 ) .
+.It Fl I Ar pattern , Fl Fl ignore Ns = Ns Ar pattern
+Exclude names matching
+.Ar pattern .
+The flag is repeatable and cumulative.
+A vertical bar inside
+.Ar pattern
+separates alternatives.
+.It Fl Fl color Ns = Ns Ar when
+Colorize names.
+.Ar when
+is
+.Cm always ,
+.Cm auto
+(the default), or
+.Cm never .
+.Ev NO_COLOR
+disables color even with
+.Cm always .
+.It Fl Fl icons Ns = Ns Ar when
+Prefix entries with file-type icons.
+.Ar when
+uses the same values as
+.Fl Fl color .
+.Ev NO_COLOR
+does not disable icons.
+.It Fl h , Fl Fl help
+Display help and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+After all operands,
+.Nm
+prints a combined summary of the entries it listed.
+.Sh EXIT STATUS
+.Ex -std tree
+.Sh EXAMPLES
+.Bd -literal -offset indent
+$ tree src
+$ tree -L 1 -d .
+$ tree -I '*.log|skipme' project
+.Ed
+.Sh SEE ALSO
+.Xr find 1 ,
+.Xr ls 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX.
+Named flags follow Steve Baker's
+.Nm tree
+where this implementation includes them.
+.Fl Fl color
+and
+.Fl h
+as help follow vibeutils convention rather than Baker.
+.Sh AUTHORS
+.An vibeutils implementation by Travis Cole
