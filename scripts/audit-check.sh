@@ -299,7 +299,7 @@ END {
 # plus the meta short/long mappings. `###FILE` markers start a new file
 # inside the same unit, so depth and mode do not leak across siblings.
 function classify(   i, c, ld, f, r, m, t, ch, file) {
-    gdepth = 0; mode = ""; n_structs = 0; n_fields = 0; cur_meta = ""; 
+    gdepth = 0; mode = ""; n_structs = 0; n_fields = 0; cur_meta = "";
     in_sfn = 0; sfn_base = 0;
     for (i = 1; i <= n_lines; i++) {
         if (IS_MARK[i]) {
@@ -347,6 +347,10 @@ function classify(   i, c, ld, f, r, m, t, ch, file) {
                     m = substr(r, RSTART + 1, RLENGTH - 1);
                     sub(/[ \t]*=.*$/, "", m);
                     cur_meta = m;
+                    # A meta entry is argparse-filled even when it has no
+                    # quoted short/long -- house style for long-only flags
+                    # is `.short = 0` with no `.long` (#157).
+                    if (cur_meta != "") META_FIELDS[cur_meta] = 1;
                 }
                 if (cur_meta != "") {
                     if (match(r, /\.short[ \t]*=[ \t]*\x27.\x27/)) {
@@ -403,6 +407,7 @@ function count_refs(   i, nm, ispub, hdr, file, first) {
 }
 
 function field_in_meta(f,   k) {
+    if (f in META_FIELDS) return 1;
     for (k in META_SHORT) if (META_SHORT[k] == f) return 1;
     for (k in META_LONG) if (META_LONG[k] == f) return 1;
     return 0;
@@ -1022,7 +1027,7 @@ concat_unit() {
     fi
     if [ "$_cdir" = "src" ] || [ "$_cdir" = "." ]; then
         printf '###FILE %s\n' "$_cpath"
-        cat "$ROOT/$_cpath"
+        cat "$ROOT/$_cpath" || return 1
         return 0
     fi
     _clist=$WORKDIR/list.$(facts_name "$_cpath")
@@ -1036,7 +1041,9 @@ concat_unit() {
         [ -n "$_csrc" ] || continue
         _crel="$_cdir/${_csrc##*/}"
         printf '###FILE %s\n' "$_crel"
-        cat "$_csrc"
+        if ! cat "$_csrc"; then
+            return 1
+        fi
         printf '\n'
     done <"$_clist"
     return 0

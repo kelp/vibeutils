@@ -16,12 +16,17 @@
 # To regenerate after a deliberate change:  scripts/audit-check.sh --update-baseline
 matrix-drift	docs/specs/cat-flags.md::-l	POSIX -l is accepted and ignored; resolve with src/cat.zig::ignored_l. Stage 2 implement-vs-decline.
 matrix-drift	docs/specs/cat-flags.md::-u	POSIX -u is accepted and ignored; resolve with src/cat.zig::ignored_u. Stage 2 implement-vs-decline.
+matrix-drift	docs/specs/chmod-flags.md::--dereference	chmod --dereference is parsed and unused; resolve with src/chmod.zig::dereference (#157 .short=0).
+matrix-drift	docs/specs/chmod-flags.md::--no-preserve-root	chmod --no-preserve-root is parsed and unused; resolve with src/chmod.zig::no_preserve_root (#157 .short=0).
 matrix-drift	docs/specs/chmod-flags.md::-C	macOS ACL -C is parsed and unused; resolve with src/chmod.zig::acl_check.
 matrix-drift	docs/specs/chmod-flags.md::-E	macOS ACL -E is parsed and unused; resolve with src/chmod.zig::acl_stdin.
 matrix-drift	docs/specs/chmod-flags.md::-I	macOS ACL -I is parsed and unused; resolve with src/chmod.zig::acl_remove_all_inherited.
 matrix-drift	docs/specs/chmod-flags.md::-N	macOS ACL -N is parsed and unused; resolve with src/chmod.zig::acl_remove.
 matrix-drift	docs/specs/chmod-flags.md::-i	macOS ACL -i is parsed and unused; resolve with src/chmod.zig::acl_remove_inherited.
+matrix-drift	docs/specs/chown-flags.md::--dereference	chown --dereference is parsed and unused; resolve with src/chown.zig::dereference (#157 .short=0).
+matrix-drift	docs/specs/chown-flags.md::--no-preserve-root	chown --no-preserve-root is parsed and unused; resolve with src/chown.zig::no_preserve_root (#157 .short=0).
 matrix-drift	docs/specs/cp-flags.md::-c	macOS clonefile -c is parsed and unused; resolve with src/cp.zig::clone.
+matrix-drift	docs/specs/cut-flags.md::--complement	cut --complement is parsed and unused; resolve with src/cut.zig::complement (#157).
 matrix-drift	docs/specs/du-flags.md::-H	du -H is parsed and unused; resolve with src/du.zig::dereference_args.
 matrix-drift	docs/specs/du-flags.md::-I	du -I is parsed and unused; resolve with src/du.zig::ignore_pattern.
 matrix-drift	docs/specs/du-flags.md::-L	du -L is parsed and unused; resolve with src/du.zig::dereference.
@@ -43,6 +48,7 @@ matrix-drift	docs/specs/sort-flags.md::--debug	Matrix claims Ours: yes for a fla
 matrix-drift	docs/specs/sort-flags.md::--parallel	Matrix claims Ours: yes for a flag sort validates and discards; resolve with the src/sort.zig::parallel stub.
 matrix-drift	docs/specs/sort-flags.md::--random-source	Matrix claims Ours: yes for a flag sort validates and discards; resolve with the src/sort.zig::random_source stub.
 matrix-drift	docs/specs/touch-flags.md::-A	BSD touch -A is parsed and unused; resolve with src/touch.zig::adjust.
+matrix-drift	docs/specs/touch-flags.md::-f	touch -f is parsed and unused; resolve with src/touch.zig::f (#157).
 matrix-drift	docs/specs/tr-flags.md::-u	POSIX tr -u is accepted and ignored; resolve with src/tr.zig::ignored_u.
 parse-only-test	src/date.zig::no_set_date	The only assertion on -j is parsed.opts.no_set_date; nothing pins date`s output, which is why the stub above stayed green.
 parse-only-test	src/df.zig::no_sync	The only assertion on df -n is parsed.opts.no_sync; nothing pins df`s output for the flag.
@@ -54,9 +60,14 @@ stub-flag	src/chmod.zig::acl_remove	macOS chmod -N is parsed and unused. Stage 2
 stub-flag	src/chmod.zig::acl_remove_all_inherited	macOS chmod -I is parsed and unused. Stage 2 implement-vs-decline (#157).
 stub-flag	src/chmod.zig::acl_remove_inherited	macOS chmod -i is parsed and unused. Stage 2 implement-vs-decline (#157).
 stub-flag	src/chmod.zig::acl_stdin	macOS chmod -E is parsed and unused. Stage 2 implement-vs-decline (#157).
+stub-flag	src/chmod.zig::dereference	chmod --dereference is parsed and unused. Stage 2 implement-vs-decline; surfaced by .short=0 meta counting (#157).
+stub-flag	src/chmod.zig::no_preserve_root	chmod --no-preserve-root is parsed and unused. Stage 2 implement-vs-decline; surfaced by .short=0 meta counting (#157).
 stub-flag	src/chmod.zig::no_traverse_symlinks	ChmodOptions field set from the -H/-L/-P policy and never consulted by the walker; chmod symlink policy is a stage-2 GNU-parity question, not a mechanical fix.
+stub-flag	src/chown.zig::dereference	chown --dereference is parsed and unused. Stage 2 implement-vs-decline; surfaced by .short=0 meta counting (#157).
+stub-flag	src/chown.zig::no_preserve_root	chown --no-preserve-root is parsed and unused. Stage 2 implement-vs-decline; surfaced by .short=0 meta counting (#157).
 stub-flag	src/chown.zig::no_traverse_symlinks	ChownOptions field set from the -H/-L/-P policy and never consulted by the walker; same stage-2 question as the chmod field.
 stub-flag	src/cp.zig::clone	macOS cp -c (clonefile) is parsed and unused. Stage 2 implement-vs-decline (#157).
+stub-flag	src/cut.zig::complement	cut --complement is parsed and unused. Stage 2 implement-vs-decline (#157).
 stub-flag	src/date.zig::no_set_date	-j is accepted and ignored (BSD `do not set the date`). Either it becomes real or date-flags.md stops claiming it; both are behaviour verdicts stage 2 owes.
 stub-flag	src/df.zig::no_sync	df -n is accepted and ignored. AUDIT_SWEEP names this class; the fix is a df spec/behaviour decision, out of scope for the PR that adds the scanner.
 stub-flag	src/df.zig::suppress_inodes	df -I is accepted and ignored. Named in AUDIT_SWEEP as the finding this check exists to catch; left for stage 2 to settle implement-vs-decline.
@@ -84,6 +95,7 @@ stub-flag	src/sort.zig::parallel	--parallel is a GNU thread-count knob; our sort
 stub-flag	src/sort.zig::random_source	--random-source only feeds -R random hashing, which we do not implement.
 stub-flag	src/sort.zig::temp_dir	-T/--temporary-directory only applies to spill files, which an in-memory sort never writes.
 stub-flag	src/touch.zig::adjust	BSD touch -A is parsed and unused. Stage 2 implement-vs-decline (#157).
+stub-flag	src/touch.zig::f	touch -f is parsed and unused. Stage 2 implement-vs-decline (#157).
 stub-flag	src/tr.zig::ignored_u	POSIX tr -u is accepted and ignored. Stage 2 implement-vs-decline (#157).
 test-only-code	src/chmod.zig::chmod	Private wrapper exercised only by unit tests; runChmod calls the lower-level path directly. Consolidation is a refactor, not a defect fix.
 test-only-code	src/chown.zig::chownFile	Private wrapper exercised only by unit tests; the production path goes through the walker.
