@@ -70,15 +70,25 @@ run_isolated_and_exit() {
 
 # The #150 contract test mkdir's zig-out/bin as root. A root-owned
 # install dir makes the next `zig build` in the same checkout fail with
-# AccessDenied. Hand zig-out back to the checkout owner. No-op when we
-# are not root or zig-out is missing.
+# AccessDenied. Hand zig-out back to the checkout owner. Skip when the
+# owner already matches: `chown -R` over a just-built zig-out/bin is
+# enough to blow the contract test's 20s run_with_limit.
 restore_zig_out_owner() {
     [ "$(id -u)" -eq 0 ] || return 0
     [ -d "$PROJECT_ROOT/zig-out" ] || return 0
-    local ugid
-    ugid="$(stat -c '%u:%g' "$PROJECT_ROOT" 2>/dev/null ||
+    local repo_ugid out_ugid bin_ugid
+    repo_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT" 2>/dev/null ||
         stat -f '%u:%g' "$PROJECT_ROOT")" || return 0
-    chown -R "$ugid" "$PROJECT_ROOT/zig-out" || true
+    out_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT/zig-out")" || return 0
+    if [ -d "$PROJECT_ROOT/zig-out/bin" ]; then
+        bin_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out/bin" 2>/dev/null ||
+            stat -f '%u:%g' "$PROJECT_ROOT/zig-out/bin")" || return 0
+        [ "$out_ugid" = "$repo_ugid" ] && [ "$bin_ugid" = "$repo_ugid" ] && return 0
+    else
+        [ "$out_ugid" = "$repo_ugid" ] && return 0
+    fi
+    chown -R "$repo_ugid" "$PROJECT_ROOT/zig-out" || true
     chmod -R u+w "$PROJECT_ROOT/zig-out" || true
 }
 
@@ -91,6 +101,14 @@ if ! command -v setpriv >/dev/null 2>&1; then
     echo "integration: running as root without setpriv; permission-denied tests will fail" >&2
     run_isolated_and_exit "$@"
 fi
+
+# Announce before any chown or lock wait so a SIGKILL'd runner still
+# greps as having started. `|| true` so a missing or broken python3
+# cannot abort the demotion path under `set -e`.
+python3 -c 'import sys; sys.stderr.write("integration: provisioning\n"); sys.stderr.flush()' \
+    2>/dev/null \
+    || echo "integration: provisioning '$TEST_USER'" >&2 \
+    || true
 
 restore_zig_out_owner
 
@@ -134,14 +152,6 @@ release_test_user_lock() {
     fi
     USER_LOCK_KIND=""
 }
-
-# Announce before the lock wait so a SIGKILL'd runner still greps as
-# having started. `|| true` so a missing or broken python3 cannot abort
-# the demotion path under `set -e`.
-python3 -c 'import sys; sys.stderr.write("integration: provisioning\n"); sys.stderr.flush()' \
-    2>/dev/null \
-    || echo "integration: provisioning '$TEST_USER'" >&2 \
-    || true
 
 if ! acquire_test_user_lock; then
     echo "integration: timed out waiting to provision '$TEST_USER'" >&2
