@@ -21,11 +21,15 @@ concurrency:
 # Linux/macOS only and cannot run inside the BSD guest. Jobs are
 # independent (no matrix) so a red OS is a real workflow failure.
 #
-# Pin vmactions to the last node20 releases. v1 / v1.5.3 declare
-# using: node24; GitHub rejects that in third-party action.yml at
-# workflow parse (startup_failure, zero jobs). Official actions/*
-# node24 is fine. FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 still upgrades
-# these node20 actions at runtime.
+# Pin vmactions to the last node20 releases (freebsd v1.4.2,
+# openbsd/netbsd v1.3.6). Current v1 / v1.5.3 declare using: node24;
+# FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 still upgrades these node20
+# actions at runtime.
+#
+# These three SHA pins must also be on the repo selected-actions
+# allowlist (CHANGELOG "Tighten GitHub Actions allowlist"). Without
+# them GitHub rejects the whole workflow at parse: startup_failure,
+# zero jobs. Local actions and actions/* do not need extra patterns.
 
 permissions:
   contents: read
