@@ -626,25 +626,33 @@ fn parseArgs_collectLeadingGlobals(
     start_paths: *std.ArrayListUnmanaged([]const u8),
 ) !usize { // tiger:allow:usize-arch returns slice index cursor; Zig indexing requires usize
     var expr_start: usize = 0; // tiger:allow:usize-arch slice index cursor
+    var seen_end_of_options = false;
     while (expr_start < args.len) {
         const arg = args[expr_start];
-        if (std.mem.eql(u8, arg, "-L") or std.mem.eql(u8, arg, "-follow")) {
+        if (!seen_end_of_options and std.mem.eql(u8, arg, "--")) {
+            // First `--` ends only the leading -H/-L/-P options. A later
+            // `--` is an expression token (GNU: unknown predicate).
+            seen_end_of_options = true;
+            expr_start += 1;
+        } else if (!seen_end_of_options and
+            (std.mem.eql(u8, arg, "-L") or std.mem.eql(u8, arg, "-follow")))
+        {
             flags.follow_symlinks = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-H")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-H")) {
             flags.follow_cmdline_symlinks = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-P")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-P")) {
             // -P: never follow symlinks (default behavior); accept as no-op
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-E")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-E")) {
             flags.extended_regex = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-s")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-s")) {
             // -s: traverse in alphabetical (sorted) order
             flags.sorted = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-depth")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-depth")) {
             // Check if followed by a number: -depth N is an expression primary
             if (expr_start + 1 < args.len) {
                 if (std.fmt.parseInt(u32, args[expr_start + 1], 10)) |_| {
@@ -654,16 +662,16 @@ fn parseArgs_collectLeadingGlobals(
             }
             flags.depth_first = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-d")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-d")) {
             flags.depth_first = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-x")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-x")) {
             flags.xdev = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-X")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-X")) {
             flags.xargs_safe = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-f")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-f")) {
             expr_start += 1;
             if (expr_start < args.len) {
                 try start_paths.append(allocator, args[expr_start]);

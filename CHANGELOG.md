@@ -106,6 +106,15 @@
 
 ### Fixed
 
+- **`find`, `printf`, `dd`, and `date` honor `--` as the end of
+  options.** All four hand-rolled parsers treated `--` as an operand
+  or unknown flag: `printf -- 'x\n'` printed `--`, `find -- .`
+  reported an unknown predicate, `dd -- if=f` was an unrecognized
+  operand, and `date -- +%Y` was an unrecognized option. They now
+  match GNU: `--` stops option parsing, a leading `--` with nothing
+  after it is a missing operand for printf, a second `--` is still a
+  predicate for find and an unrecognized operand for dd, and date
+  treats a following dash-token as a date string (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not

@@ -73,6 +73,10 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
                 opts.version = true;
                 return .{ .opts = opts, .err = null };
             }
+            if (std.mem.eql(u8, arg, "--")) {
+                err_msg = parseArgs_afterDashDash(args, &i, &opts);
+                break;
+            }
             if (parseArgs_longOption(arg, args, &i, &opts)) |msg| {
                 err_msg = msg;
                 break;
@@ -93,6 +97,29 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
     }
 
     return .{ .opts = opts, .err = err_msg };
+}
+
+/// Drain argv after a POSIX `--`. Remaining `+FORMAT` tokens are formats;
+/// anything else is a date string (GNU `date -- -1` is an invalid date,
+/// not an unrecognized option).
+fn parseArgs_afterDashDash(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch cursor indexes args slice
+    opts: *DateOptions,
+) ?[]const u8 {
+    std.debug.assert(i.* < args.len);
+    std.debug.assert(std.mem.eql(u8, args[i.*], "--"));
+    i.* += 1;
+    while (i.* < args.len) : (i.* += 1) {
+        const rest = args[i.*];
+        if (rest.len > 0 and rest[0] == '+') {
+            opts.format = rest[1..];
+            continue;
+        }
+        if (opts.date_string != null) return "extra operand";
+        opts.date_string = rest;
+    }
+    return null;
 }
 
 /// Parse a single long option (`--`-prefixed), excluding `--help`/`--version`
@@ -677,6 +704,29 @@ fn runDate_brokenDownTime(secs: i64, utc: bool, tm: *time.c_tm) bool {
     return time.localtime_r(&time_secs, tm) != null;
 }
 
+/// GNU quotes the date string: `date: invalid date '-1'`.
+fn runDate_printTsErr(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    opts: DateOptions,
+    err_msg: []const u8,
+) void {
+    std.debug.assert(err_msg.len > 0);
+    if (std.mem.eql(u8, err_msg, "invalid date")) {
+        if (opts.date_string) |ds| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid date '{s}'",
+                .{ds},
+            );
+            return;
+        }
+    }
+    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+}
+
 /// Main date utility logic
 pub fn runDate(
     allocator: Allocator,
@@ -726,7 +776,7 @@ pub fn runDate(
     // Resolve the timestamp to format
     const ts = resolveTimestamp(io, opts);
     if (ts.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        runDate_printTsErr(allocator, stderr_writer, opts, err_msg);
         return @intFromEnum(common.ExitCode.general_error);
     }
 

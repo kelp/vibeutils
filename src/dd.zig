@@ -237,6 +237,7 @@ fn zeroMultiplierPart(s: []const u8) ?[]const u8 {
 /// dd uses operand=value syntax instead of flags.
 fn parseOperands(args: []const []const u8) !DdConfig {
     var config = DdConfig{};
+    var seen_end_of_options = false;
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
@@ -246,6 +247,11 @@ fn parseOperands(args: []const []const u8) !DdConfig {
         if (std.mem.eql(u8, arg, "--version")) {
             config.version = true;
             return config;
+        }
+        // First `--` is the POSIX delimiter. A later `--` is an operand.
+        if (!seen_end_of_options and std.mem.eql(u8, arg, "--")) {
+            seen_end_of_options = true;
+            continue;
         }
 
         // Parse operand=value
@@ -632,6 +638,51 @@ fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+/// First argv token that is not `--`, `--help`, `--version`, or `key=value`.
+/// Used to quote GNU's `unrecognized operand '…'` after parseOperands fails.
+fn findUnknownOperand(args: []const []const u8) ?[]const u8 {
+    var seen_end_of_options = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--help")) continue;
+        if (std.mem.eql(u8, arg, "--version")) continue;
+        if (!seen_end_of_options and std.mem.eql(u8, arg, "--")) {
+            seen_end_of_options = true;
+            continue;
+        }
+        if (std.mem.indexOfScalar(u8, arg, '=') != null) continue;
+        std.debug.assert(arg.len > 0);
+        std.debug.assert(std.mem.indexOfScalar(u8, arg, '=') == null);
+        return arg;
+    }
+    return null;
+}
+
+fn runDd_printUnknownOperand(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    args: []const []const u8,
+) void {
+    std.debug.assert(args.len > 0);
+    if (findUnknownOperand(args)) |name| {
+        std.debug.assert(name.len > 0);
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            "dd",
+            "unrecognized operand '{s}'",
+            .{name},
+        );
+        return;
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        "dd",
+        "unrecognized operand",
+        .{},
+    );
 }
 
 /// Outcome of handling a read error inside the main copy loop.
@@ -1432,7 +1483,7 @@ pub fn runDd(
                 }
             },
             error.UnknownOperand => {
-                common.printErrorWithProgram(allocator, stderr, "dd", "unrecognized operand", .{});
+                runDd_printUnknownOperand(allocator, stderr, args);
             },
         }
         return @intFromEnum(common.ExitCode.general_error);

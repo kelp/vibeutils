@@ -31,14 +31,7 @@ pub fn runPrintf(
     stderr_writer: *std.Io.Writer,
 ) !u8 {
     if (args.len == 0) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            "printf",
-            "missing operand\nTry 'printf --help' for more information.",
-            .{},
-        );
-        return @intFromEnum(common.ExitCode.general_error);
+        return printfMissingOperand(allocator, stderr_writer);
     }
 
     // Check for --help and --version before treating first arg as format
@@ -52,8 +45,11 @@ pub fn runPrintf(
         return @intFromEnum(common.ExitCode.success);
     }
 
-    const format = args[0];
-    const arguments = args[1..];
+    const fmt_idx = printfFormatIndex(args) orelse {
+        return printfMissingOperand(allocator, stderr_writer);
+    };
+    const format = args[fmt_idx];
+    const arguments = args[fmt_idx + 1 ..];
 
     var had_error = false;
     var arg_idx: usize = 0;
@@ -92,6 +88,26 @@ pub fn runPrintf(
         return @intFromEnum(common.ExitCode.general_error);
     }
     return @intFromEnum(common.ExitCode.success);
+}
+
+fn printfMissingOperand(allocator: Allocator, stderr_writer: *std.Io.Writer) u8 {
+    const msg = "missing operand\nTry 'printf --help' for more information.";
+    std.debug.assert(msg.len > 0);
+    common.printErrorWithProgram(allocator, stderr_writer, "printf", msg, .{});
+    const rc = @intFromEnum(common.ExitCode.general_error);
+    std.debug.assert(rc != 0);
+    return rc;
+}
+
+/// Index of FORMAT after a leading POSIX `--`. Null when `--` is the
+/// only argument (GNU: missing operand). `--help`/`--version` are
+/// already consumed by the caller.
+fn printfFormatIndex(args: []const []const u8) ?usize {
+    std.debug.assert(args.len > 0);
+    if (!std.mem.eql(u8, args[0], "--")) return 0;
+    if (args.len == 1) return null;
+    std.debug.assert(args.len > 1);
+    return 1;
 }
 
 /// Process one pass of the format string, consuming arguments as needed.
