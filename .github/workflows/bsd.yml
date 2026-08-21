@@ -1,0 +1,89 @@
+name: BSD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions to run on Node 24 regardless of their action.yml-declared
+# runtime.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: bsd-${{ github.ref }}
+  cancel-in-progress: true
+
+# Official Zig 0.16.0 tarballs, not mlugg/setup-zig: that action is
+# Linux/macOS only and cannot run inside the BSD guest. Jobs are
+# independent (no matrix) so a red OS is a real workflow failure.
+
+jobs:
+  freebsd:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: vmactions/freebsd-vm@83b151f58c6047089f4c80eb5ba2039d158ce093  # v1
+        with:
+          usesh: true
+          prepare: |
+            set -eu
+            pkg install -y curl fakeroot
+            curl -fsSL -o /tmp/zig.tar.xz \
+              https://ziglang.org/download/0.16.0/zig-x86_64-freebsd-0.16.0.tar.xz
+            mkdir -p /usr/local/bin
+            tar -xf /tmp/zig.tar.xz -C /usr/local
+            ln -sf /usr/local/zig-x86_64-freebsd-0.16.0/zig /usr/local/bin/zig
+          run: |
+            set -eu
+            export PATH="/usr/local/zig-x86_64-freebsd-0.16.0:/usr/local/bin:$PATH"
+            zig build test
+            fakeroot zig build test-privileged
+
+  openbsd:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: vmactions/openbsd-vm@e6c68b637a12e83519688d115d57d5b0b53923cd  # v1
+        with:
+          usesh: true
+          prepare: |
+            set -eu
+            pkg_add curl
+            export PATH="/usr/local/bin:$PATH"
+            curl -fsSL -o /tmp/zig.tar.xz \
+              https://ziglang.org/download/0.16.0/zig-x86_64-openbsd-0.16.0.tar.xz
+            mkdir -p /usr/local/bin
+            tar -xf /tmp/zig.tar.xz -C /usr/local
+            ln -sf /usr/local/zig-x86_64-openbsd-0.16.0/zig /usr/local/bin/zig
+          run: |
+            set -eu
+            export PATH="/usr/local/zig-x86_64-openbsd-0.16.0:/usr/local/bin:$PATH"
+            zig build test
+
+  netbsd:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: vmactions/netbsd-vm@00081e82b14bc40114eb97f32b4455306828516b  # v1
+        with:
+          usesh: true
+          prepare: |
+            set -eu
+            pkg_add curl
+            export PATH="/usr/pkg/bin:/usr/local/bin:$PATH"
+            curl -fsSL -o /tmp/zig.tar.xz \
+              https://ziglang.org/download/0.16.0/zig-x86_64-netbsd-0.16.0.tar.xz
+            mkdir -p /usr/local/bin
+            tar -xf /tmp/zig.tar.xz -C /usr/local
+            ln -sf /usr/local/zig-x86_64-netbsd-0.16.0/zig /usr/local/bin/zig
+          run: |
+            set -eu
+            export PATH="/usr/local/zig-x86_64-netbsd-0.16.0:/usr/pkg/bin:/usr/local/bin:$PATH"
+            zig build test
