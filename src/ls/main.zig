@@ -1240,10 +1240,12 @@ fn testCreateLsAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
         .modify_timestamp = .{ .new = .{ .nanoseconds = one_hour_ago } },
     });
 
-    const path = try tmp_dir.dir.realPathFileAlloc(io, "allocated.bin", testing.allocator);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "allocated.bin", &path_buf);
+    const path = path_buf[0..path_len];
     std.debug.assert(path.len > 0);
     std.debug.assert(std.fs.path.isAbsolute(path));
-    return path;
+    return testing.allocator.dupe(u8, path);
 }
 
 fn testRunLsOutput(io: std.Io, args: []const []const u8) ![]u8 {
