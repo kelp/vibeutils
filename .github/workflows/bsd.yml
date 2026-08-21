@@ -21,7 +21,19 @@ concurrency:
 # Linux/macOS only and cannot run inside the BSD guest. Jobs are
 # independent (no matrix) so a red OS is a real workflow failure.
 
+permissions:
+  contents: read
+
 jobs:
+  # Host-side sanity job so a vmactions parse/allowlist failure still
+  # leaves one job in the graph instead of a zero-job startup_failure.
+  workflow-ok:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - run: bash tests/tools/bsd-workflow_test.sh
+
   freebsd:
     timeout-minutes: 60
     runs-on: ubuntu-latest
