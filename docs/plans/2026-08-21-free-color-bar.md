@@ -62,9 +62,10 @@ delta is the contract:
 ## In scope
 
 - **Color bands** (df `applyUsageColor`): green `percent < 70`,
-  yellow `percent < 90`, red otherwise. Percent is
-  `used * 100 / total` clamped to 100, or **0 when total is 0**
-  (df `calcUsagePercent`; no divide-by-zero). `u8`. `@divTrunc`.
+  yellow `percent < 90`, red otherwise. Percent matches df
+  `calcUsagePercent`: `u128` `used * 100 / total` with ceiling
+  remainder (`@divTrunc + @intFromBool(rem != 0)`), clamp to 100,
+  or **0 when total is 0** (no divide-by-zero). `u8`.
 - **Bar:** 10 cells, U+2588 filled / U+2591 empty, then a space and
   `{d:>3}%`, same fill formula as df.
 - **Flags:** `--color=WHEN` and `--bar=WHEN` (required value),
@@ -105,7 +106,11 @@ Color (basic SGR; wrap the used field; reset after):
 4. `free auto emits no color when render.color is off` — injected
    auto-off (the real non-TTY path). No CSI. Same fixture with
    `--color=always` (and NO_COLOR unset in overrides) does emit.
+4b. `free auto emits color when render.color is on` — injected
+    auto-on; same fixture emits the 50% green wrap. Proves the
+    positive auto path without needing a real TTY.
 5. `free emits no color when NO_COLOR is set even with --color=always`.
+5b. `free emits no color when TERM is dumb even with --color=always`.
 6. `free --color=never emits no color`.
 7. `free --color=bogus exits 1` (and `--bar=bogus`).
 
@@ -114,6 +119,8 @@ Bar:
 8. `free --bar=always prints a 10-cell usage bar and percent` —
    UTF-8 U+2588/U+2591 bytes; fill count matches
    `@divTrunc(percent * 10 + 99, 100)` for 0, 1, 50, 100.
+   When color is on, the bar is wrapped in the same band SGR as
+   the used column (and reset after).
 9. `free --bar=never omits bar glyphs`.
 10. `free --bar=auto with icons off omits the bar`.
 11. Swap row uses swap_used/swap_total; `swap_total == 0` → 0%, no
