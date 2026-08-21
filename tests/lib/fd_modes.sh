@@ -149,9 +149,15 @@ test_fd_modes() {
     fi
     print_test_result "fd-modes fixture $util" "PASS"
 
+    # Isolate scratch so suites that count leftover TEMP_DIR files
+    # (dirname, pwd, touch, wc, rm) do not fail on our 7 captures.
+    local scratch="${TEMP_DIR}/fd_modes_scratch"
+    rm -rf "$scratch"
+    mkdir -p "$scratch"
+
     for mode in append pipe truncate dup-outer dup-inner; do
-        got="${TEMP_DIR}/fd_modes_${util}_${mode}"
-        rm -f "$got"
+        got="${scratch}/${mode}"
+        rm -f "$got" "$got.direct"
         rc=0
         fd_modes_run "$mode" "$util" "$got" || rc=$?
         if [[ "$rc" == 124 ]]; then
@@ -185,4 +191,5 @@ test_fd_modes() {
                 ;;
         esac
     done
+    rm -rf "$scratch"
 }
