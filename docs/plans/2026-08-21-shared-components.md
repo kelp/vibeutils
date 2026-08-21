@@ -19,10 +19,11 @@ The listed-order predecessors `#### 28. free` (#182) and
 cut from `origin/main` (`a41eccd`). It does not touch those
 PRs' files (`src/free.zig`, `src/tail.zig`).
 
-This environment cannot merge. The deviation is intentional so
-the slice can be planned and implemented while those PRs wait
-on a human merge. Rebase onto `main` after they land if they
-land first.
+This environment cannot merge. Round-1 and round-2: Grok and
+Fable accept the skip because the files are disjoint. GPT
+still treats the skill gate as blocking. **Decision (2/3):**
+continue. Rebase onto `main` after they land if they land
+first.
 
 ## In scope
 
@@ -33,24 +34,25 @@ plus `COLUMNS` / `LINES`. The leftover work is correctness, not
 a new module.
 
 Extract a **pure** resolver so tests never mutate the process
-environment (issue #95: never `setenv`/`unsetenv`; `env.getEnv`
-already consults `env.test_overrides`, but ioctl runs first on
-a TTY, so `getWidth()` + env is not a deterministic RED):
+environment (issue #95: never `setenv`/`unsetenv`):
 
 ```
-resolveDimension(ioctl_value: ?u16, env_text: ?[]const u8, default: u16) u16
+fn resolveDimension(ioctl_value: ?u16, env_text: ?[]const u8, default: u16) u16
 ```
+
+Two asserts (Tiger G14 / two-assertion rule):
+
+- Precondition: `std.debug.assert(default > 0)`
+- Postcondition: `std.debug.assert(result > 0)` **after** the
+  fallback, never instead of it. A zero ioctl or `COLUMNS=0`
+  must not trap; it must fall through. The postcondition fires
+  only if `default` itself is 0.
 
 Rules, in order:
 
 1. If `ioctl_value` is non-null and `> 0`, return it.
 2. Otherwise parse `env_text`: missing, empty, non-numeric,
    overflow, or `0` → `default`. A positive parse wins.
-3. `std.debug.assert(result > 0)` **after** the fallback, never
-   instead of it. A zero ioctl or `COLUMNS=0` must not trap;
-   it must fall through. The assert fires only if `default`
-   itself is 0 (already guarded by the existing
-   `DEFAULT_TERMINAL_* > 0` asserts).
 
 `getTerminalDimension` stays ioctl-first, then
 `env.getEnv("COLUMNS"|"LINES")`, then `resolveDimension`.
@@ -67,44 +69,69 @@ layout. Update `CHANGELOG.md` under Unreleased / Changed.
 GNU coreutils has no shared parallel-copy library. This
 checkbox is a common helper, not a `cp` behavior change.
 
-**Decision (round-1 2/3):** do **not** wire this into `cp`,
-`cat`, `dd`, or `sort`. Grok and Fable treated an unwired
-force-imported module as the checkbox; GPT wanted a production
-consumer. Wiring `cp` is slice creep into a later heading
-("progress-for-cp") and a behavior change GNU does not make
-by default. Recorded: no production consumer in this PR.
-`sort --parallel` already parses; leaving it sequential is
-existing behavior.
+**Decision (round-1 2/3, round-2 GPT agrees not blocking):**
+do **not** wire this into `cp`, `cat`, `dd`, or `sort`. Wiring
+`cp` is slice creep into a later heading. `sort --parallel`
+already parses; leaving it sequential is existing behavior.
 
 Zig 0.16 removed `std.Thread.Pool` and moved mutexes to
 `std.Io.Mutex`. Do **not** spawn with `std.Thread.spawn` or
 mix `std.Thread.Mutex` with `Io`. Use `std.Io` +
 `std.Io.Group`.
 
-Add `src/common/parallel.zig`, force-imported from
-`src/common/lib.zig` (alphabetical, between `path.zig` and
-`privilege_test.zig`):
+Add `src/common/parallel.zig`.
 
-- Hard cap `parallel_workers_max: u32 = 8`.
-- `runBounded(io, n_workers, ctx, work_fn, n_jobs)`:
-  `work_fn(ctx, job_index)` for `job_index` in `0 .. n_jobs`.
+`lib.zig`:
+
+- `pub const parallel = @import("parallel.zig");` (common API,
+  not tests-only).
+- Force-import `_ = @import("parallel.zig");` **between
+  `mode.zig` and `path.zig`** (alphabetical: `parallel` <
+  `path`). Not between `path` and `privilege_test`.
+
+Signature (so the test-writer can stub a compile-valid
+function):
+
+```
+pub const parallel_workers_max: u32 = 8;
+
+pub fn runBounded(
+    io: std.Io,
+    n_workers: u32,
+    ctx: anytype,
+    work_fn: *const fn (@TypeOf(ctx), u32) anyerror!void,
+    n_jobs: u32,
+) anyerror!void
+```
+
+Contracts:
+
 - Worker count is `max(1, min(n_workers, parallel_workers_max, n_jobs))`
   when `n_jobs > 0`. `n_workers == 0` means 1. `n_jobs == 0`
   is a no-op (no spawn).
 - Spawn at most that many `Group.concurrent` workers. Each
   worker atomically steals the next job index. Spawn/join
   loops bounded by `parallel_workers_max`. No recursion.
+- `Group.concurrent` callbacks must be `Cancelable!void`.
+  Job errors are **not** the group return (`Group` discards
+  them). Store them in an atomic slot via a wrapper.
 - If `Group.concurrent` returns `error.ConcurrencyUnavailable`
   mid-spawn, await already-started workers, then finish
   remaining jobs on the caller. Do not leak tasks.
+  `std.testing.io` is threaded, so this remainder path is
+  not injected in unit tests. Still required in the impl
+  (`-fsingle-threaded`). No `std.Io.failing` test in this
+  slice (Grok: do not add; GPT wanted one — 2/3 skip).
 - First error is the error from the **lowest failing job
-  index**. Later failures are discarded. All started workers
-  still join.
+  index**, even if a higher index failed first. Later
+  failures are discarded. All started workers still join.
+  Every job is still attempted (no cancel-on-first-error).
 - Job counters and error slots use `std.atomic` (lock-free;
   no `Io` mutex required). Tests that share a counter across
   workers must use atomics, not unsynchronized `u32`.
-- Two asserts per function, ≤70 lines, ≤100 columns.
-- Tests use `std.testing.io` (already a threaded `Io`).
+- Split helpers so no function exceeds 70 lines. Two asserts
+  per function, ≤100 columns.
+- Tests use `std.testing.io`.
 
 Files: `src/common/terminal.zig`, `src/common/parallel.zig`,
 `src/common/lib.zig`, `TODO.md`, `CHANGELOG.md`. No
@@ -119,8 +146,7 @@ Files: `src/common/terminal.zig`, `src/common/parallel.zig`,
 - Changing `cp`/`mv`/`dd` to copy in parallel
 - `sort --parallel` actually spawning workers
 - Tiger Style CI job (deferred heading)
-- `getWidth()` tests that require a TTY ioctl of 0 (not
-  injectable). The pure resolver covers that case.
+- Injected `ConcurrencyUnavailable` tests
 
 ## Spec impact
 
@@ -129,97 +155,150 @@ No flag-matrix change. No new CLI flags.
 ## Tests (failing first, separate test-writer)
 
 Names must not contain `#`. No privileged tests. No stdin-filter
-hangs. Never `setenv`/`unsetenv`. Prefer calling
-`resolveDimension` directly so ioctl cannot skip the case.
-Do not use `env.test_overrides` unless a test specifically
-exercises `getWidth`'s `env.getEnv` wiring; even then, a TTY
-ioctl of a positive width still wins, so that is not the RED
-for the 0-fallback.
+hangs. Never `setenv`/`unsetenv`.
 
-`COLUMNS=120` already returns 120 via `parseInt` when ioctl is
-skipped. That is **not** a RED test for this slice.
+### Stub protocol (so RED is an assertion, not a compile error)
 
-Terminal (`src/common/terminal.zig`), against
-`resolveDimension`:
+The test-writer may add **signatures only**. Stubs must
+preserve **today's** behavior:
+
+- `resolveDimension`: ioctl non-null → return that `u16`
+  even if 0; else `parseInt(u16, env, 10) catch default`
+  (so `"0"` returns 0, empty/non-numeric → default).
+- `runBounded`: return `void` without running jobs (or
+  return a dummy error). Do **not** implement the worker
+  loop in the stub.
+
+The implementer replaces the stubs. The implementer does
+not edit the tests.
+
+### Terminal — characterization (already true of today's parse/ioctl)
+
+Call `resolveDimension` directly. These must compile against
+the stub and **pass** on the stub (current semantics). Prove
+teeth later by transient sabotage if needed (tdd refactor
+rule). They are **not** this slice's RED.
 
 1. `terminal resolveDimension uses positive ioctl` — ioctl 80,
-   env `"0"` → 80 (ioctl wins; env ignored).
-2. `terminal resolveDimension falls back when ioctl is 0` —
-   ioctl 0, env `"120"` → 120.
-3. `terminal resolveDimension falls back when COLUMNS is 0` —
-   ioctl null, env `"0"` → `DEFAULT_TERMINAL_WIDTH`.
-4. `terminal resolveDimension falls back on empty env` — ioctl
+   env `"0"` → 80.
+2. `terminal resolveDimension falls back on empty env` — ioctl
    null, env `""` → default.
-5. `terminal resolveDimension falls back on non-numeric env` —
+3. `terminal resolveDimension falls back on non-numeric env` —
    ioctl null, env `"abc"` → default.
-6. `terminal resolveDimension uses positive env when ioctl is
+4. `terminal resolveDimension uses positive env when ioctl is
    null` — ioctl null, env `"120"` → 120.
+
+Existing `terminal width detection` / `height detection`
+stay green (`> 0`).
+
+`COLUMNS=120` via `getWidth()` is **not** a RED test.
+
+### Terminal — RED (today's zero leak)
+
+Against the stub above, these **fail the assertion** (not
+compile):
+
+5. `terminal resolveDimension falls back when ioctl is 0` —
+   ioctl 0, env `"120"` → 120. Stub returns 0.
+6. `terminal resolveDimension falls back when COLUMNS is 0` —
+   ioctl null, env `"0"` → `DEFAULT_TERMINAL_WIDTH`. Stub
+   returns 0.
 7. `terminal resolveDimension falls back when LINES is 0` —
-   same as (3) with `DEFAULT_TERMINAL_HEIGHT`.
-8. Existing `terminal width detection` / `height detection`
-   stay green (`> 0`).
+   ioctl null, env `"0"`, default `DEFAULT_TERMINAL_HEIGHT`
+   → 24. Stub returns 0.
 
-Parallel (`src/common/parallel.zig`):
+Production wiring (so `resolveDimension` cannot stay
+uncalled). Legal under #95 (`test_overrides`, no `setenv`):
 
-9. `parallel runBounded with 0 jobs is a no-op` — counter
-   stays 0; no spawn.
+8. `terminal getWidth falls back when COLUMNS is 0 off tty` —
+   stage `env.test_overrides` `{ .key = "COLUMNS", .value = "0" }`,
+   restore in `defer`. If `std.c.isatty(stdout) != 0`,
+   `return error.SkipZigTest` (ioctl of a positive width
+   would win). Else `getWidth(allocator) == DEFAULT_TERMINAL_WIDTH`.
+   Today this returns 0. That is the production-path RED.
+
+### Parallel — RED until the module exists
+
+Stub `runBounded` so tests compile. Failures must be
+assertion failures.
+
+9. `parallel runBounded with 0 jobs is a no-op` — atomic
+   counter stays 0. A no-op stub makes this **pass**; it is
+   characterization, not RED. Keep it as a regression guard.
 10. `parallel runBounded runs every job` — 5 jobs,
-    `std.atomic.Value(u32)` increment; load == 5.
-11. `parallel runBounded treats 0 workers as 1` — 3 jobs, 0
-    workers; all 3 run.
+    `std.atomic.Value(u32)` increment; load == 5. Stub
+    leaves it 0.
+11. `parallel runBounded treats 0 workers as 1` — 3 jobs,
+    `n_workers = 0`. All 3 run. An in-flight atomic with a
+    start-gate peaks at **exactly 1** (one worker stealing
+    sequentially). If concurrent spawn is unavailable the
+    caller-remainder path also peaks at 1; either way the
+    peak must be 1, not 0 and not 3.
 12. `parallel runBounded caps workers at parallel_workers_max`
-    — request 64 workers, 16 jobs. An atomic in-flight counter
-    peaks at ≤ 8 and all 16 jobs run. The spawn loop itself
-    is bounded by `parallel_workers_max`.
-13. `parallel runBounded returns the lowest job index error` —
-    jobs 1 and 3 fail with distinct errors; result is job 1's
-    error; all workers joined (no leak under the testing
-    allocator / no hang).
+    — request 64 workers, 16 jobs. A start-gate / barrier
+    holds every worker in `work_fn` until `parallel_workers_max`
+    have entered (or until a short timeout if
+    `ConcurrencyUnavailable` forced a sequential remainder).
+    When spawn succeeds: in-flight peak **== 8**, not merely
+    `≤ 8`, and all 16 jobs run. When spawn is unavailable:
+    skip the peak==8 assertion (`error.SkipZigTest` on that
+    half) but still require all 16 jobs. Sequential-only
+    must not count as proving the cap.
+13. `parallel runBounded returns the lowest job index error`
+    — 4 jobs. Job 3's `work_fn` fails first (gate: job 3
+    proceeds before jobs 0–2). Jobs 1 and 3 return distinct
+    errors. Result is **job 1's** error, not job 3's. Every
+    job is still attempted (atomic run-count == 4). All
+    workers joined (no hang).
 
-Prove RED:
+## Prove RED (this paragraph is the test-writer's contract)
 
-- (1)–(7) fail while ioctl 0 / env 0 / invalid env can yield 0
-  or skip the fallback (today `parseInt("0")` succeeds and
-  returns 0; ioctl `ws.col == 0` returns 0).
-- (9)–(13) fail until the module exists. Test-writer may stub
-  `runBounded` so tests compile and fail assertions. Do not
-  implement the worker loop in the stub.
+The test-writer proves RED by running the stubbed tests:
+
+- **Pass** (characterization / current behavior): (1)–(4),
+  (9), existing width/height tests. Do not claim these fail.
+- **Fail the assertion** (this slice's RED): (5), (6), (7),
+  (8) off-TTY, (10), (11), (12), (13). Right reason for
+  (5)–(8): 0 leaked through. Right reason for (10)–(13):
+  jobs did not run, peak was not 8, or the error was not
+  the lowest index. Not a compile error. (8) may skip on a
+  TTY; (12)'s peak==8 half may skip if concurrent spawn is
+  unavailable.
 
 ## Risks
 
-- **Issue #95:** never `setenv`/`unsetenv`. Tests of the
-  resolver take string slices. `env.test_overrides` is only
-  for a future `getWidth` wiring test, not for the 0-fallback
-  RED.
+- **Issue #95:** never `setenv`/`unsetenv`. Resolver tests
+  take string slices. `getWidth` wiring uses
+  `env.test_overrides` and skips on TTY.
 - **`env.getEnv` in 0.16:** follow zig-patterns; do not use
   removed `std.posix.getenv`.
 - **Zig 0.16 concurrency:** `std.Io.Group`, not
   `std.Thread.Pool`. Mix-and-match `Thread.Mutex` + `Io` is
-  incorrect. Atomics are allowed without `Io`.
+  incorrect. Atomics are allowed without `Io`. Group
+  callbacks swallow errors; the atomic slot is mandatory.
 - **ConcurrencyUnavailable:** sequential remainder on the
-  caller after joining started workers. `-fsingle-threaded`
-  builds must still complete jobs.
+  caller after joining started workers. Not unit-tested via
+  a fake Io in this slice.
 - **macOS:** ioctl `TIOCGWINSZ` is the existing path; do not
   `@intCast` signed fields that can have the high bit set
   (`ws.col` is unsigned).
-- **Dead-code concern:** `parallel.zig` is used by its tests
-  and force-imported. Round-1 2/3 accepted that as the
-  checkbox. Do not invent a `cp` consumer to silence it.
+- **Dead-code concern:** `parallel.zig` is used by its tests,
+  exported as `common.parallel`, and force-imported. Do not
+  invent a `cp` consumer.
 - **Trust the OS:** no path-traversal checks in the helper.
 - **G14:** assert `result > 0` after fallback, not as a
-  substitute for fallback.
+  substitute for fallback. Also assert `default > 0`.
 
-## Plan review (round 1 → this revision)
+## Plan review history
 
-Blocking items folded in:
+Round 1: Grok REQUEST CHANGES (setenv / ioctl-first /
+assert-after-fallback / atomics). GPT REQUEST CHANGES
+(dead `parallel`, COLUMNS=120 not RED, no ioctl-zero,
+stronger parallel, predecessor). Fable APPROVE.
 
-- Grok: no `setenv`; extract a pure helper because ioctl
-  runs first on a TTY; assert after fallback; atomics in
-  parallel tests; `n_workers == 0` → 1; spawn cap observable.
-- GPT: `COLUMNS=120` is not RED; add ioctl-zero coverage;
-  stronger parallel contracts (lowest failing index, join
-  after error). Declined: production `cp` consumer (2/3).
-- Fable: approved the library+force-import checkbox and the
-  predecessor deviation.
+Round 2: all three REQUEST CHANGES on the Prove-RED
+paragraph claiming (1)–(7) fail. Grok+GPT also blocked on
+production-path `getWidth` wiring and a spawn-cap test that
+`≤ 8` cannot prove. This revision is that delta.
 
 Re-run the three reviewers on this delta before any Zig.
