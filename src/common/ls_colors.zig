@@ -33,6 +33,15 @@ const Suffix = struct {
     sgr: []const u8,
 };
 
+/// Result of classifying a name against a parsed table.
+/// `missing` keeps the compiled palette; `uncolored` is empty/`0`/`00`
+/// (no color and no compiled fallback).
+pub const ColorHit = union(enum) {
+    missing,
+    uncolored,
+    sgr: []const u8,
+};
+
 const Measure = struct {
     pair_count: u32 = 0,
     suffix_count: u32 = 0,
@@ -65,22 +74,41 @@ pub const Table = struct {
     pub fn lookupType(self: *const Table, code: []const u8) ?[]const u8 {
         std.debug.assert(@intFromPtr(self) != 0);
         std.debug.assert(code.len == 2);
-        const idx = indicatorIndex(code) orelse return null;
-        const sgr = self.type_sgr[idx] orelse return null;
-        return if (isColoredSgr(sgr)) sgr else null;
+        return switch (self.lookupTypeHit(code)) {
+            .sgr => |sgr| sgr,
+            .missing, .uncolored => null,
+        };
     }
 
     pub fn lookupSuffix(self: *const Table, name: []const u8) ?[]const u8 {
         std.debug.assert(@intFromPtr(self) != 0);
         std.debug.assert(name.len > 0);
-        // Prepended list: index 0 is the last-listed matching suffix.
+        return switch (self.lookupSuffixHit(name)) {
+            .sgr => |sgr| sgr,
+            .missing, .uncolored => null,
+        };
+    }
+
+    fn lookupTypeHit(self: *const Table, code: []const u8) ColorHit {
+        std.debug.assert(code.len == 2);
+        std.debug.assert(@intFromPtr(self) != 0);
+        const idx = indicatorIndex(code) orelse return .missing;
+        const sgr = self.type_sgr[idx] orelse return .missing;
+        if (!isColoredSgr(sgr)) return .uncolored;
+        return .{ .sgr = sgr };
+    }
+
+    fn lookupSuffixHit(self: *const Table, name: []const u8) ColorHit {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(@intFromPtr(self) != 0);
         var i: u32 = 0;
         while (i < self.suffixes.len) : (i += 1) {
             const entry = self.suffixes[i];
             if (!std.mem.endsWith(u8, name, entry.suffix)) continue;
-            return if (isColoredSgr(entry.sgr)) entry.sgr else null;
+            if (!isColoredSgr(entry.sgr)) return .uncolored;
+            return .{ .sgr = entry.sgr };
         }
-        return null;
+        return .missing;
     }
 
     pub fn leftSeq(self: *const Table) []const u8 {
@@ -289,6 +317,20 @@ fn storeControl(table: *Table, idx: u8, sgr: []const u8) void {
     }
 }
 
+fn firstColored(hit: ColorHit) ?[]const u8 {
+    std.debug.assert(@intFromEnum(hit) <= @intFromEnum(ColorHit.sgr));
+    return switch (hit) {
+        .sgr => |sgr| sgr,
+        .missing, .uncolored => null,
+    };
+}
+
+fn coloredOrSkip(table: *const Table, code: []const u8) ?[]const u8 {
+    std.debug.assert(code.len == 2);
+    std.debug.assert(@intFromPtr(table) != 0);
+    return firstColored(table.lookupTypeHit(code));
+}
+
 pub fn sgrFor(
     table: *const Table,
     kind: std.Io.File.Kind,
@@ -296,38 +338,37 @@ pub fn sgrFor(
     nlink: u32,
     name: []const u8,
     dangling: bool,
-) ?[]const u8 {
+) ColorHit {
     std.debug.assert(@intFromPtr(table) != 0);
     std.debug.assert(name.len > 0);
     if (dangling) {
-        if (table.lookupType("or")) |sgr| return sgr;
-        return table.lookupType("mi");
+        if (coloredOrSkip(table, "or")) |sgr| return .{ .sgr = sgr };
+        return table.lookupTypeHit("mi");
     }
     return switch (kind) {
         .directory => sgrForDirectory(table, mode),
-        .sym_link => table.lookupType("ln"),
-        .named_pipe => table.lookupType("pi"),
-        .unix_domain_socket => table.lookupType("so"),
-        .block_device => table.lookupType("bd"),
-        .character_device => table.lookupType("cd"),
+        .sym_link => table.lookupTypeHit("ln"),
+        .named_pipe => table.lookupTypeHit("pi"),
+        .unix_domain_socket => table.lookupTypeHit("so"),
+        .block_device => table.lookupTypeHit("bd"),
+        .character_device => table.lookupTypeHit("cd"),
         .file => sgrForRegularFile(table, mode, nlink, name),
-        .door => table.lookupType("do"),
-        else => null,
+        .door => table.lookupTypeHit("do"),
+        else => .missing,
     };
 }
 
-fn sgrForDirectory(table: *const Table, mode: ?u32) ?[]const u8 {
+fn sgrForDirectory(table: *const Table, mode: ?u32) ColorHit {
     std.debug.assert(@intFromPtr(table) != 0);
     std.debug.assert(constants.STICKY_BIT == 0o1000);
     if (mode) |m| {
         const sticky = (m & constants.STICKY_BIT) != 0;
         const owrite = (m & other_write_bit) != 0;
-        // GNU skips an indicator when that key is uncolored / absent.
-        if (sticky and owrite) if (table.lookupType("tw")) |sgr| return sgr;
-        if (owrite) if (table.lookupType("ow")) |sgr| return sgr;
-        if (sticky) if (table.lookupType("st")) |sgr| return sgr;
+        if (sticky and owrite) if (coloredOrSkip(table, "tw")) |sgr| return .{ .sgr = sgr };
+        if (owrite) if (coloredOrSkip(table, "ow")) |sgr| return .{ .sgr = sgr };
+        if (sticky) if (coloredOrSkip(table, "st")) |sgr| return .{ .sgr = sgr };
     }
-    return table.lookupType("di");
+    return table.lookupTypeHit("di");
 }
 
 fn sgrForRegularFile(
@@ -335,25 +376,26 @@ fn sgrForRegularFile(
     mode: ?u32,
     nlink: u32,
     name: []const u8,
-) ?[]const u8 {
+) ColorHit {
     std.debug.assert(@intFromPtr(table) != 0);
     std.debug.assert(name.len > 0);
     if (mode) |m| {
         if (m & constants.SETUID_BIT != 0) {
-            if (table.lookupType("su")) |sgr| return sgr;
+            if (coloredOrSkip(table, "su")) |sgr| return .{ .sgr = sgr };
         }
         if (m & constants.SETGID_BIT != 0) {
-            if (table.lookupType("sg")) |sgr| return sgr;
+            if (coloredOrSkip(table, "sg")) |sgr| return .{ .sgr = sgr };
         }
         if (m & constants.EXECUTE_BIT != 0) {
-            if (table.lookupType("ex")) |sgr| return sgr;
+            if (coloredOrSkip(table, "ex")) |sgr| return .{ .sgr = sgr };
         }
     }
     if (nlink > 1) {
-        if (table.lookupType("mh")) |sgr| return sgr;
+        if (coloredOrSkip(table, "mh")) |sgr| return .{ .sgr = sgr };
     }
-    if (table.lookupSuffix(name)) |sgr| return sgr;
-    return table.lookupType("fi");
+    const suffix = table.lookupSuffixHit(name);
+    if (suffix != .missing) return suffix;
+    return table.lookupTypeHit("fi");
 }
 
 pub fn writeWrapped(writer: anytype, table: *const Table, sgr: []const u8) !void {
@@ -361,6 +403,19 @@ pub fn writeWrapped(writer: anytype, table: *const Table, sgr: []const u8) !void
     std.debug.assert(@intFromPtr(table) != 0);
     try writer.writeAll(table.leftSeq());
     try writer.writeAll(sgr);
+    try writer.writeAll(table.rightSeq());
+}
+
+/// GNU end sequence: `ec` if set, otherwise `lc`+`rs`+`rc`.
+pub fn writeEnd(writer: anytype, table: *const Table) !void {
+    std.debug.assert(@intFromPtr(table) != 0);
+    std.debug.assert(default_rs.len == 1);
+    if (table.ec) |ec| {
+        try writer.writeAll(ec);
+        return;
+    }
+    try writer.writeAll(table.leftSeq());
+    try writer.writeAll(table.resetSeq());
     try writer.writeAll(table.rightSeq());
 }
 

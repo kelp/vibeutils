@@ -254,7 +254,7 @@ fn printEntryName_writeIcon(entry: Entry, writer: anytype, style: anytype) !void
     if (icon_color != null and style.color_mode != .none) try style.reset();
 }
 
-fn sgrForEntry(table: *const common.ls_colors.Table, entry: Entry) ?[]const u8 {
+fn sgrForEntry(table: *const common.ls_colors.Table, entry: Entry) common.ls_colors.ColorHit {
     std.debug.assert(@intFromPtr(table) != 0);
     std.debug.assert(entry.name.len > 0);
     const mode: ?u32 = if (entry.stat) |stat| @intCast(stat.mode) else null;
@@ -271,12 +271,26 @@ fn writeEntryNameColor(
     std.debug.assert(entry.name.len > 0);
     std.debug.assert(style.color_mode != .none);
     if (options.ls_colors) |table| {
-        if (sgrForEntry(table, entry)) |sgr| {
-            try common.ls_colors.writeWrapped(writer, table, sgr);
-            return;
+        switch (sgrForEntry(table, entry)) {
+            .sgr => |sgr| {
+                try common.ls_colors.writeWrapped(writer, table, sgr);
+                return;
+            },
+            .uncolored => return,
+            .missing => {},
         }
     }
     try style.setColor(getFileColor(entry));
+}
+
+fn writeEntryNameReset(writer: anytype, style: anytype, options: LsOptions) !void {
+    std.debug.assert(style.color_mode != .none);
+    std.debug.assert(@intFromEnum(style.color_mode) > 0);
+    if (options.ls_colors) |table| {
+        try common.ls_colors.writeEnd(writer, table);
+        return;
+    }
+    try style.reset();
 }
 
 /// Write the entry name with file-type color and -b/-q transformations.
@@ -306,7 +320,7 @@ fn printEntryName_writeName(
     }
 
     if (style.color_mode != .none) {
-        try style.reset();
+        try writeEntryNameReset(writer, style, options);
     }
 }
 

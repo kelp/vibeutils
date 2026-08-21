@@ -643,7 +643,10 @@ fn targetBaseName(path: []const u8) []const u8 {
     return path;
 }
 
-fn overlayTargetSgr(table: *const common.ls_colors.Table, target: []const u8) ?[]const u8 {
+fn overlayTargetHit(
+    table: *const common.ls_colors.Table,
+    target: []const u8,
+) common.ls_colors.ColorHit {
     std.debug.assert(@intFromPtr(table) != 0);
     std.debug.assert(target.len > 0);
     const name = targetBaseName(target);
@@ -663,9 +666,13 @@ fn writeSymlinkTargetColor(
     std.debug.assert(target.len > 0);
     std.debug.assert(style.color_mode != .none);
     if (options.ls_colors) |table| {
-        if (overlayTargetSgr(table, target)) |sgr| {
-            try common.ls_colors.writeWrapped(writer, table, sgr);
-            return;
+        switch (overlayTargetHit(table, target)) {
+            .sgr => |sgr| {
+                try common.ls_colors.writeWrapped(writer, table, sgr);
+                return;
+            },
+            .uncolored => return,
+            .missing => {},
         }
     }
     const target_kind = blk: {
@@ -694,6 +701,10 @@ fn printLongFormatEntryAligned_symlinkTarget(
     }
     try writeSymlinkTargetColor(style, writer, target, options);
     try writer.print("{s}", .{target});
+    if (options.ls_colors) |table| {
+        try common.ls_colors.writeEnd(writer, table);
+        return;
+    }
     try style.reset();
 }
 
