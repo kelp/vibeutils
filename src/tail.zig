@@ -1228,7 +1228,7 @@ fn followSet_scanInactive(ctx: *FollowCtx) !void {
 fn followSet_maybeScan(ctx: *FollowCtx, last_scan_ns: *i128) !void {
     assert(ctx.slot_count > 0);
     if (!ctx.options.follow_retry) return;
-    const now = std.time.nanoTimestamp();
+    const now = std.Io.Timestamp.now(ctx.io, .real).nanoseconds;
     if (now - last_scan_ns.* < std.time.ns_per_s) return;
     last_scan_ns.* = now;
     try followSet_scanInactive(ctx);
