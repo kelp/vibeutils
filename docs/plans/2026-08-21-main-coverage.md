@@ -81,13 +81,13 @@ Extract `runWithStreamingFiles` from `utilityMain` in
 `utilityMain` becomes: parse argv, call
 `runWithStreamingFiles` with `File.stdout()` /
 `File.stderr()`, then `process.exit`. It is a
-modified function, so it keeps **two** asserts of
-its own: `args.len >= 1`, and both file handles
-`>= 0`. Do **not** assert `args[0].len > 0` —
-empty `argv[0]` is legal and must not trap in
-debug. Keep `runWithBufferedIO` unchanged for
-Allocating-writer tests. Function bodies stay
-≤ 70 lines.
+modified function. Three separate asserts (do not
+compound them): `args.len >= 1`, stdout handle
+`>= 0`, stderr handle `>= 0`. Do **not** assert
+`args[0].len > 0` — empty `argv[0]` is legal and
+must not trap in debug. Keep `runWithBufferedIO`
+unchanged for Allocating-writer tests. Function
+bodies stay ≤ 70 lines.
 
 `env` keeps its own `main()` (`environ_map`). Do not
 rewrite env onto `utilityMain`. Do not duplicate the
@@ -163,8 +163,10 @@ Round 3 (Sol still REQUEST CHANGES; Grok+Fable
 APPROVE):
 
 6. **No `args[0].len > 0`.** Empty argv[0] is
-   legal. `utilityMain`'s second assert is both
-   file handles `>= 0`.
+   legal. `utilityMain` has three separate
+   asserts: `args.len >= 1`, stdout handle
+   `>= 0`, stderr handle `>= 0`. Do not
+   compound the two handle checks.
 7. **Source-scan cannot live in `main.zig`.**
    Needles in the test strings would self-satisfy.
    Scan production `main.zig` from `lib.zig` / a
@@ -177,6 +179,17 @@ APPROVE):
 9. **TODO boxes** are checked in the implementer
    commit, not in the same commit as the hook.
    Docs below match that.
+
+Round 4 (Sol still REQUEST CHANGES; Grok+Fable
+APPROVE round 3):
+
+10. **Scanner RED** is `zig build test` plus
+    decoy fixtures, not `just it`.
+11. **Catch-path RED** is three separate
+    mutations (exit code, stderr flush, stdout
+    non-flush), not one "or".
+12. **Split compound asserts** on the two
+    file handles.
 
 ## Tests
 
@@ -202,6 +215,15 @@ TDD split (test-writer ≠ implementer).
   After the extract those needles still live in
   production `runWithStreamingFiles`.
 
+  Scanner RED proof is `zig build test`, not
+  `just it`. Test-writer ships fixture coverage
+  (a decoy comment/string/test-body needle must
+  not fire; a production needle missing must
+  fire). Uncommitted sabotage: delete one
+  production needle from `utilityMain` and
+  confirm `zig build test` fails for that
+  needle, then revert.
+
 Do **not** call `runWithStreamingFiles` in this
 commit — the symbol does not exist yet, and a
 compile failure is not the RED.
@@ -222,8 +244,9 @@ Revert every sabotage. Never commit it.
 ### Implementer (commit 2)
 
 Extract `runWithStreamingFiles`, point `utilityMain`
-at it, keep both functions within Tiger caps and
-two-assert. Check the two TODO boxes **in this
+at it, keep both functions within Tiger caps.
+`utilityMain` has three split asserts; the extract
+keeps its buffer asserts plus `args.len >= 1`. Check the two TODO boxes **in this
 commit** (the extract is what completes the slice;
 the hook landed earlier still unchecked). Add the
 `TESTING_STRATEGY.md` note. Does not edit the shell
@@ -247,9 +270,18 @@ follow-up:
 flush (runFn returns 1). It does **not** cover
 the `catch` branch; the follow-up Zig uncaught-
 error test does. After those tests exist, prove
-them RED by sabotaging the catch path (skip
-stderr flush, or flush stdout on error), then
-revert.
+them RED with **three separate** uncommitted
+mutations, then revert each:
+
+- return 0 from the catch path → exit-code
+  assertion fails
+- omit `stderr.flush()` on the catch path →
+  stderr file empty
+- add `stdout.flush()` on the catch path →
+  pending stdout appears in the file
+
+One mutation covering only one of the three
+assertions is not enough.
 
 Existing `lib.zig` issue #5 `writer(` lint stays. Do
 not treat that grep as this slice. Existing
@@ -278,7 +310,11 @@ None. No `docs/specs/` edit.
 - `src/common/` boundary: extract stays in
   `main.zig`; do not grow `lib.zig`.
 - Tiger Style: every new or modified function ≤ 70
-  lines and has two asserts (`utilityMain` included).
+  lines. Split compound asserts. `utilityMain`
+  has three asserts (argv length, each handle).
+  `runWithStreamingFiles` keeps buffer-len 8192
+  and stdout/stderr lens equal as two asserts,
+  plus `args.len >= 1`.
 - `TestDir` on github/main is the pre-#194 API
   (`getPath`, no `join` / `chdirToBase` required
   here). Tests create files via `createFile` / open
