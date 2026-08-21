@@ -1875,6 +1875,40 @@ test "free --bar=bogus exits 1" {
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
 }
 
+test "free --color= empty WHEN exits 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--color="},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
+}
+
+test "free --bar= empty WHEN exits 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--bar="},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
+}
+
 test "free --bar=always prints a 10-cell usage bar and percent" {
     const saved_overrides = common.env.test_overrides;
     defer common.env.test_overrides = saved_overrides;

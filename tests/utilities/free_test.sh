@@ -273,4 +273,18 @@ test_free() {
         print_test_result "free --bar=always emits bar bytes through a pipe" "FAIL" \
             "No U+2588/U+2591 in --bar=always output"
     fi
+
+    # Empty --color= / --bar= is valid argparse and still an invalid WHEN.
+    # Must exit 1 (not panic / SIGABRT).
+    local empty_color_rc empty_bar_rc
+    "$binary" --color= >/dev/null 2>&1
+    empty_color_rc=$?
+    "$binary" --bar= >/dev/null 2>&1
+    empty_bar_rc=$?
+    if [[ $empty_color_rc -eq 1 && $empty_bar_rc -eq 1 ]]; then
+        print_test_result "free --color= and --bar= empty WHEN exit 1" "PASS"
+    else
+        print_test_result "free --color= and --bar= empty WHEN exit 1" "FAIL" \
+            "Expected exit 1 (no panic), got --color=$empty_color_rc --bar=$empty_bar_rc"
+    fi
 }
