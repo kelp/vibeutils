@@ -36,6 +36,13 @@ jobs:
       - name: Concurrent useradd contract (#150)
         if: runner.os == 'Linux'
         run: bash tests/tools/run-integration_useradd_test.sh
+      # The contract test sudo's to root and may mkdir zig-out/bin. A runner
+      # SIGKILL'd during flock never reaches the in-script chown, and the
+      # next `just build` then AccessDenied's every binary. Restore here
+      # even if the contract step failed.
+      - name: Restore zig-out owner after root contract test
+        if: always() && runner.os == 'Linux'
+        run: sudo chown -R "$(id -u):$(id -g)" zig-out && sudo chmod -R u+w zig-out || true
       - name: Install bash 4+ (macOS)
         if: runner.os == 'macOS'
         run: brew install bash

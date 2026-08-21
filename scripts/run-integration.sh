@@ -62,9 +62,24 @@ run_isolated() {
 # run. Both are gone.
 run_isolated_and_exit() {
     local rc=0
+    restore_zig_out_owner
     reap_stale_run_dirs "${TMPDIR:-/tmp}" 'vibeutils-run-*'
     run_isolated "$@" || rc=$?
     exit "$rc"
+}
+
+# The #150 contract test mkdir's zig-out/bin as root. A root-owned
+# install dir makes the next `zig build` in the same checkout fail with
+# AccessDenied. Hand zig-out back to the checkout owner. No-op when we
+# are not root or zig-out is missing.
+restore_zig_out_owner() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ -d "$PROJECT_ROOT/zig-out" ] || return 0
+    local ugid
+    ugid="$(stat -c '%u:%g' "$PROJECT_ROOT" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT")" || return 0
+    chown -R "$ugid" "$PROJECT_ROOT/zig-out" || true
+    chmod -R u+w "$PROJECT_ROOT/zig-out" || true
 }
 
 # Not root, or explicitly told not to demote: run the suite directly.
@@ -76,6 +91,8 @@ if ! command -v setpriv >/dev/null 2>&1; then
     echo "integration: running as root without setpriv; permission-denied tests will fail" >&2
     run_isolated_and_exit "$@"
 fi
+
+restore_zig_out_owner
 
 # Serialize the id-check + useradd + home-chown window for this test
 # user. Two runners racing useradd can leave the home owned by a uid
@@ -164,16 +181,7 @@ fi
 # to write inside the tree — everything it creates goes under $TMPDIR — so
 # the checkout stays root-owned.
 chmod -R a+rX "$PROJECT_ROOT/zig-out" "$PROJECT_ROOT/tests" 2>/dev/null || true
-
-# The #150 contract test mkdir's zig-out/bin as root before invoking
-# this script. A root-owned install dir makes the next `zig build` in
-# the same checkout fail with AccessDenied. Hand zig-out back to the
-# checkout owner; a+rX above still lets the demoted user read it.
-if [ -d "$PROJECT_ROOT/zig-out" ]; then
-    repo_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT" 2>/dev/null ||
-        stat -f '%u:%g' "$PROJECT_ROOT")"
-    chown -R "$repo_ugid" "$PROJECT_ROOT/zig-out" || true
-fi
+restore_zig_out_owner
 
 echo "integration: dropping to '$TEST_USER' so permission-denied tests are meaningful"
 
