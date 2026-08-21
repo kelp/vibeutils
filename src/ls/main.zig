@@ -2264,3 +2264,152 @@ test "ls #147: an ACL entry the section does not list cannot widen it" {
     try expectLinePrefix(fx.stdout(), ".hidden_acl", "-rw-rw-r--+ 1 ");
     try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r--  1 ");
 }
+
+// ============================================================
+// Issue #166: `ls -l` sizes the file-operand section after
+// partitioning directories out. GNU measures every operand first
+// (gobble_file), then extract_dirs_from_files removes directories
+// from the listing -- so a directory's nlink/owner/group/size (and
+// ACL marker) still size the surviving file lines.
+//
+// A 0-byte file plus a directory is enough for the size column
+// (typical st_size 4096, four digits). Eight subdirectories push
+// the directory's nlink to 10 so the nlink column widens too; a
+// fix that only pads size would still fail here. Owner and group
+// are the same id on both operands under -n, so they do not widen,
+// but they sit in the asserted prefix and a column that drifted
+// would still fail.
+//
+// No ACL is attached: #166 is not ACL-specific, and the marker
+// column is covered as the ten-column mode field with no eleventh.
+// ============================================================
+
+/// Decimal digit count of `n`. Zero is one digit, matching how GNU
+/// renders a 0-byte size.
+fn testDecimalDigits(n: u64) u32 {
+    var digits: u32 = 1;
+    var x = n;
+    while (x >= 10) {
+        x = @divFloor(x, 10);
+        digits += 1;
+        std.debug.assert(digits <= 20);
+    }
+    return digits;
+}
+
+/// Right-align the decimal form of `value` into `buf` to `width`
+/// columns, the way GNU right-aligns nlink/uid/gid/size.
+fn testRightAlignU64(buf: []u8, value: u64, width: u32) ![]const u8 {
+    std.debug.assert(width >= 1);
+    std.debug.assert(buf.len >= width);
+    var txt_buf: [20]u8 = undefined;
+    const txt = try std.fmt.bufPrint(&txt_buf, "{d}", .{value});
+    std.debug.assert(txt.len > 0);
+    std.debug.assert(txt.len <= width);
+    const pad = width - @as(u32, @intCast(txt.len));
+    var i: u32 = 0;
+    while (i < pad) : (i += 1) {
+        buf[i] = ' ';
+    }
+    @memcpy(buf[pad..][0..txt.len], txt);
+    return buf[0..width];
+}
+
+test "ls #166: -ln sizes the file-operand section from every operand, including directories" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "f_plain", .{});
+        file.close(io);
+        const rc = std.c.fchmodat(tmp_dir.dir.handle, "f_plain", 0o644, 0);
+        std.debug.assert(rc == 0);
+    }
+    try tmp_dir.dir.createDir(io, "d_wide", .default_dir);
+    {
+        const rc = std.c.fchmodat(tmp_dir.dir.handle, "d_wide", 0o755, 0);
+        std.debug.assert(rc == 0);
+    }
+    // Eight children → nlink 10 (2 + 8). An empty directory's nlink is
+    // 2, still one digit, and would not catch a nlink-width miss.
+    const subdirs = [_][]const u8{
+        "d_wide/s0", "d_wide/s1", "d_wide/s2", "d_wide/s3",
+        "d_wide/s4", "d_wide/s5", "d_wide/s6", "d_wide/s7",
+    };
+    for (subdirs) |path| {
+        try tmp_dir.dir.createDirPath(io, path);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    const file_info = try common.file.FileInfo.lstat("f_plain");
+    const dir_info = try common.file.FileInfo.lstat("d_wide");
+    std.debug.assert(file_info.kind == .file);
+    std.debug.assert(dir_info.kind == .directory);
+
+    const nlink_width = @max(
+        testDecimalDigits(file_info.nlink),
+        testDecimalDigits(dir_info.nlink),
+    );
+    const owner_width = @max(
+        testDecimalDigits(file_info.uid),
+        testDecimalDigits(dir_info.uid),
+    );
+    const group_width = @max(
+        testDecimalDigits(file_info.gid),
+        testDecimalDigits(dir_info.gid),
+    );
+    const size_width = @max(
+        testDecimalDigits(file_info.size),
+        testDecimalDigits(dir_info.size),
+    );
+    // The fixture must actually widen nlink and size versus a file-only
+    // measurement, or the prefix below would match today's (wrong) output.
+    try testing.expect(nlink_width > testDecimalDigits(file_info.nlink));
+    try testing.expect(size_width > testDecimalDigits(file_info.size));
+
+    var nlink_buf: [20]u8 = undefined;
+    var owner_buf: [20]u8 = undefined;
+    var group_buf: [20]u8 = undefined;
+    var size_buf: [20]u8 = undefined;
+    const nlink_field = try testRightAlignU64(&nlink_buf, file_info.nlink, nlink_width);
+    const owner_field = try testRightAlignU64(&owner_buf, file_info.uid, owner_width);
+    const group_field = try testRightAlignU64(&group_buf, file_info.gid, group_width);
+    const size_field = try testRightAlignU64(&size_buf, file_info.size, size_width);
+
+    var prefix_buf: [128]u8 = undefined;
+    const expected_prefix = try std.fmt.bufPrint(
+        &prefix_buf,
+        "-rw-r--r-- {s} {s} {s} {s} ",
+        .{ nlink_field, owner_field, group_field, size_field },
+    );
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-ln", "--color=never", "f_plain", "d_wide" };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
+
+    const output = stdout_aw.writer.buffered();
+    const line = try testLineWith(output, "f_plain");
+    // Mode (no eleventh marker column), nlink, owner, group, and size
+    // together -- not one column in isolation. A fix that moves only
+    // one of those widths still fails this prefix.
+    try expectLinePrefix(output, "f_plain", expected_prefix);
+    try testing.expect(std.mem.endsWith(u8, line, "f_plain"));
+}
