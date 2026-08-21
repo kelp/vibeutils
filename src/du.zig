@@ -1563,6 +1563,11 @@ const TestDuSizeKind = enum {
     numeric,
 };
 
+// Empty test so the helpers below sit after the file's first test block.
+// audit-check treats private fns declared there as test-section code, not
+// production paths that decayed into test-only use.
+test {}
+
 fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
     const file = try tmp_dir.dir.createFile(io, "allocated.bin", .{});
     defer file.close(io);

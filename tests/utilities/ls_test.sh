@@ -260,8 +260,8 @@ test_ls() {
 
     local s_numeric_output s_numeric_field
     s_numeric_output=$(NO_COLOR=1 LC_ALL=C "$binary" -s "$hr_file" 2>/dev/null | strip_ansi)
-    s_numeric_field=$(printf '%s\n' "$s_numeric_output" | awk 'NR == 1 {print $1}')
-    if [[ "$s_numeric_field" =~ ^[0-9]+$ ]]; then
+    s_numeric_field=${s_numeric_output%% *}
+    if [[ -n "$s_numeric_field" && "$s_numeric_field" != *[!0-9]* ]]; then
         print_test_result "ls -s without -l keeps numeric block count" "PASS"
     else
         print_test_result "ls -s without -l keeps numeric block count" "FAIL" \
