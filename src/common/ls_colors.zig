@@ -387,7 +387,12 @@ fn sgrForRegularFile(
             if (coloredOrSkip(table, "sg")) |sgr| return .{ .sgr = sgr };
         }
         if (m & constants.EXECUTE_BIT != 0) {
-            if (coloredOrSkip(table, "ex")) |sgr| return .{ .sgr = sgr };
+            // Missing `ex` keeps the compiled executable color. `ex=0` skips.
+            switch (table.lookupTypeHit("ex")) {
+                .sgr => |sgr| return .{ .sgr = sgr },
+                .uncolored => {},
+                .missing => return .missing,
+            }
         }
     }
     if (nlink > 1) {
