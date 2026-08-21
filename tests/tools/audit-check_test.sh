@@ -94,6 +94,27 @@ require_one_added_line() {
         preflight_fail "$pair/$rel: added line lacks '$needle': $line"
 }
 
+# Same +1/-0 discipline as require_one_added_line, for fixture pairs whose
+# directories are not named positive/ and negative/ under a single pair root
+# (positive-splitly vs negative-splitly, and similar).
+require_one_added_line_dirs() {
+    local label="$1" pos="$2" neg="$3" rel="$4" needle="$5"
+    local differing added removed line
+
+    differing=$(diff -rq "$pos" "$neg" | grep -c .)
+    [[ "$differing" == "1" ]] ||
+        preflight_fail "$label: expected 1 differing file, found $differing"
+
+    added=$(diff "$pos/$rel" "$neg/$rel" | grep -c '^> ')
+    removed=$(diff "$pos/$rel" "$neg/$rel" | grep -c '^< ')
+    [[ "$added" == "1" && "$removed" == "0" ]] ||
+        preflight_fail "$label/$rel: expected +1/-0 lines, got +$added/-$removed"
+
+    line=$(diff "$pos/$rel" "$neg/$rel" | grep '^> ')
+    [[ "$line" == *"$needle"* ]] ||
+        preflight_fail "$label/$rel: added line lacks '$needle': $line"
+}
+
 # Weaker discipline for pairs where a single line cannot express the defect.
 require_single_differing_file() {
     local pair="$1" rel="$2"
@@ -115,6 +136,17 @@ run_preflight() {
     require_one_added_line stub-flag src/planted.zig "opts.unused_flag"
     require_one_added_line test-only-code src/deadly.zig "doubleWidth("
     require_one_added_line parse-only-test src/parsely.zig "opts.show_tabs"
+
+    # Multi-file / argparse pairs live in *-splitly / *-argparse dirs rather
+    # than the default positive/negative names, so they take explicit trees.
+    require_one_added_line_dirs "test-only-code/splitly" \
+        "$FIXTURES/test-only-code/positive-splitly" \
+        "$FIXTURES/test-only-code/negative-splitly" \
+        src/splitly/helper.zig "hiddenHelper("
+    require_one_added_line_dirs "stub-flag/argparse" \
+        "$FIXTURES/stub-flag/positive-argparse" \
+        "$FIXTURES/stub-flag/negative-argparse" \
+        src/reflectly/helper.zig "opts.unused_flag"
 
     # toothless-assert flips one line rather than adding one.
     require_single_differing_file toothless-assert tests/utilities/toothy_test.sh
@@ -453,6 +485,52 @@ test_parse_only_test() {
         "$FIXTURES/parse-only-test/negative" parse-only-test
 }
 
+# ===========================================================================
+# Multi-file units (issue #146) and argparse-shaped stubs (issue #157).
+#
+# The scanner currently opens only the manifest path, and stub-flag currently
+# fires on W[f] > 0 && R[f] == 0, so every positive case below is a false
+# negative today. The converses guard the naive fixes.
+# ===========================================================================
+
+test_test_only_code_non_entry_file() {
+    echo -e "${CYAN}Testing test-only-code in a non-entry-point file...${NC}"
+    # hiddenHelper is planted in src/splitly/helper.zig. The manifest path is
+    # src/splitly/main.zig, so a scanner that only opens the entry point never
+    # reports it. The key names the FILE the finding is in, not a line number.
+    expect_one_new_finding "test-only-code non-entry-point" \
+        "$FIXTURES/test-only-code/positive-splitly" test-only-code \
+        "src/splitly/helper.zig::hiddenHelper" 0
+    expect_no_findings "test-only-code non-entry-point negative" \
+        "$FIXTURES/test-only-code/negative-splitly" test-only-code
+}
+
+test_stub_flag_cross_file_read() {
+    echo -e "${CYAN}Testing stub-flag cross-file read...${NC}"
+    # live_flag is written in main.zig and read in helper.zig. Naive per-file
+    # scanning of the entry point sees W>0 and R==0 and reports a stub.
+    expect_no_findings "stub-flag cross-file read" \
+        "$FIXTURES/test-only-code/positive-splitly" stub-flag
+}
+
+test_stub_flag_argparse_unread() {
+    echo -e "${CYAN}Testing argparse-shaped unread stub...${NC}"
+    # unused_flag is declared on ReflectlyArgs and in meta. Nothing writes
+    # `opts.unused_flag =` and nothing reads it. Treating the declaration as
+    # the argparse write must report it; requiring W[f] > 0 misses it.
+    expect_one_new_finding "stub-flag argparse unread" \
+        "$FIXTURES/stub-flag/positive-argparse" stub-flag \
+        "src/reflectly/main.zig::unused_flag" 0
+}
+
+test_stub_flag_argparse_read() {
+    echo -e "${CYAN}Testing argparse-shaped flag that is read...${NC}"
+    # Same declaration shape as the unread fixture, but helper.zig reads
+    # opts.unused_flag. Unit-scope counting must see that read.
+    expect_no_findings "stub-flag argparse read" \
+        "$FIXTURES/stub-flag/negative-argparse" stub-flag
+}
+
 test_unscannable() {
     echo -e "${CYAN}Testing unscannable...${NC}"
     # An unscannable unit is counted in total and new, so a unit that stops
@@ -630,6 +708,10 @@ main() {
     test_toothless_assert
     test_path_shadow
     test_test_only_code
+    test_test_only_code_non_entry_file
+    test_stub_flag_cross_file_read
+    test_stub_flag_argparse_unread
+    test_stub_flag_argparse_read
     test_parse_only_test
     test_unscannable
     test_check_selection_excludes
