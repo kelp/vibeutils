@@ -282,6 +282,12 @@ tiger-check:
 test-tiger-check:
     @bash tests/tools/tiger-check_test.sh
 
+# Pin checks for the BSD vmactions workflow. Lives in tests/tools/, which
+# test_runner.sh does not glob, so it must be invoked here and from CI
+# explicitly.
+test-bsd-workflow:
+    @bash tests/tools/bsd-workflow_test.sh
+
 # Contract tests for scripts/audit-check.sh. Needs no Zig build: every
 # case points --root at a fixture tree under tests/fixtures/audit. Lives in
 # tests/tools/, which test_runner.sh does not glob, so it must be invoked
