@@ -216,8 +216,9 @@ TDD split (test-writer ≠ implementer):
      RED. Confirm the file no longer starts with
      `EXISTING\n`. Point the harness at real `echo
      fd-mode` → GREEN.
-   - Stderr dual-append: same seek-0 overwrite on a
-     command that writes stderr, for `>> file 2>&1`.
+   - Stderr dual-append: same no-`O_APPEND` reopen
+     clobber for a command that writes stderr, under
+     `>> file 2>&1`.
 
    macOS (CI `macos-26`, optional locally): also
    temporarily change `utilityMain` stdout/stderr to
