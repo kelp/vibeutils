@@ -68,9 +68,10 @@ None. No flag matrix.
 
 None. This is a documentation checkbox for a CI job that
 already runs in `.github/workflows/tiger-style.yml`. Skip
-red-green TDD (no program behavior change). Local gate:
-`just fmt-check` is N/A (no Zig); do not run the full test
-suite for a TODO.md tick.
+red-green TDD (no program behavior change). Before each
+commit run `just fmt-check` (or `zig fmt --check` when
+`just` is the node wrapper) even for docs-only edits. Do
+not run the full test suite for a TODO.md tick.
 
 Evidence the job exists: every open PR on this repo already
 shows a `tiger-check` required check.
