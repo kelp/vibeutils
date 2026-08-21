@@ -39,7 +39,8 @@ fd_modes_has_fixture() {
 }
 
 # Spawn $BIN_DIR/$name (never the bash builtin). Status is captured so
-# false exiting 1 does not abort under set -e. 124 means the limit fired.
+# false exiting 1 does not abort under set -e. Restore errexit like
+# test_command_output_exact. 124 means the limit fired.
 fd_modes_spawn() {
     local file="$1"
     local redirect="$2"
@@ -76,9 +77,11 @@ fd_modes_spawn() {
             rc=$?
             ;;
         *)
+            set -e
             return 2
             ;;
     esac
+    set -e
     return "$rc"
 }
 
@@ -94,30 +97,25 @@ fd_modes_run() {
     case "$mode" in
         append)
             printf '%s' "$FD_MODES_SEED" >"$file"
-            fd_modes_spawn "$file" append "$bin" "${FD_MODES_ARGS[@]}"
-            rc=$?
+            fd_modes_spawn "$file" append "$bin" "${FD_MODES_ARGS[@]}" || rc=$?
             ;;
         pipe)
-            fd_modes_spawn "$file" pipe "$bin" "${FD_MODES_ARGS[@]}"
-            rc=$?
+            fd_modes_spawn "$file" pipe "$bin" "${FD_MODES_ARGS[@]}" || rc=$?
             ;;
         truncate)
-            fd_modes_spawn "$file" truncate "$bin" "${FD_MODES_ARGS[@]}"
-            rc=$?
+            fd_modes_spawn "$file" truncate "$bin" "${FD_MODES_ARGS[@]}" || rc=$?
             if [[ "$rc" != 124 ]]; then
-                fd_modes_spawn "$file" truncate "$bin" "${FD_MODES_ARGS[@]}"
-                rc=$?
+                rc=0
+                fd_modes_spawn "$file" truncate "$bin" "${FD_MODES_ARGS[@]}" || rc=$?
             fi
             ;;
         dup-outer)
             printf '%s' "$FD_MODES_SEED" >"$file"
-            fd_modes_spawn "$file" dup-outer "$bin" "${FD_MODES_ARGS[@]}"
-            rc=$?
+            fd_modes_spawn "$file" dup-outer "$bin" "${FD_MODES_ARGS[@]}" || rc=$?
             ;;
         dup-inner)
             printf '%s' "$FD_MODES_SEED" >"$file"
-            fd_modes_spawn "$file" dup-inner "$bin" "${FD_MODES_ARGS[@]}"
-            rc=$?
+            fd_modes_spawn "$file" dup-inner "$bin" "${FD_MODES_ARGS[@]}" || rc=$?
             ;;
         *)
             return 2
@@ -126,10 +124,21 @@ fd_modes_run() {
     return "$rc"
 }
 
+# Direct stdout capture for pipe/truncate compares (same argv, > file).
+fd_modes_capture_direct() {
+    local dest="$1"
+    local name="$2"
+    local rc=0
+    fd_modes_load_args "$name"
+    fd_modes_spawn "$dest" truncate "$BIN_DIR/$name" "${FD_MODES_ARGS[@]}" || rc=$?
+    return "$rc"
+}
+
 # Per-utility hook. Issue #5 assertion: append/dup files start with the seed.
+# Pipe stdout equals a direct capture; truncate twice equals one run.
 test_fd_modes() {
     local util="$1"
-    local mode got rc
+    local mode got rc direct
 
     echo -e "${CYAN}File descriptor mode tests...${NC}"
 
@@ -143,8 +152,8 @@ test_fd_modes() {
     for mode in append pipe truncate dup-outer dup-inner; do
         got="${TEMP_DIR}/fd_modes_${util}_${mode}"
         rm -f "$got"
-        fd_modes_run "$mode" "$util" "$got"
-        rc=$?
+        rc=0
+        fd_modes_run "$mode" "$util" "$got" || rc=$?
         if [[ "$rc" == 124 ]]; then
             print_test_result "fd-modes $util $mode" "FAIL" "run_with_limit fired"
             continue
@@ -161,11 +170,17 @@ test_fd_modes() {
                 fi
                 ;;
             pipe | truncate)
-                if [[ -f "$got" ]]; then
-                    print_test_result "fd-modes $util $mode finished" "PASS"
+                direct="${got}.direct"
+                rc=0
+                fd_modes_capture_direct "$direct" "$util" || rc=$?
+                if [[ "$rc" == 124 ]]; then
+                    print_test_result "fd-modes $util $mode" "FAIL" \
+                        "direct capture hit run_with_limit"
+                elif cmp -s "$got" "$direct"; then
+                    print_test_result "fd-modes $util $mode equals direct" "PASS"
                 else
-                    print_test_result "fd-modes $util $mode finished" "FAIL" \
-                        "no result file"
+                    print_test_result "fd-modes $util $mode equals direct" "FAIL" \
+                        "redirected stdout != one direct capture"
                 fi
                 ;;
         esac
