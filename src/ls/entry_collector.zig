@@ -108,7 +108,8 @@ fn collectFilteredEntries_shouldSkip(
 pub fn needsMetadata(options: LsOptions) bool {
     return options.long_format or options.sort_by_time or options.sort_by_size or
         options.file_type_indicators or options.show_inodes or
-        options.show_git_status or options.show_blocks or options.use_atime;
+        options.show_git_status or options.show_blocks or options.use_atime or
+        options.ls_colors != null;
 }
 
 /// Simplified symlink reading that trusts OS readLink syscall completely
@@ -162,7 +163,7 @@ pub fn enhanceEntriesWithMetadata(
     // Determine what metadata we need
     const needs_stat = options.long_format or options.sort_by_time or options.sort_by_size or
         options.file_type_indicators or options.show_inodes or
-        options.show_blocks or options.use_atime;
+        options.show_blocks or options.use_atime or options.ls_colors != null;
     const needs_symlink = options.long_format and !options.follow_all_symlinks;
     const needs_git = options.show_git_status and git_context != null;
 
