@@ -66,8 +66,20 @@ Baker 2.x **accumulates** repeated `-I` / `--ignore` and
 treats `|` inside a pattern as alternation. Do not last-wins.
 
 Argparse optional string cannot store a list. Scan argv
-(stop at `--`) for `-I PATTERN`, `-IPATTERN`, `--ignore`,
-and `--ignore=PATTERN`. Bound `args.len`. Split each
+(stop at `--`) for every `-I` / `--ignore` occurrence,
+including short clusters. Bound `args.len`.
+
+Match:
+- `--ignore=PATTERN` and `--ignore PATTERN`
+- `-I PATTERN`, `-IPATTERN`, `-I=PATTERN`
+- Clustered shorts: walk each char like
+  `argparse.parse_handleShortCluster_combined`. Boolean
+  shorts (`-a`, `-d`, …) may precede `I`. When `I` is
+  not last in the cluster, the remainder of that argv is
+  the pattern (`-aI*.log`, `-dIskipme`). When `I` is last,
+  the next argv is the pattern (`-aI '*.log'`).
+
+Do not last-wins across any of those forms. Split each
 PATTERN on `|` and match basename with
 `common.glob.globMatch`. A name matches if **any**
 alternative of **any** `-I` matches. On a matching
@@ -95,10 +107,12 @@ Prefix/connector loops are indexed with `u16` to match
 `Entry.depth`. No recursion.
 
 Default operand: `.`. Multiple operands: print each tree in
-argv order with a blank line between trees, then **one**
-combined summary at the end (Baker). A file operand is a
-single-node tree (just the name). Trust the OS; no `../`
-theater.
+argv order with **no** blank line between trees. Baker 2.x
+unix mode concatenates roots (`emit_tree` then the next
+root; `unix_close` is `null_close`). Insert **one** blank
+line only immediately before the combined summary
+(`unix_report`). A file operand is a single-node tree
+(just the name). Trust the OS; no `../` theater.
 
 Skip `.` and `..`. Skip other `.*` names unless `-a`. A
 hidden directory skipped this way is `pruneCurrent()`'d so
@@ -204,12 +218,15 @@ fields. `common.env.test_overrides` for env, not libc
 8b. `--ignore=skipme` same as `-I skipme`. `--level=1`
     same as `-L 1`. `--directories-only` same as `-d`.
     `--all` same as `-a`.
+8c. Clustered `-aI'*.log'` (and `-dIskipme`) excludes the
+    pattern the same as a separate `-I`.
 9. `-I 'skipme|*.log'` same as two alternatives.
 10. Last remaining sibling gets `└──` when the
     alphabetically last child is excluded by `-I` or `-d`.
 11. Default `.` when no operands.
-12. Two directory operands: blank line between trees, **one**
-    summary at the end.
+12. Two directory operands: **no** blank line between
+    trees; one blank line immediately before the **one**
+    combined summary.
 13. `--color=never`: no ESC. `--color=always` with `NO_COLOR`
     set: no ESC. `--icons=always` with `NO_COLOR`: icon
     present, no color.
@@ -269,4 +286,10 @@ split long aliases to KEEP rows + RED tests; positive
 color/icon tests with `NO_COLOR` unset; prune hidden dirs
 with visible descendants; unreadable-root preflight test.
 This revision applies those four plus the `-L 0` matrix
-note. Grok round 2 was still running at plan-edit time.
+note.
+
+Round 2 Grok (`b4c4d45`): REQUEST CHANGES. Multi-root
+spacing is not Baker 2.x (no blank between trees; blank
+only before `unix_report`). `-I` argv scan must walk
+short clusters (`-aI'*.log'`). This revision applies
+both.
