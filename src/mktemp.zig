@@ -839,8 +839,8 @@ test "mktemp with custom template" {
     // Should start with "myapp."
     try testing.expect(std.mem.startsWith(u8, basename, "myapp."));
 
-    // Clean up
-    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    // Custom templates without -p/-t are created relative to cwd.
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
 test "mktemp with --suffix" {
@@ -867,8 +867,8 @@ test "mktemp with --suffix" {
     const basename = std.fs.path.basename(path);
     try testing.expect(std.mem.startsWith(u8, basename, "tmp"));
 
-    // Clean up
-    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    // Suffix templates without -p/-t are created relative to cwd.
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
 test "mktemp suffix with slash is rejected" {
