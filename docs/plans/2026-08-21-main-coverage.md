@@ -68,18 +68,25 @@ Extract `runWithStreamingFiles` from `utilityMain` in
 - Allocates `[8192]u8` stdout and stderr buffers.
 - Wraps each file with `writerStreaming`.
 - Calls `runFn`. On `runFn` error, print to stderr,
-  `stderr.flush()`, return 1 (same as today's
-  `utilityMain` catch). On success, `stdout.flush()`
-  and `stderr.flush()`, then return the exit code.
+  `stderr.flush()`, return 1. Do **not** flush
+  stdout on that branch — today's `utilityMain`
+  `catch` calls `process.exit(1)` before the success-
+  path `stdout.flush()`.
+- On success, `stdout.flush()` and `stderr.flush()`,
+  then return the exit code.
 - Does **not** call `std.process.exit`.
-- Keep the existing `stdout_buffer.len ==
-  stderr_buffer.len` assert, plus `== 8192`.
+- Two asserts: buffer len `== 8192`, and
+  `stdout_buffer.len == stderr_buffer.len`.
 
 `utilityMain` becomes: parse argv, call
 `runWithStreamingFiles` with `File.stdout()` /
-`File.stderr()`, then `process.exit`. Keep
-`runWithBufferedIO` unchanged for Allocating-writer
-tests.
+`File.stderr()`, then `process.exit`. It is a
+modified function, so it keeps **two** asserts of
+its own (`args.len >= 1` and `args[0].len > 0`),
+not only the ones that moved into the extract.
+Keep `runWithBufferedIO` unchanged for
+Allocating-writer tests. Function bodies stay
+≤ 70 lines.
 
 `env` keeps its own `main()` (`environ_map`). Do not
 rewrite env onto `utilityMain`. Do not duplicate the
@@ -111,7 +118,7 @@ Locked cases:
 | --- | --- | --- |
 | short stdout | `echo hi` | payload `< 8192` survives process exit (flush) |
 | long stdout | `echo` of 9000 bytes | full payload, including the tail after a full 8KB buffer |
-| stderr flush | `pwd --not-a-flag` | stderr is non-empty after exit (`unrecognized option`) |
+| stderr flush | `pwd --not-a-flag` | exit non-zero; stderr contains `unrecognized option` |
 | custom main | `env --help` | env's own 8KB `writerStreaming` + flush, not `utilityMain` |
 
 Do **not** use `echo --not-a-flag`. GNU and vibeutils
@@ -122,16 +129,90 @@ flush. `pwd` uses `utilityMain` and prints
 
 Do not iterate all 48 binaries. That matrix is `### 1`.
 
-## Review revision (round 1)
+## Review revision (round 2)
 
-Grok and Bugbot both flagged the locked stderr case.
-`echo --not-a-flag` is an operand, not a diagnostic.
-Replaced with `pwd --not-a-flag`. Hook moved to
-`tests/integration.sh` beside help-consistency.
-`runWithStreamingFiles` now states the argv0 contract
-and that the `runFn` error path flushes stderr before
-returning 1.
+Round 1 (Grok + Bugbot): `echo --not-a-flag` cannot
+pin stderr flush. Replaced with `pwd --not-a-flag`.
+Hook is `tests/integration.sh` beside help-consistency.
 
+Round 2 (Grok, Sol, Fable all REQUEST CHANGES):
+
+1. **TDD is characterization, not compile-error RED.**
+   This is a behavior-preserving coverage refactor
+   (`tdd` skill). Test-writer's first commit must
+   compile and GREEN on current `utilityMain`. Prove
+   teeth by uncommitted flush sabotage through
+   `just it`, then extract. An absent-symbol compile
+   failure is not teeth.
+2. **Test-writer owns the hook.** Implementer does
+   not decide whether the suite runs. Test-writer
+   adds the `tests/integration.sh` source +
+   `test_main_io` call and folds `print_test_summary`
+   into `overall_result`. Missing file is FAIL.
+   Prove a failing case makes `just it` non-zero.
+3. **Uncaught-error path does not flush stdout.**
+   Match today's `catch` + `process.exit(1)`.
+4. **Tiger:** every new or modified function has two
+   asserts, including the slimmed `utilityMain`.
+5. **Stderr sabotage** is its own uncommitted proof
+   (omit `stderr.flush()`; `pwd --not-a-flag` loses
+   the diagnostic).
+
+## Tests
+
+TDD split (test-writer ≠ implementer).
+
+### Test-writer (commit 1, compiles, GREEN)
+
+- `tests/tools/main_io_test.sh` with the four locked
+  cases. `pwd --not-a-flag` asserts non-zero exit
+  and that stderr contains `unrecognized option`.
+- Hook in `tests/integration.sh` (all-utilities
+  path only). Own this file. Do not leave the hook
+  for the implementer.
+- Zig source-scan in `src/common/main.zig` (same
+  hole-close style as the issue #5 `writer(` lint):
+  the file must contain `[8192]u8`,
+  `writerStreaming`, `stdout.flush()`, and
+  `stderr.flush()`. GREEN on current `utilityMain`.
+  After the extract those needles still live in
+  this file (`runWithStreamingFiles`).
+
+Do **not** call `runWithStreamingFiles` in this
+commit — the symbol does not exist yet, and a
+compile failure is not the RED.
+
+Uncommitted sabotage (mandatory, Linux and macOS):
+
+- Omit `stdout.flush()` in `utilityMain` → `echo hi`
+  writes nothing; `just it` fails.
+- Omit `stderr.flush()` on the success path →
+  `pwd --not-a-flag` stderr is empty; `just it`
+  fails.
+- Omit env's `stdout.flush()` → `env --help` is
+  empty; `just it` fails. `utilityMain` sabotage
+  must not RED env.
+
+Revert every sabotage. Never commit it.
+
+### Implementer (commit 2)
+
+Extract `runWithStreamingFiles`, point `utilityMain`
+at it, keep both functions within Tiger caps and
+two-assert. Check the two TODO boxes. Add the
+`TESTING_STRATEGY.md` note. Does not edit the shell
+assertions, the Zig scan needles, or the
+integration.sh hook.
+
+File-backed Zig tests that *call*
+`runWithStreamingFiles` (short write, >8192 write,
+uncaught error with no stdout flush) are a
+**test-writer follow-up** after the symbol exists.
+They are not the first RED.
+
+Existing `lib.zig` issue #5 `writer(` lint stays. Do
+not treat that grep as this slice. Existing
+`echo_test.sh` issue #5 `>>` case stays.
 
 ## Out of scope
 
@@ -147,40 +228,6 @@ returning 1.
 
 None. No `docs/specs/` edit.
 
-## Tests
-
-TDD split (test-writer ≠ implementer):
-
-1. **Test-writer** adds:
-   - Zig tests in `src/common/main.zig` that call
-     `runWithStreamingFiles` with `TestDir` files and a
-     tiny `runFn` (short write, >8192 write, uncaught
-     error). These do not compile until the extract
-     exists — that compile failure is the first RED
-     (wrong-symbol, not a skip). After the symbol
-     exists, dropping `flush` must leave the short
-     stdout file empty (right-reason RED).
-   - `tests/tools/main_io_test.sh` with the four locked
-     cases. Proven RED against a sabotaged
-     `utilityMain` that omits `stdout.flush()`: `echo
-     hi` writes nothing (Linux and macOS). The `pwd`
-     stderr case goes RED if `stderr.flush()` is
-     omitted on the success path after `runPwd` returns
-     1 (the diagnostic is buffered). `env --help`
-     stays GREEN under `utilityMain` sabotage (own
-     `main`); sabotage env's flush separately,
-     uncommitted.
-2. **Implementer** extracts `runWithStreamingFiles`,
-   points `utilityMain` at it, hooks the shell suite
-   from `run_all_utility_tests`, checks the two TODO
-   boxes, adds a short `TESTING_STRATEGY.md` note.
-   Does not edit the shell assertions or the Zig test
-   names/expectations.
-
-Existing `lib.zig` issue #5 `writer(` lint stays. Do
-not treat that grep as this slice. Existing
-`echo_test.sh` issue #5 `>>` case stays.
-
 ## Risks
 
 - Filter stdin hangs: locked cases use `/dev/null`.
@@ -189,8 +236,8 @@ not treat that grep as this slice. Existing
 - Root: `scripts/run-integration.sh` already demotes.
 - `src/common/` boundary: extract stays in
   `main.zig`; do not grow `lib.zig`.
-- Tiger Style: extracted function ≤ 70 lines; two
-  asserts (buffer len 8192, stdout/stderr lens equal).
+- Tiger Style: every new or modified function ≤ 70
+  lines and has two asserts (`utilityMain` included).
 - `TestDir` on github/main is the pre-#194 API
   (`getPath`, no `join` / `chdirToBase` required
   here). Tests create files via `createFile` / open
