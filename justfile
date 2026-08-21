@@ -305,6 +305,15 @@ test-host-path:
 test-run-integration: build
     @bash tests/tools/run-integration_test.sh
 
+# Concurrent useradd of the same VIBEUTILS_TEST_USER cannot leave a
+# stale home uid or die with `setpriv: uid … not found` (issue #150).
+# Linux root/sudo + useradd + setpriv; fails honestly if those are
+# missing. Needs no Zig build: the runners are passed --help so they
+# stop after setpriv. Lives in tests/tools/, so it needs an explicit
+# invocation here.
+test-run-integration-useradd:
+    @bash tests/tools/run-integration_useradd_test.sh
+
 # Stage-1 audit pre-pass over every unit in build/utils.zig. A finding
 # already recorded in scripts/audit-baseline.tsv is BASELINED; anything
 # else is NEW and fails. Plain sh + awk, so it needs no Zig toolchain.
