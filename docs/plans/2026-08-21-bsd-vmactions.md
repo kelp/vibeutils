@@ -41,12 +41,20 @@ Add `.github/workflows/bsd.yml`:
 - Pin like other workflows (`checkout@de0fac2e…` plus SHA comments).
   Do not use floating `@v1` tags.
 - Do **not** pin current `v1` / v1.5.3: those declare
-  `using: node24`. GitHub rejects third-party node24
-  `action.yml` at parse (`startup_failure`, zero jobs;
-  runs 32502582357 and 32503154809). Last node20 tags are
-  freebsd `v1.4.2`, openbsd/netbsd `v1.3.6`. Official
-  `actions/*` node24 is fine. `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`
-  still upgrades these node20 actions at runtime.
+  `using: node24`. Last node20 tags are freebsd `v1.4.2`,
+  openbsd/netbsd `v1.3.6`. `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`
+  still upgrades them at runtime.
+- **Allowlist (the actual `startup_failure` cause):** repo
+  `selected-actions` is SHA-exact (`verified_allowed: false`).
+  Runs 32502582357, 32503154809, and 32504080714 failed at parse
+  with zero jobs because `vmactions/*` is not in the pattern
+  list. This environment cannot PUT
+  `repos/kelp/vibeutils/actions/permissions/selected-actions`.
+  The owner must add the three SHA pins above alongside the
+  existing `cachix/*`, `extractions/*`, `mlugg/setup-zig`, and
+  `kelp/*` patterns, then re-run the BSD workflow. Vendoring
+  the actions would pull ~26MB of committed `node_modules`;
+  do not do that.
 - `usesh: true` on each VM.
 - Install Zig **0.16.0** from ziglang.org inside `prepare` (official
   `x86_64-freebsd` / `x86_64-openbsd` / `x86_64-netbsd` tarballs). Do
