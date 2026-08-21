@@ -53,59 +53,71 @@ The five TODO boxes:
 ### Harness
 
 New `tests/lib/fd_modes.sh`, sourced from
-`tests/lib/test_runner.sh`. `run_utility_tests` calls
+`tests/lib/test_runner.sh`. After `init_test_session`
+(so `$TEMP_DIR` exists), `run_utility_tests` calls
 `test_fd_modes "$util"` for every utility `just it` /
 `just it-util` already visits, **before** the per-utility
 `*_test.sh`. PATH stays pinned to `zig-out/bin` (issue
 #167 / `tests/integration.sh`).
 
 A coverage oracle `tests/tools/fd_modes_test.sh` parses
-`build/utils.zig` `utilities` names and fails if any name
-lacks a fixture. `just test-run-integration` stays
-untouched; wire the oracle through a new `just` recipe
-`test-fd-modes` **and** call it from the existing
-integration path so CI (`just it`) cannot skip it. Prefer
-one call site: `run_all_utility_tests` already walks every
-built binary, so per-util `test_fd_modes` plus the oracle
-is enough. Do not add `tests/utilities/fd_modes_test.sh`
-(the runner would look for a `fd_modes` binary).
+`build/utils.zig` `utilities` names (48 entries, including
+`[`) and fails if any name lacks a fixture. Invoke the
+oracle once from `run_all_utility_tests` (the `just it`
+path CI actually runs). A `just test-fd-modes` recipe may
+exist for local iteration; it is not a substitute for the
+`just it` hook. Do not add
+`tests/utilities/fd_modes_test.sh` (the runner would look
+for a `fd_modes` binary).
+
+`tests/lib/common.sh` enables `set -euo pipefail`.
+Capture every spawn status (`set +e` around the command,
+as `test_command_output_exact` does). `false` exiting 1
+is success for fd assertions. `run_with_limit` returning
+124 is FAIL. For pipe mode, do not let `| cat` hide the
+left-hand status: run under `pipefail` and inspect
+`PIPESTATUS[0]` so a 124 is visible.
 
 ### Fixtures
 
 Every `build/utils.zig` name has an explicit argv + stdin
 recipe. Missing fixture is a FAIL, not a skip.
 
-Default template (overridden per util when needed):
+Default argv is `--help` with stdin `/dev/null`, except
+the locked rows below. `--help` is bounded, prompt-free,
+and for utilities that use `common.utilityMain` it writes
+through the issue #5 `writerStreaming` stdout. `env` has
+its **own** `main()` (`src/env.zig`); it still uses
+`writerStreaming`, so its fixture must write through
+*env's* writers, not a child.
 
-- stdin: `/dev/null` (never the runner TTY)
-- argv: a **bounded** invocation that returns without a
-  prompt
-- wrap every spawn in `run_with_limit` (macOS has no GNU
-  `timeout(1)`)
-- non-zero exit is allowed; fd assertions are about the
-  file/pipe, not POSIX exit codes (`### 2` owns those)
+Every spawn: `run_with_limit` (macOS has no GNU
+`timeout(1)`). Non-zero exit is allowed; fd assertions
+are about the file/pipe, not POSIX exit codes (`### 2`
+owns those). Run directory utilities against `$TEMP_DIR`
+(or `cd "$TEMP_DIR"`) so `ls`/`find`/`du` do not walk the
+repo.
 
 Locked exceptions:
 
 | util | argv | stdin | why |
 | --- | --- | --- | --- |
-| `echo` | `echo fd-mode` | `/dev/null` | known payload; matches issue #5 |
+| `echo` | `echo fd-mode` | `/dev/null` | known payload; issue #5 oracle |
 | `true` / `false` | no extra args | `/dev/null` | POSIX ignores args; stdout empty |
 | `test` | `test -n x` | `/dev/null` | `--help` is an expression |
 | `[` | `[ -n x ]` | `/dev/null` | same; trailing `]` required |
 | `yes` | `yes --help` | `/dev/null` | `--help` exits; never unbounded `yes` |
 | `sleep` | `sleep 0` | `/dev/null` | no delay |
-| `cat`/`tee`/`sort`/other filters | file operand **or** `--help` if that path uses the same `utilityMain` stdout writer | `/dev/null` when using `--help`; otherwise a here-string closed after one write | never block on stdin |
-| `rm`/`cp`/`mv` | `--help` | `/dev/null` | avoid prompts; `--help` still flushes `utilityMain` stdout |
-| `dd` | `dd --help` | `/dev/null` | avoid copying forever |
-| `env` | `env true` | `/dev/null` | bounded child |
-| `timeout` | `timeout 0.1 true` | `/dev/null` | bounded child |
+| `env` | `env --help` | `/dev/null` | env's own writers, not `env true` |
+| `timeout` | `timeout --help` | `/dev/null` | timeout's own writers, not a child |
+| `date` / `mktemp` / `free` / `df` | `--help` | `/dev/null` | deterministic; no `/tmp` files |
+| `ls` / `find` / `du` | `--help` | `/dev/null` | do not list the repo |
+| `cat` / `tee` / `sort` / `head` / `tail` / `wc` / `grep` / `nl` / `tac` / `uniq` / `cut` / `tr` | `--help` | `/dev/null` | filters; never block on stdin |
 
-`--help` is allowed only because every utility that
-parses it prints through `common.utilityMain`'s
-`writerStreaming` stdout, which is the issue #5 path.
-Do not use `--help` for `test` / `[`. Do not use
-`yes` without `--help` or a limit.
+`true` writes 0 bytes, so it cannot catch seek-to-0
+overwrite; the echo payload plus sabotage stays
+mandatory. Do not use `--help` for `test` / `[`. Do not
+use `yes` without `--help` or a limit.
 
 ### The four modes
 
@@ -121,11 +133,13 @@ less). Work in `$TEMP_DIR`.
    and overwrites the marker.
 
 2. **Pipe (`| cat`)**
-   `run_with_limit … util args | cat` must finish (not
-   124) and stdout must equal a direct capture of the
-   same argv. Stdin still `/dev/null` or the fixture
-   here-string. This is "stdout is a pipe", not "the util
-   is the right-hand side of a pipe".
+   `run_with_limit … util args | cat` must finish and
+   stdout must equal a direct capture of the same argv.
+   Fail if `PIPESTATUS[0]` is 124. Stdin still
+   `/dev/null`. This is "stdout is a pipe", not "the util
+   is the right-hand side of a pipe". Fixtures are
+   `--help` or the locked rows, so pipe/truncate compares
+   stay deterministic.
 
 3. **Truncate (`> file`)**
    Run the fixture `> file` twice. After the second run,
@@ -144,8 +158,13 @@ less). Work in `$TEMP_DIR`.
    Issue #5 on stderr used the same `writer()` footgun.
 
 Do not assert TTY layout, color, or column padding.
-`NO_COLOR=1` for the harness so color cannot leak into
-byte compares. `env -u NO_COLOR` is not required here.
+Prefix **each spawn** with `NO_COLOR=1`. Do **not**
+`export NO_COLOR=1` from the sourced harness — that
+poisons later `*_test.sh` in the same `just it` process
+(AGENTS.md: ambient `NO_COLOR` fails `ls truecolor icons`
+even with `--color=always`). `env -u NO_COLOR` is not
+required for these four modes (stdout is already a
+file/pipe).
 
 ## Out of scope
 
@@ -176,13 +195,16 @@ TDD split (test-writer ≠ implementer):
 2. **Implementer** adds `tests/lib/fd_modes.sh`, the
    per-util table, and the `run_utility_tests` hook.
    Does not edit the oracle's assertions.
-3. **Sabotage (uncommitted):** temporarily change
-   `utilityMain` stdout to `writer(` instead of
-   `writerStreaming(`, run the echo append case, confirm
-   RED (marker overwritten), revert, confirm GREEN.
-   Same for stderr on `>> file 2>&1` if a util writes
-   stderr (or `ls` of a missing path). Never commit the
-   mutation.
+3. **Sabotage (uncommitted, mandatory both streams):**
+   Temporarily change `utilityMain` stdout to `writer(`
+   instead of `writerStreaming(`, run the echo append
+   case, confirm RED (marker overwritten). Revert.
+   Then change stderr the same way, run
+   `ls` of a missing path with `>> file 2>&1`, confirm
+   RED on the marker, revert, confirm GREEN. Never
+   commit the mutation. `env` sabotage is its own
+   `main()`, not `utilityMain`; out of scope unless env
+   is the oracle.
 
 Existing `echo_test.sh` issue #5 case stays. Do not
 delete it.
@@ -199,7 +221,7 @@ delete it.
 - `[` binary name and `test_[` function naming already
   special-cased in `test_runner.sh`; fixtures must use
   `$BIN_DIR/[`.
-- CI time: ~50 utils × 5 spawns; keep limits ≤ 2s;
+- CI time: 48 utils × 5 spawns; keep limits ≤ 2s;
   `sleep 0` / `yes --help` keep it small.
 - `src/common/` boundaries: no Zig change.
 - Tiger Style: shell only; `scripts/tiger-check.sh`
