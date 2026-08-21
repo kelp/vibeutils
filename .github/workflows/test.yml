@@ -33,6 +33,9 @@ jobs:
       - uses: ./.github/actions/setup-just
       - run: just test
       - run: just test-integration
+      - name: Concurrent useradd contract (#150)
+        if: runner.os == 'Linux'
+        run: bash tests/tools/run-integration_useradd_test.sh
       - name: Install bash 4+ (macOS)
         if: runner.os == 'macOS'
         run: brew install bash

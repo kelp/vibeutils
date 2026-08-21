@@ -106,6 +106,13 @@
 
 ### Fixed
 
+- **Concurrent integration runs no longer race `useradd`.** Two
+  `scripts/run-integration.sh` processes creating the same
+  `VIBEUTILS_TEST_USER` could leave the home owned by a uid that
+  passwd no longer had, and `setpriv` then died with `uid N not
+  found`. Provisioning now takes a per-user lock (`flock` on Linux,
+  `mkdir` elsewhere) around the existence check, `useradd`, and
+  home `chown`, so overlapping creates serialize (#150).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not

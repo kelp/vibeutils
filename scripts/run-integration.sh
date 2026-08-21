@@ -77,8 +77,52 @@ if ! command -v setpriv >/dev/null 2>&1; then
     run_isolated_and_exit "$@"
 fi
 
+# Serialize the id-check + useradd + home-chown window for this test
+# user. Two runners racing useradd can leave the home owned by a uid
+# that passwd no longer has, and setpriv then dies with "uid N not
+# found" (issue #150). flock(1) is Linux; mkdir is the macOS fallback.
+# Hold the lock only for provisioning, never for the suite itself.
+USER_LOCK_FILE="${TMPDIR:-/tmp}/vibeutils-useradd-${TEST_USER}.lock"
+USER_LOCK_DIR="${TMPDIR:-/tmp}/vibeutils-useradd-${TEST_USER}.lockdir"
+USER_LOCK_KIND=""
+
+acquire_test_user_lock() {
+    local i=0
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$USER_LOCK_FILE" || return 1
+        flock -w 15 9 || return 1
+        USER_LOCK_KIND=flock
+        return 0
+    fi
+    while [ "$i" -lt 300 ]; do
+        if mkdir "$USER_LOCK_DIR" 2>/dev/null; then
+            USER_LOCK_KIND=mkdir
+            return 0
+        fi
+        sleep 0.05
+        i=$((i + 1))
+    done
+    return 1
+}
+
+release_test_user_lock() {
+    if [ "$USER_LOCK_KIND" = flock ]; then
+        flock -u 9 2>/dev/null || true
+        exec 9>&- 2>/dev/null || true
+    elif [ "$USER_LOCK_KIND" = mkdir ]; then
+        rmdir "$USER_LOCK_DIR" 2>/dev/null || true
+    fi
+    USER_LOCK_KIND=""
+}
+
+if ! acquire_test_user_lock; then
+    echo "integration: timed out waiting to provision '$TEST_USER'" >&2
+    run_isolated_and_exit "$@"
+fi
+
 if ! id "$TEST_USER" >/dev/null 2>&1; then
     if ! useradd -m -s /bin/bash "$TEST_USER" >/dev/null 2>&1; then
+        release_test_user_lock
         echo "integration: could not create '$TEST_USER'; permission-denied tests will fail" >&2
         run_isolated_and_exit "$@"
     fi
@@ -89,12 +133,10 @@ test_gid="$(id -g "$TEST_USER")"
 test_home="$(getent passwd "$TEST_USER" | cut -d: -f6)"
 test_tmp="${TMPDIR:-/tmp}/vibeutils-integration-$test_uid"
 
-# useradd is not concurrency-safe: two runs racing to create the same user
-# can leave the home directory owned by a uid that /etc/passwd no longer
-# agrees with, and a test user that cannot write its own home fails ~66
-# assertions for a reason unrelated to the code. Repair the ownership
-# rather than assume it. The race itself is issue #150.
+# Repair a leftover from a predecessor that raced before this lock
+# existed. Under the lock the owner should already match.
 chown "$test_uid:$test_gid" "$test_home" 2>/dev/null || true
+release_test_user_lock
 
 mkdir -p "$test_tmp"
 chown "$test_uid:$test_gid" "$test_tmp"
