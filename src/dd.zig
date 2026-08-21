@@ -4442,8 +4442,8 @@ fn runDdWithInput(
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
 ) !u8 {
-    std.debug.assert(args.len >= 2);
-    std.debug.assert(args[0].len > 0);
+    std.debug.assert(args.len >= 1);
+    std.debug.assert(args.len < std.math.maxInt(usize));
     return runDd(allocator, io, args, stdout, stderr);
 }
 
@@ -4521,4 +4521,56 @@ test "runDd #177: unknown key=value is named before a later bare token" {
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     const err = stderr_aw.writer.buffered();
     try testing.expect(std.mem.indexOf(u8, err, "unrecognized operand 'bogus=x'") != null);
+}
+
+test "runDd #178: empty operand is unrecognized" {
+    // GNU dd 9.4: `dd ''` is unrecognized operand ''. Current
+    // findUnknownOperand asserts arg.len > 0 and panics.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{""};
+    const exit_code = try runDdWithInput(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "unrecognized operand ''",
+    ) != null);
+}
+
+test "runDd #178: -- then empty operand is unrecognized" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "" };
+    const exit_code = try runDdWithInput(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "unrecognized operand ''",
+    ) != null);
 }

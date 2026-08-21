@@ -9524,3 +9524,37 @@ test "find #177: path then -- is an unknown predicate" {
     try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
     try testing.expect(std.mem.find(u8, err, "--") != null);
 }
+
+test "find #178: path then -- --help is unknown predicate" {
+    // GNU findutils 4.9: `find . -- --help` does not print help.
+    // `--` after a path is an unknown predicate; `--help` is never
+    // reached. Current runFind scans all argv for --help first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "--", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, err, "--") != null);
+}

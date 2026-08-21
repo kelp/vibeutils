@@ -1920,3 +1920,130 @@ test "date #177: two formats without -- is extra operand" {
         "extra operand '+%m'",
     ) != null);
 }
+
+test "date #178: -- format then bare operand is extra" {
+    // GNU: any second positional is extra. `date -- +%Y foo` is
+    // extra operand 'foo', not an invalid date.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "+%Y", "foo" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand 'foo'",
+    ) != null);
+}
+
+test "date #178: -- date string then format is extra" {
+    // GNU: `date -- foo +%Y` names the second token, '+%Y'.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "foo", "+%Y" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand '+%Y'",
+    ) != null);
+}
+
+test "date #178: two bare operands names the second" {
+    // GNU: `date foo bar` treats foo as the date string and names bar.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "foo", "bar" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand 'bar'",
+    ) != null);
+}
+
+test "date #178: single bare operand is invalid date" {
+    // GNU: one non-+ positional is a date string. `date foo` is
+    // invalid date 'foo', not extra operand 'foo'.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"foo"};
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "invalid date 'foo'",
+    ) != null);
+}
+
+test "date #178: -- format then empty operand is extra" {
+    // GNU: `date -- +%Y ''` reports extra operand ''.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "+%Y", "" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand ''",
+    ) != null);
+}
