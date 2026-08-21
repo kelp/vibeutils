@@ -2286,7 +2286,8 @@ test_ls() {
         && (( w124_umax != w124_umin )); then
         local w124_ours w124_gnu w124_gnu_mode_w w124_ours_mode_w
         w124_ours=$(NO_COLOR=1 "$binary" -ldk /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
-        w124_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldk /run/systemd/netif /etc/hostname /usr 2>/dev/null)
+        w124_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld --block-size=1K \
+            /run/systemd/netif /etc/hostname /usr 2>/dev/null)
         w124_gnu_mode_w=$(mode_field_width "$w124_gnu")
         w124_ours_mode_w=$(mode_field_width "$w124_ours")
 
@@ -2326,7 +2327,8 @@ test_ls() {
         # reference rather than a hardcoded uid/gid snapshot.
         local w124n_ours w124n_gnu w124n_gnu_mode_w w124n_ours_mode_w
         w124n_ours=$(NO_COLOR=1 "$binary" -ldnk /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
-        w124n_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldnk /run/systemd/netif /etc/hostname /usr 2>/dev/null)
+        w124n_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldn --block-size=1K \
+            /run/systemd/netif /etc/hostname /usr 2>/dev/null)
         w124n_gnu_mode_w=$(mode_field_width "$w124n_gnu")
         w124n_ours_mode_w=$(mode_field_width "$w124n_ours")
 
@@ -2410,7 +2412,8 @@ test_ls() {
     if [[ -n "$w124ind_path" ]]; then
         local w124ind_ours w124ind_gnu w124ind_gnu_mode_w w124ind_ours_mode_w
         w124ind_ours=$(NO_COLOR=1 "$binary" -ldk "$w124ind_path" /etc/hostname 2>/dev/null | strip_ansi)
-        w124ind_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldk "$w124ind_path" /etc/hostname 2>/dev/null)
+        w124ind_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld --block-size=1K \
+            "$w124ind_path" /etc/hostname 2>/dev/null)
         w124ind_gnu_mode_w=$(mode_field_width "$w124ind_gnu")
         w124ind_ours_mode_w=$(mode_field_width "$w124ind_ours")
 
@@ -2724,7 +2727,8 @@ $sect_r_dir/sub:
             local acl_ours_full acl_gnu_full
             acl_ours_full=$(NO_COLOR=1 LC_ALL=C TZ=UTC "$binary" -lk "$acl_root/mixed" 2>/dev/null |
                 strip_ansi | sed '/^total /d')
-            acl_gnu_full=$(LC_ALL=C TZ=UTC "$gnu_ls" -lk "$acl_root/mixed" 2>/dev/null | sed '/^total /d')
+            acl_gnu_full=$(LC_ALL=C TZ=UTC "$gnu_ls" -l --block-size=1K \
+                "$acl_root/mixed" 2>/dev/null | sed '/^total /d')
             if [[ -z "$acl_gnu_full" ]]; then
                 print_test_result "${acl_names[7]}" "FAIL" \
                     "GNU ls produced no output for the ACL fixture -- the fixture or the reference binary broke"
