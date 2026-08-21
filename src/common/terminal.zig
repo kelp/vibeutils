@@ -10,76 +10,89 @@ const Dimension = enum {
 };
 
 fn resolveDimension(ioctl_value: ?u16, env_text: ?[]const u8, default: u16) u16 {
+    // Callers must supply a usable fallback; the postcondition below can
+    // only fire when this precondition is violated.
     std.debug.assert(default > 0);
-    std.debug.assert(default <= std.math.maxInt(u16));
 
-    if (ioctl_value) |value| return value;
-    const text = env_text orelse return default;
-    return std.fmt.parseInt(u16, text, 10) catch default;
+    const result = resolved: {
+        if (ioctl_value) |value| {
+            if (value > 0) break :resolved value;
+        }
+        const text = env_text orelse break :resolved default;
+        const parsed = std.fmt.parseInt(u16, text, 10) catch break :resolved default;
+        if (parsed == 0) break :resolved default;
+        break :resolved parsed;
+    };
+    // A zero ioctl value or a missing/empty/non-numeric/zero environment
+    // value fell back to the default above, so the result is never zero.
+    std.debug.assert(result > 0);
+    return result;
+}
+
+/// Query the kernel for the stdout window size. Returns null when stdout is
+/// not a terminal or the ioctl fails. A reported size of 0 is returned as-is
+/// so that resolveDimension can fall through to the environment and default.
+fn queryWinsize(dimension: Dimension) ?u16 {
+    std.debug.assert(builtin.os.tag != .windows);
+    const stdout_handle = std.Io.File.stdout().handle;
+    std.debug.assert(stdout_handle >= 0);
+
+    if (std.c.isatty(stdout_handle) == 0) return null;
+
+    var ws: std.c.winsize = undefined;
+    const result = switch (builtin.os.tag) {
+        .linux => std.os.linux.ioctl(
+            stdout_handle,
+            std.os.linux.T.IOCGWINSZ,
+            @intFromPtr(&ws),
+        ),
+        .macos, .ios, .tvos, .watchos => std.c.ioctl(
+            stdout_handle,
+            std.c.T.IOCGWINSZ,
+            &ws,
+        ),
+        .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(
+            stdout_handle,
+            std.c.T.IOCGWINSZ,
+            &ws,
+        ),
+        else => return null, // Force fallback for unknown systems
+    };
+    if (result != 0) return null;
+
+    return switch (dimension) {
+        .width => ws.col,
+        .height => ws.row,
+    };
 }
 
 /// Generic helper function to get terminal dimensions
 fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16 {
     // Fallback dimensions must be usable (nonzero) column/row counts.
-    std.debug.assert(@import("constants.zig").DEFAULT_TERMINAL_WIDTH > 0);
-    std.debug.assert(@import("constants.zig").DEFAULT_TERMINAL_HEIGHT > 0);
+    std.debug.assert(constants.DEFAULT_TERMINAL_WIDTH > 0);
+    std.debug.assert(constants.DEFAULT_TERMINAL_HEIGHT > 0);
+    _ = allocator;
+
     if (builtin.os.tag == .windows) {
         // TODO: Windows implementation would use GetConsoleScreenBufferInfo
         return switch (dimension) {
-            .width => @import("constants.zig").DEFAULT_TERMINAL_WIDTH,
-            .height => @import("constants.zig").DEFAULT_TERMINAL_HEIGHT,
+            .width => constants.DEFAULT_TERMINAL_WIDTH,
+            .height => constants.DEFAULT_TERMINAL_HEIGHT,
         };
     }
 
-    // Unix-like systems: try ioctl first
-    if (std.c.isatty(std.Io.File.stdout().handle) != 0) {
-        var ws: std.c.winsize = undefined;
-
-        // Use the appropriate ioctl based on the OS
-        const result = switch (builtin.os.tag) {
-            .linux => std.os.linux.ioctl(
-                std.Io.File.stdout().handle,
-                std.os.linux.T.IOCGWINSZ,
-                @intFromPtr(&ws),
-            ),
-            .macos, .ios, .tvos, .watchos => std.c.ioctl(
-                std.Io.File.stdout().handle,
-                std.c.T.IOCGWINSZ,
-                &ws,
-            ),
-            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(
-                std.Io.File.stdout().handle,
-                std.c.T.IOCGWINSZ,
-                &ws,
-            ),
-            else => @as(usize, 1), // Force fallback for unknown systems
-        };
-
-        if (result == 0) {
-            return switch (dimension) {
-                .width => ws.col,
-                .height => ws.row,
-            };
-        }
-    }
-
-    // Fallback: check environment variables via env.getEnv (works without libc)
-    _ = allocator;
-    const env_var = switch (dimension) {
+    // ioctl first, then environment, then default — all folded through the
+    // pure resolver so a zero from any source falls through to the next.
+    const ioctl_value = queryWinsize(dimension);
+    const env_text = env.getEnv(switch (dimension) {
         .width => "COLUMNS",
         .height => "LINES",
+    });
+    const default_value: u16 = switch (dimension) {
+        .width => constants.DEFAULT_TERMINAL_WIDTH,
+        .height => constants.DEFAULT_TERMINAL_HEIGHT,
     };
-    const default_value = switch (dimension) {
-        .width => @import("constants.zig").DEFAULT_TERMINAL_WIDTH,
-        .height => @import("constants.zig").DEFAULT_TERMINAL_HEIGHT,
-    };
-
-    if (env.getEnv(env_var)) |env_value| {
-        return std.fmt.parseInt(u16, env_value, 10) catch default_value;
-    }
-
-    // Default fallback
-    return default_value;
+    return resolveDimension(ioctl_value, env_text, default_value);
 }
 
 /// Get terminal width in columns

@@ -33,6 +33,11 @@
   BSD defines none (#93).
 
 ### Changed
+- **Terminal size detection no longer reports a zero width or height.**
+  `COLUMNS=0`, an empty or non-numeric `COLUMNS`/`LINES` value, and an
+  ioctl window size of 0 all fall back to the 80×24 defaults now, so
+  `ls` column layout never sees a zero terminal width. Previously a
+  zero from the ioctl or from `COLUMNS`/`LINES` leaked through as-is.
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,

@@ -1089,8 +1089,8 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
   - [x] **Interactive prompts** (prompt.zig — promptYesNo for cp/mv/rm confirmation)
   - [x] **Human-readable formatting** (format.zig — formatHumanReadable with SI/IEC suffixes, parseBlockSize)
   - [x] **File content copying** (file_ops.zig — copyFileContents, isSameFile)
-  - [ ] Terminal width detection for responsive layouts
-  - [ ] Parallel I/O utilities for performance
+  - [x] Terminal width detection for responsive layouts
+  - [x] Parallel I/O utilities for performance
 
 ### Build System
 - [x] Set up build.zig
