@@ -1660,3 +1660,124 @@ test "date -d ISO 8601 with +00:00 offset is same as Z" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1705276800\n", stdout_aw.writer.buffered());
 }
+
+// Issue #159: `--` is the POSIX end-of-options delimiter.
+// Pinned against GNU coreutils 9.4 (`/usr/bin/date`, LC_ALL=C).
+// Current vibeutils reports `unrecognized option` for a bare `--`.
+
+test "date #159: -- before format prints the format" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Motivating case from issue #159: `date -- +%Y`. Year is
+    // environment-dependent, so pin shape (four digits + newline).
+    const args = [_][]const u8{ "--", "+%Y" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expectEqual(@as(usize, 5), out.len);
+    try testing.expect(out[0] >= '0' and out[0] <= '9');
+    try testing.expect(out[1] >= '0' and out[1] <= '9');
+    try testing.expect(out[2] >= '0' and out[2] <= '9');
+    try testing.expect(out[3] >= '0' and out[3] <= '9');
+    try testing.expectEqual(@as(u8, '\n'), out[4]);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "date #159: -- after options then format" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-u", "-d", "@0", "--", "+%Y-%m-%d" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970-01-01\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "date #159: -- alone prints the current date" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"--"};
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.endsWith(u8, stdout_aw.writer.buffered(), "\n"));
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "date #159: doubled -- is an invalid date" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "--" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "date: invalid date '--'\n",
+        stderr_aw.writer.buffered(),
+    );
+}
+
+test "date #159: -- then dash operand is an invalid date" {
+    // The reason `--` exists: `date -- -1` must treat `-1` as a date
+    // string, not as an option. GNU date 9.4 rejects it as invalid.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "-1" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "date: invalid date '-1'\n",
+        stderr_aw.writer.buffered(),
+    );
+}

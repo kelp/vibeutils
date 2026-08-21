@@ -4153,3 +4153,209 @@ test "conv=noerror,sync counts an error-synthesized block as partial in" {
     try testing.expectEqual(@as(usize, 0), stats.partial_blocks_out);
     try testing.expectEqual(ibs, stats.bytes_copied);
 }
+
+// Issue #159: `--` is the POSIX end-of-options delimiter.
+// Pinned against GNU coreutils 9.4 (`/usr/bin/dd`, LC_ALL=C).
+// Current vibeutils rejects `--` as `unrecognized operand` because the
+// hand-rolled parser requires every argv entry to contain `=`.
+
+test "parseOperands #159: -- alone is accepted" {
+    const args = [_][]const u8{"--"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.input_file == null);
+    try testing.expect(config.output_file == null);
+    try testing.expect(!config.help);
+    try testing.expect(!config.version);
+}
+
+test "parseOperands #159: -- before if= leaves the operand" {
+    const args = [_][]const u8{ "--", "if=input.txt" };
+    const config = try parseOperands(&args);
+    try testing.expectEqualStrings("input.txt", config.input_file.?);
+    try testing.expect(config.output_file == null);
+}
+
+test "parseOperands #159: -- after if= is ignored" {
+    const args = [_][]const u8{ "if=input.txt", "--", "status=none" };
+    const config = try parseOperands(&args);
+    try testing.expectEqualStrings("input.txt", config.input_file.?);
+    try testing.expectEqual(StatusLevel.none, config.status);
+}
+
+test "parseOperands #159: doubled -- rejects the second --" {
+    const args = [_][]const u8{ "--", "--" };
+    try testing.expectError(error.UnknownOperand, parseOperands(&args));
+}
+
+test "runDd #159: -- before if= copies the file" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello-dd\n");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", if_arg, of_arg, "status=none" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("hello-dd\n", content);
+}
+
+test "runDd #159: -- after if= copies the file" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "after-opt\n");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ if_arg, "--", of_arg, "status=none" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("after-opt\n", content);
+}
+
+test "runDd #159: doubled -- names the second -- in stderr" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "--", "status=none" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const doubled_err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, doubled_err, "unrecognized operand") != null);
+    try testing.expect(std.mem.indexOf(u8, doubled_err, "'--'") != null);
+}
+
+test "runDd #159: -- then dash-named if= copies the file" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "-dash.txt", "neg\n");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "-dash.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", if_arg, of_arg, "status=none" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("neg\n", content);
+}
+
+test "runDd #159: -- then -foo names the dash operand in stderr" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "-foo" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const dash_err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, dash_err, "unrecognized operand") != null);
+    try testing.expect(std.mem.indexOf(u8, dash_err, "'-foo'") != null);
+}

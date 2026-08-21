@@ -9322,3 +9322,162 @@ test "find: exprContainsDelete: -delete behind -o still forces depth-first" {
     const victim_stat = tmp.dir.statFile(testing.io, "orvictim", .{});
     try testing.expect(victim_stat == error.FileNotFound);
 }
+
+// Issue #159: `--` is the POSIX end-of-options delimiter for the
+// leading -H/-L/-P options. Pinned against GNU findutils 4.9.0
+// (`/usr/bin/find`, LC_ALL=C). Current vibeutils treats `--` as an
+// unknown predicate. A dash-named start path must be written
+// `./-name`: GNU find still classifies a bare `-name` as an expression.
+
+test "find #159: -- before path lists the tree" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", dir_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #159: -- after -P lists the tree" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "after.txt", .{});
+    f1.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-P", "--", dir_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "after.txt") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #159: doubled -- is an unknown predicate" {
+    // GNU findutils 4.9: the first `--` ends -H/-L/-P option parsing;
+    // a second `--` is an expression token and is rejected. Pin that
+    // so a naive "skip every --" fix does not treat `--` as a path.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", "--" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "--") != null);
+}
+
+test "find #159: -- then ./dash-dir lists the dash-named tree" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "-dashdir", .default_dir);
+    var dash = try tmp.dir.openDir(testing.io, "-dashdir", .{});
+    const inner = try dash.createFile(testing.io, "inside.txt", .{});
+    inner.close(testing.io);
+    dash.close(testing.io);
+
+    const dash_path = try tmp.dir.realPathFileAlloc(testing.io, "-dashdir", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", dash_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "inside.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-dashdir") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #159: -- path -name matches a dash-named file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "-dashfile", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f2.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", dir_path, "-name", "-dashfile" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-dashfile") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") == null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}

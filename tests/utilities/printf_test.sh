@@ -571,4 +571,57 @@ test_printf() {
 
     test_command_output "printf .* precision" "3.142" \
         "$binary" '%.*f' 3 3.14159
+
+    echo -e "${CYAN}Testing issue #159: -- end-of-options...${NC}"
+
+    # Pinned against GNU coreutils 9.4 (`/usr/bin/printf`, LC_ALL=C).
+    # Current vibeutils prints `--` as FORMAT and exits 0, so exit-only
+    # checks would pass — assert stdout, stderr, and exit together.
+    local eopt_cmd eopt_out eopt_err eopt_exit
+    local eopt="env LC_ALL=C '$binary'"
+
+    run_command eopt_cmd eopt_out eopt_err eopt_exit \
+        bash -c "$eopt -- 'x\n'"
+    if [[ $eopt_exit -eq 0 && "$eopt_out" == "x" && -z "$eopt_err" ]]; then
+        print_test_result "printf -- before format" "PASS"
+    else
+        print_test_result "printf -- before format" "FAIL" \
+            "exit=$eopt_exit out='$eopt_out' err='$eopt_err'"
+    fi
+
+    run_command eopt_cmd eopt_out eopt_err eopt_exit \
+        bash -c "$eopt -- '%s\n' ok"
+    if [[ $eopt_exit -eq 0 && "$eopt_out" == "ok" && -z "$eopt_err" ]]; then
+        print_test_result "printf -- after options-slot format" "PASS"
+    else
+        print_test_result "printf -- after options-slot format" "FAIL" \
+            "exit=$eopt_exit out='$eopt_out' err='$eopt_err'"
+    fi
+
+    run_command eopt_cmd eopt_out eopt_err eopt_exit \
+        bash -c "$eopt --"
+    if [[ $eopt_exit -eq 1 && -z "$eopt_out" && "$eopt_err" == *"missing operand"* ]]; then
+        print_test_result "printf -- alone missing operand" "PASS"
+    else
+        print_test_result "printf -- alone missing operand" "FAIL" \
+            "exit=$eopt_exit out='$eopt_out' err='$eopt_err'"
+    fi
+
+    run_command eopt_cmd eopt_out eopt_err eopt_exit \
+        bash -c "$eopt -- --"
+    if [[ $eopt_exit -eq 0 && "$eopt_out" == "--" && -z "$eopt_err" ]]; then
+        print_test_result "printf doubled -- prints second --" "PASS"
+    else
+        print_test_result "printf doubled -- prints second --" "FAIL" \
+            "exit=$eopt_exit out='$eopt_out' err='$eopt_err'"
+    fi
+
+    run_command eopt_cmd eopt_out eopt_err eopt_exit \
+        bash -c "$eopt -- -n"
+    if [[ $eopt_exit -eq 0 && "$eopt_out" == "-n" && -z "$eopt_err" ]]; then
+        print_test_result "printf -- dash operand prints -n" "PASS"
+    else
+        print_test_result "printf -- dash operand prints -n" "FAIL" \
+            "exit=$eopt_exit out='$eopt_out' err='$eopt_err'"
+    fi
 }
