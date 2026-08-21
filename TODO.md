@@ -1356,14 +1356,18 @@ that would have caught it — and similar bugs — earlier.
       against every binary
 
 ### 3. Adopt Shared TestDir Across All Utilities
-- [ ] Replace ad-hoc `testing.tmpDir(.{})` usage with
+- [x] Replace ad-hoc `testing.tmpDir(.{})` usage with
       shared `common.test_dir.TestDir` in all utility tests
-- [ ] Ensure all tests use absolute paths (no fchdir)
-- [ ] Utilities to migrate: cat, chmod, chown, cut, dd,
+- [x] Ensure all tests use absolute paths (no fchdir)
+      Residual cwd-behavior tests keep `TestDir.chdirToBase`
+      (see `docs/plans/2026-08-21-shared-testdir.md`
+      decisions 2 and 3). This is an annotated residual,
+      not a silent fchdir ban.
+- [x] Utilities to migrate: cat, chmod, chown, cut, dd,
       du, find, grep, head, ln, ls, mkdir, mktemp, nl,
       pwd, readlink, realpath, rm, rmdir, stat, tac,
       tail, tee, test, touch, tr, uniq, wc
-- [ ] Consolidate mv.zig's local TestDir into the shared
+- [x] Consolidate mv.zig's local TestDir into the shared
       one
 
 ### 4. Fix LLVM Backend Test Failures ✓
