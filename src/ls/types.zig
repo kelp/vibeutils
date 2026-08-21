@@ -36,6 +36,8 @@ pub const LsOptions = struct {
     omit_owner: bool = false,
     omit_group: bool = false,
     color_mode: ColorMode = .auto,
+    /// GNU LS_COLORS overlay; null keeps the compiled vibeutils palette.
+    ls_colors: ?*const common.ls_colors.Table = null,
     terminal_width: ?u16 = null, // null means auto-detect
     group_directories_first: bool = false,
     show_inodes: bool = false,

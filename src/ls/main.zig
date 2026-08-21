@@ -253,7 +253,11 @@ fn lsMain(
     const display_config = common.display_config.DisplayConfig.resolve(allocator);
 
     // Build the consolidated options struct from args + resolved config.
-    const options = lsMain_buildOptions(io, stderr_writer, args, allocator, display_config);
+    var options = lsMain_buildOptions(io, stderr_writer, args, allocator, display_config);
+
+    var ls_colors_table: ?common.ls_colors.Table = null;
+    defer if (ls_colors_table) |*table| table.deinit(allocator);
+    try lsMain_loadLsColors(allocator, stderr_writer, &options, &ls_colors_table);
 
     // Initialize GitContext once if git status is requested
     const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
@@ -277,6 +281,75 @@ fn lsMain(
     );
 
     return if (had_error) 2 else 0;
+}
+
+/// True when this invocation would emit color (so LS_COLORS is worth parsing).
+fn lsMain_colorWillEmit(color_mode: ColorMode) bool {
+    std.debug.assert(@intFromEnum(color_mode) <= @intFromEnum(ColorMode.never));
+    if (color_mode == .never) return false;
+    if (common.env.getEnv("NO_COLOR") != null) return false;
+    if (color_mode == .auto) {
+        if (std.c.isatty(std.Io.File.stdout().handle) == 0) return false;
+        if (common.env.getEnv("TERM")) |term| {
+            if (std.mem.eql(u8, term, "dumb")) return false;
+        }
+    }
+    std.debug.assert(color_mode != .never);
+    return true;
+}
+
+fn lsMain_reportLsColorsError(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    report: common.ls_colors.ParseReport,
+) void {
+    std.debug.assert(@intFromPtr(stderr_writer) != 0);
+    std.debug.assert(@intFromPtr(allocator.ptr) != 0);
+    if (report.unrecognized_prefix) |prefix| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "unrecognized prefix: {s}",
+            .{&prefix},
+        );
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "ls",
+        "unparsable value for LS_COLORS environment variable",
+        .{},
+    );
+}
+
+/// Parse LS_COLORS when color is on. Invalid values disable color for this run.
+fn lsMain_loadLsColors(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    options: *LsOptions,
+    table_slot: *?common.ls_colors.Table,
+) !void {
+    std.debug.assert(table_slot.* == null);
+    std.debug.assert(options.ls_colors == null);
+    if (!lsMain_colorWillEmit(options.color_mode)) return;
+    const text = common.env.getEnv("LS_COLORS") orelse return;
+    if (text.len == 0) return;
+    var report = common.ls_colors.ParseReport{};
+    const parsed = common.ls_colors.parseWithReport(allocator, text, &report) catch |err| {
+        switch (err) {
+            error.Unparsable => {
+                lsMain_reportLsColorsError(allocator, stderr_writer, report);
+                options.color_mode = .never;
+                return;
+            },
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    };
+    table_slot.* = parsed;
+    if (table_slot.*) |*table| {
+        options.ls_colors = table;
+    }
 }
 
 /// Resolve ls-specific color/icon modes and time style from args + config.

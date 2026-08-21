@@ -10,6 +10,9 @@
   green.
 
 ### Added
+- **`ls` honors GNU `LS_COLORS` when color is on.** Type and suffix
+  keys overlay the compiled palette; an invalid value prints a
+  diagnostic and disables color for that invocation.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so
