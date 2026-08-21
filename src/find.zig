@@ -726,6 +726,28 @@ fn parseArgs_parseDepthArg(
     };
 }
 
+/// Predicates whose next argv token is an argument, not a predicate.
+/// The depth prescan must skip that token so `-name --help` does not
+/// look like predicate-position `--help`.
+fn parseArgs_prescanTakesArg(arg: []const u8) bool {
+    std.debug.assert(arg.len > 0);
+    const one_arg = [_][]const u8{
+        "-name",   "-iname",      "-path",   "-wholename",
+        "-ipath",  "-iwholename", "-ilname", "-lname",
+        "-type",   "-regex",      "-iregex", "-size",
+        "-perm",   "-amin",       "-cmin",   "-mmin",
+        "-atime",  "-ctime",      "-mtime",  "-user",
+        "-group",  "-uid",        "-gid",    "-printf",
+        "-fstype", "-links",      "-inum",   "-samefile",
+        "-anewer", "-cnewer",     "-newer",  "-used",
+    };
+    for (one_arg) |key| {
+        if (std.mem.eql(u8, arg, key)) return true;
+    }
+    std.debug.assert(!std.mem.eql(u8, arg, "-name"));
+    return false;
+}
+
 fn parseArgs_prescanDepthGlobals(
     allocator: Allocator,
     args: []const []const u8,
@@ -769,11 +791,14 @@ fn parseArgs_prescanDepthGlobals(
         {
             // Accept as no-ops
             i += 1;
+        } else if (parseArgs_prescanTakesArg(args[i])) {
+            i += 2;
         } else if (std.mem.eql(u8, args[i], "--help") or
             std.mem.eql(u8, args[i], "--version"))
         {
             // Sequential GNU parse: predicate-position --help/--version
-            // must run before later -maxdepth validation.
+            // must run before later -maxdepth validation. A `--help`
+            // consumed as a primary argument is skipped above.
             break;
         } else {
             i += 1;
