@@ -415,7 +415,7 @@ test "entry_collector - needsMetadata" {
 }
 
 test "entry_collector - collectFilteredEntries basic" {
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create test files
@@ -440,7 +440,7 @@ test "entry_collector - collectFilteredEntries basic" {
 }
 
 test "entry_collector - collectFilteredEntries with all option" {
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create test files
@@ -479,7 +479,7 @@ test "entry_collector - collectFilteredEntries with all option" {
 }
 
 test "entry_collector - hide_backups filters tilde files" {
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const f1 = try tmp_dir.dir().createFile(testing.io, "file.txt", .{});
@@ -509,7 +509,7 @@ test "entry_collector - hide_backups filters tilde files" {
 }
 
 test "entry_collector - ignore_pattern filters matching files" {
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const f1 = try tmp_dir.dir().createFile(testing.io, "readme.md", .{});

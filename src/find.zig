@@ -4341,7 +4341,7 @@ test "find: basic directory search" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
@@ -4376,7 +4376,7 @@ test "find: -name filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
@@ -4409,7 +4409,7 @@ test "find: -type filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -4461,7 +4461,7 @@ test "find: -empty" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "empty.txt", .{});
@@ -4497,7 +4497,7 @@ test "find: -maxdepth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "top.txt", .{});
@@ -4534,7 +4534,7 @@ test "find: -not / !" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "keep.txt", .{});
@@ -4567,7 +4567,7 @@ test "find: -or operator" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "a.txt", .{});
@@ -4602,7 +4602,7 @@ test "find: parentheses grouping" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "a.txt", .{});
@@ -4635,7 +4635,7 @@ test "find: -print0" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -4710,7 +4710,7 @@ test "find: -mindepth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "top.txt", .{});
@@ -4746,7 +4746,7 @@ test "find: -delete" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "deleteme.txt", .{});
@@ -4777,7 +4777,7 @@ test "find: -iname" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "Hello.TXT", .{});
@@ -4810,7 +4810,7 @@ test "find: -size filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "small.txt", .{});
@@ -4844,7 +4844,7 @@ test "find: -perm filter" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "rw.txt", .{
@@ -4885,7 +4885,7 @@ test "find: -path matches full path pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "subdir", .default_dir);
@@ -4924,7 +4924,7 @@ test "find: -prune prevents descending into directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create a directory to skip and one to keep
@@ -4968,7 +4968,7 @@ test "find: -depth lists directory contents before directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "adir", .default_dir);
@@ -5010,7 +5010,7 @@ test "find: -path with non-matching pattern returns no results" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
@@ -5048,7 +5048,7 @@ test "find: -atime +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
@@ -5078,7 +5078,7 @@ test "find: -ctime +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
@@ -5108,7 +5108,7 @@ test "find: -links 99 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "single.txt", .{});
@@ -5138,7 +5138,7 @@ test "find: -nouser matches nothing for normal files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "owned.txt", .{});
@@ -5169,7 +5169,7 @@ test "find: -xdev is accepted without error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5203,7 +5203,7 @@ test "find: -d is alias for -depth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "adir", .default_dir);
@@ -5242,7 +5242,7 @@ test "find: -f specifies explicit search path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5272,7 +5272,7 @@ test "find: -x is alias for -xdev" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5302,7 +5302,7 @@ test "find: -X warns about xargs-unsafe filenames" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create a file with a space in its name (xargs-problematic)
@@ -5342,7 +5342,7 @@ test "find: -mmin matches recently modified files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "fresh.txt", .{});
@@ -5372,7 +5372,7 @@ test "find: -mmin +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
@@ -5401,7 +5401,7 @@ test "find: -inum matches file by inode number" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "target.txt", .{});
@@ -5437,7 +5437,7 @@ test "find: -inum with non-matching inode returns nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5471,7 +5471,7 @@ test "find: -amin -5 matches recently accessed files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "accessed.txt", .{});
@@ -5501,7 +5501,7 @@ test "find: -amin +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
@@ -5530,7 +5530,7 @@ test "find: -cmin -5 matches recently changed files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "changed.txt", .{});
@@ -5559,7 +5559,7 @@ test "find: -cmin +9999 matches nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "recent.txt", .{});
@@ -5588,7 +5588,7 @@ test "find: -anewer matches files accessed after reference" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create reference file first
@@ -5639,7 +5639,7 @@ test "find: -cnewer matches files changed after reference" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create reference file first
@@ -5711,7 +5711,7 @@ test "find: -execdir runs command in file directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "testfile.txt", .{});
@@ -5740,7 +5740,7 @@ test "find: -ls produces listing output" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "listed.txt", .{});
@@ -5773,7 +5773,7 @@ test "find: -fstype is accepted without error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5802,7 +5802,7 @@ test "find: -flags is accepted without error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5835,7 +5835,7 @@ test "find: -P global option accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5864,7 +5864,7 @@ test "find: -E global option accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5893,7 +5893,7 @@ test "find: -s global option accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -5922,7 +5922,7 @@ test "find: -ipath case-insensitive path matching" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "SubDir", .default_dir);
@@ -5955,7 +5955,7 @@ test "find: -iwholename is alias for -ipath" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "Test.TXT", .{});
@@ -5984,7 +5984,7 @@ test "find: -regex matches full path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6013,7 +6013,7 @@ test "find: -iregex matches case-insensitively" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6042,7 +6042,7 @@ test "find: -Bmin stub accepted (always true)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6077,7 +6077,7 @@ test "find: -Bnewer parses and evaluates" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6108,7 +6108,7 @@ test "find: -Btime evaluates birth time" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6144,7 +6144,7 @@ test "find: -acl stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6174,7 +6174,7 @@ test "find: -depth N matches files at exact depth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "top.txt", .{});
@@ -6232,7 +6232,7 @@ test "find: -gid matches numeric group ID" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6267,7 +6267,7 @@ test "find: -gid with non-matching GID returns nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6297,7 +6297,7 @@ test "find: -uid matches numeric user ID" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6332,7 +6332,7 @@ test "find: -uid with non-matching UID returns nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6362,7 +6362,7 @@ test "find: -ignore_readdir_race accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6391,7 +6391,7 @@ test "find: -noignore_readdir_race accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6420,7 +6420,7 @@ test "find: -noleaf accepted as no-op" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6449,7 +6449,7 @@ test "find: -lname matches symlink target" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "target.txt", .{});
@@ -6481,7 +6481,7 @@ test "find: -ilname case-insensitive symlink target matching" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "Target.TXT", .{});
@@ -6512,7 +6512,7 @@ test "find: -mnewer is alias for -newer" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const ref = try tmp.dir().createFile(testing.io, "old_ref.txt", .{});
@@ -6559,7 +6559,7 @@ test "find: -mount is alias for -xdev" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6588,7 +6588,7 @@ test "find: -newerXY parses and evaluates" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6662,7 +6662,7 @@ test "find: -samefile matches files with same inode" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "original.txt", .{});
@@ -6692,7 +6692,7 @@ test "find: -sparse stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6721,7 +6721,7 @@ test "find: -xattr stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6750,7 +6750,7 @@ test "find: -xattrname stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6779,7 +6779,7 @@ test "find: -printf stub accepted (prints like -print)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6808,7 +6808,7 @@ test "find: -false always evaluates to false" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6838,7 +6838,7 @@ test "find: -true always evaluates to true" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6868,7 +6868,7 @@ test "find: -false -o -true evaluates to true" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -6897,7 +6897,7 @@ test "find: -regex rejects non-matching pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "hello.txt", .{});
@@ -6928,7 +6928,7 @@ test "find: -iregex rejects non-matching pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "hello.txt", .{});
@@ -6967,7 +6967,7 @@ test "find: -size 1 matches 100-byte file (block rounding)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "small.txt", .{});
@@ -7002,7 +7002,7 @@ test "find: -size 2 matches 513-byte file (block rounding)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "medium.txt", .{});
@@ -7038,7 +7038,7 @@ test "find: -size -2 excludes 513-byte file (block rounding)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "twoblk.txt", .{});
@@ -7086,7 +7086,7 @@ test "find: -exec runs command and filters on exit code" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "target.txt", .{});
@@ -7149,7 +7149,7 @@ test "find: -user matches files by username" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "myfile.txt", .{});
@@ -7190,7 +7190,7 @@ test "find: -group matches files by group name" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "grpfile.txt", .{});
@@ -7230,7 +7230,7 @@ test "find: -nogroup matches nothing for normal files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "normalfile.txt", .{});
@@ -7296,7 +7296,7 @@ test "find: -user resolves a name to its uid, not to its gid" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
     const f = try tmp.dir().createFile(testing.io, "foreign.txt", .{});
     f.close(testing.io);
@@ -7346,7 +7346,7 @@ test "find: -group resolves a name to its gid, not to zero" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
     const f = try tmp.dir().createFile(testing.io, "foreigngrp.txt", .{});
     f.close(testing.io);
@@ -7429,7 +7429,7 @@ test "find: -newer matches files modified after reference" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create reference file first
@@ -7485,7 +7485,7 @@ test "find: -L follows symlinks to directories" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create a real directory with a file
@@ -7559,7 +7559,7 @@ test "find: -H follows only command-line symlinks" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create a real directory with a file
@@ -7603,7 +7603,7 @@ test "find: -follow in expression position is accepted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "file.txt", .{});
@@ -7637,7 +7637,7 @@ test "find: -a and -and operators combine predicates" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const f1 = try tmp.dir().createFile(testing.io, "hello.txt", .{});
@@ -7715,7 +7715,7 @@ test "find: walker: multi-level pre-order prints parents before their contents" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{a.txt, sub/{b.txt, deeper/{c.txt}}}
@@ -7779,7 +7779,7 @@ test "find: walker: multiple path operands are each fully walked in argument ord
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // alpha/{inside_alpha.txt}  and  beta/{inside_beta.txt}
@@ -7831,7 +7831,7 @@ test "find: walker: -maxdepth 0 evaluates only the start operand" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     (try tmp.dir().createFile(testing.io, "child.txt", .{})).close(testing.io);
@@ -7868,7 +7868,7 @@ test "find: walker: -maxdepth N under -depth evaluates depth N, never N+1" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{lvl1.txt, sub/{lvl2.txt}}
@@ -7919,7 +7919,7 @@ test "find: walker: -mindepth under -depth descends through shallow entries but 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{shallow.txt, sub/{deep.txt}}
@@ -7970,7 +7970,7 @@ test "find: walker: -depth -delete empties then removes a matched directory" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // victim/{a.txt, b.txt}
@@ -8016,7 +8016,7 @@ test "find: walker: unreadable subdirectory errors, siblings still processed, ex
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{readable_sibling.txt, locked/{secret.txt}}
@@ -8072,7 +8072,7 @@ test "find: walker: under -depth an unreadable directory is itself still evaluat
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{locked/{secret.txt}}
@@ -8122,7 +8122,7 @@ test "find: walker: -prune on a matched directory suppresses its whole subtree" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{prune_me/{deep/{burrowed.txt}}}
@@ -8171,7 +8171,7 @@ test "find: walker: -prune is a no-op under -depth (subtree still appears)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{prune_me/{burrowed.txt}}
@@ -8229,7 +8229,7 @@ test "find: walker: -s emits each directory's children in lexicographic order" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // Create children OUT of lexicographic order so a no-sort regression would
@@ -8277,7 +8277,7 @@ test "find: walker: -P does not descend a symlink-to-directory start operand" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // target/{behind.txt}, and operand_link -> target
@@ -8340,7 +8340,7 @@ test "find: walker: -H follows operand symlink but evaluates inner symlinks as l
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // inner_target/{deep.txt} reachable only by following an inner symlink.
@@ -8412,7 +8412,7 @@ test "find: walker: -L evaluates an inner symlink-to-file as its target type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/{real.txt, link_to_file -> real.txt}
@@ -8474,7 +8474,7 @@ test "find: walker: -L descends two sibling symlinks pointing at the same direct
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // shared/{found.txt}, root/{link_a -> ../shared, link_b -> ../shared}
@@ -8527,7 +8527,7 @@ test "find: walker: -X never filters the depth-0 start operand" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // A directory whose own name contains a space (xargs-unsafe).
@@ -8586,7 +8586,7 @@ test "find: walker-migration: -L reports filesystem loop without descending it" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // root/sub/{f.txt, up -> ..}  ("up" loops back to root, an ancestor).
@@ -8661,7 +8661,7 @@ test "find: evaluate: AND short-circuit suppresses right-side -print for non-mat
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // One file matches the -name test, one does not. Both exist on disk.
@@ -8697,7 +8697,7 @@ test "find: evaluate: OR short-circuit suppresses side-effecting right -print on
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // A file matching the left -name, and one that does not.
@@ -8736,7 +8736,7 @@ test "find: evaluate: -not inverts its operand and drives the following AND shor
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     const matchf = try tmp.dir().createFile(testing.io, "skip_ccc.txt", .{});
@@ -8772,7 +8772,7 @@ test "find: evaluate: implicit -print obeys flat -true and is suppressed by flat
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // A file AND a directory, so we prove -true prints non-file entries too --
@@ -8823,7 +8823,7 @@ test "find: evaluate: prune via out-param composed with -o suppresses pruned dir
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // A directory to prune (with a child) and a sibling file. Existing tests at
@@ -8896,7 +8896,7 @@ test "find: parser: AND binds tighter than OR (A -o B -a C = A OR (B AND C))" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     (try tmp.dir().createFile(testing.io, "match_a.txt", .{})).close(testing.io);
@@ -8933,7 +8933,7 @@ test "find: parser: implicit AND binds tighter than OR (A -o B C = A OR (B AND C
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     (try tmp.dir().createFile(testing.io, "match_a.txt", .{})).close(testing.io);
@@ -8971,7 +8971,7 @@ test "find: parser: all 3 operands of an -o chain contribute; none dropped (A -o
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     (try tmp.dir().createFile(testing.io, "term_one.aaa", .{})).close(testing.io);
@@ -9012,7 +9012,7 @@ test "find: parser: all 3 conjuncts of an implicit-AND chain apply; none dropped
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     // all_three: starts "abc", contains "mid", ends ".dat" -> all three true.
@@ -9053,7 +9053,7 @@ test "find: parser: -not negates only its operand then implicit-ANDs the rest" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     (try tmp.dir().createFile(testing.io, "keep_me.txt", .{})).close(testing.io);
@@ -9092,7 +9092,7 @@ test "find: parser: -not -not P double-negates back to P" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     (try tmp.dir().createFile(testing.io, "target_xyz.txt", .{})).close(testing.io);
@@ -9136,7 +9136,7 @@ test "find: parser: parentheses override AND-over-OR precedence" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "grp_a_dir", .default_dir);
@@ -9189,7 +9189,7 @@ test "find: parser: trailing '(' with no ')' reports missing closing and exits 1
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
     (try tmp.dir().createFile(testing.io, "anything.txt", .{})).close(testing.io);
     const dir_path = try tmp.getBasePath();
@@ -9220,7 +9220,7 @@ test "find: parser: stray ')' in operand position errors with unknown predicate,
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
     (try tmp.dir().createFile(testing.io, "anything.txt", .{})).close(testing.io);
     const dir_path = try tmp.getBasePath();
@@ -9257,7 +9257,7 @@ test "find: exprContainsDelete: -delete under -not still forces depth-first" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "notvictim", .default_dir);
@@ -9296,7 +9296,7 @@ test "find: exprContainsDelete: -delete behind -o still forces depth-first" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var tmp = TestDir.init(testing.allocator);
+    var tmp = TestDir.init(allocator);
     defer tmp.deinit();
 
     try tmp.dir().createDir(testing.io, "orvictim", .default_dir);

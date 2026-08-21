@@ -768,7 +768,7 @@ test "mktemp creates file with default template" {
 
     // Clean up the created file
     const path = std.mem.trimEnd(u8, out, "\n");
-    std.fs.deleteFileAbsolute(path) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
 }
 
 test "mktemp creates directory with -d flag" {
@@ -793,7 +793,7 @@ test "mktemp creates directory with -d flag" {
     try testing.expect(stat_result.kind == .directory);
 
     // Clean up
-    std.fs.deleteDirAbsolute(path) catch {};
+    std.Io.Dir.deleteDirAbsolute(io, path) catch {};
 }
 
 test "mktemp dry-run does not create file" {
@@ -840,7 +840,7 @@ test "mktemp with custom template" {
     try testing.expect(std.mem.startsWith(u8, basename, "myapp."));
 
     // Clean up
-    std.fs.deleteFileAbsolute(path) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
 }
 
 test "mktemp with --suffix" {
@@ -868,7 +868,7 @@ test "mktemp with --suffix" {
     try testing.expect(std.mem.startsWith(u8, basename, "tmp"));
 
     // Clean up
-    std.fs.deleteFileAbsolute(path) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
 }
 
 test "mktemp suffix with slash is rejected" {
@@ -918,7 +918,7 @@ test "mktemp with -p flag" {
     try testing.expect(std.mem.startsWith(u8, result_path, dir_path));
 
     // Clean up
-    std.fs.deleteFileAbsolute(result_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, result_path) catch {};
 }
 
 test "mktemp quiet mode suppresses errors" {

@@ -1861,7 +1861,7 @@ fn processInputByLines_lastN(
 
 test "tail outputs default 10 lines" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create test file with 15 lines
@@ -1882,7 +1882,7 @@ test "tail outputs default 10 lines" {
 
 test "tail with -n 5 outputs last 5 lines" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n";
@@ -1899,7 +1899,7 @@ test "tail with -n 5 outputs last 5 lines" {
 
 test "tail with -n 0 outputs nothing" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\n";
@@ -1916,7 +1916,7 @@ test "tail with -n 0 outputs nothing" {
 
 test "tail with -c 10 outputs last 10 bytes" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "abcdefghijklmnopqrstuvwxyz";
@@ -1933,7 +1933,7 @@ test "tail with -c 10 outputs last 10 bytes" {
 
 test "tail with -c 0 outputs nothing" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "some content here";
@@ -1950,7 +1950,7 @@ test "tail with -c 0 outputs nothing" {
 
 test "tail handles line count larger than file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\n";
@@ -1967,7 +1967,7 @@ test "tail handles line count larger than file" {
 
 test "tail handles byte count larger than file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "small";
@@ -1984,7 +1984,7 @@ test "tail handles byte count larger than file" {
 
 test "tail handles empty file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     try tmp_dir.createFile("empty.txt", "", null);
@@ -1999,7 +1999,7 @@ test "tail handles empty file" {
 
 test "tail handles file with no final newline" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3"; // no final newline
@@ -2016,7 +2016,7 @@ test "tail handles file with no final newline" {
 
 test "tail handles very long lines" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a line longer than typical buffer sizes
@@ -2085,7 +2085,7 @@ test "tail with -v always shows headers" {
 
 test "tail handles non-existent file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2097,7 +2097,7 @@ test "tail handles non-existent file" {
 
 test "tail with -z handles zero-terminated lines" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\x00line2\x00line3\x00";
@@ -2114,7 +2114,7 @@ test "tail with -z handles zero-terminated lines" {
 
 test "tail with binary file in byte mode" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const binary_content = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE, 0xFD, 0xFC };
@@ -2151,7 +2151,7 @@ test "parseNumericArg with plus prefix" {
 
 test "tail -n +1 outputs entire file (from-beginning)" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
@@ -2169,7 +2169,7 @@ test "tail -n +1 outputs entire file (from-beginning)" {
 
 test "tail -n +3 skips first 2 lines (from-beginning)" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
@@ -2187,7 +2187,7 @@ test "tail -n +3 skips first 2 lines (from-beginning)" {
 
 test "tail -n +NUM larger than file outputs nothing" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\n";
@@ -2205,7 +2205,7 @@ test "tail -n +NUM larger than file outputs nothing" {
 
 test "tail -n +NUM detected via runTail arg parsing" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
@@ -2318,7 +2318,7 @@ test "tail with invalid byte count" {
 
 test "tail with obsolete -NUM syntax" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
@@ -2418,7 +2418,7 @@ test "tail: -b flag is parsed" {
 
 test "tail: -b 2 shows last 1024 bytes" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a file with 2048 bytes (4 blocks of 512)
@@ -2445,7 +2445,7 @@ test "tail: -b 2 shows last 1024 bytes" {
 
 test "tail: -b +2 shows from byte 512 onwards" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a file with 1536 bytes (3 blocks of 512)
@@ -2478,7 +2478,7 @@ test "tail: -b +2 shows from byte 512 onwards" {
 
 test "tail: -b with file shorter than block count shows everything" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "short file content";
@@ -2507,7 +2507,7 @@ test "tail: -r flag is parsed" {
 
 test "tail: -r reverses all lines of a file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
@@ -2524,7 +2524,7 @@ test "tail: -r reverses all lines of a file" {
 
 test "tail: -r -n 3 reverses last 3 lines" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
@@ -2541,7 +2541,7 @@ test "tail: -r -n 3 reverses last 3 lines" {
 
 test "tail: -r on single-line file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const content = "only line\n";
@@ -2561,7 +2561,7 @@ test "tail: -f and -r are mutually exclusive" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
     try tmp_dir.createFile("test.txt", "content\n", null);
 

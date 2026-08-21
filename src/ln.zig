@@ -1083,7 +1083,7 @@ fn createSingleLinkInDir(
 
 test "ln creates hard link to existing file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create target file in test directory
@@ -1112,7 +1112,7 @@ test "ln creates hard link to existing file" {
 
 test "ln creates symbolic link" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create target file
@@ -1141,7 +1141,7 @@ test "ln creates symbolic link" {
 
 test "ln fails on non-existent target for hard link" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Should fail - hard links require existing targets
@@ -1173,7 +1173,7 @@ test "ln fails on non-existent target for hard link" {
 
 test "ln allows non-existent target for symbolic link" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Should succeed - symbolic links allow non-existent targets
@@ -1200,7 +1200,7 @@ test "ln allows non-existent target for symbolic link" {
 
 test "ln with force removes existing file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create target and existing link
@@ -1230,7 +1230,7 @@ test "ln with force removes existing file" {
 
 test "ln fails without force on existing file" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create target and existing link
@@ -1250,7 +1250,7 @@ test "ln fails without force on existing file" {
 
 test "ln creates relative symbolic link with -r" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a subdirectory structure
@@ -1302,7 +1302,7 @@ test "ln relative path calculation" {
 
 test "isTargetMissing returns true for nonexistent target" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a symlink to a nonexistent target
@@ -1323,7 +1323,7 @@ test "isTargetMissing returns true for nonexistent target" {
 
 test "isTargetMissing returns false for existing target" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a real file and a symlink pointing to it
@@ -1344,7 +1344,7 @@ test "isTargetMissing returns false for existing target" {
 
 test "dangling symlink produces warning via createSingleLink with -w" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const tmp_path = try tmp_dir.getBasePath();
@@ -1377,7 +1377,7 @@ test "dangling symlink produces warning via createSingleLink with -w" {
 
 test "dangling symlink no warning without -w" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const tmp_path = try tmp_dir.getBasePath();
@@ -1447,7 +1447,7 @@ test "ln: -P flag is parsed" {
 
 test "ln: -L creates hard link to symlink target" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create original file
@@ -1505,7 +1505,7 @@ test "ln: -L creates hard link to symlink target" {
 
 test "ln: -P creates hard link to symlink itself" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create original file
@@ -1554,7 +1554,7 @@ test "ln: -P creates hard link to symlink itself" {
 
 test "ln: -b flag creates backup of destination" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create target and existing link
@@ -1654,7 +1654,7 @@ test "ln: -F implies force" {
 
 test "ln: -w flag enables dangling symlink warning" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     const tmp_path = try tmp_dir.getBasePath();
@@ -1686,7 +1686,7 @@ test "ln: -w flag enables dangling symlink warning" {
 
 test "ln: -sb without -f creates backup and replaces symlink" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create two target files
@@ -1740,7 +1740,7 @@ test "ln: -sb without -f creates backup and replaces symlink" {
 // F54: ln -sfn should replace a symlink-to-directory, not follow it
 test "ln: -sfn replaces symlink to directory instead of following it" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     // Create a real directory and a symlink pointing to it
@@ -1789,7 +1789,7 @@ test "ln: -sfn replaces symlink to directory instead of following it" {
 // F54: ln -sfh should also replace symlink to directory (POSIX -h alias)
 test "ln: -sfh replaces symlink to directory (POSIX -h alias)" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     try tmp_dir.dir().createDir(io, "real_dir", .default_dir);
@@ -1832,7 +1832,7 @@ test "ln: -sfh replaces symlink to directory (POSIX -h alias)" {
 // F54: ln -n with regular file dest should work normally
 test "ln: -sfn with regular file destination works normally" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     try createTestFile(io, tmp_dir.dir(), "target.txt", "target content");
@@ -1874,7 +1874,7 @@ test "ln: -sfn with regular file destination works normally" {
 // F54: ln -n with dangling symlink dest should work normally
 test "ln: -sfn with dangling symlink destination replaces it" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     try createTestFile(io, tmp_dir.dir(), "target.txt", "target content");
@@ -1917,7 +1917,7 @@ test "ln: -sfn with dangling symlink destination replaces it" {
 // F66: ln --backup=simple should not panic
 test "ln: --backup=simple does not panic with TooManyValues" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     try createTestFile(io, tmp_dir.dir(), "source.txt", "source content");
@@ -1962,7 +1962,7 @@ test "ln: --backup=simple does not panic with TooManyValues" {
 // F66: ln --backup=numbered should also not panic
 test "ln: --backup=numbered does not panic" {
     const io = testing.io;
-    var tmp_dir = TestDir.init(allocator);
+    var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     try createTestFile(io, tmp_dir.dir(), "source.txt", "source content");

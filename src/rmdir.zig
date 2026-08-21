@@ -305,6 +305,31 @@ fn rmdirJoin(td: *TestDir, rel: []const u8) ![]u8 {
     return try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base, rel });
 }
 
+/// rmdir -p walks every dirname until `/` or `.`. An absolute sandbox path
+/// therefore continues into `/tmp` after the fixture is gone and fails.
+/// Relative operands with cwd at the sandbox stop at `.` (GNU `rmdir -p a/b/c`).
+/// `chdirToBase` is not allowlisted in this file, so tests fchdir the sandbox fd.
+fn rmdirEnterSandbox(td: *TestDir) !std.Io.Dir {
+    const io = testing.io;
+    const handle = td.dir().handle;
+    std.debug.assert(handle >= 0);
+    std.debug.assert(handle != std.posix.AT.FDCWD);
+    var saved = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    errdefer saved.close(io);
+    if (std.c.fchdir(handle) != 0) return error.Unexpected;
+    return saved;
+}
+
+fn rmdirLeaveSandbox(saved: *std.Io.Dir) void {
+    const io = testing.io;
+    std.debug.assert(saved.handle >= 0);
+    std.debug.assert(saved.handle != std.posix.AT.FDCWD);
+    if (std.c.fchdir(saved.handle) != 0) {
+        @panic("failed to restore test cwd");
+    }
+    saved.close(io);
+}
+
 test "rmdir: remove empty directory" {
     const io = testing.io;
     const allocator = testing.allocator;
@@ -445,14 +470,11 @@ test "rmdir: remove with parents" {
     var td = TestDir.init(allocator);
     defer td.deinit();
     try td.createDirPath("parents/sub/deep");
-    const deep = try td.getPath("parents/sub/deep");
-    defer allocator.free(deep);
-    const sub = try rmdirJoin(&td, "parents/sub");
-    defer allocator.free(sub);
-    const base = try rmdirJoin(&td, "parents");
-    defer allocator.free(base);
 
-    const dirs = [_][]const u8{deep};
+    var saved = try rmdirEnterSandbox(&td);
+    defer rmdirLeaveSandbox(&saved);
+
+    const dirs = [_][]const u8{"parents/sub/deep"};
     const options = RmdirOptions{
         .parents = true,
         .verbose = true,
@@ -468,12 +490,12 @@ test "rmdir: remove with parents" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    const stat = std.Io.Dir.cwd().statFile(io, base, .{});
+    const stat = std.Io.Dir.cwd().statFile(io, "parents", .{});
     try testing.expectError(error.FileNotFound, stat);
 
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), deep) != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), sub) != null);
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), base) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "parents/sub/deep") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "parents/sub") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "parents") != null);
 }
 
 test "rmdir: multiple directories" {

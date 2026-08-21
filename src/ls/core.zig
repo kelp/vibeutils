@@ -236,7 +236,7 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
 
-    var tmp = TestDir.init(allocator);
+    var tmp = TestDir.init(std.testing.allocator);
     defer tmp.deinit();
     try tmp.dir().createDir(io, "defaultacl", .default_dir);
     try tmp.dir().createDir(io, "plain", .default_dir);
