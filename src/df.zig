@@ -1919,7 +1919,10 @@ fn printTotal_formatField(buf: []u8, bytes: u128, display_block: u64, opts: DfOp
         if (bytes > std.math.maxInt(u64)) {
             return std.fmt.bufPrint(buf, "{d}", .{bytes}) catch "?";
         }
-        return formatHumanReadable(buf, @intCast(bytes), opts.si);
+        // Same order as formatSize: -h / default human wins over -H, so the
+        // total row does not switch to SI when both flags are set.
+        const use_si = opts.si and !opts.human_readable;
+        return formatHumanReadable(buf, @intCast(bytes), use_si);
     }
     const val = ceilDiv128(bytes, display_block);
     if (opts.thousands_grouping and val <= std.math.maxInt(u64)) {
@@ -4661,6 +4664,23 @@ test "printTotal_formatField - u64max bytes rejects a saturating fix (issue #138
     opts.human_readable = false;
     const result = printTotal_formatField(&buf, std.math.maxInt(u64), 1024, opts);
     try testing.expectEqualStrings("18014398509481984", result);
+}
+
+// human_readable defaults to true, so bare -H sets both flags. formatSize
+// still prefers the binary path; the total row must not switch to SI alone.
+test "printTotal_formatField - human_readable wins over si like formatSize" {
+    var row_buf: [32]u8 = undefined;
+    var tot_buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = true;
+    opts.si = true;
+    const row = formatSize(&row_buf, 1500, 1, opts);
+    const tot = printTotal_formatField(&tot_buf, 1500, 1, opts);
+    try testing.expectEqualStrings(row, tot);
+    try testing.expectEqualStrings("1.5K", tot);
+    opts.human_readable = false;
+    const si_only = printTotal_formatField(&tot_buf, 1500, 1, opts);
+    try testing.expectEqualStrings("1.5k", si_only);
 }
 
 test "formatSize - 1M blocks" {
