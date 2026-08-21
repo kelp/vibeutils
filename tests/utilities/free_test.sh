@@ -237,9 +237,10 @@ test_free() {
     fi
 
     # --color=always emits CSI; a default pipe does not. Scrub ambient
-    # NO_COLOR so --color=always can actually colorize.
+    # NO_COLOR and pin a capable TERM: this VM exports TERM=dumb, which
+    # must still kill color even with --color=always (unit test 5b).
     local always_out default_out
-    always_out=$(env -u NO_COLOR "$binary" --color=always 2>/dev/null)
+    always_out=$(env -u NO_COLOR TERM=xterm-256color "$binary" --color=always 2>/dev/null)
     default_out=$("$binary" 2>/dev/null)
     if [[ "$always_out" == *$'\033'* && "$default_out" != *$'\033'* ]]; then
         print_test_result "free --color=always emits CSI; default pipe does not" "PASS"
@@ -248,9 +249,9 @@ test_free() {
             "always missing ESC or default pipe leaked ESC"
     fi
 
-    # NO_COLOR wins over --color=always (ls guard).
+    # NO_COLOR wins over --color=always even with a capable TERM (ls guard).
     local nocolor_out
-    nocolor_out=$(NO_COLOR=1 "$binary" --color=always 2>/dev/null)
+    nocolor_out=$(NO_COLOR=1 TERM=xterm-256color "$binary" --color=always 2>/dev/null)
     if [[ "$nocolor_out" != *$'\033'* ]]; then
         print_test_result "free NO_COLOR overrides --color=always" "PASS"
     else
