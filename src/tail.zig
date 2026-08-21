@@ -1286,7 +1286,7 @@ fn followSet_checkNameFollow(ctx: *FollowCtx, slot: *FollowedFile) !void {
 fn followSet_handleSlot(ctx: *FollowCtx, slot: *FollowedFile) !void {
     if (!slot.active) return;
     assert(slot.file != null);
-    assert(slot.slot < follow_files_max);
+    assert(slot.slot != std.math.maxInt(u32));
     if (ctx.options.follow_retry) {
         try followSet_checkNameFollow(ctx, slot);
         if (!slot.active) return;
