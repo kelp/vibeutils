@@ -33,6 +33,12 @@
   BSD defines none (#93).
 
 ### Changed
+- **`tiger-check.sh --staged` scans the index, not the worktree.**
+  The pre-commit hook computes added lines from `git diff --cached`
+  but used to awk the on-disk file, so staging a violation and then
+  reverting the worktree made the hook report clean. Staged bytes
+  now come from `git show :path`; the reported path is unchanged
+  (#149).
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,
