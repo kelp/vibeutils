@@ -1694,6 +1694,27 @@ test "du size modes use argv last-wins order and stop at double dash" {
     for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
 }
 
+test "du size-mode scan ignores block size threshold and ignore option values" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_]struct {
+        args: []const []const u8,
+        expected: TestDuSizeKind,
+    }{
+        .{ .args = &.{ "-B1k", path }, .expected = .numeric },
+        .{ .args = &.{ "-B1K", path }, .expected = .numeric },
+        .{ .args = &.{ "-B", "1k", path }, .expected = .numeric },
+        .{ .args = &.{ "-t1k", path }, .expected = .binary_human },
+        .{ .args = &.{ "-t", "1k", path }, .expected = .binary_human },
+        .{ .args = &.{ "-Ifoo-k", path }, .expected = .binary_human },
+    };
+    for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
+}
+
 test "parseBlockSize - pure numeric" {
     try testing.expectEqual(@as(?u64, 512), parseBlockSize("512"));
     try testing.expectEqual(@as(?u64, 1024), parseBlockSize("1024"));

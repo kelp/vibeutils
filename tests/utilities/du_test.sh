@@ -75,6 +75,12 @@ test_du() {
     check_du_size_mode "du --block-size 1 overrides human default" numeric --block-size 1
     check_du_size_mode "du -B 1 overrides human default" numeric -B 1
     check_du_size_mode "du -B1 overrides human default" numeric -B1
+    check_du_size_mode "du -B1k keeps custom block size numeric" numeric -B1k
+    check_du_size_mode "du -B1K keeps custom block size numeric" numeric -B1K
+    check_du_size_mode "du -B 1k keeps custom block size numeric" numeric -B 1k
+    check_du_size_mode "du -t1k ignores threshold value for size mode" binary -t1k
+    check_du_size_mode "du -t 1k ignores threshold value for size mode" binary -t 1k
+    check_du_size_mode "du -Ifoo-k ignores pattern for size mode" binary -Ifoo-k
     check_du_size_mode "du --si uses decimal suffix" si --si
     check_du_size_mode "du -h -k uses last size mode" numeric -h -k
     check_du_size_mode "du -k -h uses last size mode" binary -k -h
