@@ -9705,3 +9705,45 @@ test "find #180: invalid -maxdepth before --help is not help" {
     try testing.expect(std.mem.find(u8, err, "-maxdepth") != null);
     try testing.expect(std.mem.find(u8, err, "foo") != null);
 }
+
+// GNU findutils 4.9: `--help` as a `-name` pattern is not a help
+// option. The later `-maxdepth 1` still applies, so a file named
+// `--help` under `sub/deep` is not listed.
+test "find #181: -name --help -maxdepth 1 stays at depth 1" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root_help = try tmp.dir.createFile(testing.io, "--help", .{});
+    root_help.close(testing.io);
+    try tmp.dir.createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    try sub.createDir(testing.io, "deep", .default_dir);
+    var deep = try sub.openDir(testing.io, "deep", .{});
+    const deep_help = try deep.createFile(testing.io, "--help", .{});
+    deep_help.close(testing.io);
+    deep.close(testing.io);
+    sub.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "--help", "-maxdepth", "1" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "--help") != null);
+    try testing.expect(std.mem.find(u8, out, "deep") == null);
+}
