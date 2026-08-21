@@ -60,6 +60,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "dd", .path = "src/dd.zig", .needs_libc = true, .description = "Convert and copy a file" },
     .{ .name = "find", .path = "src/find.zig", .needs_libc = true, .description = "Search for files in a directory hierarchy", .c_sources = &.{"src/regex_alloc.c"} },
     .{ .name = "grep", .path = "src/grep.zig", .needs_libc = true, .description = "Print lines that match patterns", .c_sources = &.{"src/regex_alloc.c"} },
+    .{ .name = "tree", .path = "src/tree.zig", .needs_libc = true, .description = "List contents of a directory in a tree-like format" },
 };
 
 /// Parse version from ZON content string
