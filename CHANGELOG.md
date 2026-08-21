@@ -123,7 +123,10 @@
   token is a date string. A leftover non-`+` positional after `--date`
   or `-r` is GNU "lacks a leading '+'". After a find start path, `--`
   is an unknown predicate (`find . -- --help`); `--help` in predicate
-  position still prints help (`find . -name -- --help`) (#159).
+  position still prints help (`find . -name -- --help`). Walker
+  globals `-depth`/`-d`/`-xdev`/`-mount`/`-follow` are captured
+  only as sequential primaries, so a token that is a primary
+  argument (`find DIR -exec true -depth \;`) does not flip them (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not

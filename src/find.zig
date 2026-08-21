@@ -691,53 +691,6 @@ fn parseArgs_collectLeadingGlobals(
     return expr_start;
 }
 
-/// Pre-scan expression args for depth-first/xdev globals (`-depth`/`-d`/
-/// `-xdev`/`-mount` and the readdir-race no-ops). `-maxdepth`/`-mindepth`
-/// are captured during sequential expression parse so `--help` ordering
-/// and predicate arguments stay GNU-correct.
-fn parseArgs_prescanDepthGlobals(
-    args: []const []const u8,
-    expr_start: usize, // tiger:allow:usize-arch slice index cursor; Zig indexing requires usize
-    flags: *GlobalFlags,
-) void {
-    assert(expr_start <= args.len);
-    var i: usize = expr_start; // tiger:allow:usize-arch slice index cursor
-    while (i < args.len) {
-        if (std.mem.eql(u8, args[i], "-depth")) {
-            // Check if next arg is numeric: -depth N (exact depth match, not depth-first)
-            if (i + 1 < args.len) {
-                if (std.fmt.parseInt(u32, args[i + 1], 10)) |_| {
-                    // -depth N: exact depth matching, skip (handled by parsePrimary)
-                    i += 2;
-                } else |_| {
-                    // -depth without numeric arg: depth-first mode
-                    flags.depth_first = true;
-                    i += 1;
-                }
-            } else {
-                flags.depth_first = true;
-                i += 1;
-            }
-        } else if (std.mem.eql(u8, args[i], "-d")) {
-            flags.depth_first = true;
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "-xdev") or std.mem.eql(u8, args[i], "-mount")) {
-            flags.xdev = true;
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "-ignore_readdir_race") or
-            std.mem.eql(u8, args[i], "-noignore_readdir_race") or
-            std.mem.eql(u8, args[i], "-noleaf"))
-        {
-            // Accept as no-ops
-            i += 1;
-        } else {
-            i += 1;
-        }
-    }
-    assert(i == args.len);
-    assert(i >= expr_start);
-}
-
 /// Wrap an expression with an implicit -print action via an AND node, matching
 /// find's default behavior when the expression contains no explicit action.
 fn parseArgs_wrapImplicitPrint(allocator: Allocator, final_expr: *Expression) !*Expression {
@@ -783,10 +736,9 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     }
     assert(start_paths.items.len >= 1);
 
-    // Pre-scan for global options within expression args.
-    parseArgs_prescanDepthGlobals(args, expr_start, &flags);
-
-    // Parse expression tree
+    // Parse expression tree. Walker globals that also appear as
+    // primaries (`-depth`/`-d`/`-xdev`/`-follow`) are captured in
+    // parsePrimary so a token that is a primary argument cannot flip them.
     var pos: usize = expr_start;
     var has_action = false;
     var pctx = ParseContext{
@@ -804,14 +756,6 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     // If -delete is used, enable depth-first
     if (exprContainsDelete(final_expr)) {
         flags.depth_first = true;
-    }
-
-    // -follow in expression position also enables symlink following
-    for (args[expr_start..]) |a| {
-        if (std.mem.eql(u8, a, "-follow")) {
-            flags.follow_symlinks = true;
-            break;
-        }
     }
 
     // If no action, wrap with implicit -print
@@ -1228,7 +1172,8 @@ fn parsePrimary_takeDepth(
 
 /// Handle global-option and accepted-no-op predicates: -maxdepth/-mindepth,
 /// -depth, -d, -follow, -ignore_readdir_race, -noignore_readdir_race, -noleaf.
-/// Returns null when `arg` is not one of these (fall through to next group).
+/// `-depth`/`-d`/`-follow` set walker flags here so a token that is a
+/// primary argument cannot. Returns null when `arg` is none of these.
 fn parsePrimary_globalsAndNoops(
     allocator: Allocator,
     args: []const []const u8,
@@ -1247,24 +1192,31 @@ fn parsePrimary_globalsAndNoops(
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
     if (std.mem.eql(u8, arg, "-depth")) {
-        // Check if next arg is numeric: -depth N (exact depth matching)
+        // Numeric next arg: exact-depth primary. Otherwise: post-order walk.
         if (pos.* + 1 < args.len) {
             if (std.fmt.parseInt(u32, args[pos.* + 1], 10)) |n| {
                 pos.* += 2;
                 return allocExpr(allocator, .depth_n, .{ .depth_val = n });
             } else |_| {}
         }
-        // Non-numeric or no argument: depth-first mode (already handled in parseArgs)
         pos.* += 1;
+        pctx.flags.depth_first = true;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
-    if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "-follow") or
-        std.mem.eql(u8, arg, "-ignore_readdir_race") or
+    if (std.mem.eql(u8, arg, "-d")) {
+        pos.* += 1;
+        pctx.flags.depth_first = true;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-follow")) {
+        pos.* += 1;
+        pctx.flags.follow_symlinks = true;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-ignore_readdir_race") or
         std.mem.eql(u8, arg, "-noignore_readdir_race") or
         std.mem.eql(u8, arg, "-noleaf"))
     {
-        // -follow in expression position (deprecated GNU/macOS form); the
-        // others are accepted no-ops.
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
@@ -1647,6 +1599,7 @@ fn parsePrimary_actions(
     }
     if (std.mem.eql(u8, arg, "-xdev") or std.mem.eql(u8, arg, "-mount")) {
         pos.* += 1;
+        pctx.flags.xdev = true;
         return allocExpr(allocator, .xdev, .{ .none = {} });
     }
     return null;
