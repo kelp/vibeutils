@@ -151,6 +151,10 @@ run_preflight() {
         "$FIXTURES/stub-flag/positive-short0" \
         "$FIXTURES/stub-flag/negative-short0" \
         src/longly/helper.zig "opts.unread_flag"
+    require_one_added_line_dirs "stub-flag/oneline" \
+        "$FIXTURES/stub-flag/positive-oneline" \
+        "$FIXTURES/stub-flag/negative-oneline" \
+        src/onely/helper.zig "opts.unread_flag"
 
     # toothless-assert flips one line rather than adding one.
     require_single_differing_file toothless-assert tests/utilities/toothy_test.sh
@@ -562,6 +566,24 @@ test_stub_flag_multiline_init_read() {
         "$FIXTURES/stub-flag/negative-method-init" stub-flag
 }
 
+test_stub_flag_oneline_method_unread() {
+    echo -e "${CYAN}Testing stub-flag after a one-line method...${NC}"
+    # unread_flag is declared AFTER `pub fn ping() void {}` in OnelyArgs.
+    # classify() sets in_sfn on that method; braces net to zero so
+    # sfn_entered never trips and the field is not harvested. It must
+    # still be reported as a stub.
+    expect_one_new_finding "stub-flag oneline method unread" \
+        "$FIXTURES/stub-flag/positive-oneline" stub-flag \
+        "src/onely/main.zig::unread_flag" 0
+}
+
+test_stub_flag_oneline_method_read() {
+    echo -e "${CYAN}Testing stub-flag after a one-line method that is read...${NC}"
+    # Same one-line method shape, but helper.zig reads opts.unread_flag.
+    expect_no_findings "stub-flag oneline method read" \
+        "$FIXTURES/stub-flag/negative-oneline" stub-flag
+}
+
 test_unscannable() {
     echo -e "${CYAN}Testing unscannable...${NC}"
     # An unscannable unit is counted in total and new, so a unit that stops
@@ -746,6 +768,8 @@ main() {
     test_stub_flag_argparse_short0_unread
     test_stub_flag_argparse_short0_read
     test_stub_flag_multiline_init_read
+    test_stub_flag_oneline_method_unread
+    test_stub_flag_oneline_method_read
     test_parse_only_test
     test_unscannable
     test_check_selection_excludes
