@@ -100,7 +100,9 @@ combined summary at the end (Baker). A file operand is a
 single-node tree (just the name). Trust the OS; no `../`
 theater.
 
-Skip `.` and `..`. Skip other `.*` names unless `-a`.
+Skip `.` and `..`. Skip other `.*` names unless `-a`. A
+hidden directory skipped this way is `pruneCurrent()`'d so
+visible descendants under `.hidden/` do not leak.
 
 ### Flags (this slice)
 
@@ -112,17 +114,18 @@ Implement every TODO box this slice even though CLAUDE MUST
 
 | Flag | Tier | Behavior |
 |------|------|----------|
-| `-L N` / `--level=N` | SHOULD | Depth cap via `pruneCurrent`; see above. |
-| `-d` / `--directories-only` | SHOULD | Directories only. |
-| `-I PATTERN` / `--ignore=PATTERN` | SHOULD | Cumulative ignore; `\|` alternation; prune matching dirs. Repeatable. |
-| `-a` / `--all` | SHOULD | Include `.*` names. Needed so the Baker hidden default is usable. |
+| `-L N` | SHOULD | Depth cap via `pruneCurrent`; see above. `-L 0` is a house deviation: Baker 2.x rejects it, we emit only the operand. |
+| `--level=N` | KEEP | Long alias of `-L`. |
+| `-d` | SHOULD | Directories only. |
+| `--directories-only` | KEEP | Long alias of `-d`. |
+| `-I PATTERN` | SHOULD | Cumulative ignore; `\|` alternation; prune matching dirs. Repeatable. |
+| `--ignore=PATTERN` | KEEP | Long alias of `-I` (house style: every flag has a long spelling). |
+| `-a` | SHOULD | Include `.*` names. Needed so the Baker hidden default is usable. |
+| `--all` | KEEP | Long alias of `-a`. |
 | `--color=WHEN` | KEEP | `always`/`auto`/`never`. Default `auto`. Not Baker `-C`/`-n`. |
 | `--icons=WHEN` | KEEP | `always`/`auto`/`never`. `common.icons`. |
 | `--help` / `-h` | KEEP | Help. Baker `-h` is human sizes; we do not implement that. |
 | `--version` / `-V` | KEEP | Version (vibeutils `-V`). |
-
-`--level`, `--directories-only`, `--ignore`, `--all` are
-KEEP long spellings required by man-page house style.
 
 ### Summary
 
@@ -186,7 +189,9 @@ fields. `common.env.test_overrides` for env, not libc
 1. Bare `tree DIR`: root name, sorted children, `├──` /
    `└──` / `│` topology, hidden `.dot` absent, summary
    `1 directory, N files` (or the fixture's counts).
-2. `-a` includes `.dot`.
+2. `-a` includes `.dot`. Without `-a`, a hidden directory
+    with a visible descendant is omitted **and** the
+    descendant does not leak (`pruneCurrent`).
 3. `-d`: directories only; summary is `N directories` with
    no file clause.
 4. `-L 1` on a deeper tree **succeeds** and omits
@@ -196,6 +201,9 @@ fields. `common.env.test_overrides` for env, not libc
 7. `-I '*.log'` excludes matching basenames and prunes a
    matching directory.
 8. Repeated `-I skipme -I '*.log'` excludes both.
+8b. `--ignore=skipme` same as `-I skipme`. `--level=1`
+    same as `-L 1`. `--directories-only` same as `-d`.
+    `--all` same as `-a`.
 9. `-I 'skipme|*.log'` same as two alternatives.
 10. Last remaining sibling gets `└──` when the
     alphabetically last child is excluded by `-I` or `-d`.
@@ -205,9 +213,17 @@ fields. `common.env.test_overrides` for env, not libc
 13. `--color=never`: no ESC. `--color=always` with `NO_COLOR`
     set: no ESC. `--icons=always` with `NO_COLOR`: icon
     present, no color.
+13b. Positive color: `--color=always` with `NO_COLOR`
+    **unset** and `TERM` not `dumb` emits an ESC sequence
+    for at least one file type (directory vs regular).
+    Positive icons: `--icons=always` maps at least two
+    kinds (directory vs regular file) to different
+    `common.icons` glyphs.
 14. `--help` / `--version` / unknown flag / invalid
     `--color`/`--icons` exit codes.
 15. Nonexistent operand: stderr, nonzero, no Zig error names.
+15b. Unreadable directory operand (chmod 000, skip when
+    euid 0): stderr, nonzero, no Zig error names.
 16. Directory symlink: listed, not followed.
 
 Prove RED before GREEN. Test-writer does not edit production;
@@ -246,3 +262,11 @@ Baker-2.x summary; SHOULD/KEEP tiers; `ls` color/icon
 precedence; expanded RED tests. Long aliases stay KEEP
 house style (GPT asked to drop them; man-page house style
 requires a long spelling).
+
+Round 2 (`b4c4d45`): Fable APPROVE (non-blocking: record
+`-L 0` house deviation in the matrix). GPT REQUEST CHANGES:
+split long aliases to KEEP rows + RED tests; positive
+color/icon tests with `NO_COLOR` unset; prune hidden dirs
+with visible descendants; unreadable-root preflight test.
+This revision applies those four plus the `-L 0` matrix
+note. Grok round 2 was still running at plan-edit time.
