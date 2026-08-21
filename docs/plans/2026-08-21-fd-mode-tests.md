@@ -207,10 +207,14 @@ TDD split (test-writer ≠ implementer):
 
    - Coverage oracle: empty fixture table → RED.
    - Append assertion: point the harness at a
-     known-bad command that `lseek(0)` then writes
-     over the seed (a one-off Python snippet, never
-     committed). Confirm RED (file no longer starts
-     with `EXISTING\n`). Point it at real `echo
+     known-bad command that clobbers the seed through
+     a **new** open file description **without**
+     `O_APPEND` (reopen the path `O_RDWR`, or
+     `fcntl` to drop `O_APPEND` then `lseek(0)` and
+     write). A naive `lseek(0)` on the inherited
+     `>> file` fd still appends on Linux and is not
+     RED. Confirm the file no longer starts with
+     `EXISTING\n`. Point the harness at real `echo
      fd-mode` → GREEN.
    - Stderr dual-append: same seek-0 overwrite on a
      command that writes stderr, for `>> file 2>&1`.
