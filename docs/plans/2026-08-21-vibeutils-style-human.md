@@ -47,7 +47,10 @@ Add `resolveSizeMode(args)` that scans argv once with bound
 
 - Stop at `--`.
 - Short clusters: each of `h`, `k`, `m`, `g`, `b` is a size-mode
-  event (last char in the cluster wins among them).
+  event (last char in the cluster wins among them). Valued
+  `-B SIZE` / `-BSIZE` is the same event as `--block-size`
+  (`block_size.short = 'B'`). Skip the SIZE token so it is not
+  scanned as a flag.
 - Long: `--human-readable`, `--si`, `--bytes`, `--block-size=SIZE`,
   and `--block-size` followed by `SIZE` if that form is accepted
   today.
