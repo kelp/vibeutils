@@ -32,6 +32,8 @@ Feature 6 is background. The TODO boxes win when they
 are narrower: only permission-denied and directory-not-empty
 hints. Do not implement Levenshtein “did you mean”.
 
+Wrong hint is worse than none.
+
 ## In scope
 
 The two TODO boxes:
@@ -39,165 +41,202 @@ The two TODO boxes:
 1. Permission denied with an actionable hint.
 2. Directory not empty with an `rm -r` suggestion.
 
-Utilities: `rm`, `rmdir`, `cp`, and `cat` (the design
-doc’s starting set, plus `rmdir` because that is where
-`DirNotEmpty` is the primary user-facing error).
+Utilities: `rm`, `rmdir`, `cp`, and `cat`.
 
 ### When to hint
 
-Gate on **process stderr** being a TTY
-(`common.env.isTty(std.Io.File.stderr().handle)`), the
-same check `cp` already uses for overwrite hints. No
-hint when stderr is a pipe, file, or `TERM=dumb` is
-irrelevant here — dumb terminals are still TTYs; still
-hint, without requiring color.
+Use a **hint seam**, not `isTty` itself:
 
-Do not hint when `geteuid() == 0` (root bypasses DAC;
-the message would be wrong). Skip that case in tests
-with `error.SkipZigTest`.
+```zig
+pub fn stderrHintsEnabled() bool
+```
+
+Production: `common.env.isTty(std.Io.File.stderr().handle)`.
+Do not copy `std.c.isatty` (`cp` overwrite still uses
+that; leave it). `TERM=dumb` does not suppress hints
+(dumb is still a TTY).
+
+Test builds: default **off**, ignoring the process TTY,
+unless `common.env.test_stderr_hints == true`. This is
+**not** an `isTty` overlay. Color
+(`stderrSupportsColor` → `isTty`) stays independent, so
+exact-match hint tests do not grow ANSI from a flipped
+isatty. Overlay applies only to this function, not every
+fd.
+
+`geteuid() == 0` suppresses **permission** hints only
+(root bypasses DAC). `DirNotEmpty` hints still fire for
+root. Permission fixtures `SkipZigTest` when
+`geteuid() == 0`. Under fakeroot, euid is 0 and
+permission hints stay off; document that, do not special-case
+fakeroot.
 
 ### Wording (KEEP)
 
 Keep the existing GNU-shaped first clause intact. Append
-one parenthetical on the same line. Do not emit a second
-`prog: hint:` line (`printHintWithProgram` stays for the
-existing overwrite hints only).
+one parenthetical on the **same** line, including the
+leading space. `printErrorWithProgram` always adds `\n`,
+so callers pass the suffix inside the format
+(`"{s}{s}"`, `.{ gnu_clause, hint orelse "" }`). Do not
+print, then append. Do not emit a second `prog: hint:`
+line (`printHintWithProgram` stays for overwrite hints).
 
-| Error | Condition | Suffix |
-| --- | --- | --- |
-| `DirNotEmpty` | `rm` / `rmdir` (including `rm -d`) | ` (use rm -r to remove recursively)` |
-| `AccessDenied` on a path we own whose owner-write bit is off, and the failing op needs write (unlink, rmdir, truncate/create) | `(file is not writable)` |
-| `AccessDenied` on a path we own whose owner-read bit is off, and the failing op needs read (`cat`, `cp` source) | `(file is not readable)` |
+Exact suffixes (byte-for-byte):
 
-If `lstat` fails, or the uid is not ours, or the mode
-bit that matches the operation is already set (so the
-denial is a parent directory / ACL / other cause), print
-the GNU line **with no suffix**. Wrong hint is worse than
-none.
+- DirNotEmpty: ` (use rm -r to remove recursively)`
+- write-denied on a dest we own: ` (file is not writable)`
+- read-denied on a source we own: ` (file is not readable)`
 
-Examples:
+| Error | Who | Condition | Suffix |
+| --- | --- | --- | --- |
+| `DirNotEmpty` | `rm`, `rmdir` (including `rm -d`) | stderr hints enabled | ` (use rm -r to remove recursively)` |
+| `AccessDenied` | `cp` destination (create/truncate/open-write) | hints on, not root, `lstat` ok, `st_uid == euid`, owner-write bit **off** | ` (file is not writable)` |
+| `AccessDenied` | `cat` operand or `cp` source (open-read) | hints on, not root, `lstat` ok, `st_uid == euid`, owner-read bit **off** | ` (file is not readable)` |
+
+Do **not** attach a write hint to `rm` / `rmdir`
+`AccessDenied`. Unlink and `rmdir(2)` need write+search
+on the **parent**, not owner-write on the operand. An
+owned `chmod 000` file in a writable directory is
+removable; `rm` without `-f` prompts, then deletes.
+Hinting `(file is not writable)` on a parent-dir `EACCES`
+would be the wrong cause.
+
+If `lstat` fails, uid is not ours, or the mode bit that
+matches the **open** already allows the op (denial is
+parent / ACL / other), print the GNU line with **no**
+suffix.
+
+Examples (hints enabled):
 
 ```
 rmdir: failed to remove 'src': Directory not empty (use rm -r to remove recursively)
-rm: cannot remove 'readonly.txt': Permission denied (file is not writable)
+rm: cannot remove 'src': Directory not empty (use rm -r to remove recursively)
+cp: cannot create regular file 'readonly.txt': Permission denied (file is not writable)
 cat: secret.txt: Permission denied (file is not readable)
 ```
 
-Non-TTY (unit Allocating writer, pipes, integration
-without a pty):
-
-```
-rmdir: failed to remove 'src': Directory not empty
-```
+Pipes / test default (hints off): GNU line only, no `(`.
 
 ### Code shape
 
-Do not add a new `src/common/` module. Add a small helper
-next to `printErrorWithProgram` in `src/common/lib.zig`:
+No new `src/common/` module.
 
-- `pub fn actionableHint(err: anyerror, path: []const u8, op: HintOp) ?[]const u8`
-  returns a static suffix or null. `HintOp` is
-  `.read` or `.write`. `DirNotEmpty` ignores `op`.
-- Ownership/mode uses `common.file.FileInfo.lstat` and
-  `std.c.geteuid()`. Copy nothing that a later libc call
-  can clobber; uid is an integer.
+- `src/common/env.zig`: `test_stderr_hints: ?bool = null`
+  (test builds) and `stderrHintsEnabled()`. Do not change
+  `isTty`’s meaning for other fds. Add two assertions to
+  `stderrHintsEnabled` (and to `isTty` if that function is
+  touched; today it has none — do not touch it).
+- `src/common/lib.zig`: `HintOp { read, write }` and
+  `pub fn actionableHint(err: anyerror, path: []const u8, op: HintOp) ?[]const u8`
+  returning a static suffix or null. `DirNotEmpty` ignores
+  `op`. Ownership/mode via `FileInfo.lstat` + `geteuid()`.
+  No `getpwuid`. Under 70 lines, two asserts, no recursion,
+  no `@panic` on user paths.
+- Call sites: `rm.zig` / `rmdir.zig` **only** for
+  `DirNotEmpty`. `cat.zig` / `cp.zig` for `AccessDenied`
+  with the matching `HintOp`. Do not grow
+  `runCat_processFile` (already 70 lines) or
+  `removeFiles_removeOne` (already over) in place —
+  extract the diagnostic into a helper under 70 lines.
 
-Callers (`rm`, `rmdir`, `cp`, `cat`) keep their current
-format strings. After composing the GNU line they append
-`hint orelse ""` only when stderr is a TTY.
+Do not change `posixErrorString` or make
+`printErrorWithProgram` auto-append hints.
 
-Do not change `posixErrorString`. Do not change
-`printErrorWithProgram` to auto-append hints (that would
-leak into every utility).
+### Phased TDD
 
-### Tests (TDD; separate test-writer; all new behavior RED)
+The overlay and `actionableHint` do not exist yet.
+Tests that name them would fail to compile, which is
+not a valid RED.
 
-Assert emitted stderr and exit codes. Existing exact-match
-tests that run with a non-TTY process stderr stay valid
-because hints are TTY-gated on **process** stderr, not the
-test writer. Cloud CI stderr is typically not a TTY.
+1. **Seam (implementer, behavior-preserving).** Add
+   `stderrHintsEnabled` (prod = isTty(stderr); tests =
+   overlay or false) and `actionableHint` that always
+   returns null. No call-site wiring. Existing suites
+   stay GREEN. Prove the overlay with transient sabotage
+   (force `true` in a probe that expects no suffix today,
+   confirm nothing changes because the helper is unused;
+   then a tiny test that `stderrHintsEnabled()` follows
+   the overlay). Do not commit the sabotage.
+2. **Tests (test-writer).** RED on emitted stderr/exit
+   once call sites are expected to append. Fail for
+   missing suffix, not compile errors.
+3. **Wire (implementer).** Call sites + real
+   `actionableHint` logic. Same tests GREEN.
 
-To pin the positive TTY case without depending on the
-runner, add a test-only overlay on `common.env` analogous
-to `test_overrides`:
+### Tests (after the seam)
 
-- `pub var test_stderr_tty: ?bool = null` (test builds
-  only). `isTty` returns it when non-null.
-- Unit tests stage `.true` / `.false` and restore.
+Assert emitted stderr and exit codes. Stage
+`NO_COLOR=1` in overlay-true tests anyway so a future
+color leak cannot break exact match.
 
-Tests:
+1. `rmdir DIR` non-empty, overlay false/default:
+   exact GNU line, no `(`; exit 1. Characterization
+   of today’s string (sabotage-prove by mutating the
+   expected suffix).
+2. Same, overlay true: GNU line plus exact
+   ` (use rm -r to remove recursively)`; exit 1. This
+   is the DirNotEmpty RED.
+3. `rm -d DIR` non-empty, overlay true: rm’s
+   `cannot remove` line plus the same suffix.
+4. **Removed.** Do not test `rm` of `chmod 000` for a
+   write hint.
+5. Owned `chmod 000` file, `cat`, overlay true:
+   `(file is not readable)`; overlay false: no suffix.
+   Skip if root.
+6. Owned mode-0444 dest, `cp` overwrite/create, overlay
+   true: GNU create/open line plus
+   `(file is not writable)`; overlay false: no suffix.
+   Skip if root.
+7. Owned `chmod 000` source, `cp src dest`, overlay
+   true: `(file is not readable)`. Skip if root.
+8. `AccessDenied` whose operand mode already allows the
+   op (writable dest whose **parent** is 555): overlay
+   true, **no** suffix. Constructible without a foreign
+   uid. Skip if root.
+9. Integration `rmdir` / `rm -d` on a non-empty dir
+   (piped stderr): no parenthetical.
 
-1. `rmdir DIR` on a non-empty dir, overlay false: exact
-   GNU line, no `(`; exit 1.
-2. Same, overlay true: GNU line plus
-   ` (use rm -r to remove recursively)`; exit 1.
-3. `rm -d DIR` on a non-empty dir, overlay true: same
-   suffix on rm’s `cannot remove` line.
-4. Owned `chmod 000` file, `rm` without `-f` overlay
-   true: Permission denied plus
-   `(file is not writable)`. Overlay false: no suffix.
-   Skip if `geteuid() == 0`.
-5. Owned `chmod 000` file, `cat` overlay true:
-   `(file is not readable)`. Skip if root.
-6. `AccessDenied` on a path we do **not** own (or whose
-   owner-write bit is already on): overlay true, **no**
-   suffix. Skip if we cannot construct that fixture.
-7. Integration `rmdir` / `rm -d` on a non-empty dir
-   (piped stderr): no parenthetical. Existing
-   `rmdir_test.sh` substring checks stay green.
-
-Do not rewrite existing assertions that pin the GNU
-prefix.
+Do not rewrite existing GNU-prefix assertions.
 
 ## Out of scope
 
 - `### 6` progress bars
 - `### 4` `du` relative color
-- Fuzzy “did you mean” / Levenshtein
-- `printHintWithProgram` rewrite
-- New flags
-- Hints on other utilities (`mv`, `mkdir`, `touch`, …)
-- Changing exit codes
-- Man-page HISTORY
-- `## Bugs` ls-pipe
-- Testing-improvement headings
+- Fuzzy “did you mean”
+- `printHintWithProgram` rewrite / `cp` overwrite isatty
+- Permission hints on `rm`/`rmdir` `AccessDenied`
+- New flags; other utilities (`mv`, `mkdir`, `touch`)
+- Exit codes; fakeroot-specific DAC
+- `## Bugs` ls-pipe; testing-improvement headings
 
 ## Spec impact
 
-No flag-matrix edit. This is KEEP house wording on
-existing diagnostics. Mention in `CHANGELOG.md`
-Unreleased. Check both boxes under `### 7`. Optional
-one-line note in `man/man1/rm.1` and `man/man1/rmdir.1`
-that TTY stderr may append a suggestion; skip if
-reviewers prefer changelog-only.
+No flag-matrix edit. KEEP house wording. `CHANGELOG.md`
+Unreleased. Check both `### 7` boxes. One-line
+DIAGNOSTICS note in `man/man1/rm.1`, `rmdir.1`, `cp.1`,
+and `cat.1` that TTY stderr may append a suggestion.
+No HISTORY.
 
 ## Risks
 
 - Filter-stdin: none.
-- Privileged: permission tests must skip as root
-  (`geteuid() == 0`).
-- macOS: `st_uid` compare uses the integer; no
-  `getpwuid` string. Mode bits via `FileInfo`.
-- `src/common/` boundary: helper in `lib.zig` plus a
-  test overlay on `env.zig`. No new module.
-- Tiger Style: helper under 70 lines; two asserts;
-  no recursion. `actionableHint` must not `@panic` on
-  user paths.
-- Existing tests: TTY-off is the default in CI, so
-  exact GNU matches should not break. Overlay restore
-  is mandatory in every test (`defer`).
-- Wrong hint on `EACCES` from a missing search bit on
-  a parent: the lstat-of-the-operand check refuses to
-  hint when the operand’s own mode already allows the
-  op. If lstat itself gets `AccessDenied`, return null.
+- Privileged: permission tests skip as root.
+- macOS: integer `st_uid` / mode; no `getpwuid`.
+- `src/common/` : helper in `lib.zig`, seam in `env.zig`.
+- Tiger: extract before growing 70-line functions.
+- Existing tests: default overlay off, so GNU exact
+  matches stay. Restore overlay with `defer`.
+- Parent `EACCES` vs file mode: test 8 locks the
+  no-suffix rule.
 
 ## Implementation order after plan consensus
 
-1. Test-writer adds RED unit + integration coverage.
-2. Prove RED (missing suffix / unexpected suffix), not
-   compile errors.
-3. Separate implementer lands the helper and call sites.
-4. `just fmt-check`, `zig build test -Dtest-util=rm`,
-   `-Dtest-util=rmdir`, `-Dtest-util=cp`, `-Dtest-util=cat`,
-   `just it-util rmdir`, `just it-util rm`,
-   `scripts/audit-check.sh`, `scripts/tiger-check.sh --base github/main`.
+1. Seam commit (implementer).
+2. RED tests (test-writer).
+3. Wire hints (implementer).
+4. `just fmt-check`; `zig build test -Dtest-util=` rm,
+   rmdir, cp, cat, and common if `lib.zig`/`env.zig`
+   tests live there; `just it-util rmdir`; `just it-util rm`;
+   `just it-util cp`; `just it-util cat`;
+   `scripts/audit-check.sh`;
+   `scripts/tiger-check.sh --base github/main`.
