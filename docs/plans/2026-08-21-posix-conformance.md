@@ -84,6 +84,53 @@ REQUEST CHANGES. Decisions, recorded here:
    The `just test-posix-io` recipe may be test-writer
    or implementer; do not require it before it exists.
 
+## Review revision (round 3)
+
+Sol still REQUEST CHANGES after round 2; Grok and Fable
+APPROVE. Decisions:
+
+1. **`env` wait-test (test-writer, inline).**
+   `env -v -i $BIN_DIR/sleep 5` writes
+   `env: clearing environment\n` then waits for the
+   child. Current `main`: 8KB-buffered stderr is held
+   until `runEnv` returns (after exec/spawn wait), so
+   a 2s `select` sees `stderr_bytes=b''` while the
+   process is still running. Confirmed 2026-08-21.
+   Same accumulate-until-marker rules as cat
+   (`clearing environment`). This is the independent
+   behavioral tooth for `env.zig`'s custom `main()`.
+   The source lint remains a mechanical extra, not
+   the RED/GREEN proof.
+2. **No `trap EXIT` inside `test_posix_io`.** That
+   would replace `cleanup_test_session`'s EXIT trap.
+   Create scratch, run contracts, `rm -rf` the
+   scratch at the function's single exit (including
+   after recorded FAILs). The runner still wipes
+   `$TEMP_DIR` in `cleanup_test_session`.
+3. **Negative controls (test-writer oracle):**
+   - `posix_io_has_fixture __posix_io_not_a_util__`
+     must return nonzero.
+   - Append assertion teeth: seed a file, run
+     `$BIN_DIR/echo posix-io > file` (truncate, not
+     `>>`), confirm the seed-prefix `cmp` **fails**.
+     That is portable, production-untouched sabotage
+     of the observation, not `.writer()`.
+   - Closed-pipe hang tooth: `run_with_limit 1` on
+     unbounded `yes` with stdout held open and never
+     read must return 124. Proves a yes that ignored
+     EPIPE would fail the suite.
+4. **Wait-test order.** Run both inline wait-tests
+   (cat, env) **before** `source posix_io.sh`, so a
+   missing harness cannot skip them under `set -e`.
+5. **Helper call sites are three:** `utilityMain`
+   success, `utilityMain` arg-failure, `env.zig`
+   `main()`. Buffer local is `var buf: [0]u8 = .{};`
+   passed as `&buf` to a helper taking `*[0]u8`.
+   Lint needles: `stderr_buffer: [8192]`,
+   `stderr_buf: [256]`, raw
+   `.stderr().writerStreaming(` in those two files
+   that is not the helper.
+
 ## Classification
 
 Mostly test infrastructure. One production behavior
@@ -150,10 +197,11 @@ Scratch lives under `$TEMP_DIR/posix_io_scratch`.
 That directory name must **not** contain a utility
 name. Dest files inside it are `append`, `seed`,
 `help.out`, never `*dirname*` / `*pwd*` / `*touch*`
-/ `*wc*` / `*rm*` / `*test*`. `trap` `rm -rf` the
-scratch on EXIT inside `test_posix_io` so a mid-loop
-FAIL still cleans up. `dirname_test.sh` and siblings
-fail when leftover `$TEMP_DIR` files matching
+/ `*wc*` / `*rm*` / `*test*`. Do **not** install an
+`EXIT` trap from `test_posix_io` (that would replace
+`cleanup_test_session`). `rm -rf` the scratch at the
+function's single return. `dirname_test.sh` and
+siblings fail when leftover `$TEMP_DIR` files matching
 `*<util>*` exceed a threshold.
 
 Python 3 is already required by `run_with_limit` and
@@ -282,12 +330,10 @@ pass the wait-test and hide a regression.
 **Source lint (implementer, in `lib.zig` next to the
 issue #5 `writerStreaming` scan).** Fail `zig build
 test` if `src/common/main.zig` or `src/env.zig`
-contains `stderr_buffer: [` with a positive length,
-or calls `.stderr().writerStreaming(` with a buffer
-that is not the shared helper / a `[0]u8`. This is
-the tooth for `env` (no wait-after-stderr path) and
-the mechanical guard against the flush-cheat plus a
-still-buffered writer.
+contains `stderr_buffer: [8192]`, `stderr_buf: [256]`,
+or a raw `.stderr().writerStreaming(` that is not the
+shared helper. Mechanical extra; not the RED/GREEN
+proof (the wait-tests are).
 
 **Behavioral lock (test-writer, inline in the
 oracle).** `printErrorWithProgram` does not flush.
@@ -313,9 +359,20 @@ reads stdin for `-`. Python in
 
 Do not use `rm -i`: `promptYesNo` already flushes.
 
-This wait-test is **one** representative (`cat`), not
-48. The utility-agnostic box is contracts 1, 2, 4
-plus the fixture table. Document that in
+Second wait-test, also test-writer inline, also
+before `source posix_io.sh`:
+
+`NO_COLOR=1 $BIN_DIR/env -v -i $BIN_DIR/sleep 5`
+
+Accumulate until `clearing environment` is visible
+and `poll()` is still `None`. Current `main` RED:
+`select_ready=False elapsed=2.002 still_running=True
+data=b''`. Kill the child after the assertion so the
+oracle does not wait the full 5s.
+
+These two wait-tests are the representatives, not 48.
+The utility-agnostic box is contracts 1, 2, 4 plus
+the fixture table. Document that in
 `docs/TESTING_STRATEGY.md`.
 
 ### Contract 4 — exit codes
@@ -369,13 +426,19 @@ file; implementer does not edit its assertions):
   RED, distinct from wait-test RED).
 - Require `posix_io_has_fixture NAME` for every parsed
   name.
-- Run the **inline** cat wait-test (does not need the
-  harness; still runs if sourcing fails after the
-  wait-test, or run the wait-test first).
+- Run the **inline** cat and env wait-tests **before**
+  `source posix_io.sh`.
+- `posix_io_has_fixture __posix_io_not_a_util__` is
+  nonzero (negative control).
+- Append clobber control: `$BIN_DIR/echo posix-io >`
+  a seeded file; seed-prefix `cmp` must fail.
+- Closed-pipe hang control: `run_with_limit 1` on
+  unbounded `yes` with stdout held open must return
+  124.
 - Call implementer API for echo/true append, yes
   closed-pipe, and the exit table.
 - `MIN_ASSERTIONS` high enough that an empty harness
-  cannot tally green **and** that skipping the
+  cannot tally green **and** that skipping either
   wait-test cannot tally green.
 
 ### Implementer API (`tests/lib/posix_io.sh`)
