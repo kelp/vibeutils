@@ -198,9 +198,10 @@ exposes `realPath` / `realPathFile` that do not use fd-to-path.
 Production `realpath` / `readlink` / `ln` fall back to libc
 `realpath(3)`. `lookupUserName` / `lookupGroupName` call
 `getpwuid` / `getgrgid` on every Unix host, not only Linux
-and macOS. `free` uses `totalSystemMemory` for RAM; page
-counts use `sysctlbyname` only on FreeBSD/NetBSD (OpenBSD
-libc has no `sysctlbyname`). `ln` hard-link tests join
-`TestDir.getBasePath()` instead of `Dir.realPathFileAlloc`.
+and macOS. `free` uses `totalSystemMemory` for RAM, then
+real page counts: FreeBSD `sysctlbyname`, OpenBSD
+`CTL_VM`/`VM_UVMEXP`, NetBSD `CTL_VM`/`VM_UVMEXP2`. `ln`
+hard-link tests join `TestDir.getBasePath()` instead of
+`Dir.realPathFileAlloc`.
 `dfMountOsSupported` is called from the production mount
 dispatch so audit does not treat it as test-only.

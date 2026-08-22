@@ -216,11 +216,10 @@
   libc `realpath(3)` of the path string.
 - **`free` reports memory on FreeBSD, OpenBSD, and NetBSD.** Those
   hosts have no `/proc/meminfo`. Total RAM comes from
-  `std.process.totalSystemMemory` (OpenBSD uses `CTL_HW` +
-  `HW_PHYSMEM64`; the others use `sysctlbyname`). Page counts and
-  swap are FreeBSD/NetBSD-only — OpenBSD libc has no
-  `sysctlbyname`, so unknown breakdowns stay zero instead of
-  reporting used=0.
+  `std.process.totalSystemMemory`. Page counts and swap are read
+  from each OS's own interface: FreeBSD `sysctlbyname`
+  (`vm.stats.vm.*`), OpenBSD numeric `sysctl` `CTL_VM`/`VM_UVMEXP`,
+  NetBSD `CTL_VM`/`VM_UVMEXP2`. OpenBSD libc has no `sysctlbyname`.
 - **User and group names resolve on BSD.** `getUserName` /
   `getGroupName` only called `getpwuid` / `getgrgid` on Linux and
   macOS, so `ls -l`, `stat %G`, and `find -group` printed raw ids
