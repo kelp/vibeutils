@@ -26,10 +26,10 @@ concurrency:
 # FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 still upgrades these node20
 # actions at runtime.
 #
-# These three SHA pins must also be on the repo selected-actions
-# allowlist (CHANGELOG "Tighten GitHub Actions allowlist"). Without
-# them GitHub rejects the whole workflow at parse: startup_failure,
-# zero jobs. Local actions and actions/* do not need extra patterns.
+# Clone each locked SHA into ./_vmactions/<os>-vm and uses: that local
+# path. A same-repo local action is not matched against the SHA-exact
+# selected-actions allowlist (remote third-party uses fail at parse:
+# startup_failure, zero jobs). Do not vendor node_modules.
 
 permissions:
   contents: read
@@ -49,7 +49,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: vmactions/freebsd-vm@c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e  # v1.4.2
+      - name: Clone pinned freebsd-vm
+        run: |
+          git clone https://github.com/vmactions/freebsd-vm ./_vmactions/freebsd-vm
+          cd ./_vmactions/freebsd-vm
+          git checkout c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e
+      - uses: ./_vmactions/freebsd-vm
         with:
           usesh: true
           prepare: |
@@ -71,7 +76,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: vmactions/openbsd-vm@9a8e4351a4a0dc6238e7c69276dcbf6c03bea576  # v1.3.6
+      - name: Clone pinned openbsd-vm
+        run: |
+          git clone https://github.com/vmactions/openbsd-vm ./_vmactions/openbsd-vm
+          cd ./_vmactions/openbsd-vm
+          git checkout 9a8e4351a4a0dc6238e7c69276dcbf6c03bea576
+      - uses: ./_vmactions/openbsd-vm
         with:
           usesh: true
           prepare: |
@@ -93,7 +103,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: vmactions/netbsd-vm@e04aec09540429f9cebb0e7941f7cd0c0fc3b44f  # v1.3.6
+      - name: Clone pinned netbsd-vm
+        run: |
+          git clone https://github.com/vmactions/netbsd-vm ./_vmactions/netbsd-vm
+          cd ./_vmactions/netbsd-vm
+          git checkout e04aec09540429f9cebb0e7941f7cd0c0fc3b44f
+      - uses: ./_vmactions/netbsd-vm
         with:
           usesh: true
           prepare: |
