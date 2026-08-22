@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 const builtin = @import("builtin");
 const privilege_test = common.privilege_test;
@@ -1217,11 +1218,11 @@ test "privileged: applyModeSpecToFile basic functionality" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             const test_file_path = "test_file.txt";
-            const test_file = try tmp_dir.dir.createFile(testing.io, test_file_path, .{});
+            const test_file = try tmp_dir.dir().createFile(testing.io, test_file_path, .{});
             defer test_file.close(testing.io);
 
             // Test applying mode 644
@@ -1234,7 +1235,7 @@ test "privileged: applyModeSpecToFile basic functionality" {
             const mode_spec = ModeSpec{ .octal = mode };
             const options = ChmodOptions{ .verbose = true };
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(
+            const abs_path = try tmp_dir.dir().realPathFileAlloc(
                 testing.io,
                 test_file_path,
                 inner_allocator,
@@ -1266,18 +1267,18 @@ test "privileged: chmodFiles handles multiple files" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             const test_files_rel = [_][]const u8{ "file1.txt", "file2.txt" };
             var test_files_abs = try std.ArrayList([]u8).initCapacity(inner_allocator, 0);
             defer test_files_abs.deinit(inner_allocator);
 
             for (test_files_rel) |filename| {
-                const file = try tmp_dir.dir.createFile(testing.io, filename, .{});
+                const file = try tmp_dir.dir().createFile(testing.io, filename, .{});
                 file.close(testing.io);
 
-                const abs_path = try tmp_dir.dir.realPathFileAlloc(
+                const abs_path = try tmp_dir.dir().realPathFileAlloc(
                     testing.io,
                     filename,
                     inner_allocator,
@@ -1348,11 +1349,11 @@ test "privileged: chmod integration test with octal mode" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             const test_file_path = "integration_test.txt";
-            const test_file = try tmp_dir.dir.createFile(testing.io, test_file_path, .{});
+            const test_file = try tmp_dir.dir().createFile(testing.io, test_file_path, .{});
             defer test_file.close(testing.io);
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
@@ -1360,7 +1361,7 @@ test "privileged: chmod integration test with octal mode" {
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(
+            const abs_path = try tmp_dir.dir().realPathFileAlloc(
                 testing.io,
                 test_file_path,
                 inner_allocator,
@@ -1609,26 +1610,26 @@ test "privileged: recursive chmod on directory structure" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "subdir", .default_dir);
-            try tmp_dir.dir.createDir(testing.io, "subdir/deeper", .default_dir);
+            try tmp_dir.dir().createDir(testing.io, "subdir", .default_dir);
+            try tmp_dir.dir().createDir(testing.io, "subdir/deeper", .default_dir);
 
-            const test_file1 = try tmp_dir.dir.createFile(testing.io, "file1.txt", .{});
+            const test_file1 = try tmp_dir.dir().createFile(testing.io, "file1.txt", .{});
             defer test_file1.close(testing.io);
 
-            const test_file2 = try tmp_dir.dir.createFile(testing.io, "subdir/file2.txt", .{});
+            const test_file2 = try tmp_dir.dir().createFile(testing.io, "subdir/file2.txt", .{});
             defer test_file2.close(testing.io);
 
-            const test_file3 = try tmp_dir.dir.createFile(
+            const test_file3 = try tmp_dir.dir().createFile(
                 testing.io,
                 "subdir/deeper/file3.txt",
                 .{},
             );
             defer test_file3.close(testing.io);
 
-            const abs_root = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", inner_allocator);
+            const abs_root = try tmp_dir.getBasePath();
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -1663,18 +1664,14 @@ test "privileged: recursive flag processes files and directories" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "testdir", .default_dir);
-            const test_file = try tmp_dir.dir.createFile(testing.io, "testdir/test.txt", .{});
+            try tmp_dir.dir().createDir(testing.io, "testdir", .default_dir);
+            const test_file = try tmp_dir.dir().createFile(testing.io, "testdir/test.txt", .{});
             defer test_file.close(testing.io);
 
-            const abs_dir = try tmp_dir.dir.realPathFileAlloc(
-                testing.io,
-                "testdir",
-                inner_allocator,
-            );
+            const abs_dir = try tmp_dir.getPath("testdir");
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -1710,17 +1707,13 @@ test "privileged: verbose flag outputs changes" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const test_file = try tmp_dir.dir.createFile(testing.io, "test_verbose.txt", .{});
+            const test_file = try tmp_dir.dir().createFile(testing.io, "test_verbose.txt", .{});
             defer test_file.close(testing.io);
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(
-                testing.io,
-                "test_verbose.txt",
-                inner_allocator,
-            );
+            const abs_path = try tmp_dir.getPath("test_verbose.txt");
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -1761,17 +1754,13 @@ test "privileged: changes flag only outputs when mode changes" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const test_file = try tmp_dir.dir.createFile(testing.io, "test_changes.txt", .{});
+            const test_file = try tmp_dir.dir().createFile(testing.io, "test_changes.txt", .{});
             defer test_file.close(testing.io);
 
-            const abs_path = try tmp_dir.dir.realPathFileAlloc(
-                testing.io,
-                "test_changes.txt",
-                inner_allocator,
-            );
+            const abs_path = try tmp_dir.getPath("test_changes.txt");
 
             var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stdout_aw.deinit();
@@ -2179,16 +2168,16 @@ test "chmod stat AccessDenied produces correct Permission denied message" {
     // Skip if running as root (root bypasses permission checks)
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a subdirectory with a file inside
-    try tmp_dir.dir.createDir(testing.io, "noaccess", .default_dir);
-    const inner_file = try tmp_dir.dir.createFile(testing.io, "noaccess/target.txt", .{});
+    try tmp_dir.dir().createDir(testing.io, "noaccess", .default_dir);
+    const inner_file = try tmp_dir.dir().createFile(testing.io, "noaccess/target.txt", .{});
     inner_file.close(testing.io);
 
     // Get the full path to the file inside
-    const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    const dir_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(dir_path);
     const inner_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -2246,16 +2235,16 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
     // Skip if running as root (root bypasses permission checks)
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a subdirectory with a file inside
-    try tmp_dir.dir.createDir(testing.io, "noaccess", .default_dir);
-    const inner_file = try tmp_dir.dir.createFile(testing.io, "noaccess/target.txt", .{});
+    try tmp_dir.dir().createDir(testing.io, "noaccess", .default_dir);
+    const inner_file = try tmp_dir.dir().createFile(testing.io, "noaccess/target.txt", .{});
     inner_file.close(testing.io);
 
     // Get the full path to the file inside
-    const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    const dir_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(dir_path);
     const inner_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -2330,17 +2319,13 @@ test "behavioral: chmod 755 actually sets mode 0o755" {
     // Skip if running as root (root may produce different behavior)
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test755.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test755.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test755.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test755.txt");
     defer testing.allocator.free(abs_path);
 
     // Set initial mode to 0o644
@@ -2369,17 +2354,13 @@ test "behavioral: chmod 755 actually sets mode 0o755" {
 test "behavioral: chmod u+x from 644 sets mode 0o744" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_uplusx.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_uplusx.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_uplusx.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_uplusx.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2407,17 +2388,13 @@ test "behavioral: chmod u+x from 644 sets mode 0o744" {
 test "behavioral: chmod g+w from 644 sets mode 0o664" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_gplusw.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_gplusw.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_gplusw.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_gplusw.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2445,17 +2422,13 @@ test "behavioral: chmod g+w from 644 sets mode 0o664" {
 test "behavioral: chmod o-r from 644 sets mode 0o640" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_ominusr.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_ominusr.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_ominusr.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_ominusr.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2483,17 +2456,13 @@ test "behavioral: chmod o-r from 644 sets mode 0o640" {
 test "behavioral: chmod a+x from 644 sets mode 0o755" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_aplusx.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_aplusx.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_aplusx.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_aplusx.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2521,17 +2490,13 @@ test "behavioral: chmod a+x from 644 sets mode 0o755" {
 test "behavioral: chmod u=rwx,g=rx,o=r sets mode 0o754" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_complex.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_complex.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_complex.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_complex.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o000);
@@ -2559,12 +2524,12 @@ test "behavioral: chmod u=rwx,g=rx,o=r sets mode 0o754" {
 test "behavioral: chmod +t on directory sets sticky bit" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDir(testing.io, "stickydir", .default_dir);
+    try tmp_dir.dir().createDir(testing.io, "stickydir", .default_dir);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "stickydir", testing.allocator);
+    const abs_path = try tmp_dir.getPath("stickydir");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o755);
@@ -2594,17 +2559,13 @@ test "behavioral: chmod +t on directory sets sticky bit" {
 test "behavioral: chmod 4755 sets setuid bit" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_setuid.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_setuid.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_setuid.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_setuid.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2638,17 +2599,13 @@ test "behavioral: chmod -w via runChmod removes write permission" {
     // This test documents the bug and will FAIL until fixed.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_minusw.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_minusw.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_minusw.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_minusw.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
@@ -2683,16 +2640,16 @@ test "chmod: -R -P should not follow symlinks during traversal" {
     // permissions through the symlink.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create target file OUTSIDE the directory tree being chmod'd
-    const target_file = try tmp_dir.dir.createFile(testing.io, "outside_target.txt", .{});
+    const target_file = try tmp_dir.dir().createFile(testing.io, "outside_target.txt", .{});
     target_file.close(testing.io);
 
     // Create the directory to recurse into
-    try tmp_dir.dir.createDir(testing.io, "mydir", .default_dir);
-    var mydir = try tmp_dir.dir.openDir(testing.io, "mydir", .{});
+    try tmp_dir.dir().createDir(testing.io, "mydir", .default_dir);
+    var mydir = try tmp_dir.dir().openDir(testing.io, "mydir", .{});
     defer mydir.close(testing.io);
 
     // Create a regular file inside mydir
@@ -2710,23 +2667,15 @@ test "chmod: -R -P should not follow symlinks during traversal" {
         else => return,
     };
 
-    const mydir_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "mydir", testing.allocator);
+    const mydir_abs = try tmp_dir.getPath("mydir");
     defer testing.allocator.free(mydir_abs);
-    const target_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "outside_target.txt",
-        testing.allocator,
-    );
+    const target_abs = try tmp_dir.getPath("outside_target.txt");
     defer testing.allocator.free(target_abs);
 
     // Set known modes: target=0o644, regular=0o644
     try setFileModeOctal(target_abs, 0o644);
 
-    const regular_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "mydir/regular.txt",
-        testing.allocator,
-    );
+    const regular_abs = try tmp_dir.getPath("mydir/regular.txt");
     defer testing.allocator.free(regular_abs);
     try setFileModeOctal(regular_abs, 0o644);
 
@@ -2786,17 +2735,13 @@ test "symbolic: +rw without who masks bits blocked by umask 022" {
 test "behavioral: chmod -x via runChmod removes execute permission" {
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(testing.io, "test_minusx.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(testing.io, "test_minusx.txt", .{});
     test_file.close(testing.io);
 
-    const abs_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "test_minusx.txt",
-        testing.allocator,
-    );
+    const abs_path = try tmp_dir.getPath("test_minusx.txt");
     defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o755);
@@ -2841,18 +2786,18 @@ test "char: -R applies mode to every entry across a multi-level tree" {
     // their original mode.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDir(testing.io, "a", .default_dir);
-    try tmp_dir.dir.createDir(testing.io, "a/b", .default_dir);
-    try tmp_dir.dir.createDir(testing.io, "a/b/c", .default_dir);
+    try tmp_dir.dir().createDir(testing.io, "a", .default_dir);
+    try tmp_dir.dir().createDir(testing.io, "a/b", .default_dir);
+    try tmp_dir.dir().createDir(testing.io, "a/b/c", .default_dir);
 
-    const f0 = try tmp_dir.dir.createFile(testing.io, "a/top.txt", .{});
+    const f0 = try tmp_dir.dir().createFile(testing.io, "a/top.txt", .{});
     f0.close(testing.io);
-    const f1 = try tmp_dir.dir.createFile(testing.io, "a/b/mid.txt", .{});
+    const f1 = try tmp_dir.dir().createFile(testing.io, "a/b/mid.txt", .{});
     f1.close(testing.io);
-    const f2 = try tmp_dir.dir.createFile(testing.io, "a/b/c/deep.txt", .{});
+    const f2 = try tmp_dir.dir().createFile(testing.io, "a/b/c/deep.txt", .{});
     f2.close(testing.io);
 
     const paths = [_][]const u8{
@@ -2865,7 +2810,7 @@ test "char: -R applies mode to every entry across a multi-level tree" {
     };
     var abs_paths: [paths.len][:0]u8 = undefined;
     for (paths, 0..) |rel, idx| {
-        abs_paths[idx] = try tmp_dir.dir.realPathFileAlloc(testing.io, rel, testing.allocator);
+        abs_paths[idx] = try tmp_dir.dir().realPathFileAlloc(testing.io, rel, testing.allocator);
     }
     defer for (abs_paths) |p| testing.allocator.free(p);
 
@@ -2873,7 +2818,7 @@ test "char: -R applies mode to every entry across a multi-level tree" {
     // is detectable.
     for (abs_paths) |p| try setFileModeOctal(p, 0o700);
 
-    const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "a", testing.allocator);
+    const root_abs = try tmp_dir.getPath("a");
     defer testing.allocator.free(root_abs);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2917,27 +2862,19 @@ test "char: post-order applies mode to leaf, child, and parent in one run" {
     // the leaf; the leaf is a file, so restoring dir bits does not perturb it.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDir(testing.io, "parent", .default_dir);
-    try tmp_dir.dir.createDir(testing.io, "parent/child", .default_dir);
-    const leaf = try tmp_dir.dir.createFile(testing.io, "parent/child/leaf.txt", .{});
+    try tmp_dir.dir().createDir(testing.io, "parent", .default_dir);
+    try tmp_dir.dir().createDir(testing.io, "parent/child", .default_dir);
+    const leaf = try tmp_dir.dir().createFile(testing.io, "parent/child/leaf.txt", .{});
     leaf.close(testing.io);
 
-    const parent_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent", testing.allocator);
+    const parent_abs = try tmp_dir.getPath("parent");
     defer testing.allocator.free(parent_abs);
-    const child_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "parent/child",
-        testing.allocator,
-    );
+    const child_abs = try tmp_dir.getPath("parent/child");
     defer testing.allocator.free(child_abs);
-    const leaf_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "parent/child/leaf.txt",
-        testing.allocator,
-    );
+    const leaf_abs = try tmp_dir.getPath("parent/child/leaf.txt");
     defer testing.allocator.free(leaf_abs);
 
     // Directories start traversable (0o700). The leaf starts at 0o644 so the
@@ -2979,30 +2916,26 @@ test "char: -L descends symlinked directory and chmods its contents" {
     // unchanged.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Real directory outside the walked tree, containing a file.
-    try tmp_dir.dir.createDir(testing.io, "real_target", .default_dir);
-    const inside = try tmp_dir.dir.createFile(testing.io, "real_target/inside.txt", .{});
+    try tmp_dir.dir().createDir(testing.io, "real_target", .default_dir);
+    const inside = try tmp_dir.dir().createFile(testing.io, "real_target/inside.txt", .{});
     inside.close(testing.io);
 
     // The tree we walk; contains a symlink to real_target.
-    try tmp_dir.dir.createDir(testing.io, "tree", .default_dir);
-    var tree = try tmp_dir.dir.openDir(testing.io, "tree", .{});
+    try tmp_dir.dir().createDir(testing.io, "tree", .default_dir);
+    var tree = try tmp_dir.dir().openDir(testing.io, "tree", .{});
     defer tree.close(testing.io);
     tree.symLink(testing.io, "../real_target", "link_to_dir", .{}) catch |err| switch (err) {
         error.AccessDenied => return,
         else => return,
     };
 
-    const inside_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "real_target/inside.txt",
-        testing.allocator,
-    );
+    const inside_abs = try tmp_dir.getPath("real_target/inside.txt");
     defer testing.allocator.free(inside_abs);
-    const tree_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "tree", testing.allocator);
+    const tree_abs = try tmp_dir.getPath("tree");
     defer testing.allocator.free(tree_abs);
 
     try setFileModeOctal(inside_abs, 0o700);
@@ -3035,14 +2968,14 @@ test "char: -P leaves symlink target unchanged but chmods sibling files" {
     // Distinct target/sibling modes prevent a default-value trap.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(testing.io, "outside.txt", .{});
+    const target = try tmp_dir.dir().createFile(testing.io, "outside.txt", .{});
     target.close(testing.io);
 
-    try tmp_dir.dir.createDir(testing.io, "dir", .default_dir);
-    var dir = try tmp_dir.dir.openDir(testing.io, "dir", .{});
+    try tmp_dir.dir().createDir(testing.io, "dir", .default_dir);
+    var dir = try tmp_dir.dir().openDir(testing.io, "dir", .{});
     defer dir.close(testing.io);
     const sibling = try dir.createFile(testing.io, "sibling.txt", .{});
     sibling.close(testing.io);
@@ -3051,19 +2984,11 @@ test "char: -P leaves symlink target unchanged but chmods sibling files" {
         else => return,
     };
 
-    const target_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "outside.txt",
-        testing.allocator,
-    );
+    const target_abs = try tmp_dir.getPath("outside.txt");
     defer testing.allocator.free(target_abs);
-    const sibling_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "dir/sibling.txt",
-        testing.allocator,
-    );
+    const sibling_abs = try tmp_dir.getPath("dir/sibling.txt");
     defer testing.allocator.free(sibling_abs);
-    const dir_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "dir", testing.allocator);
+    const dir_abs = try tmp_dir.getPath("dir");
     defer testing.allocator.free(dir_abs);
 
     try setFileModeOctal(target_abs, 0o600);
@@ -3099,8 +3024,8 @@ test "char: deep tree (~100 levels) completes without stack overflow" {
     // per-level recursion). We verify the deepest file received the mode.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const depth: usize = 100;
 
@@ -3111,14 +3036,14 @@ test "char: deep tree (~100 levels) completes without stack overflow" {
     while (level < depth) : (level += 1) {
         if (level != 0) try path_buf.append(testing.allocator, '/');
         try path_buf.append(testing.allocator, 'd');
-        try tmp_dir.dir.createDir(testing.io, path_buf.items, .default_dir);
+        try tmp_dir.dir().createDir(testing.io, path_buf.items, .default_dir);
     }
     // Place a file at the bottom.
     try path_buf.appendSlice(testing.allocator, "/bottom.txt");
-    const bottom = try tmp_dir.dir.createFile(testing.io, path_buf.items, .{});
+    const bottom = try tmp_dir.dir().createFile(testing.io, path_buf.items, .{});
     bottom.close(testing.io);
 
-    const bottom_abs = try tmp_dir.dir.realPathFileAlloc(
+    const bottom_abs = try tmp_dir.dir().realPathFileAlloc(
         testing.io,
         path_buf.items,
         testing.allocator,
@@ -3126,7 +3051,7 @@ test "char: deep tree (~100 levels) completes without stack overflow" {
     defer testing.allocator.free(bottom_abs);
     try setFileModeOctal(bottom_abs, 0o700);
 
-    const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "d", testing.allocator);
+    const root_abs = try tmp_dir.getPath("d");
     defer testing.allocator.free(root_abs);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3162,12 +3087,12 @@ test "char: symlink cycle does not cause an infinite loop" {
     // deduping; here we lock in that -R completes and the run terminates.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-    try tmp_dir.dir.createDir(testing.io, "root/sub", .default_dir);
-    var sub = try tmp_dir.dir.openDir(testing.io, "root/sub", .{});
+    try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+    try tmp_dir.dir().createDir(testing.io, "root/sub", .default_dir);
+    var sub = try tmp_dir.dir().openDir(testing.io, "root/sub", .{});
     defer sub.close(testing.io);
     const f = try sub.createFile(testing.io, "real.txt", .{});
     f.close(testing.io);
@@ -3177,13 +3102,9 @@ test "char: symlink cycle does not cause an infinite loop" {
         else => return,
     };
 
-    const real_abs = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "root/sub/real.txt",
-        testing.allocator,
-    );
+    const real_abs = try tmp_dir.getPath("root/sub/real.txt");
     defer testing.allocator.free(real_abs);
-    const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "root", testing.allocator);
+    const root_abs = try tmp_dir.getPath("root");
     defer testing.allocator.free(root_abs);
 
     try setFileModeOctal(real_abs, 0o700);
@@ -3215,11 +3136,11 @@ test "char: wide directory - every entry receives the mode" {
     // miss some entries.
     if (std.c.getuid() == 0) return;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDir(testing.io, "wide", .default_dir);
-    var wide = try tmp_dir.dir.openDir(testing.io, "wide", .{});
+    try tmp_dir.dir().createDir(testing.io, "wide", .default_dir);
+    var wide = try tmp_dir.dir().openDir(testing.io, "wide", .{});
     defer wide.close(testing.io);
 
     const count: usize = 64;
@@ -3231,14 +3152,14 @@ test "char: wide directory - every entry receives the mode" {
         file.close(testing.io);
     }
 
-    const wide_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "wide", testing.allocator);
+    const wide_abs = try tmp_dir.getPath("wide");
     defer testing.allocator.free(wide_abs);
 
     // Set every entry to a distinct starting mode so a partial run is visible.
     idx = 0;
     while (idx < count) : (idx += 1) {
         const name = try std.fmt.bufPrint(&name_buf, "wide/f{d}.txt", .{idx});
-        const abs = try tmp_dir.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+        const abs = try tmp_dir.dir().realPathFileAlloc(testing.io, name, testing.allocator);
         defer testing.allocator.free(abs);
         try setFileModeOctal(abs, 0o700);
     }
@@ -3265,7 +3186,7 @@ test "char: wide directory - every entry receives the mode" {
     idx = 0;
     while (idx < count) : (idx += 1) {
         const name = try std.fmt.bufPrint(&name_buf, "wide/f{d}.txt", .{idx});
-        const abs = try tmp_dir.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+        const abs = try tmp_dir.dir().realPathFileAlloc(testing.io, name, testing.allocator);
         defer testing.allocator.free(abs);
         try testing.expectEqual(@as(u32, 0o750), try getFileMode(abs));
     }

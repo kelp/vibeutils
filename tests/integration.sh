@@ -52,7 +52,7 @@ print_usage() {
     echo ""
     echo "Environment Variables:"
     echo "  NO_COLOR       Set to disable colored output"
-    echo "  UTIL           Alternative way to specify utility (for Makefile)"
+    echo "  UTIL           Alternative way to specify utility (for just it-util)"
 }
 
 # Parse command line arguments
@@ -91,7 +91,7 @@ parse_arguments() {
         esac
     done
     
-    # Check for UTIL environment variable (used by Makefile)
+    # Check for UTIL environment variable (used by just it-util)
     if [[ -n "${UTIL:-}" ]] && [[ -z "$TARGET_UTILITY" ]]; then
         TARGET_UTILITY="$UTIL"
     fi
@@ -155,7 +155,7 @@ main() {
     # Verify binary directory exists
     if [[ ! -d "$BIN_DIR" ]]; then
         echo -e "${RED}Error: Binary directory not found at $BIN_DIR${NC}"
-        echo "Run 'make build' first"
+        echo "Run 'just build' first"
         exit 1
     fi
     

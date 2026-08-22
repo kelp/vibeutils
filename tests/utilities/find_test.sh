@@ -1336,4 +1336,65 @@ test_find() {
             "Expected leaf.txt in output (implicit -print), got: '$out'"
     fi
     rm -rf "$containsdelete_dir"
+
+    echo -e "${CYAN}Testing issue #159: -- end-of-options...${NC}"
+
+    # Pinned against GNU findutils 4.9.0 (`/usr/bin/find`, LC_ALL=C).
+    # `--` ends the leading -H/-L/-P options. A bare `-dashdir` is still
+    # an expression; the dash-named path is written `./-dashdir`.
+    local fopt_dir
+    fopt_dir=$(create_temp_dir)
+    create_temp_file "content" "$fopt_dir/keep.txt"
+    mkdir -- "$fopt_dir/-dashdir"
+    create_temp_file "in" "$fopt_dir/-dashdir/inside.txt"
+    create_temp_file "d" "$fopt_dir/-dashfile"
+
+    local fopt_cmd fopt_out fopt_err fopt_exit
+
+    run_command fopt_cmd fopt_out fopt_err fopt_exit \
+        env LC_ALL=C "$binary" -- "$fopt_dir"
+    if [[ $fopt_exit -eq 0 && -z "$fopt_err" && "$fopt_out" == *"keep.txt"* ]]; then
+        print_test_result "find -- before path" "PASS"
+    else
+        print_test_result "find -- before path" "FAIL" \
+            "exit=$fopt_exit out='$fopt_out' err='$fopt_err'"
+    fi
+
+    run_command fopt_cmd fopt_out fopt_err fopt_exit \
+        env LC_ALL=C "$binary" -P -- "$fopt_dir"
+    if [[ $fopt_exit -eq 0 && -z "$fopt_err" && "$fopt_out" == *"keep.txt"* ]]; then
+        print_test_result "find -- after -P" "PASS"
+    else
+        print_test_result "find -- after -P" "FAIL" \
+            "exit=$fopt_exit out='$fopt_out' err='$fopt_err'"
+    fi
+
+    run_command fopt_cmd fopt_out fopt_err fopt_exit \
+        bash -c "cd '$fopt_dir' && LC_ALL=C '$binary' --"
+    if [[ $fopt_exit -eq 0 && -z "$fopt_err" && "$fopt_out" == *"keep.txt"* ]]; then
+        print_test_result "find -- alone searches cwd" "PASS"
+    else
+        print_test_result "find -- alone searches cwd" "FAIL" \
+            "exit=$fopt_exit out='$fopt_out' err='$fopt_err'"
+    fi
+
+    run_command fopt_cmd fopt_out fopt_err fopt_exit \
+        env LC_ALL=C "$binary" -- --
+    if [[ $fopt_exit -eq 1 && -z "$fopt_out" && "$fopt_err" == *"unknown predicate"* && "$fopt_err" == *"--"* ]]; then
+        print_test_result "find doubled -- is unknown predicate" "PASS"
+    else
+        print_test_result "find doubled -- is unknown predicate" "FAIL" \
+            "exit=$fopt_exit out='$fopt_out' err='$fopt_err'"
+    fi
+
+    run_command fopt_cmd fopt_out fopt_err fopt_exit \
+        bash -c "cd '$fopt_dir' && LC_ALL=C '$binary' -- ./-dashdir"
+    if [[ $fopt_exit -eq 0 && -z "$fopt_err" && "$fopt_out" == *"inside.txt"* ]]; then
+        print_test_result "find -- ./dash-dir lists dash-named tree" "PASS"
+    else
+        print_test_result "find -- ./dash-dir lists dash-named tree" "FAIL" \
+            "exit=$fopt_exit out='$fopt_out' err='$fopt_err'"
+    fi
+
+    rm -rf "$fopt_dir"
 }

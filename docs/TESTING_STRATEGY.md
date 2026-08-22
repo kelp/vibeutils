@@ -187,20 +187,23 @@ make test-privileged-local
 
 ### File System Testing
 
-Use temporary directories for isolation:
+Use `common.test_dir.TestDir` for isolation. Pass absolute
+paths from `getPath` / `getBasePath` into the utility under
+test so parallel tests do not share a process cwd. Use
+`join` for a dest that does not exist yet (`getPath`
+realpaths and fails if the name is missing).
 
 ```zig
 test "file operations" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    
-    const tmp_path = try tmp_dir.dir.realpathAlloc(
-        testing.allocator, "."
-    );
-    defer testing.allocator.free(tmp_path);
-    
+    const TestDir = common.test_dir.TestDir;
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("test.txt", "content", null);
+    const path = try test_dir.getPath("test.txt");
+    defer testing.allocator.free(path);
+
     // Perform file operations in isolated directory
-    try tmp_dir.dir.writeFile("test.txt", "content");
 }
 ```
 
@@ -449,6 +452,27 @@ test "utility test" {
     return error.SkipZigTest;
 }
 ```
+
+## File Descriptor Mode Tests
+
+Issue #5 was `File.writer()` seeking to offset 0 and
+ignoring `O_APPEND`. A source grep in `src/common/lib.zig`
+and one `echo` case are not enough for the next utility
+that grows its own `main()`.
+
+`tests/lib/fd_modes.sh` runs every `build/utils.zig` binary
+under `>> file`, `| cat`, `> file`, `2>&1 >> file`, and
+`>> file 2>&1`. A missing fixture is FAIL. Default argv is
+`--help` with stdin `/dev/null`; locked rows (echo, true,
+false, test, `[`, yes, sleep) are in that file.
+
+`tests/tools/fd_modes_test.sh` is the coverage oracle
+(`just test-fd-modes`, and `just it` via
+`run_all_utility_tests`). Do not add
+`tests/utilities/fd_modes_test.sh`.
+
+When adding a utility, add a `fd_modes_has_fixture` row
+in the same change.
 
 ## Coverage Guidelines
 
