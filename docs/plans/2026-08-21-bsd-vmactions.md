@@ -189,3 +189,15 @@ SkipZigTest,” which contradicted diagnose-and-fix.
 Round 4 (this revision): that In-scope sentence now matches
 r3. Zig only to fix a guest-named portability bug, never to
 insert `SkipZigTest`.
+
+Round 5 (guest diagnosis, 24c0312 / 3032793): OpenBSD and
+NetBSD `zig build test` failed hundreds of tests at Zig
+`Dir.realPath` (`Threaded.realPathPosix` else-branch). TestDir
+now stores `<cwd>/.zig-cache/tmp/<sub_path>` at init and
+exposes `realPath` / `realPathFile` that do not use fd-to-path.
+Production `realpath` / `readlink` / `ln` fall back to libc
+`realpath(3)`. `lookupUserName` / `lookupGroupName` call
+`getpwuid` / `getgrgid` on every Unix host, not only Linux
+and macOS. `free` reads BSD sysctl instead of `/proc/meminfo`.
+`dfMountOsSupported` is called from the production mount
+dispatch so audit does not treat it as test-only.
