@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Documentation
+- **Rewrite `docs/INTEGRATION_TESTING.md` to match the tree.** The
+  old page described `tests/integration/{lib,utils}/`, `init_framework`,
+  and `exec_utility`, none of which exist. The real layout is
+  `tests/integration.sh` plus `tests/utilities/` and `tests/lib/`,
+  entered only through `scripts/run-integration.sh`. The wave2-walker
+  workflow now tells agents to use that wrapper rather than
+  `bash tests/integration.sh` as root (#152).
 - **Add the `land-todo-slice` agent skill.** Operating procedure
   for landing one `TODO.md` heading as one draft PR: choose the
   slice, write a plan, review it with three models, implement
@@ -13,6 +20,23 @@
 - **`ls` honors GNU `LS_COLORS` when color is on.** Type and suffix
   keys overlay the compiled palette; an invalid value prints a
   diagnostic and disables color for that invocation.
+- **`zig build` now installs man pages under `share/man/man1`.**
+  The default install step copies `man/man1/<name>.1` for every
+  utility (including `[.1`) next to the binaries, so
+  `zig build --prefix /usr/local` ships documentation without Nix.
+  A missing page fails configuration instead of being skipped.
+- **`tail -f` / `-F` now follow every file operand.** Appends to any
+  followed file appear in stdout, with GNU `\n==> file <==\n` headers
+  when output switches from one operand to another (suppressed by
+  `-q`). Duplicate operands are separate slots. A hard cap of 256 real
+  files applies before any dump I/O. `-F` retries missing or rotated
+  names without stalling the other files.
+- **`free` colors the used column and can draw a usage bar.**
+  `--color=WHEN` (always/auto/never) wraps the Mem and Swap used
+  fields green below 70%, yellow below 90%, and red otherwise.
+  `--bar=WHEN` appends df's 10-cell usage-bar widget.
+  `NO_COLOR` and `TERM=dumb` still kill color, including with
+  `--color=always`. Default WHEN is `auto`.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so
@@ -36,6 +60,40 @@
   BSD defines none (#93).
 
 ### Changed
+- **Terminal size detection no longer reports a zero width or height.**
+  `COLUMNS=0`, an empty or non-numeric `COLUMNS`/`LINES` value, and an
+  ioctl window size of 0 all fall back to the 80×24 defaults now, so
+  `ls` column layout never sees a zero terminal width. Previously a
+  zero from the ioctl or from `COLUMNS`/`LINES` leaked through as-is.
+- **`df --total` accumulates byte sums in 128-bit integers.** Two
+  large filesystems could wrap the Size/Used/Avail totals at 16 EiB
+  (`u64max`), and `used + avail` for the percent column overflowed
+  independently. Both the default total row and `--output` now fold
+  in `u128`, so a 2e19-byte aggregate prints as 20000000000000000000
+  rather than a wrapped residue, and the percent stays the true
+  ceiling of used/(used+avail) (#158).
+- **`grep` with no pattern prints GNU's Usage line.** Bare `grep` and
+  `grep --` wrote `grep: no pattern specified`; GNU prints
+  `Usage: grep [OPTION]... PATTERNS [FILE]...` and the Try-help line,
+  with no program-name prefix. Exit 2 is unchanged (#162).
+- **`grep` frees parsed options on argument errors.** `parseArgs`
+  signals those errors with `return null`, which does not run
+  `errdefer`, so `--include`/`-e`/`--exclude` buffers leaked on the
+  next unrecognized flag. Every `.fail` path now deinits before
+  returning null (#164).
+- **`ls -l` sizes mixed file-and-directory operands the way GNU does.**
+  The file-operand lines were padded from the remaining files only,
+  after directories had already been split out, so `ls -l file dir`
+  under-padded nlink, owner, group and size whenever a directory
+  operand was wider. Those columns now measure every command-line
+  operand together; each directory listing still sizes itself from
+  its own contents (#166).
+- **`tiger-check.sh --staged` scans the index, not the worktree.**
+  The pre-commit hook computes added lines from `git diff --cached`
+  but used to awk the on-disk file, so staging a violation and then
+  reverting the worktree made the hook report clean. Staged bytes
+  now come from `git show :path`; the reported path is unchanged
+  (#149).
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,
@@ -113,6 +171,51 @@
   Keys like `di=0` (and `ln=0`/`fi=0` on a long-format symlink
   target) write no color start. GNU then skips `ec`/CSI-reset, so a
   custom `ec` cannot leave the terminal in the wrong state.
+- **`tail -f` prints `cannot open` when a follow reopen fails after a
+  successful dump.** The slot is still omitted from the follow set, but
+  vanishing between dump and reopen no longer exits 1 with empty
+  stderr. `-F` already printed this diagnostic; dump-failed `-f` paths
+  stay silent because the dump already reported them.
+
+- **Concurrent integration runs no longer race `useradd`.** Two
+  `scripts/run-integration.sh` processes creating the same
+  `VIBEUTILS_TEST_USER` could leave the home owned by a uid that
+  passwd no longer had, and `setpriv` then died with `uid N not
+  found`. Provisioning now takes a per-user lock (`flock` on Linux,
+  `mkdir` elsewhere) around the existence check, `useradd`, and
+  home `chown`, so overlapping creates serialize (#150).
+- **`ls -e` dumps the ACL after each long-format line.** The flag
+  was parsed into `show_acls` and then ignored, and `--help` called
+  it a no-op. `-e` now implies `-l` (BSD) and prints a getfacl-style
+  POSIX ACL after a marked entry; a file with no stored ACL is
+  unchanged from `ls -l` (#147).
+- **`ls -l` `total` now uses GNU's 1024-byte default, and empty
+  directories print `total 0`.** The line previously summed raw
+  512-byte `st_blocks` (twice GNU) and omitted the header when a
+  directory had no visible entries. `-k` matches that 1024-byte
+  total; `-h` humanizes the allocated size. `--block-size` stays
+  WONT (#160).
+- **`find`, `printf`, `dd`, and `date` honor `--` as the end of
+  options.** All four hand-rolled parsers treated `--` as an operand
+  or unknown flag: `printf -- 'x\n'` printed `--`, `find -- .`
+  reported an unknown predicate, `dd -- if=f` was an unrecognized
+  operand, and `date -- +%Y` was an unrecognized option. They now
+  match GNU: `--` stops option parsing, a leading `--` with nothing
+  after it is a missing operand for printf, a second `--` is still a
+  predicate for find and an unrecognized operand for dd, and date
+  treats a following dash-token as a date string. `--` is a delimiter
+  for find only before any start path (`find . --` is an unknown
+  predicate). After `dd --`, `--help`/`--version` are unrecognized
+  operands, and the first invalid token — including an unknown
+  `key=value` or an empty `''` — is the one named. Date collects
+  positionals: a second operand is extra (quoted), a single non-`+`
+  token is a date string. A leftover non-`+` positional after `--date`
+  or `-r` is GNU "lacks a leading '+'". After a find start path, `--`
+  is an unknown predicate (`find . -- --help`); `--help` in predicate
+  position still prints help (`find . -name -- --help`). Walker
+  globals `-depth`/`-d`/`-xdev`/`-mount`/`-follow` are captured
+  only as sequential primaries, so a token that is a primary
+  argument (`find DIR -exec true -depth \;`) does not flip them (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not

@@ -64,6 +64,8 @@ pub const LsOptions = struct {
     version_sort: bool = false, // -v: natural version sort
     sort_by_extension: bool = false, // -X: sort by file extension
     thousands_grouping: bool = false, // -,: format sizes with comma grouping
+    /// BSD `-e`: dump the ACL after each long-format line.
+    show_acls: bool = false,
 };
 
 /// Represents a directory entry with metadata
@@ -78,8 +80,22 @@ pub const Entry = struct {
     /// path to probe exists, and only under -l, so an entry that was never
     /// probed keeps the default and its section stays ten columns wide.
     has_acl: bool = false,
+    /// getfacl-style text dumped after the long line when `-e` is set.
+    /// Null when `-e` is off or the file has no stored ACL. Owned by
+    /// the entry; directory listings free it in freeEntries, operands
+    /// via freeAclDump (their names are argv, not allocated).
+    acl_dump: ?[]const u8 = null,
     display_width: ?usize = null, // Cached display width for performance
     file_type_indicator: ?u8 = null, // Cached file type indicator for performance
+
+    /// Release the `-e` dump if one was allocated. Safe when null.
+    pub fn freeAclDump(self: *Entry, allocator: std.mem.Allocator) void {
+        const dump = self.acl_dump orelse return;
+        std.debug.assert(dump.len > 0);
+        std.debug.assert(dump.len <= std.math.maxInt(u32));
+        allocator.free(dump);
+        self.acl_dump = null;
+    }
 
     /// Calculate the display width of this entry without caching
     pub fn calculateDisplayWidth(

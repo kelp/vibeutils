@@ -6,6 +6,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 /// Command-line arguments for tee
@@ -565,10 +566,10 @@ test "tee with unknown flag should return error" {
 
 test "tee copies input to stdout and files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const output_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const output_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(output_path);
     const out_file_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -598,7 +599,7 @@ test "tee copies input to stdout and files" {
     try testing.expectEqualStrings("hello tee\n", stdout_aw.writer.buffered());
 
     // Verify the output file received the data
-    const file_content = try tmp_dir.dir.readFileAlloc(
+    const file_content = try tmp_dir.dir().readFileAlloc(
         io,
         "output.txt",
         testing.allocator,
@@ -610,17 +611,17 @@ test "tee copies input to stdout and files" {
 
 test "tee -a appends to existing files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create output file with existing content
     {
-        const existing = try tmp_dir.dir.createFile(io, "output.txt", .{});
+        const existing = try tmp_dir.dir().createFile(io, "output.txt", .{});
         try existing.writeStreamingAll(io, "existing\n");
         existing.close(io);
     }
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
     defer testing.allocator.free(output_path);
@@ -647,7 +648,7 @@ test "tee -a appends to existing files" {
     try testing.expectEqualStrings("appended\n", stdout_aw.writer.buffered());
 
     // Verify output file has both existing and appended content
-    const file_content = try tmp_dir.dir.readFileAlloc(
+    const file_content = try tmp_dir.dir().readFileAlloc(
         io,
         "output.txt",
         testing.allocator,
@@ -709,10 +710,10 @@ test "tee two dash operands writes stdout three times" {
 
 test "tee dash with file writes stdout twice and to file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
     defer testing.allocator.free(output_path);
@@ -740,7 +741,7 @@ test "tee dash with file writes stdout twice and to file" {
     try testing.expectEqualStrings("hello\nhello\n", stdout_aw.writer.buffered());
 
     // File should have exactly one copy.
-    const file_content = try tmp_dir.dir.readFileAlloc(
+    const file_content = try tmp_dir.dir().readFileAlloc(
         io,
         "output.txt",
         testing.allocator,

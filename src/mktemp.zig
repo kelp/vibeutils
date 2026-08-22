@@ -27,6 +27,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
@@ -767,7 +768,7 @@ test "mktemp creates file with default template" {
 
     // Clean up the created file
     const path = std.mem.trimEnd(u8, out, "\n");
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
 }
 
 test "mktemp creates directory with -d flag" {
@@ -792,7 +793,7 @@ test "mktemp creates directory with -d flag" {
     try testing.expect(stat_result.kind == .directory);
 
     // Clean up
-    std.Io.Dir.cwd().deleteDir(io, path) catch {};
+    std.Io.Dir.deleteDirAbsolute(io, path) catch {};
 }
 
 test "mktemp dry-run does not create file" {
@@ -838,7 +839,7 @@ test "mktemp with custom template" {
     // Should start with "myapp."
     try testing.expect(std.mem.startsWith(u8, basename, "myapp."));
 
-    // Clean up
+    // Custom templates without -p/-t are created relative to cwd.
     std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
@@ -866,7 +867,7 @@ test "mktemp with --suffix" {
     const basename = std.fs.path.basename(path);
     try testing.expect(std.mem.startsWith(u8, basename, "tmp"));
 
-    // Clean up
+    // Suffix templates without -p/-t are created relative to cwd.
     std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
@@ -898,11 +899,11 @@ test "mktemp with -p flag" {
     defer stdout_aw.deinit();
 
     // Use a known temp directory
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const path_len = try tmp_dir.dir().realPath(io, &path_buf);
     const dir_path = path_buf[0..path_len];
 
     const args = &[_][]const u8{ "-p", dir_path };
@@ -917,7 +918,7 @@ test "mktemp with -p flag" {
     try testing.expect(std.mem.startsWith(u8, result_path, dir_path));
 
     // Clean up
-    std.Io.Dir.cwd().deleteFile(io, result_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, result_path) catch {};
 }
 
 test "mktemp quiet mode suppresses errors" {
