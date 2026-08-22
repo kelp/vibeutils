@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
@@ -678,14 +679,14 @@ fn printVersion(writer: *std.Io.Writer) !void {
 
 test "wc counts lines correctly" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -695,14 +696,14 @@ test "wc counts lines correctly" {
 
 test "wc counts words correctly" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "hello world\nthis is a test\n");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -712,14 +713,14 @@ test "wc counts words correctly" {
 
 test "wc counts bytes correctly" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "12345\n67890\n");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -729,15 +730,15 @@ test "wc counts bytes correctly" {
 
 test "wc counts UTF-8 characters correctly" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
     try test_file.writeStreamingAll(io, "hello \xe4\xb8\x96\xe7\x95\x8c\n");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -748,14 +749,14 @@ test "wc counts UTF-8 characters correctly" {
 
 test "wc finds maximum line length" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "short\nthis is a longer line\nmedium\n");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -766,13 +767,13 @@ test "wc finds maximum line length" {
 
 test "wc handles empty input" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -784,14 +785,14 @@ test "wc handles empty input" {
 
 test "wc handles input without final newline" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "line1\nline2");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -801,14 +802,14 @@ test "wc handles input without final newline" {
 
 test "wc counts multiple whitespace correctly" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "word1   word2\t\tword3\n\n  word4");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -819,14 +820,14 @@ test "wc counts multiple whitespace correctly" {
 
 test "wc handles all counts together" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "Hello world\nThis is test\n");
     test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "test.txt", .{});
     defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
@@ -906,15 +907,15 @@ test "wc runWc with default options" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
     test_file.close(io);
 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buffer);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buffer);
     const test_path = path_buffer[0..path_len];
 
     const args = &[_][]const u8{test_path};
@@ -928,22 +929,22 @@ test "wc runWc with default options" {
 
 test "wc with multiple files shows total" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file1 = try tmp_dir.dir.createFile(io, "a.txt", .{});
+    const file1 = try tmp_dir.dir().createFile(io, "a.txt", .{});
     try file1.writeStreamingAll(io, "one two\n");
     file1.close(io);
 
-    const file2 = try tmp_dir.dir.createFile(io, "b.txt", .{});
+    const file2 = try tmp_dir.dir().createFile(io, "b.txt", .{});
     try file2.writeStreamingAll(io, "three four five\n");
     file2.close(io);
 
     var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path1_len = try tmp_dir.dir.realPathFile(io, "a.txt", &path_buf1);
+    const path1_len = try tmp_dir.dir().realPathFile(io, "a.txt", &path_buf1);
     const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path2_len = try tmp_dir.dir.realPathFile(io, "b.txt", &path_buf2);
+    const path2_len = try tmp_dir.dir().realPathFile(io, "b.txt", &path_buf2);
     const path2 = path_buf2[0..path2_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -993,13 +994,13 @@ test "wc --version shows version" {
 
 test "wc reports error for directory" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDir(io, "subdir", .default_dir);
+    try tmp_dir.dir().createDir(io, "subdir", .default_dir);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir.realPathFile(io, "subdir", &path_buf);
+    const dir_path_len = try tmp_dir.dir().realPathFile(io, "subdir", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const test_utils = @import("test_utils.zig");
 const types = @import("types.zig");
 const formatter = @import("formatter.zig");
@@ -16,6 +17,13 @@ const TEST_SIZE_2K = test_utils.TEST_SIZE_2K;
 const TEST_SIZE_4K = test_utils.TEST_SIZE_4K;
 const TEST_SIZE_1_5K = test_utils.TEST_SIZE_1_5K;
 const TEST_TERMINAL_WIDTH = test_utils.TEST_TERMINAL_WIDTH;
+
+fn parseLongFormatTotal(output: []const u8) !u64 {
+    const prefix = "total ";
+    const newline = std.mem.findScalar(u8, output, '\n') orelse return error.MissingTotalLine;
+    if (!std.mem.startsWith(u8, output[0..newline], prefix)) return error.MissingTotalLine;
+    return std.fmt.parseInt(u64, output[prefix.len..newline], 10);
+}
 
 // ============================================================================
 // Basic listing functionality
@@ -254,6 +262,78 @@ test "long_format: shows kilobyte sizes with -lk flags" {
     const output = env.getStdout();
     try LsAssertions.expectContainsFile(output, "small.txt");
     try LsAssertions.expectContainsFile(output, "medium.txt");
+}
+
+test "long_format: total uses 1024-byte blocks like GNU" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFileWithSize("first.bin", TEST_SIZE_4K, 'A');
+    try env.createFileWithSize("second.bin", TEST_SIZE_2K, 'B');
+
+    const first = try common.file.FileInfo.statDir(testing.allocator, env.test_dir, "first.bin");
+    const second = try common.file.FileInfo.statDir(testing.allocator, env.test_dir, "second.bin");
+    const total_blocks_512 = first.blocks + second.blocks;
+    const expected_total = @divFloor(total_blocks_512 + 1, 2);
+
+    try env.runLs(.{ .long_format = true });
+
+    try testing.expect(total_blocks_512 > 0);
+    try testing.expect(expected_total < total_blocks_512);
+    try testing.expectEqual(expected_total, try parseLongFormatTotal(env.getStdout()));
+}
+
+test "long_format: empty directory prints total 0" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.runLs(.{ .long_format = true });
+
+    try testing.expectEqualStrings("total 0\n", env.getStdout());
+    try testing.expectEqualStrings("", env.getStderr());
+}
+
+test "long_format: -k total matches the 1024-byte default" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFileWithSize("payload.bin", TEST_SIZE_4K, 'K');
+    const stat = try common.file.FileInfo.statDir(testing.allocator, env.test_dir, "payload.bin");
+    const expected_total = @divFloor(stat.blocks + 1, 2);
+
+    try env.runLs(.{ .long_format = true });
+    const default_total = try parseLongFormatTotal(env.getStdout());
+
+    try env.runLs(.{ .long_format = true, .kilobytes = true });
+    const kilobyte_total = try parseLongFormatTotal(env.getStdout());
+
+    try testing.expectEqual(expected_total, kilobyte_total);
+    try testing.expectEqual(kilobyte_total, default_total);
+}
+
+test "long_format: -h humanizes the total line" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFileWithSize("payload.bin", TEST_SIZE_4K, 'H');
+    const stat = try common.file.FileInfo.statDir(testing.allocator, env.test_dir, "payload.bin");
+    const total_bytes = stat.blocks * 512;
+
+    var human_buf: [32]u8 = undefined;
+    const expected_human = try common.file.formatSizeHuman(total_bytes, &human_buf);
+    const expected_line = try std.fmt.allocPrint(
+        testing.allocator,
+        "total {s}\n",
+        .{expected_human},
+    );
+    defer testing.allocator.free(expected_line);
+
+    try env.runLs(.{ .long_format = true, .human_readable = true });
+    const output = env.getStdout();
+    const newline = std.mem.findScalar(u8, output, '\n') orelse return error.MissingTotalLine;
+
+    try testing.expect(total_bytes > 0);
+    try testing.expectEqualStrings(expected_line, output[0 .. newline + 1]);
 }
 
 test "long_format: shows numeric user and group IDs with -n flag" {
@@ -1267,7 +1347,7 @@ test "blocks: -s reports st_blocks, not a size-derived count" {
     // implementation reading st_blocks and one deriving from the size
     // cannot agree on either entry or on the total.
     {
-        const file = try env.tmp_dir.dir.createFile(std.testing.io, "sparse", .{});
+        const file = try env.tmp_dir.dir().createFile(std.testing.io, "sparse", .{});
         defer file.close(std.testing.io);
         try file.setLength(std.testing.io, 1 << 20);
     }
@@ -1295,7 +1375,7 @@ test "blocks: -s -k converts st_blocks to 1 KiB units" {
     // so 0 stays 0 and 8 becomes 4. Deriving from the size instead yields
     // ceil(1048576 / 1024) = 1024 and ceil(1 / 1024) = 1.
     {
-        const file = try env.tmp_dir.dir.createFile(std.testing.io, "sparse", .{});
+        const file = try env.tmp_dir.dir().createFile(std.testing.io, "sparse", .{});
         defer file.close(std.testing.io);
         try file.setLength(std.testing.io, 1 << 20);
     }
@@ -1676,7 +1756,7 @@ test "printEntries: -l nlink and size columns widen to the widest value in a sec
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
-    const fmt = "total 24\n" ++
+    const fmt = "total 12\n" ++
         PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++ SIZE_3 ++ "{s} a\n" ++
         PERM_DIR ++ NLINK_5 ++ OWNER_ROOT ++ "{s}" ++ SIZE_4096 ++ "{s} b\n" ++
         PERM_DIR ++ NLINK_12 ++ OWNER_ROOT ++ "{s}" ++ SIZE_4096 ++ "{s} c\n";
@@ -2206,7 +2286,7 @@ test "printEntries: -ls block-size prefix width is independent of nlink/owner/gr
     var group_field_buf: [32]u8 = undefined;
     const GROUP_ROOT = padField(&group_field_buf, group0, group0.len, false);
 
-    const fmt = "total 21\n" ++
+    const fmt = "total 11\n" ++
         BLOCK_1 ++ PERM_FILE ++ NLINK_1 ++ OWNER_ROOT ++ "{s}" ++
         SIZE_3 ++ "{s} m\n" ++
         BLOCK_20 ++ PERM_DIR ++ NLINK_12 ++ OWNER_ROOT ++ "{s}" ++
@@ -2317,7 +2397,7 @@ test "printEntries: mixed section pads null-stat fallbacks to the stat-derived w
     var group_null_field_buf: [32]u8 = undefined;
     const GROUP_NULL = padField(&group_null_field_buf, "?", group0.len, false);
 
-    const fmt = "total 8\n" ++
+    const fmt = "total 4\n" ++
         PERM_FILE ++ NLINK_A ++ OWNER_A ++ "{s}" ++ SIZE_A ++ "{s} a\n" ++
         PERM_NULL ++ NLINK_NULL ++ OWNER_NULL ++ "{s}" ++ SIZE_NULL ++
         DATE_NULL ++ "b\n";
@@ -2379,7 +2459,7 @@ test "printEntries: -ln mixed section right-aligns null-stat id/size fallbacks (
     const SIZE_NULL = "   ? "; // "?" right-aligned to the same width-4 column
     const DATE_NULL = "??? ?? ??:?? "; // unaffected by this bug, its own fallback
 
-    const fmt = "total 8\n" ++
+    const fmt = "total 4\n" ++
         PERM_FILE ++ NLINK_A ++ OWNER_GROUP_A ++ OWNER_GROUP_A ++ SIZE_A ++ "{s} a\n" ++
         PERM_NULL ++ NLINK_NULL ++ OWNER_GROUP_NULL ++ OWNER_GROUP_NULL ++ SIZE_NULL ++
         DATE_NULL ++ "b\n";
@@ -4317,10 +4397,10 @@ test "F49: runLs returns non-zero when one of multiple paths is invalid" {
     const main = @import("main.zig");
 
     // Create a real temporary directory
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const f = try tmp_dir.dir.createFile(testing.io, "real.txt", .{});
+    const f = try tmp_dir.dir().createFile(testing.io, "real.txt", .{});
     f.close(testing.io);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

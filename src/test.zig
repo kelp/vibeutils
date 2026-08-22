@@ -8,6 +8,7 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayListUnmanaged;
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 
 const c = std.c;
 const linux = std.os.linux;
@@ -934,14 +935,14 @@ test "numeric comparison tests" {
 test "file existence tests" {
     const io = testing.io;
     // Create a temporary file for testing
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const test_file = try tmp.dir.createFile(io, "test_file", .{});
+    const test_file = try tmp.dir().createFile(io, "test_file", .{});
     test_file.close(io);
 
     // Get the full path to our temp file
-    const temp_path = try tmp.dir.realPathFileAlloc(io, "test_file", testing.allocator);
+    const temp_path = try tmp.getPath("test_file");
     defer testing.allocator.free(temp_path);
 
     // Test file existence
@@ -977,12 +978,12 @@ test "file existence tests" {
 
 test "directory tests" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "test_dir", .default_dir);
+    try tmp.dir().createDir(io, "test_dir", .default_dir);
 
-    const temp_dir = try tmp.dir.realPathFileAlloc(io, "test_dir", testing.allocator);
+    const temp_dir = try tmp.getPath("test_dir");
     defer testing.allocator.free(temp_dir);
 
     // Test directory existence
@@ -996,10 +997,10 @@ test "directory tests" {
     try testing.expectEqual(@intFromEnum(ExitCode.true), result);
 
     // Test that file is not a directory
-    const test_file = try tmp.dir.createFile(io, "test_file", .{});
+    const test_file = try tmp.dir().createFile(io, "test_file", .{});
     test_file.close(io);
 
-    const temp_file = try tmp.dir.realPathFileAlloc(io, "test_file", testing.allocator);
+    const temp_file = try tmp.getPath("test_file");
     defer testing.allocator.free(temp_file);
 
     result = try runTest(
@@ -1014,22 +1015,22 @@ test "directory tests" {
 
 test "file size tests" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create empty file
-    const empty_file = try tmp.dir.createFile(io, "empty", .{});
+    const empty_file = try tmp.dir().createFile(io, "empty", .{});
     empty_file.close(io);
 
-    const empty_path = try tmp.dir.realPathFileAlloc(io, "empty", testing.allocator);
+    const empty_path = try tmp.getPath("empty");
     defer testing.allocator.free(empty_path);
 
     // Create non-empty file
-    const non_empty = try tmp.dir.createFile(io, "nonempty", .{});
+    const non_empty = try tmp.dir().createFile(io, "nonempty", .{});
     try non_empty.writeStreamingAll(io, "content");
     non_empty.close(io);
 
-    const nonempty_path = try tmp.dir.realPathFileAlloc(io, "nonempty", testing.allocator);
+    const nonempty_path = try tmp.getPath("nonempty");
     defer testing.allocator.free(nonempty_path);
 
     // Test empty file
@@ -1629,23 +1630,23 @@ test "POSIX: -o is left-associative" {
 
 test "symlink detection with -L and -h operators" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a regular file
-    const test_file = try tmp.dir.createFile(io, "target_file", .{});
+    const test_file = try tmp.dir().createFile(io, "target_file", .{});
     try test_file.writeStreamingAll(io, "test content");
     test_file.close(io);
 
     // Create a symlink to the file
-    try tmp.dir.symLink(io, "target_file", "link_to_file", .{});
+    try tmp.dir().symLink(io, "target_file", "link_to_file", .{});
 
     // Get full paths
-    const target_path = try tmp.dir.realPathFileAlloc(io, "target_file", testing.allocator);
+    const target_path = try tmp.getPath("target_file");
     defer testing.allocator.free(target_path);
 
     // Get the absolute path of the symlink without resolving it
-    const tmpdir_path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmpdir_path = try tmp.getBasePath();
     defer testing.allocator.free(tmpdir_path);
 
     const link_path_abs = try std.fmt.allocPrint(
@@ -1721,20 +1722,20 @@ test "setuid and sticky bit operators -u and -k" {
 
 test "file comparison operators -nt, -ot, -ef" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create two files with different timestamps
-    const file1 = try tmp.dir.createFile(io, "older", .{});
+    const file1 = try tmp.dir().createFile(io, "older", .{});
     file1.close(io);
 
     // Small delay to ensure different mtime
     io.sleep(std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
 
-    const file2 = try tmp.dir.createFile(io, "newer", .{});
+    const file2 = try tmp.dir().createFile(io, "newer", .{});
     file2.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const dir_path = try tmp.getBasePath();
     defer testing.allocator.free(dir_path);
 
     const older_path = try std.fmt.allocPrint(testing.allocator, "{s}/older", .{dir_path});
@@ -1800,20 +1801,20 @@ test "file comparison operators -nt, -ot, -ef" {
 // the two files straddle a wall-clock second boundary.
 test "file comparison -nt / -ot across a one-second boundary" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const f_old = try tmp.dir.createFile(io, "old", .{});
+    const f_old = try tmp.dir().createFile(io, "old", .{});
     f_old.close(io);
 
     // Sleep long enough to push the second file into the next whole
     // second (1.1s — comfortable margin for low-resolution clocks).
     io.sleep(std.Io.Duration.fromNanoseconds(1_100 * std.time.ns_per_ms), .awake) catch {};
 
-    const f_new = try tmp.dir.createFile(io, "new", .{});
+    const f_new = try tmp.dir().createFile(io, "new", .{});
     f_new.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const dir_path = try tmp.getBasePath();
     defer testing.allocator.free(dir_path);
     const old_path = try std.fmt.allocPrint(testing.allocator, "{s}/old", .{dir_path});
     defer testing.allocator.free(old_path);
@@ -1952,14 +1953,14 @@ test "string ordering operators are recognized as binary operators" {
 
 test "-G operator: file group matches effective group ID" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a file owned by current user/group
-    const test_file = try tmp.dir.createFile(io, "test_file", .{});
+    const test_file = try tmp.dir().createFile(io, "test_file", .{});
     test_file.close(io);
 
-    const temp_path = try tmp.dir.realPathFileAlloc(io, "test_file", testing.allocator);
+    const temp_path = try tmp.getPath("test_file");
     defer testing.allocator.free(temp_path);
 
     // File created by current process should match effective group ID
@@ -1985,14 +1986,14 @@ test "-G operator: file group matches effective group ID" {
 
 test "-O operator: file user matches effective user ID" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a file owned by current user
-    const test_file = try tmp.dir.createFile(io, "test_file", .{});
+    const test_file = try tmp.dir().createFile(io, "test_file", .{});
     test_file.close(io);
 
-    const temp_path = try tmp.dir.realPathFileAlloc(io, "test_file", testing.allocator);
+    const temp_path = try tmp.getPath("test_file");
     defer testing.allocator.free(temp_path);
 
     // File created by current process should match effective user ID

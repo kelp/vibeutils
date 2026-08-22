@@ -38,6 +38,14 @@ const DateOptions = struct {
     v_adjust: ?[]const u8 = null,
     help: bool = false,
     version: bool = false,
+    extra_operand: ?[]const u8 = null,
+    /// First positional operand (`+FORMAT` or a date string). A second
+    /// positional is extra_operand. Applied after the option scan.
+    positional: ?[]const u8 = null,
+    /// True when date_string came from a positional, not `--date`/`-d`.
+    /// GNU obsolete set-date does not use parse_datetime (`date -- @0`
+    /// is invalid, while `date -d @0` is epoch).
+    positional_date: bool = false,
 };
 
 /// Parse command-line arguments manually (date has unusual flag semantics)
@@ -49,18 +57,10 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        if (arg.len == 0) continue;
-
-        // Format string starts with +
-        if (arg[0] == '+') {
-            opts.format = arg[1..];
+        if (arg.len == 0 or arg[0] != '-') {
+            err_msg = parseArgs_takePositional(&opts, arg);
+            if (err_msg != null) break;
             continue;
-        }
-
-        // Not a flag
-        if (arg[0] != '-') {
-            err_msg = "extra operand";
-            break;
         }
 
         // Long options
@@ -72,6 +72,10 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
             } else if (std.mem.eql(u8, arg, "--version")) {
                 opts.version = true;
                 return .{ .opts = opts, .err = null };
+            }
+            if (std.mem.eql(u8, arg, "--")) {
+                err_msg = parseArgs_afterDashDash(args, &i, &opts);
+                break;
             }
             if (parseArgs_longOption(arg, args, &i, &opts)) |msg| {
                 err_msg = msg;
@@ -92,7 +96,62 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
         }
     }
 
+    if (err_msg == null) err_msg = parseArgs_applyPositional(&opts);
     return .{ .opts = opts, .err = err_msg };
+}
+
+/// Record the first positional, or tag a second one as GNU extra operand.
+fn parseArgs_takePositional(opts: *DateOptions, tok: []const u8) ?[]const u8 {
+    std.debug.assert(opts.extra_operand == null);
+    if (opts.positional != null) return parseArgs_setExtraOperand(opts, tok);
+    opts.positional = tok;
+    std.debug.assert(opts.positional != null);
+    return null;
+}
+
+/// Map the first positional onto format (`+…`) or date_string. A leftover
+/// non-`+` token after `--date`/`-r` is GNU "lacks a leading '+'".
+fn parseArgs_applyPositional(opts: *DateOptions) ?[]const u8 {
+    std.debug.assert(opts.extra_operand == null);
+    const tok = opts.positional orelse return null;
+    if (tok.len > 0 and tok[0] == '+') {
+        opts.format = tok[1..];
+        return null;
+    }
+    if (opts.date_string != null or opts.reference_file != null) {
+        opts.extra_operand = tok;
+        std.debug.assert(opts.extra_operand != null);
+        return "lacks plus";
+    }
+    opts.date_string = tok;
+    opts.positional_date = true;
+    std.debug.assert(opts.positional_date);
+    return null;
+}
+
+/// Record `operand` as GNU's extra-operand token and return the err tag
+/// parseArgs / runDate use to select the quoted diagnostic.
+fn parseArgs_setExtraOperand(opts: *DateOptions, operand: []const u8) []const u8 {
+    std.debug.assert(opts.extra_operand == null);
+    opts.extra_operand = operand;
+    std.debug.assert(opts.extra_operand != null);
+    return "extra operand";
+}
+
+/// Drain argv after a POSIX `--`. Every remaining token is a positional
+/// operand, including empty strings and dash-tokens (`date -- -1`).
+fn parseArgs_afterDashDash(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch cursor indexes args slice
+    opts: *DateOptions,
+) ?[]const u8 {
+    std.debug.assert(i.* < args.len);
+    std.debug.assert(std.mem.eql(u8, args[i.*], "--"));
+    i.* += 1;
+    while (i.* < args.len) : (i.* += 1) {
+        if (parseArgs_takePositional(opts, args[i.*])) |msg| return msg;
+    }
+    return null;
 }
 
 /// Parse a single long option (`--`-prefixed), excluding `--help`/`--version`
@@ -263,6 +322,12 @@ fn parseArgs_takeValue(
 /// Resolve the timestamp to use based on options
 fn resolveTimestamp(io: std.Io, opts: DateOptions) TimestampResult {
     if (opts.date_string) |ds| {
+        // Positional dates are GNU obsolete set-date, not `--date`.
+        // `@0` is epoch only with `-d`; a leftover positional is invalid.
+        if (opts.positional_date) {
+            std.debug.assert(opts.date_string != null);
+            return .{ .secs = 0, .ns = 0, .err = "invalid date" };
+        }
         // Parse @EPOCH format
         if (ds.len > 0 and ds[0] == '@') {
             const epoch_str = ds[1..];
@@ -677,6 +742,64 @@ fn runDate_brokenDownTime(secs: i64, utc: bool, tm: *time.c_tm) bool {
     return time.localtime_r(&time_secs, tm) != null;
 }
 
+/// GNU quotes the extra operand: `date: extra operand '+%m'`.
+fn runDate_printParseErr(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    opts: DateOptions,
+    err_msg: []const u8,
+) void {
+    std.debug.assert(err_msg.len > 0);
+    if (std.mem.eql(u8, err_msg, "extra operand")) {
+        std.debug.assert(opts.extra_operand != null);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "extra operand '{s}'",
+            .{opts.extra_operand.?},
+        );
+        return;
+    }
+    if (std.mem.eql(u8, err_msg, "lacks plus")) {
+        std.debug.assert(opts.extra_operand != null);
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "the argument '{s}' lacks a leading '+';\n" ++
+                "when using an option to specify date(s), any non-option\n" ++
+                "argument must be a format string beginning with '+'",
+            .{opts.extra_operand.?},
+        );
+        return;
+    }
+    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+}
+
+/// GNU quotes the date string: `date: invalid date '-1'`.
+fn runDate_printTsErr(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    opts: DateOptions,
+    err_msg: []const u8,
+) void {
+    std.debug.assert(err_msg.len > 0);
+    if (std.mem.eql(u8, err_msg, "invalid date")) {
+        if (opts.date_string) |ds| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "invalid date '{s}'",
+                .{ds},
+            );
+            return;
+        }
+    }
+    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+}
+
 /// Main date utility logic
 pub fn runDate(
     allocator: Allocator,
@@ -688,7 +811,7 @@ pub fn runDate(
     // Parse arguments
     const parsed = parseArgs(args);
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        runDate_printParseErr(allocator, stderr_writer, parsed.opts, err_msg);
         return @intFromEnum(common.ExitCode.general_error);
     }
     const opts = parsed.opts;
@@ -726,7 +849,7 @@ pub fn runDate(
     // Resolve the timestamp to format
     const ts = resolveTimestamp(io, opts);
     if (ts.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        runDate_printTsErr(allocator, stderr_writer, opts, err_msg);
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -1659,4 +1782,404 @@ test "date -d ISO 8601 with +00:00 offset is same as Z" {
     const result = try runDate(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1705276800\n", stdout_aw.writer.buffered());
+}
+
+// Issue #159: `--` is the POSIX end-of-options delimiter.
+// Pinned against GNU coreutils 9.4 (`/usr/bin/date`, LC_ALL=C).
+// Current vibeutils reports `unrecognized option` for a bare `--`.
+
+test "date #159: -- before format prints the format" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Motivating case from issue #159: `date -- +%Y`. Year is
+    // environment-dependent, so pin shape (four digits + newline).
+    const args = [_][]const u8{ "--", "+%Y" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    const out = stdout_aw.writer.buffered();
+    try testing.expectEqual(@as(usize, 5), out.len);
+    try testing.expect(out[0] >= '0' and out[0] <= '9');
+    try testing.expect(out[1] >= '0' and out[1] <= '9');
+    try testing.expect(out[2] >= '0' and out[2] <= '9');
+    try testing.expect(out[3] >= '0' and out[3] <= '9');
+    try testing.expectEqual(@as(u8, '\n'), out[4]);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "date #159: -- after options then format" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-u", "-d", "@0", "--", "+%Y-%m-%d" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970-01-01\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "date #159: -- alone prints the current date" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"--"};
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.endsWith(u8, stdout_aw.writer.buffered(), "\n"));
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "date #159: doubled -- is an invalid date" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "--" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "date: invalid date '--'\n",
+        stderr_aw.writer.buffered(),
+    );
+}
+
+test "date #159: -- then dash operand is an invalid date" {
+    // The reason `--` exists: `date -- -1` must treat `-1` as a date
+    // string, not as an option. GNU date 9.4 rejects it as invalid.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "-1" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "date: invalid date '-1'\n",
+        stderr_aw.writer.buffered(),
+    );
+}
+
+test "date #177: -- then two formats is extra operand" {
+    // GNU date 9.4: `date -- +%Y +%m` reports extra operand '+%m'.
+    // Current post-`--` parser overwrites format and prints the month.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "+%Y", "+%m" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand '+%m'",
+    ) != null);
+}
+
+test "date #177: two formats without -- is extra operand" {
+    // Same GNU rule without `--`: `date +%Y +%m` is extra operand '+%m'.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "+%Y", "+%m" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand '+%m'",
+    ) != null);
+}
+
+test "date #178: -- format then bare operand is extra" {
+    // GNU: any second positional is extra. `date -- +%Y foo` is
+    // extra operand 'foo', not an invalid date.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "+%Y", "foo" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand 'foo'",
+    ) != null);
+}
+
+test "date #178: -- date string then format is extra" {
+    // GNU: `date -- foo +%Y` names the second token, '+%Y'.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "foo", "+%Y" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand '+%Y'",
+    ) != null);
+}
+
+test "date #178: two bare operands names the second" {
+    // GNU: `date foo bar` treats foo as the date string and names bar.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "foo", "bar" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand 'bar'",
+    ) != null);
+}
+
+test "date #178: single bare operand is invalid date" {
+    // GNU: one non-+ positional is a date string. `date foo` is
+    // invalid date 'foo', not extra operand 'foo'.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"foo"};
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "invalid date 'foo'",
+    ) != null);
+}
+
+test "date #178: -- format then empty operand is extra" {
+    // GNU: `date -- +%Y ''` reports extra operand ''.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "+%Y", "" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "extra operand ''",
+    ) != null);
+}
+
+test "date #179: -d then leftover bare operand lacks a leading +" {
+    // GNU date 9.4: once -d/--date set the date, a leftover non-+
+    // positional is not a date string. `date -d @0 foo` must error.
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-d", "@0", "foo" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "the argument 'foo' lacks a leading '+'",
+    ) != null);
+}
+
+test "date #179: --date= then -- leftover bare operand lacks a leading +" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--date=@0", "--", "foo" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "the argument 'foo' lacks a leading '+'",
+    ) != null);
+}
+
+// GNU date 9.4: a positional `@0` is a date string, not `--date`
+// syntax. `date @0` / `date -- @0` are invalid date '@0'. `-d @0`
+// remains valid and is covered by existing tests.
+test "date #180: positional @0 is an invalid date" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"@0"};
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "invalid date '@0'",
+    ) != null);
+}
+
+test "date #180: -- then positional @0 is an invalid date" {
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "@0" };
+    const result = try runDate(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.indexOf(
+        u8,
+        stderr_aw.writer.buffered(),
+        "invalid date '@0'",
+    ) != null);
 }
