@@ -118,12 +118,21 @@ require_guest_job netbsd netbsd-vm "$NETBSD_SHA"
 require_job_text openbsd \
     "openbsd job does not pkg_add xz before tar extract" \
     "pkg_add xz"
+require_job_text netbsd \
+    "netbsd job does not pkg_add xz before tar extract" \
+    "pkg_add xz"
+# Base OpenBSD tar does not auto-decompress xz even after pkg_add xz.
+# NetBSD may, but the same pipe is portable. `tar -xf /tmp/zig.tar.xz`
+# is not sufficient — the job must decompress with `xz -dc` first.
+require_job_text openbsd \
+    "openbsd job does not decompress Zig tarball with xz -dc" \
+    "xz -dc"
 require_job_text openbsd \
     "openbsd job does not extract the Zig tarball with tar -xf" \
     "tar -xf"
 require_job_text netbsd \
-    "netbsd job does not pkg_add xz before tar extract" \
-    "pkg_add xz"
+    "netbsd job does not decompress Zig tarball with xz -dc" \
+    "xz -dc"
 require_job_text netbsd \
     "netbsd job does not extract the Zig tarball with tar -xf" \
     "tar -xf"
