@@ -7,9 +7,11 @@ const common = @import("common");
 const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
-/// AT_SYMLINK_FOLLOW flag for linkat: follow symlinks when creating hard links.
-/// Value is platform-dependent: 0x0040 on macOS, 0x0400 on Linux.
-const AT_SYMLINK_FOLLOW: c_int = if (@import("builtin").os.tag == .macos) 0x0040 else 0x0400;
+/// linkat(2) AT_SYMLINK_FOLLOW. The numeric value is not portable:
+/// Linux/FreeBSD/NetBSD use 0x400, macOS 0x40, OpenBSD 0x04. A
+/// hardcoded Linux value makes every default/-L hard link fail on
+/// OpenBSD with EINVAL.
+const AT_SYMLINK_FOLLOW: c_int = c.AT.SYMLINK_FOLLOW;
 
 /// Field order is GNU ln's own `longopts[]` order, because that is the order
 /// an ambiguous abbreviation lists its candidates in (`ln --v` -> '--verbose'

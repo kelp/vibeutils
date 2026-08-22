@@ -224,6 +224,9 @@
   `getGroupName` only called `getpwuid` / `getgrgid` on Linux and
   macOS, so `ls -l`, `stat %G`, and `find -group` printed raw ids
   on FreeBSD, OpenBSD, and NetBSD.
+- **`ln -L` / default hard links work on OpenBSD.** `linkat` was
+  passed Linux's `AT_SYMLINK_FOLLOW` (0x400); OpenBSD's value is
+  0x04, so every follow-symlink hard link failed with `EINVAL`.
 - **`stat -f` uses each BSD's `statfs`/`statvfs` layout.** The
   Darwin `statfs` struct was used on every non-Linux host, so
   FreeBSD `stat -f` trapped while printing `f_mntfromname`.
