@@ -2377,10 +2377,10 @@ test "mv progress covers a cross-filesystem single file copy" {
     const content = try testing.allocator.alloc(u8, size);
     defer testing.allocator.free(content);
     @memset(content, 'm');
-    try test_dir.inner.createFile("source.bin", content, null);
-    const source_path = try test_dir.inner.getPath("source.bin");
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
     defer testing.allocator.free(source_path);
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
     defer testing.allocator.free(dest_path);
@@ -2416,11 +2416,11 @@ test "mv progress covers a file copied through a cross-filesystem tree" {
     const content = try testing.allocator.alloc(u8, size);
     defer testing.allocator.free(content);
     @memset(content, 't');
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/a.txt", content, null);
-    const source_path = try test_dir.inner.getPath("src");
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/a.txt", content, null);
+    const source_path = try test_dir.getPath("src");
     defer testing.allocator.free(source_path);
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
     defer testing.allocator.free(dest_path);
@@ -2452,10 +2452,10 @@ test "mv same-filesystem rename does not emit progress" {
 
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.inner.createFile("source.txt", "rename only", null);
-    const source_path = try test_dir.inner.getPath("source.txt");
+    try test_dir.createFile("source.txt", "rename only", null);
+    const source_path = try test_dir.getPath("source.txt");
     defer testing.allocator.free(source_path);
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
     defer testing.allocator.free(dest_path);
