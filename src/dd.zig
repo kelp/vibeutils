@@ -4253,17 +4253,15 @@ test "parseOperands #159: doubled -- rejects the second --" {
 
 test "runDd #159: -- before if= copies the file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello-dd\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.txt", "hello-dd\n");
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(base_path);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    const output_path = try tmp_dir.join("output.txt");
     defer testing.allocator.free(output_path);
 
     const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
@@ -4289,23 +4287,21 @@ test "runDd #159: -- before if= copies the file" {
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("hello-dd\n", content);
 }
 
 test "runDd #159: -- after if= copies the file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "after-opt\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.txt", "after-opt\n");
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(base_path);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    const output_path = try tmp_dir.join("output.txt");
     defer testing.allocator.free(output_path);
 
     const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
@@ -4331,7 +4327,7 @@ test "runDd #159: -- after if= copies the file" {
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("after-opt\n", content);
 }
@@ -4361,16 +4357,14 @@ test "runDd #159: doubled -- names the second -- in stderr" {
 
 test "runDd #159: -- then dash-named if= copies the file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "-dash.txt", "neg\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "-dash.txt", "neg\n");
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "-dash.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("-dash.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(base_path);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    const output_path = try tmp_dir.join("output.txt");
     defer testing.allocator.free(output_path);
 
     const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
@@ -4396,7 +4390,7 @@ test "runDd #159: -- then dash-named if= copies the file" {
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
     try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("neg\n", content);
 }
