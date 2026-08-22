@@ -15,6 +15,18 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="$PROJECT_ROOT/.github/workflows/bsd.yml"
 FAILED=0
 
+# Locked last-node20 SHAs. Current v1 tags declare using: node24; the
+# workflow clones these commits and lets FORCE_JAVASCRIPT_ACTIONS_TO_NODE24
+# upgrade the runtime.
+FREEBSD_SHA=c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e
+OPENBSD_SHA=9a8e4351a4a0dc6238e7c69276dcbf6c03bea576
+NETBSD_SHA=e04aec09540429f9cebb0e7941f7cd0c0fc3b44f
+
+# Remote-action prefix that GitHub rejects at parse time against this
+# repo's SHA-exact selected-actions allowlist. Asserted as a substring
+# so comments cannot sneak the same token past the check.
+FORBIDDEN_REMOTE_USES='uses: vmactions/'
+
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
     FAILED=1
@@ -29,6 +41,62 @@ require_text() {
     fi
 }
 
+# Same two-space job-key boundary as the fakeroot assertion. Per-job
+# greps are required: the locked SHAs already sit on today's remote
+# uses: lines, so a file-wide SHA search would pass for the wrong reason.
+job_body() {
+    local want="$1"
+
+    awk -v want="$want" '
+        /^jobs:[[:space:]]*$/ {
+            in_jobs = 1
+            next
+        }
+        in_jobs && /^[^[:space:]#]/ {
+            in_jobs = 0
+        }
+        in_jobs && /^  [[:alnum:]_-]+:[[:space:]]*(#.*)?$/ {
+            job = $1
+            sub(/:$/, "", job)
+        }
+        in_jobs && job == want {
+            print
+        }
+    ' "$WORKFLOW"
+}
+
+require_job_text() {
+    local job="$1"
+    local description="$2"
+    local needle="$3"
+    local body
+
+    body="$(job_body "$job")"
+    if [[ -z "$body" ]]; then
+        fail "job '$job' is missing"
+        return
+    fi
+    if [[ "$body" != *"$needle"* ]]; then
+        fail "$description"
+    fi
+}
+
+require_guest_job() {
+    local job="$1"
+    local repo="$2"
+    local sha="$3"
+
+    require_job_text "$job" \
+        "${job} job does not clone https://github.com/vmactions/${repo}" \
+        "git clone https://github.com/vmactions/${repo}"
+    require_job_text "$job" \
+        "${job} job does not git checkout the locked SHA ${sha}" \
+        "git checkout ${sha}"
+    require_job_text "$job" \
+        "${job} job does not use the local action ./_vmactions/${repo}" \
+        "uses: ./_vmactions/${repo}"
+}
+
 if [[ ! -f "$WORKFLOW" ]]; then
     fail ".github/workflows/bsd.yml does not exist"
     exit "$FAILED"
@@ -36,15 +104,14 @@ fi
 
 WORKFLOW_CONTENT="$(<"$WORKFLOW")"
 
-require_text \
-    "FreeBSD vmaction is not pinned to the locked SHA" \
-    "uses: vmactions/freebsd-vm@c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e"
-require_text \
-    "OpenBSD vmaction is not pinned to the locked SHA" \
-    "uses: vmactions/openbsd-vm@9a8e4351a4a0dc6238e7c69276dcbf6c03bea576"
-require_text \
-    "NetBSD vmaction is not pinned to the locked SHA" \
-    "uses: vmactions/netbsd-vm@e04aec09540429f9cebb0e7941f7cd0c0fc3b44f"
+if [[ "$WORKFLOW_CONTENT" == *"$FORBIDDEN_REMOTE_USES"* ]]; then
+    fail "workflow must not contain ${FORBIDDEN_REMOTE_USES} (parse-time allowlist failure)"
+fi
+
+require_guest_job freebsd freebsd-vm "$FREEBSD_SHA"
+require_guest_job openbsd openbsd-vm "$OPENBSD_SHA"
+require_guest_job netbsd netbsd-vm "$NETBSD_SHA"
+
 require_text "workflow does not install Zig 0.16.0" "0.16.0"
 require_text "workflow does not use an Ubuntu host runner" \
     "runs-on: ubuntu-latest"
