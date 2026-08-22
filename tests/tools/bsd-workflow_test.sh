@@ -112,6 +112,22 @@ require_guest_job freebsd freebsd-vm "$FREEBSD_SHA"
 require_guest_job openbsd openbsd-vm "$OPENBSD_SHA"
 require_guest_job netbsd netbsd-vm "$NETBSD_SHA"
 
+# OpenBSD/NetBSD stock tar cannot unpack the official Zig .tar.xz
+# without the xz package. Needle is the install command, not `xz`:
+# the tarball URL already contains `.tar.xz` and would false-pass.
+require_job_text openbsd \
+    "openbsd job does not pkg_add xz before tar extract" \
+    "pkg_add xz"
+require_job_text openbsd \
+    "openbsd job does not extract the Zig tarball with tar -xf" \
+    "tar -xf"
+require_job_text netbsd \
+    "netbsd job does not pkg_add xz before tar extract" \
+    "pkg_add xz"
+require_job_text netbsd \
+    "netbsd job does not extract the Zig tarball with tar -xf" \
+    "tar -xf"
+
 require_text "workflow does not install Zig 0.16.0" "0.16.0"
 require_text "workflow does not use an Ubuntu host runner" \
     "runs-on: ubuntu-latest"
