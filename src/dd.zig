@@ -1156,6 +1156,7 @@ fn runDd_writeBlockRecord(
             ctx.stats.bytes_copied += cbs;
             ctx.stats.full_blocks_out += 1;
             cbs_pos.* = 0;
+            runDd_updateProgress(ctx);
         } else {
             // Accumulate byte into record (truncate if > cbs)
             if (cbs_pos.* < cbs) {
@@ -1205,6 +1206,7 @@ fn runDd_writeUnblockRecords(
             ctx.stats.bytes_copied += end + 1;
             ctx.stats.full_blocks_out += 1;
             unblock_pos.* = 0;
+            runDd_updateProgress(ctx);
         }
     }
     // Loop invariant: each step advances data_pos by at most the bytes
@@ -1283,6 +1285,9 @@ fn runDd_writeBufferedBlock(
             ctx.stats.full_blocks_out += 1;
             ctx.stats.bytes_copied += obs;
             out_pos.* = 0;
+            // A later flush in this call can fail; paint now so finish
+            // matches printStats instead of the previous loop update.
+            runDd_updateProgress(ctx);
         }
     }
     // Loop invariant: data_pos advances by at most the bytes remaining,
