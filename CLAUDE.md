@@ -266,7 +266,13 @@ implementation files.
 - Landing one `TODO.md` heading → the
   `land-todo-slice` skill (plan, three-model
   review, TDD, draft PR, comment drain). One
-  heading is one pull request.
+  heading is one pull request. Plan and patch
+  review use a one-page brief and split axes
+  (Grok: scope/process; Sol: CLAUDE/TDD;
+  Opus 5: test teeth). Send Sol and Opus the
+  real plan or `git show` diff, not the full
+  tree. Resume only the objector on nits. The
+  parent watches CI. Stay at three reviewers.
 - Implementing a new utility → the `new-util` skill
   (classification, TDD phases, template).
 - Writing Zig → the `zig-patterns` skill;
