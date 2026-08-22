@@ -904,6 +904,43 @@ fn copyRegularFile(
         options,
     ) orelse return false;
 
+    // One tracker per file, TTY-gated inside makeCopyTracker per file
+    // (macOS isatty class); all three byte-copy paths below share it.
+    var tracker_storage = makeCopyTracker(io, stderr_writer, source_path, source_info.size);
+
+    return copyRegularFile_dispatch(
+        allocator,
+        io,
+        stderr_writer,
+        source_path,
+        dest_path,
+        options,
+        source_info,
+        dest_unlinked,
+        if (tracker_storage) |*t| t else null,
+    );
+}
+
+/// Route one regular-file copy to the matching byte-copy path: preserve
+/// (-p), overwrite-in-place, or simple create-and-copy. Extracted from
+/// copyRegularFile so the parent stays within the 70-line limit after
+/// gaining the progress tracker.
+fn copyRegularFile_dispatch(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+    source_info: common.file.FileInfo,
+    dest_unlinked: bool,
+    tracker: ?*common.progress.Tracker,
+) bool {
+    // Forwarded from copyRegularFile, which stats the source successfully
+    // before dispatching; both operands still name the diagnostics below.
+    assert(source_path.len > 0);
+    assert(source_info.mode & std.c.S.IFMT != 0);
+
     if (options.preserve) {
         common.file_ops.copyFileWithAttributes(
             allocator,
@@ -913,6 +950,7 @@ fn copyRegularFile(
             source_path,
             dest_path,
             source_info,
+            tracker,
         ) catch {
             return false;
         };
@@ -921,7 +959,7 @@ fn copyRegularFile(
     if (!dest_unlinked and fileExists(io, dest_path)) {
         // Destination exists and was not unlinked: overwrite in place to
         // preserve the inode (and thus hard links).
-        copyInPlace(allocator, io, stderr_writer, source_path, dest_path) catch {
+        copyInPlace(allocator, io, stderr_writer, source_path, dest_path, tracker) catch {
             return false;
         };
         return true;
@@ -933,7 +971,32 @@ fn copyRegularFile(
         source_path,
         dest_path,
         source_info.mode,
+        tracker,
     );
+}
+
+/// Build the auto-progress tracker for one regular-file copy, or null when
+/// stderr is not a TTY (or the test overlay disables it). Extracted so
+/// copyRegularFile stays within the 70-line limit.
+fn makeCopyTracker(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    total: u64,
+) ?common.progress.Tracker {
+    // The path labels the status line and cp asserts non-empty operands
+    // upstream; an empty label would render "cp: copying " with no name.
+    assert(source_path.len > 0);
+    const tracker = common.progress.forCopy(
+        stderr_writer,
+        "cp",
+        source_path,
+        total,
+        common.progress.nowNs(io),
+    );
+    // forCopy either declines (no TTY) or hands back an enabled tracker.
+    assert(tracker == null or tracker.?.enabled);
+    return tracker;
 }
 
 /// Apply the GNU force-overwrite rule before copying a regular file: "if an
@@ -979,6 +1042,7 @@ fn copyRegularFile_simpleCopy(
     source_path: []const u8,
     dest_path: []const u8,
     source_mode: std.posix.mode_t,
+    tracker: ?*common.progress.Tracker,
 ) bool {
     // Sole caller copyRegularFile forwards its own asserted non-empty source.
     assert(source_path.len > 0);
@@ -1013,7 +1077,7 @@ fn copyRegularFile_simpleCopy(
     };
     defer dest_file.close(io);
 
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -1034,6 +1098,7 @@ fn copyInPlace(
     stderr_writer: *std.Io.Writer,
     source_path: []const u8,
     dest_path: []const u8,
+    tracker: ?*common.progress.Tracker,
 ) !void {
     // Sole caller copyRegularFile forwards its own non-empty operands here.
     assert(source_path.len > 0);
@@ -1079,7 +1144,7 @@ fn copyInPlace(
         return error.DestinationNotWritable;
     };
 
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,

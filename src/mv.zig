@@ -588,16 +588,7 @@ fn crossFilesystemMove(
             .{ .order = .both, .symlinks = .no_follow, .cycle_mode = .ancestors },
         );
     } else {
-        errdefer std.Io.Dir.cwd().deleteFile(io, dest) catch {};
-        try common.file_ops.copyFileWithAttributes(
-            allocator,
-            io,
-            stderr_writer,
-            "mv",
-            source,
-            dest,
-            source_info,
-        );
+        try crossFilesystemMoveFile(allocator, io, source, dest, source_info, stderr_writer);
     }
 
     // Copy succeeded for every entry. Remove the source (copy-then-delete).
@@ -611,6 +602,43 @@ fn crossFilesystemMove(
     if (options.verbose) {
         try stdout_writer.print("mv: completed cross-filesystem move\n", .{});
     }
+}
+
+/// Copy one regular file across filesystems for the EXDEV fallback, with the
+/// auto-progress tracker attached. On any copy failure the partial dest is
+/// wiped (errdefer) before the error propagates — a half-copied single file
+/// must never masquerade as a completed move. Extracted from
+/// crossFilesystemMove so the parent stays within the 70-line limit.
+fn crossFilesystemMoveFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    dest: []const u8,
+    source_info: common.file.FileInfo,
+    stderr_writer: anytype,
+) !void {
+    assert(source.len > 0);
+    assert(dest.len > 0);
+
+    errdefer std.Io.Dir.cwd().deleteFile(io, dest) catch {};
+    // One tracker per file, TTY-gated inside forCopy (macOS isatty class).
+    var tracker_storage = common.progress.forCopy(
+        stderr_writer,
+        "mv",
+        source,
+        source_info.size,
+        common.progress.nowNs(io),
+    );
+    try common.file_ops.copyFileWithAttributes(
+        allocator,
+        io,
+        stderr_writer,
+        "mv",
+        source,
+        dest,
+        source_info,
+        if (tracker_storage) |*t| t else null,
+    );
 }
 
 /// Remove the source after a successful copy. A failure here leaves the source
@@ -882,6 +910,15 @@ fn copyTreeFile(
         );
         return err;
     };
+    // One tracker per regular file in the tree, not one bar for the whole
+    // tree; the TTY gate lives inside forCopy and is re-checked per file.
+    var tracker_storage = common.progress.forCopy(
+        stderr_writer,
+        "mv",
+        source_path,
+        source_info.size,
+        common.progress.nowNs(io),
+    );
     try common.file_ops.copyFileWithAttributes(
         allocator,
         io,
@@ -890,6 +927,7 @@ fn copyTreeFile(
         source_path,
         dest_path,
         source_info,
+        if (tracker_storage) |*t| t else null,
     );
 
     if (options.verbose) {

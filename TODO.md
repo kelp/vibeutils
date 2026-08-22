@@ -1324,10 +1324,10 @@ full design.
 - [ ] Man page
 
 ### 6. Progress Feedback for `cp`/`mv`/`dd`
-- [ ] Progress module in `src/common/`
-- [ ] Show status line on stderr after 2s delay
-- [ ] Update in place, clear when done
-- [ ] Only when stderr is a TTY
+- [x] Progress module in `src/common/`
+- [x] Show status line on stderr after 2s delay
+- [x] Update in place, clear when done
+- [x] Only when stderr is a TTY
 
 ### 7. Smarter Error Messages
 - [ ] Permission denied with actionable hint

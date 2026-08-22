@@ -490,27 +490,11 @@ fn applyConversions(buf: []u8, config: DdConfig) void {
     }
 }
 
-/// Format a byte count as a human-readable string (e.g., "1.5 MB, 1.4 MiB")
+/// Format a byte count as a human-readable string (e.g., "1.5 MB, 1.4 MiB").
+/// Thin delegate to the shared GNU formatter in common.progress so the
+/// final stats and the status=progress live line can never drift apart.
 fn formatByteCount(buf: []u8, bytes: usize) []const u8 {
-    const fb: f64 = @floatFromInt(bytes);
-    if (bytes >= 1_000_000_000) {
-        return std.fmt.bufPrint(buf, "{d:.1} GB, {d:.1} GiB", .{
-            fb / 1_000_000_000.0,
-            fb / 1_073_741_824.0,
-        }) catch "?";
-    } else if (bytes >= 1_000_000) {
-        return std.fmt.bufPrint(buf, "{d:.1} MB, {d:.1} MiB", .{
-            fb / 1_000_000.0,
-            fb / 1_048_576.0,
-        }) catch "?";
-    } else if (bytes >= 1000) {
-        return std.fmt.bufPrint(buf, "{d:.1} kB, {d:.1} KiB", .{
-            fb / 1000.0,
-            fb / 1024.0,
-        }) catch "?";
-    } else {
-        return std.fmt.bufPrint(buf, "{d} bytes", .{bytes}) catch "?";
-    }
+    return common.progress.formatGnuBytes(buf, @intCast(bytes));
 }
 
 /// Print transfer statistics to stderr
@@ -529,34 +513,15 @@ fn printStats(io: std.Io, stderr: *std.Io.Writer, stats: DdStats, status: Status
     if (status == .noxfer) return;
 
     const elapsed_ns = std.Io.Timestamp.now(io, .real).nanoseconds - stats.start_ns;
-    const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
-    const elapsed_display = if (elapsed_s < 0.0001) 0.0001 else elapsed_s;
-    // Clamped to >= 0.0001 above (covers clock skew), so the rate
-    // division by elapsed_display below can never divide by zero.
-    std.debug.assert(elapsed_display > 0.0);
-
-    var size_buf: [128]u8 = undefined;
-    const size_str = formatByteCount(&size_buf, stats.bytes_copied);
-
-    const fb: f64 = @floatFromInt(stats.bytes_copied);
-    const rate = fb / elapsed_display;
-
-    var rate_buf: [64]u8 = undefined;
-    const rate_str = if (rate >= 1_000_000_000.0)
-        std.fmt.bufPrint(&rate_buf, "{d:.1} GB/s", .{rate / 1_000_000_000.0}) catch "?"
-    else if (rate >= 1_000_000.0)
-        std.fmt.bufPrint(&rate_buf, "{d:.1} MB/s", .{rate / 1_000_000.0}) catch "?"
-    else if (rate >= 1000.0)
-        std.fmt.bufPrint(&rate_buf, "{d:.1} kB/s", .{rate / 1000.0}) catch "?"
-    else
-        std.fmt.bufPrint(&rate_buf, "{d:.0} bytes/s", .{rate}) catch "?";
-
-    stderr.print("{d} bytes ({s}) copied, {d:.4} s, {s}\n", .{
-        stats.bytes_copied,
-        size_str,
-        elapsed_display,
-        rate_str,
-    }) catch {};
+    // Shared with the .gnu_xfer live line (which clamps elapsed the same
+    // way), so the two renderings of the transfer line cannot drift.
+    var line_buf: [256]u8 = undefined;
+    const line = common.progress.formatGnuTransfer(
+        &line_buf,
+        @intCast(stats.bytes_copied),
+        elapsed_ns,
+    );
+    stderr.print("{s}\n", .{line}) catch {};
 }
 
 fn printHelp(allocator: Allocator, writer: anytype) !void {
@@ -1124,13 +1089,7 @@ fn runDd_handleReadError(
     if (config.conv_noerror) {
         // Continue after read errors
         const read_message = common.posixErrorString(err);
-        common.printErrorWithProgram(
-            ctx.allocator,
-            ctx.stderr,
-            "dd",
-            "read error: {s}",
-            .{read_message},
-        );
+        ddNote(ctx, "read error: {s}", .{read_message});
         // Consume the count= budget on every failed read attempt. A
         // persistent, non-advancing read (e.g. a directory fd returning
         // EISDIR with zero bytes consumed) otherwise never increments
@@ -1148,13 +1107,7 @@ fn runDd_handleReadError(
                 // Write the NUL-filled block
                 ctx.output_file.writeStreamingAll(ctx.io, in_buf) catch |werr| {
                     const write_message = common.posixErrorString(werr);
-                    common.printErrorWithProgram(
-                        ctx.allocator,
-                        ctx.stderr,
-                        "dd",
-                        "write error: {s}",
-                        .{write_message},
-                    );
+                    ddNote(ctx, "write error: {s}", .{write_message});
                     return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
                 };
                 ctx.stats.full_blocks_out += 1;
@@ -1164,13 +1117,7 @@ fn runDd_handleReadError(
         return .continue_loop;
     }
     const read_message = common.posixErrorString(err);
-    common.printErrorWithProgram(
-        ctx.allocator,
-        ctx.stderr,
-        "dd",
-        "read error: {s}",
-        .{read_message},
-    );
+    ddNote(ctx, "read error: {s}", .{read_message});
     printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
     return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
 }
@@ -1182,7 +1129,7 @@ fn runDd_writeError(ctx: *const DdWriteCtx, err: anyerror) u8 {
     std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
 
     const message = common.posixErrorString(err);
-    common.printErrorWithProgram(ctx.allocator, ctx.stderr, "dd", "write error: {s}", .{message});
+    ddNote(ctx, "write error: {s}", .{message});
     printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
     return @intFromEnum(common.ExitCode.general_error);
 }
@@ -1535,6 +1482,101 @@ pub fn runDd(
     return runDd_copy(allocator, io, stderr, &config);
 }
 
+/// Build the status=progress live-line tracker, or null for every other
+/// status level. GNU semantics: NOT TTY-gated (GNU writes the line into
+/// pipes and logs), 1s delay and 1s refresh (SIGALRM cadence), total known
+/// only when count= is set — block counts use a checked multiply and fall
+/// back to unknown on overflow rather than trapping.
+fn runDd_makeTracker(
+    stderr: *std.Io.Writer,
+    config: *const DdConfig,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    start_ns: i128,
+) ?common.progress.Tracker {
+    std.debug.assert(ibs > 0);
+    if (config.status != .progress) return null;
+
+    const total: ?u64 = blk: {
+        const count = config.count orelse break :blk null;
+        if (config.count_bytes) break :blk @intCast(count);
+        break :blk std.math.mul(u64, @intCast(count), @intCast(ibs)) catch null;
+    };
+    const delay_ns: i128 = if (builtin.is_test)
+        (common.progress.test_delay_ns orelse dd_progress_delay_ns)
+    else
+        dd_progress_delay_ns;
+    std.debug.assert(delay_ns >= 0);
+    return .{
+        .writer = stderr,
+        .program = "dd",
+        .label = "",
+        .total = total,
+        .delay_ns = delay_ns,
+        .interval_ns = dd_progress_interval_ns,
+        .start_ns = start_ns,
+        .last_emit_ns = start_ns,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .gnu_xfer,
+    };
+}
+
+/// GNU dd repaints the status=progress line roughly once per second
+/// (SIGALRM cadence); both the initial delay and the refresh use it.
+const dd_progress_delay_ns: i128 = 1_000_000_000;
+const dd_progress_interval_ns: i128 = 1_000_000_000;
+
+/// Effective input/output block sizes after the bs= override.
+const DdBlockSizes = struct {
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+};
+
+/// Resolve ibs/obs (bs= overrides both) and reject zero sizes with the
+/// GNU diagnostic. Extracted so runDd_copy stays within the 70-line limit.
+fn runDd_blockSizes(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    config: *const DdConfig,
+) ?DdBlockSizes {
+    const ibs = if (config.bs) |bs| bs else config.ibs;
+    const obs = if (config.bs) |bs| bs else config.obs;
+    if (ibs == 0 or obs == 0) {
+        common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
+        return null;
+    }
+    // The guard above rejected zero block sizes, so both are positive
+    // before the buffers are allocated against them.
+    std.debug.assert(ibs > 0);
+    std.debug.assert(obs > 0);
+    return .{ .ibs = ibs, .obs = obs };
+}
+
+/// Feed the live progress line after the copy loop advanced. A no-op
+/// without a tracker (any status other than progress). Extracted so
+/// runDd_copyLoop stays within the 70-line limit.
+fn runDd_updateProgress(ctx: *const DdWriteCtx) void {
+    const tracker = ctx.tracker orelse return;
+    std.debug.assert(tracker.enabled);
+    std.debug.assert(tracker.kind == .gnu_xfer);
+    tracker.update(tracker.now(ctx.io), @intCast(ctx.stats.bytes_copied));
+}
+
+/// Print a copy-loop diagnostic, finishing a live progress line first so
+/// the message starts on its own line instead of gluing to (or being
+/// wiped by) the `\r` transfer line. Parse-time errors, which can never
+/// race a live line, print directly instead of through this helper.
+fn ddNote(ctx: *const DdWriteCtx, comptime fmt: []const u8, args: anytype) void {
+    comptime std.debug.assert(fmt.len > 0);
+    if (ctx.tracker) |tracker| {
+        std.debug.assert(tracker.enabled);
+        tracker.finish(tracker.now(ctx.io));
+    }
+    common.printErrorWithProgram(ctx.allocator, ctx.stderr, "dd", fmt, args);
+}
+
 /// Set up the copy (validate, size, allocate, open, skip, seek), then
 /// run the copy loop and flush the tails. Owns every buffer/file defer
 /// so the lifecycle stays in one scope; returns the final exit code.
@@ -1547,17 +1589,10 @@ fn runDd_copy(
     const validate_code = runDd_validateConfig(allocator, stderr, config);
     if (validate_code != @intFromEnum(common.ExitCode.success)) return validate_code;
 
-    // Determine effective block sizes
-    const ibs = if (config.bs) |bs| bs else config.ibs;
-    const obs = if (config.bs) |bs| bs else config.obs;
-    if (ibs == 0 or obs == 0) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
+    const sizes = runDd_blockSizes(allocator, stderr, config) orelse
         return @intFromEnum(common.ExitCode.general_error);
-    }
-    // The guard above rejected zero block sizes, so both are positive
-    // before the buffers are allocated against them.
-    std.debug.assert(ibs > 0);
-    std.debug.assert(obs > 0);
+    const ibs = sizes.ibs;
+    const obs = sizes.obs;
 
     const bufs = switch (runDd_allocBuffers(allocator, stderr, ibs, obs)) {
         .fatal => |code| return code,
@@ -1584,6 +1619,7 @@ fn runDd_copy(
     defer if (cbs_buf) |b| allocator.free(b);
 
     var stats = DdStats{ .start_ns = std.Io.Timestamp.now(io, .real).nanoseconds };
+    var tracker_storage = runDd_makeTracker(stderr, config, ibs, stats.start_ns);
     const ctx = DdWriteCtx{
         .allocator = allocator,
         .io = io,
@@ -1591,6 +1627,7 @@ fn runDd_copy(
         .output_file = files.output_file,
         .status = config.status,
         .stats = &stats,
+        .tracker = if (tracker_storage) |*t| t else null,
     };
     const plan = DdPlan{
         .input_file = files.input_file,
@@ -1814,6 +1851,7 @@ fn runDd_copyLoop(
 
         const code = runDd_copyLoop_dispatch(ctx, config, plan, data, positions);
         if (code != @intFromEnum(common.ExitCode.success)) return code;
+        runDd_updateProgress(ctx);
     }
     return @intFromEnum(common.ExitCode.success);
 }
@@ -1896,6 +1934,11 @@ fn runDd_finish(
     const sync_code = runDd_finish_sync(ctx, config);
     if (sync_code != @intFromEnum(common.ExitCode.success)) return sync_code;
 
+    // Finish a shown live line first: GNU ends the progress line with a
+    // newline and then prints the records/transfer stats again (the GNU
+    // double print). A never-shown tracker adds nothing here.
+    if (ctx.tracker) |tracker| tracker.finish(tracker.now(ctx.io));
+
     // Print statistics
     printStats(ctx.io, ctx.stderr, ctx.stats.*, config.status);
     return @intFromEnum(common.ExitCode.success);
@@ -1954,13 +1997,7 @@ fn runDd_finish_sync_fail(
     std.debug.assert(err != .SUCCESS);
 
     const detail = runDd_finish_sync_errnoString(err);
-    common.printErrorWithProgram(
-        ctx.allocator,
-        ctx.stderr,
-        "dd",
-        "{s} failed for '{s}': {s}",
-        .{ op, target, detail },
-    );
+    ddNote(ctx, "{s} failed for '{s}': {s}", .{ op, target, detail });
     return @intFromEnum(common.ExitCode.general_error);
 }
 

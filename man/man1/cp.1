@@ -29,6 +29,15 @@ with its original filename.
 If multiple sources are provided, they are copied into
 the target directory.
 .Pp
+When standard error is a terminal and a single file copy takes
+longer than 2 seconds,
+.Nm
+displays a status line on standard error showing the file name,
+bytes copied, and percentage.
+The line refreshes in place twice per second and is cleared when
+the copy completes.
+No status line is shown when standard error is not a terminal.
+.Pp
 The options are as follows:
 .Bl -tag -width Ds
 .It Fl a

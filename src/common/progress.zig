@@ -1,10 +1,18 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("env.zig");
+const format = @import("format.zig");
+const assert = std.debug.assert;
 
 pub const Kind = enum {
     copy_line,
     gnu_xfer,
 };
+
+/// Upper bound on one rendered status line, including the leading '\r'.
+/// This is the loop bound for every formatting path below; the label is
+/// truncated to fit, the counters never are.
+const line_bytes_max: usize = 256;
 
 pub const Tracker = struct {
     writer: *std.Io.Writer,
@@ -22,14 +30,40 @@ pub const Tracker = struct {
     kind: Kind,
 
     pub fn update(self: *Tracker, now_ns: i128, copied: u64) void {
-        _ = self;
-        _ = now_ns;
-        _ = copied;
+        // Delay and interval are durations: non-negative by construction,
+        // never i128-negative, or the comparisons below would always pass.
+        assert(self.delay_ns >= 0);
+        assert(self.interval_ns >= 0);
+
+        // Record the observable byte count even when the line is disabled
+        // or still inside the delay, so callers can always read progress.
+        self.bytes_done = copied;
+        if (!self.enabled) return;
+        if (now_ns - self.start_ns < self.delay_ns) return;
+        // An interval of 0 means every update emits (tight test loops);
+        // otherwise refresh only after the interval has elapsed.
+        if (self.shown and self.interval_ns > 0 and
+            now_ns - self.last_emit_ns < self.interval_ns) return;
+        switch (self.kind) {
+            .copy_line => self.emitCopyLine(now_ns),
+            .gnu_xfer => self.emitGnuLine(now_ns, false),
+        }
     }
 
     pub fn finish(self: *Tracker, now_ns: i128) void {
-        _ = self;
-        _ = now_ns;
+        // A cleared width always fits the clear buffer, and a tracker that
+        // never emitted has nothing on screen to clean up.
+        assert(self.last_width <= line_bytes_max);
+        assert(self.shown or self.last_width == 0 or !self.enabled);
+
+        if (!self.enabled or !self.shown) return;
+        switch (self.kind) {
+            .copy_line => self.clearCopyLine(),
+            .gnu_xfer => self.emitGnuLine(now_ns, true),
+        }
+        // Idempotence: a second finish (or one after a diagnostic) is a
+        // no-op because the line is no longer considered shown.
+        self.shown = false;
     }
 
     pub fn now(self: *const Tracker, io: std.Io) i128 {
@@ -39,7 +73,239 @@ pub const Tracker = struct {
         }
         return std.Io.Timestamp.now(io, .real).nanoseconds;
     }
+
+    /// Render the cp/mv status line: '\r' + "prog: copying label  done/total  pct%".
+    /// The label is basename'd, control-sanitized, and truncated so the
+    /// whole line fits line_bytes_max; the counters are never truncated.
+    fn emitCopyLine(self: *Tracker, now_ns: i128) void {
+        assert(self.enabled);
+        assert(self.kind == .copy_line);
+
+        var counters_buf: [96]u8 = undefined;
+        const counters = formatCopyCounters(&counters_buf, self.bytes_done, self.total);
+
+        var line_buf: [line_bytes_max]u8 = undefined;
+        line_buf[0] = '\r';
+        var pos: usize = 1;
+        pos += copyBounded(line_buf[pos..], self.program);
+        pos += copyBounded(line_buf[pos..], ": copying ");
+        // Reserve the counter bytes before placing the label so a long
+        // path can never push the counters off the line.
+        const label = std.fs.path.basename(self.label);
+        const label_space = line_buf.len -| pos -| counters.len;
+        const label_len = @min(label.len, label_space);
+        for (label[0..label_len]) |byte| {
+            // A '\r', '\n', or '\t' in a hostile file name would break the
+            // single-line redraw; degrade those bytes to '?'.
+            line_buf[pos] = if (byte == '\r' or byte == '\n' or byte == '\t') '?' else byte;
+            pos += 1;
+        }
+        pos += copyBounded(line_buf[pos..], counters);
+        assert(pos <= line_buf.len);
+        assert(pos >= 1 + counters.len);
+
+        // Progress must never fail the copy: swallow write errors, and
+        // flush so a buffered stderr shows the line immediately.
+        self.writer.writeAll(line_buf[0..pos]) catch {};
+        self.writer.flush() catch {};
+        self.shown = true;
+        self.last_emit_ns = now_ns;
+        self.last_width = @intCast(pos - 1);
+    }
+
+    /// Erase a shown copy line: '\r', spaces over the previous width, '\r'.
+    /// No newline — the cursor returns to column 0 on a blank line.
+    fn clearCopyLine(self: *Tracker) void {
+        assert(self.kind == .copy_line);
+        assert(self.shown);
+
+        var buf: [line_bytes_max + 2]u8 = undefined;
+        const width: usize = @min(self.last_width, line_bytes_max);
+        buf[0] = '\r';
+        @memset(buf[1 .. 1 + width], ' ');
+        buf[1 + width] = '\r';
+        self.writer.writeAll(buf[0 .. width + 2]) catch {};
+        self.writer.flush() catch {};
+    }
+
+    /// Render the GNU dd transfer line, live ('\r', no newline) or final
+    /// ('\r' + line + '\n'), using the shared printStats formatter.
+    fn emitGnuLine(self: *Tracker, now_ns: i128, final: bool) void {
+        assert(self.enabled);
+        assert(self.kind == .gnu_xfer);
+
+        var body_buf: [line_bytes_max]u8 = undefined;
+        const body = formatGnuTransfer(&body_buf, self.bytes_done, now_ns - self.start_ns);
+        self.writer.writeAll("\r") catch {};
+        self.writer.writeAll(body) catch {};
+        if (final) self.writer.writeAll("\n") catch {};
+        self.writer.flush() catch {};
+        self.shown = true;
+        self.last_emit_ns = now_ns;
+        self.last_width = @intCast(body.len);
+    }
 };
+
+/// Copy as much of src as fits into dst and return the bytes copied.
+/// Bounded truncation is the point: callers budget the 256-byte line.
+fn copyBounded(dst: []u8, src: []const u8) usize {
+    const n = @min(dst.len, src.len);
+    @memcpy(dst[0..n], src[0..n]);
+    assert(n <= dst.len);
+    assert(n <= src.len);
+    return n;
+}
+
+/// Format the "  done/total  pct%" tail of a copy line. Unknown (null)
+/// or zero totals omit the "/total" and the percent entirely. Sizes are
+/// SI-humanized with unit suffixes (design mock "248MB/1.2GB").
+fn formatCopyCounters(buf: []u8, done: u64, total: ?u64) []const u8 {
+    // Two humanized sizes plus percent need well under 48 bytes; a
+    // smaller buffer would silently truncate the counters.
+    assert(buf.len >= 48);
+
+    const human_opts: format.FormatOptions = .{ .si = true, .suffix = .iec };
+    var done_buf: [32]u8 = undefined;
+    const done_str = format.formatHumanReadable(&done_buf, done, human_opts);
+    const total_bytes = total orelse 0;
+    if (total_bytes == 0) {
+        return std.fmt.bufPrint(buf, "  {s}", .{done_str}) catch buf[0..0];
+    }
+    var total_buf: [32]u8 = undefined;
+    const total_str = format.formatHumanReadable(&total_buf, total_bytes, human_opts);
+    // Widen to u128 so a near-maxInt(u64) done cannot wrap in the
+    // multiply; cap at 100 when done overshoots the stat-time total.
+    const pct_wide = @divFloor(@as(u128, done) * 100, @as(u128, total_bytes));
+    const pct = @min(pct_wide, 100);
+    assert(pct <= 100);
+    return std.fmt.bufPrint(buf, "  {s}/{s}  {d}%", .{ done_str, total_str, pct }) catch buf[0..0];
+}
+
+/// Format the GNU dd transfer line body: "N bytes (SI, IEC) copied, T s,
+/// RATE". Shared by dd's printStats and the .gnu_xfer live line so the
+/// two renderings can never drift apart. Elapsed time is clamped to
+/// >= 0.0001 s (clock skew) so the rate division cannot divide by zero.
+pub fn formatGnuTransfer(buf: []u8, bytes_copied: u64, elapsed_ns: i128) []const u8 {
+    assert(buf.len >= line_bytes_max);
+
+    const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+    const elapsed_display = if (elapsed_s < 0.0001) 0.0001 else elapsed_s;
+    assert(elapsed_display > 0.0);
+
+    var size_buf: [128]u8 = undefined;
+    const size_str = formatGnuBytes(&size_buf, bytes_copied);
+    const fb: f64 = @floatFromInt(bytes_copied);
+    var rate_buf: [64]u8 = undefined;
+    const rate_str = formatGnuRate(&rate_buf, fb / elapsed_display);
+    return std.fmt.bufPrint(buf, "{d} bytes ({s}) copied, {d:.4} s, {s}", .{
+        bytes_copied,
+        size_str,
+        elapsed_display,
+        rate_str,
+    }) catch "?";
+}
+
+/// Format a byte count the way GNU dd's stats do: "1.5 MB, 1.4 MiB",
+/// or "N bytes" below one kB. Moved here from dd so the live line and
+/// the final stats share one renderer.
+pub fn formatGnuBytes(buf: []u8, bytes: u64) []const u8 {
+    assert(buf.len >= 64);
+
+    const fb: f64 = @floatFromInt(bytes);
+    assert(fb >= 0.0);
+    if (bytes >= 1_000_000_000) {
+        return std.fmt.bufPrint(buf, "{d:.1} GB, {d:.1} GiB", .{
+            fb / 1_000_000_000.0,
+            fb / 1_073_741_824.0,
+        }) catch "?";
+    } else if (bytes >= 1_000_000) {
+        return std.fmt.bufPrint(buf, "{d:.1} MB, {d:.1} MiB", .{
+            fb / 1_000_000.0,
+            fb / 1_048_576.0,
+        }) catch "?";
+    } else if (bytes >= 1000) {
+        return std.fmt.bufPrint(buf, "{d:.1} kB, {d:.1} KiB", .{
+            fb / 1000.0,
+            fb / 1024.0,
+        }) catch "?";
+    } else {
+        return std.fmt.bufPrint(buf, "{d} bytes", .{bytes}) catch "?";
+    }
+}
+
+/// Format a transfer rate the way GNU dd's stats do ("12.3 MB/s").
+pub fn formatGnuRate(buf: []u8, rate: f64) []const u8 {
+    assert(buf.len >= 32);
+    assert(rate >= 0.0);
+
+    if (rate >= 1_000_000_000.0) {
+        return std.fmt.bufPrint(buf, "{d:.1} GB/s", .{rate / 1_000_000_000.0}) catch "?";
+    } else if (rate >= 1_000_000.0) {
+        return std.fmt.bufPrint(buf, "{d:.1} MB/s", .{rate / 1_000_000.0}) catch "?";
+    } else if (rate >= 1000.0) {
+        return std.fmt.bufPrint(buf, "{d:.1} kB/s", .{rate / 1000.0}) catch "?";
+    } else {
+        return std.fmt.bufPrint(buf, "{d:.0} bytes/s", .{rate}) catch "?";
+    }
+}
+
+/// Current wall-clock nanoseconds, honoring the test overlay so unit
+/// tests can drive time without sleeping.
+pub fn nowNs(io: std.Io) i128 {
+    if (builtin.is_test) {
+        if (test_now_ns) |value| return value;
+    }
+    return std.Io.Timestamp.now(io, .real).nanoseconds;
+}
+
+/// Build the cp/mv KEEP auto-progress tracker for one regular-file copy,
+/// or null when progress is disabled: stderr is not a TTY, or the test
+/// overlay forces it off. The gate is evaluated here, once per file
+/// (macOS isatty class). The caller passes the wall-clock start so tests
+/// can drive time explicitly.
+pub fn forCopy(
+    writer: *std.Io.Writer,
+    program: []const u8,
+    source_path: []const u8,
+    total: ?u64,
+    start_ns: i128,
+) ?Tracker {
+    // Both name the status line; empty values would render a broken
+    // prefix and can never come from the cp/mv call sites.
+    assert(program.len > 0);
+    assert(source_path.len > 0);
+
+    if (!copyEnabled()) return null;
+    return .{
+        .writer = writer,
+        .program = program,
+        .label = source_path,
+        .total = total,
+        .delay_ns = copyDelayNs(),
+        .interval_ns = copy_interval_ns,
+        .start_ns = start_ns,
+        .last_emit_ns = start_ns,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .copy_line,
+    };
+}
+
+fn copyEnabled() bool {
+    if (builtin.is_test) {
+        if (test_enabled) |value| return value;
+    }
+    return env.isTty(std.Io.File.stderr().handle);
+}
+
+fn copyDelayNs() i128 {
+    if (builtin.is_test) {
+        if (test_delay_ns) |value| return value;
+    }
+    return copy_delay_ns;
+}
 
 pub var test_enabled: ?bool = null;
 pub var test_delay_ns: ?i128 = null;
