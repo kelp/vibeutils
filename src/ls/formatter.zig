@@ -1063,6 +1063,48 @@ fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
     return 0;
 }
 
+/// Raw `st_blocks` (512-byte units), or 0 when the entry could not be
+/// stat'ed. The long-format `total` line sums this and then converts;
+/// `-s` prefixes keep `calculateDisplayBlocks` so BSD-pinned field
+/// widths stay in 512-byte units unless `-k`.
+fn allocatedBlocks512(entry: Entry) u64 {
+    const blocks = if (entry.stat) |stat| stat.blocks else 0;
+    std.debug.assert(entry.stat != null or blocks == 0);
+    std.debug.assert(entry.stat == null or blocks == entry.stat.?.blocks);
+    return blocks;
+}
+
+/// GNU's default `ls -l` total: 1024-byte units via howmany(st_blocks, 2).
+/// Shift-or-odd avoids overflowing `n + 1` when `n` is `u64` max.
+fn gnuKiBTotal(blocks_512: u64) u64 {
+    const kib = (blocks_512 >> 1) + (blocks_512 & 1);
+    std.debug.assert(kib >= @divFloor(blocks_512, 2));
+    std.debug.assert(blocks_512 == 0 or kib >= 1);
+    return kib;
+}
+
+/// Directory-section `total` line for `-l`. Empty directories still emit
+/// `total 0`. `-h` humanizes allocated bytes (`st_blocks * 512`); otherwise
+/// the count is GNU's 1024-byte default. `--block-size` is WONT.
+fn writeLongFormatTotal(
+    writer: anytype,
+    options: LsOptions,
+    blocks_512: u64,
+) !void {
+    std.debug.assert(options.long_format);
+    if (options.human_readable) {
+        const bytes = std.math.mul(u64, blocks_512, 512) catch std.math.maxInt(u64);
+        var buf: [32]u8 = undefined;
+        const human = try common.file.formatSizeHuman(bytes, &buf);
+        std.debug.assert(human.len > 0);
+        try writer.print("total {s}\n", .{human});
+        return;
+    }
+    const kib = gnuKiBTotal(blocks_512);
+    std.debug.assert(kib >= @divFloor(blocks_512, 2));
+    try writer.print("total {d}\n", .{kib});
+}
+
 /// Print entries in columnar format sorted across rows (-x flag)
 pub fn printColumnarAcross(
     allocator: std.mem.Allocator,
@@ -1123,8 +1165,18 @@ pub fn printEntries(
 ) !u64 {
     var total_blocks: u64 = 0;
 
-    // Calculate total blocks for -s or -l
-    if (options.show_blocks or options.long_format) {
+    // -l totals sum raw 512-byte st_blocks and convert at print time.
+    // -s without -l still uses calculateDisplayBlocks (512, or 1024 with -k).
+    if (options.long_format) {
+        for (entries) |entry| {
+            // Saturate: a wrapped sum would print a too-small total.
+            total_blocks = std.math.add(
+                u64,
+                total_blocks,
+                allocatedBlocks512(entry),
+            ) catch std.math.maxInt(u64);
+        }
+    } else if (options.show_blocks) {
         for (entries) |entry| {
             total_blocks += calculateDisplayBlocks(entry, options);
         }
@@ -1284,9 +1336,10 @@ fn printEntries_longFormat(
 ) !void {
     std.debug.assert(options.long_format);
     std.debug.assert(print_total or total_blocks == 0);
-    // A directory section is headed by its total; an operand group is not.
-    if (print_total and entries.len > 0) {
-        try writer.print("total {d}\n", .{total_blocks});
+    // A directory section is headed by its total, including `total 0` for
+    // an empty directory. Operand groups never print one (issue #119).
+    if (print_total) {
+        try writeLongFormatTotal(writer, options, total_blocks);
     }
 
     // Nothing else to print, and every column width below is a reduction that

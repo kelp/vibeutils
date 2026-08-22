@@ -153,6 +153,12 @@
   it a no-op. `-e` now implies `-l` (BSD) and prints a getfacl-style
   POSIX ACL after a marked entry; a file with no stored ACL is
   unchanged from `ls -l` (#147).
+- **`ls -l` `total` now uses GNU's 1024-byte default, and empty
+  directories print `total 0`.** The line previously summed raw
+  512-byte `st_blocks` (twice GNU) and omitted the header when a
+  directory had no visible entries. `-k` matches that 1024-byte
+  total; `-h` humanizes the allocated size. `--block-size` stays
+  WONT (#160).
 - **`find`, `printf`, `dd`, and `date` honor `--` as the end of
   options.** All four hand-rolled parsers treated `--` as an operand
   or unknown flag: `printf -- 'x\n'` printed `--`, `find -- .`
