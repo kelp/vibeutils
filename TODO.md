@@ -404,6 +404,12 @@ For each utility:
 - [x] Implement: Proper error handling with common library
 - [x] Implement: GNU/POSIX compliant flag handling
 - [x] Man page: Write concise man page with examples
+- [ ] Fix: Default to logical mode (-L), honoring `$PWD` when it
+      names the current directory; fall back to physical resolution
+      only when `$PWD` is invalid. We always resolve physically, so
+      on macOS symlinked paths (`/tmp`, `/var`, `/etc`) we print
+      `/private/var/...` where GNU/BSD `pwd` prints `/var/...`.
+      Found in the v0.13.0 pre-release smoke test.
 
 #### 11. chmod ✓
 - [x] Test: Basic permission changes (numeric: 755, 644)
@@ -865,6 +871,12 @@ For each utility:
 - [x] Implement: Space calculation
 - [x] Implement: Filesystem filtering
 - [x] Man page: Write concise man page with examples
+- [ ] Investigate: APFS usage accounting on macOS root differs from
+      `/bin/df`: we report ~86% used for `/`, system df reports 8%.
+      Likely we count the sealed system snapshot volume while macOS
+      counts the data volume (or includes purgeable space). Verify
+      which numbers GNU df would show and align. Found in the
+      v0.13.0 pre-release smoke test.
 
 ### Phase 4: Advanced Utilities
 
