@@ -76,7 +76,11 @@ jobs:
             for attempt in 1 2 3; do
               echo "fakeroot zig build test-privileged (attempt ${attempt})"
               set +e
-              fakeroot zig build test-privileged &
+              # New process group so a hang can be reaped: SIGTERM then
+              # SIGKILL to the group. Bare kill of $! leaves zig/fakeroot
+              # children that ignore TERM and hold the 60-minute job.
+              perl -e 'setpgrp(0,0) or die; exec { $ARGV[0] } @ARGV' \
+                fakeroot zig build test-privileged &
               priv_pid=$!
               waited=0
               rc=0
@@ -90,7 +94,9 @@ jobs:
                 waited=$((waited + 1))
               done
               if kill -0 "$priv_pid" 2>/dev/null; then
-                kill "$priv_pid" 2>/dev/null || true
+                kill -TERM -"$priv_pid" 2>/dev/null || true
+                sleep 2
+                kill -KILL -"$priv_pid" 2>/dev/null || true
                 wait "$priv_pid" 2>/dev/null || true
                 rc=124
               fi
