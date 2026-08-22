@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const types = @import("types.zig");
 const entry_collector = @import("entry_collector.zig");
 const sorter = @import("sorter.zig");
@@ -235,13 +236,13 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
 
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDir(io, "defaultacl", .default_dir);
-    try tmp.dir.createDir(io, "plain", .default_dir);
+    var tmp = TestDir.init(std.testing.allocator);
+    defer tmp.deinit();
+    try tmp.dir().createDir(io, "defaultacl", .default_dir);
+    try tmp.dir().createDir(io, "plain", .default_dir);
 
     var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPath(io, &dir_buf);
+    const dir_len = try tmp.dir().realPath(io, &dir_buf);
     const dir_path = dir_buf[0..dir_len];
 
     var acl_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -268,12 +269,12 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
         .{
             .name = "defaultacl",
             .kind = .unknown,
-            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir, "defaultacl"),
+            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir(), "defaultacl"),
         },
         .{
             .name = "plain",
             .kind = .unknown,
-            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir, "plain"),
+            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir(), "plain"),
         },
     };
 

@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
@@ -433,15 +434,15 @@ test "tac -r returns error (unsupported)" {
 
 test "tac reverses lines of a file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -455,15 +456,15 @@ test "tac reverses lines of a file" {
 
 test "tac reverses lines without trailing newline" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "line1\nline2\nline3");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -477,15 +478,15 @@ test "tac reverses lines without trailing newline" {
 
 test "tac handles single line" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "only line\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -499,14 +500,14 @@ test "tac handles single line" {
 
 test "tac handles empty file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -520,15 +521,15 @@ test "tac handles empty file" {
 
 test "tac with custom separator" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "a:b:c:");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -542,15 +543,15 @@ test "tac with custom separator" {
 
 test "tac with multi-byte separator" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "one<>two<>three<>");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -568,15 +569,15 @@ test "tac with --before flag" {
     //   "line1", "\nline2", "\nline3", "\n" (empty trailing)
     // Reversed: "\n", "\nline3", "\nline2", "line1"
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -590,22 +591,22 @@ test "tac with --before flag" {
 
 test "tac with multiple files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file1 = try tmp_dir.dir.createFile(io, "a.txt", .{});
+    const file1 = try tmp_dir.dir().createFile(io, "a.txt", .{});
     try file1.writeStreamingAll(io, "a1\na2\n");
     file1.close(io);
 
-    const file2 = try tmp_dir.dir.createFile(io, "b.txt", .{});
+    const file2 = try tmp_dir.dir().createFile(io, "b.txt", .{});
     try file2.writeStreamingAll(io, "b1\nb2\n");
     file2.close(io);
 
     var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path1_len = try tmp_dir.dir.realPathFile(io, "a.txt", &path_buf1);
+    const path1_len = try tmp_dir.dir().realPathFile(io, "a.txt", &path_buf1);
     const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path2_len = try tmp_dir.dir.realPathFile(io, "b.txt", &path_buf2);
+    const path2_len = try tmp_dir.dir().realPathFile(io, "b.txt", &path_buf2);
     const path2 = path_buf2[0..path2_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -695,15 +696,15 @@ test "tac -b with single-byte custom separator" {
     //   "a", ":b", ":c", ":" (empty trailing)
     // Reversed: ":", ":c", ":b", "a" → "::c:ba"
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "a:b:c:");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -719,15 +720,15 @@ test "tac -b with multi-byte separator" {
     // GNU: printf 'a<>b<>c<>' | tac -s '<>' -b → "<><>c<>ba"
     // This tests the full runTac path with multi-byte separator + before flag.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "a<>b<>c<>");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

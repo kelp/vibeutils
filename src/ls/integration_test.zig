@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const test_utils = @import("test_utils.zig");
 const types = @import("types.zig");
 const formatter = @import("formatter.zig");
@@ -1346,7 +1347,7 @@ test "blocks: -s reports st_blocks, not a size-derived count" {
     // implementation reading st_blocks and one deriving from the size
     // cannot agree on either entry or on the total.
     {
-        const file = try env.tmp_dir.dir.createFile(std.testing.io, "sparse", .{});
+        const file = try env.tmp_dir.dir().createFile(std.testing.io, "sparse", .{});
         defer file.close(std.testing.io);
         try file.setLength(std.testing.io, 1 << 20);
     }
@@ -1374,7 +1375,7 @@ test "blocks: -s -k converts st_blocks to 1 KiB units" {
     // so 0 stays 0 and 8 becomes 4. Deriving from the size instead yields
     // ceil(1048576 / 1024) = 1024 and ceil(1 / 1024) = 1.
     {
-        const file = try env.tmp_dir.dir.createFile(std.testing.io, "sparse", .{});
+        const file = try env.tmp_dir.dir().createFile(std.testing.io, "sparse", .{});
         defer file.close(std.testing.io);
         try file.setLength(std.testing.io, 1 << 20);
     }
@@ -4396,10 +4397,10 @@ test "F49: runLs returns non-zero when one of multiple paths is invalid" {
     const main = @import("main.zig");
 
     // Create a real temporary directory
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const f = try tmp_dir.dir.createFile(testing.io, "real.txt", .{});
+    const f = try tmp_dir.dir().createFile(testing.io, "real.txt", .{});
     f.close(testing.io);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

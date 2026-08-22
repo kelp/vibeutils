@@ -710,4 +710,67 @@ test_dd() {
         print_test_result "dd bs=1kBx rejected with GNU-quoted message, rc=1" "FAIL" \
             "rc=$b65_garbage_rc stderr='$(cat "$b65_garbage_err")'"
     fi
+
+    echo -e "${CYAN}Testing issue #159: -- end-of-options...${NC}"
+
+    # Pinned against GNU coreutils 9.4 (`/usr/bin/dd`, LC_ALL=C).
+    # Never let dd read the test runner's stdin: always pass if= or
+    # redirect from /dev/null. Use run_with_limit as a hang safety net.
+    local ddopt_cmd ddopt_out ddopt_err ddopt_exit
+    local dd_in=$(create_temp_file "hello-dd")
+    local dd_out="$TEMP_DIR/dd159_out.txt"
+    local dd_dash="$TEMP_DIR/-dash.txt"
+    printf 'neg' > "$dd_dash"
+
+    run_command ddopt_cmd ddopt_out ddopt_err ddopt_exit \
+        env LC_ALL=C "$binary" -- if="$dd_in" of="$dd_out" status=none
+    local dd_copied
+    dd_copied=$(cat "$dd_out")
+    if [[ $ddopt_exit -eq 0 && -z "$ddopt_out" && -z "$ddopt_err" && "$dd_copied" == "hello-dd" ]]; then
+        print_test_result "dd -- before if= copies file" "PASS"
+    else
+        print_test_result "dd -- before if= copies file" "FAIL" \
+            "exit=$ddopt_exit out='$ddopt_out' err='$ddopt_err' copied='$dd_copied'"
+    fi
+
+    local dd_out2="$TEMP_DIR/dd159_out2.txt"
+    run_command ddopt_cmd ddopt_out ddopt_err ddopt_exit \
+        env LC_ALL=C "$binary" if="$dd_in" -- of="$dd_out2" status=none
+    dd_copied=$(cat "$dd_out2")
+    if [[ $ddopt_exit -eq 0 && -z "$ddopt_out" && -z "$ddopt_err" && "$dd_copied" == "hello-dd" ]]; then
+        print_test_result "dd -- after if= copies file" "PASS"
+    else
+        print_test_result "dd -- after if= copies file" "FAIL" \
+            "exit=$ddopt_exit out='$ddopt_out' err='$ddopt_err' copied='$dd_copied'"
+    fi
+
+    # `--` alone with status=none, stdin from /dev/null: GNU copies nothing.
+    run_command ddopt_cmd ddopt_out ddopt_err ddopt_exit \
+        bash -c "env LC_ALL=C '$binary' -- status=none < /dev/null"
+    if [[ $ddopt_exit -eq 0 && -z "$ddopt_out" && -z "$ddopt_err" ]]; then
+        print_test_result "dd -- alone from /dev/null" "PASS"
+    else
+        print_test_result "dd -- alone from /dev/null" "FAIL" \
+            "exit=$ddopt_exit out='$ddopt_out' err='$ddopt_err'"
+    fi
+
+    run_command ddopt_cmd ddopt_out ddopt_err ddopt_exit \
+        env LC_ALL=C "$binary" -- -- status=none
+    if [[ $ddopt_exit -eq 1 && -z "$ddopt_out" && "$ddopt_err" == *"unrecognized operand"* && "$ddopt_err" == *"'--'"* ]]; then
+        print_test_result "dd doubled -- names second --" "PASS"
+    else
+        print_test_result "dd doubled -- names second --" "FAIL" \
+            "exit=$ddopt_exit out='$ddopt_out' err='$ddopt_err'"
+    fi
+
+    local dd_dash_out="$TEMP_DIR/dd159_dash_out.txt"
+    run_command ddopt_cmd ddopt_out ddopt_err ddopt_exit \
+        env LC_ALL=C "$binary" -- if="$dd_dash" of="$dd_dash_out" status=none
+    dd_copied=$(cat "$dd_dash_out")
+    if [[ $ddopt_exit -eq 0 && -z "$ddopt_out" && -z "$ddopt_err" && "$dd_copied" == "neg" ]]; then
+        print_test_result "dd -- dash-named if= copies file" "PASS"
+    else
+        print_test_result "dd -- dash-named if= copies file" "FAIL" \
+            "exit=$ddopt_exit out='$ddopt_out' err='$ddopt_err' copied='$dd_copied'"
+    fi
 }
