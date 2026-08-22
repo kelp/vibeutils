@@ -38,7 +38,6 @@ docs/*.tar
 test-output/
 test_output.txt
 test-utilities.sh
-tests/integration/.tmp/
 
 # Fuzzing artifacts
 *_fuzz_*

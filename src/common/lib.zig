@@ -12,6 +12,7 @@ const build_options = @import("build_options");
 // Not `pub`: this is repo tooling, not part of the common API surface. Its own
 // tests still run because the force-import block at the bottom lists it.
 const force_import_lint = @import("force_import_lint.zig");
+const testdir_lint = @import("testdir_lint.zig");
 
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
@@ -67,6 +68,9 @@ pub const help = @import("help.zig");
 /// Shared color functions for size-based coloring
 pub const colors = @import("colors.zig");
 
+/// GNU LS_COLORS parsing and lookup
+pub const ls_colors = @import("ls_colors.zig");
+
 /// Test directory utilities for managing temporary file systems in tests
 pub const test_dir = @import("test_dir.zig");
 
@@ -78,6 +82,9 @@ pub const path = @import("path.zig");
 
 /// Shared octal and symbolic file mode parser used by chmod and mkdir.
 pub const mode = @import("mode.zig");
+
+/// Bounded parallel job execution using the configured I/O backend.
+pub const parallel = @import("parallel.zig");
 
 /// Bounded iterative directory walker (replaces per-utility recursive walk).
 pub const walker = @import("walker.zig");
@@ -784,8 +791,10 @@ test {
     _ = @import("glob.zig");
     _ = @import("help.zig");
     _ = @import("icons.zig");
+    _ = @import("ls_colors.zig");
     _ = @import("main.zig");
     _ = @import("mode.zig");
+    _ = @import("parallel.zig");
     _ = @import("path.zig");
     _ = @import("privilege_test.zig");
     _ = @import("prompt.zig");
@@ -793,6 +802,7 @@ test {
     _ = @import("style.zig");
     _ = @import("terminal.zig");
     _ = @import("test_dir.zig");
+    _ = @import("testdir_lint.zig");
     _ = @import("test_utils.zig");
     _ = @import("test_utils_privilege.zig");
     _ = @import("time.zig");
@@ -815,6 +825,24 @@ test "every src/common module with tests is force-imported (issue #95)" {
     defer report.deinit();
 
     force_import_lint.verify(
+        std.testing.allocator,
+        std.testing.io,
+        build_options.common_source_dir,
+        &report.writer,
+    ) catch |err| {
+        std.debug.print("{s}", .{report.writer.buffered()});
+        return err;
+    };
+}
+
+// Lives in lib.zig for the same hole-close as the #95 test: if testdir_lint.zig
+// is dropped from the force-import block, this caller still runs and still
+// fails. Do not tidy it into testdir_lint.zig.
+test "listed utility tests do not call testing.tmpDir (TODO ### 3)" {
+    var report: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer report.deinit();
+
+    testdir_lint.verify(
         std.testing.allocator,
         std.testing.io,
         build_options.common_source_dir,

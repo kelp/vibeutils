@@ -486,6 +486,24 @@ scan_one() {
         "$SCAN_AWK" < "$_file" >> "$OUT_FILE"
 }
 
+# --staged must scan the index, not the worktree: a staged violation that
+# was later reverted on disk is still what the hook would commit (#149).
+# The reported path stays repo-relative; only the bytes come from git.
+scan_staged_one() {
+    _rel=$1
+    _added=$2
+    _blob=$WORKDIR/index-blob
+    if ! git -C "$REPO_ROOT" show ":$_rel" > "$_blob" 2>/dev/null; then
+        note "skip (not in index): $_rel"
+        return 0
+    fi
+    if ! is_scannable "$_blob"; then
+        return 0
+    fi
+    awk -v FILE="$_rel" -v STATUS_MODE="diff" -v ADDED="$_added" \
+        "$SCAN_AWK" < "$_blob" >> "$OUT_FILE"
+}
+
 # ---------------------------------------------------------------------------
 # Resolve the list of src/**/*.zig files (repo-relative paths) for the
 # changed-set or full-scan modes.
@@ -578,9 +596,8 @@ case "$MODE" in
         fi
         printf '%s\n' "$changed" | while IFS= read -r rel; do
             [ -n "$rel" ] || continue
-            abs="$REPO_ROOT/$rel"
             added=$(added_lines_for staged "" "$rel")
-            scan_one "$abs" diff "$added" "$rel"
+            scan_staged_one "$rel" "$added"
         done
         ;;
 esac

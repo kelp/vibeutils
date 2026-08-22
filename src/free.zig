@@ -299,6 +299,10 @@ const FreeArgs = struct {
     help: bool = false,
     /// Display version
     version: bool = false,
+    /// Color the used column: always, auto, never
+    color: ?[]const u8 = null,
+    /// Draw a usage bar: always, auto, never
+    bar: ?[]const u8 = null,
     /// Positional arguments (none expected)
     positionals: []const []const u8 = &.{},
 
@@ -319,6 +323,16 @@ const FreeArgs = struct {
         .count = .{ .short = 'c', .desc = "Repeat printing N times, then exit", .value_name = "N" },
         .help = .{ .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .color = .{
+            .short = 0,
+            .desc = "Color the used column; WHEN is always, auto, or never",
+            .value_name = "WHEN",
+        },
+        .bar = .{
+            .short = 0,
+            .desc = "Show a 10-cell usage bar; WHEN is always, auto, or never",
+            .value_name = "WHEN",
+        },
     };
 };
 
@@ -383,6 +397,107 @@ fn printValue(writer: *std.Io.Writer, bytes: u64, unit: Unit, use_si: bool) !voi
     }
 }
 
+/// df `calcUsagePercent`: u128 ceiling divide, 0 when total is 0.
+fn calcUsagePercent(used: u64, total: u64) u8 {
+    if (total == 0) {
+        std.debug.assert(total == 0);
+        return 0;
+    }
+    std.debug.assert(total != 0);
+    const scaled: u128 = @as(u128, used) * 100;
+    const denominator: u128 = total;
+    const pct = @divTrunc(scaled, denominator) +
+        @intFromBool(@rem(scaled, denominator) != 0);
+    const result: u8 = @intCast(@min(pct, 100));
+    std.debug.assert(result <= 100);
+    return result;
+}
+
+/// Basic-band SGR for a usage percent: green <70, yellow <90, red else.
+fn writeUsageSgr(writer: *std.Io.Writer, percent: u8) !void {
+    std.debug.assert(percent <= 100);
+    const code: u8 = if (percent < 70) 32 else if (percent < 90) 33 else 31;
+    if (percent < 70) {
+        std.debug.assert(code == 32);
+    } else if (percent < 90) {
+        std.debug.assert(code == 33);
+    } else {
+        std.debug.assert(code == 31);
+    }
+    try writer.print("\x1b[{d}m", .{code});
+}
+
+fn printValueMaybeColored(
+    writer: *std.Io.Writer,
+    bytes: u64,
+    unit: Unit,
+    use_si: bool,
+    color: bool,
+    percent: u8,
+) !void {
+    std.debug.assert(percent <= 100);
+    std.debug.assert(@intFromEnum(unit) <= 4);
+    if (color) try writeUsageSgr(writer, percent);
+    try printValue(writer, bytes, unit, use_si);
+    if (color) try writer.writeAll("\x1b[0m");
+}
+
+/// 10-cell df widget: `[████████░░]  84%`. percent is already clamped.
+fn formatUsageBar(buf: []u8, percent: u8) []const u8 {
+    std.debug.assert(percent <= 100);
+    std.debug.assert(buf.len >= 40);
+    const bar_width: u8 = 10;
+    const filled: u8 = @intCast(@divTrunc(@as(u16, percent) * bar_width + 99, 100));
+    std.debug.assert(filled <= bar_width);
+    const empty: u8 = bar_width - filled;
+
+    var pos: usize = 0;
+    buf[pos] = '[';
+    pos += 1;
+    for (0..filled) |_| {
+        buf[pos] = 0xe2;
+        buf[pos + 1] = 0x96;
+        buf[pos + 2] = 0x88;
+        pos += 3;
+    }
+    for (0..empty) |_| {
+        buf[pos] = 0xe2;
+        buf[pos + 1] = 0x96;
+        buf[pos + 2] = 0x91;
+        pos += 3;
+    }
+    buf[pos] = ']';
+    pos += 1;
+    buf[pos] = ' ';
+    pos += 1;
+    const pct_str = std.fmt.bufPrint(buf[pos..], "{d:>3}%", .{percent}) catch
+        return buf[0..pos];
+    pos += pct_str.len;
+    return buf[0..pos];
+}
+
+fn barIsOn(opts: RenderOptions) bool {
+    const on = switch (opts.bar) {
+        .always => true,
+        .never => false,
+        .auto => opts.icons == .on,
+    };
+    std.debug.assert(opts.bar != .never or !on);
+    std.debug.assert(opts.bar != .always or on);
+    return on;
+}
+
+fn writeUsageBar(writer: *std.Io.Writer, percent: u8, color: bool) !void {
+    std.debug.assert(percent <= 100);
+    var buf: [48]u8 = undefined;
+    const bar = formatUsageBar(&buf, percent);
+    std.debug.assert(bar.len != 0);
+    try writer.writeAll(" ");
+    if (color) try writeUsageSgr(writer, percent);
+    try writer.writeAll(bar);
+    if (color) try writer.writeAll("\x1b[0m");
+}
+
 /// Print a memory row (Mem: or Swap: or Total:)
 fn printMemRow(
     writer: *std.Io.Writer,
@@ -392,19 +507,23 @@ fn printMemRow(
     use_si: bool,
     wide: bool,
     is_swap: bool,
+    render: RenderOptions,
 ) !void {
     // Every row carries a non-empty label for the left-padded label column.
     std.debug.assert(label.len != 0);
+    const used_b = if (is_swap) info.swap_used else info.used;
+    const total_b = if (is_swap) info.swap_total else info.total;
+    const percent = calcUsagePercent(used_b, total_b);
+    std.debug.assert(percent <= 100);
     try writer.print("{s:<6}", .{label});
 
     if (is_swap) {
         try printValue(writer, info.swap_total, unit, use_si);
-        try printValue(writer, info.swap_used, unit, use_si);
+        try printValueMaybeColored(writer, info.swap_used, unit, use_si, render.color, percent);
         try printValue(writer, info.swap_free, unit, use_si);
-        try writer.writeAll("\n");
     } else if (wide) {
         try printValue(writer, info.total, unit, use_si);
-        try printValue(writer, info.used, unit, use_si);
+        try printValueMaybeColored(writer, info.used, unit, use_si, render.color, percent);
         try printValue(writer, info.free, unit, use_si);
         try printValue(writer, info.shared, unit, use_si);
         // Split buff/cache into buffers and cache.
@@ -412,16 +531,18 @@ fn printMemRow(
         try printValue(writer, info.buff_cache, unit, use_si);
         try printValue(writer, 0, unit, use_si);
         try printValue(writer, info.available, unit, use_si);
-        try writer.writeAll("\n");
     } else {
         try printValue(writer, info.total, unit, use_si);
-        try printValue(writer, info.used, unit, use_si);
+        try printValueMaybeColored(writer, info.used, unit, use_si, render.color, percent);
         try printValue(writer, info.free, unit, use_si);
         try printValue(writer, info.shared, unit, use_si);
         try printValue(writer, info.buff_cache, unit, use_si);
         try printValue(writer, info.available, unit, use_si);
-        try writer.writeAll("\n");
     }
+    if (barIsOn(render)) {
+        try writeUsageBar(writer, percent, render.color);
+    }
+    try writer.writeAll("\n");
 }
 
 /// Print the total row
@@ -458,6 +579,67 @@ fn printTotalRow(
     }
 }
 
+/// `--color`/`--bar` WHEN. `bar == .auto` follows resolved `icons`.
+const RenderWhen = enum { always, auto, never };
+
+/// Injected render config so tests do not need a real TTY. Color is already
+/// resolved on/off; `bar` may be `.auto` so `--bar=auto` can follow `icons`.
+const RenderOptions = struct {
+    color: bool = false,
+    bar: RenderWhen = .never,
+    icons: common.display_config.ResolvedMode = .off,
+};
+
+const RenderResolveError = error{ InvalidColor, InvalidBar };
+
+/// Parse a required-value WHEN. Null means the caller should use `.auto`.
+fn parseRenderWhen(value: []const u8) ?RenderWhen {
+    if (std.mem.eql(u8, value, "always")) return .always;
+    if (std.mem.eql(u8, value, "auto")) return .auto;
+    if (std.mem.eql(u8, value, "never")) return .never;
+    std.debug.assert(!std.mem.eql(u8, value, "always"));
+    std.debug.assert(!std.mem.eql(u8, value, "never"));
+    return null;
+}
+
+/// ls-style kill switch: NO_COLOR and TERM=dumb beat `--color=always`.
+fn colorKillSwitchOn() bool {
+    const no_color = common.env.getEnv("NO_COLOR") != null;
+    const dumb_term = if (common.env.getEnv("TERM")) |term|
+        std.mem.eql(u8, term, "dumb")
+    else
+        false;
+    const killed = no_color or dumb_term;
+    std.debug.assert(!no_color or killed);
+    std.debug.assert(!dumb_term or killed);
+    return killed;
+}
+
+fn resolveRenderOptions(allocator: Allocator, parsed: FreeArgs) RenderResolveError!RenderOptions {
+    const color_when = parseRenderWhen(parsed.color orelse "auto") orelse
+        return error.InvalidColor;
+    const bar_when = parseRenderWhen(parsed.bar orelse "auto") orelse
+        return error.InvalidBar;
+    const display = common.display_config.DisplayConfig.resolve(allocator);
+    const killed = colorKillSwitchOn();
+    // `--color=auto` follows the real stdout TTY, not DisplayConfig.color.
+    // VIBEUTILS_COLOR=always / VIBEUTILS_STYLE=always would otherwise leak
+    // ANSI into pipes (CLAUDE.md isatty guard). Kill switches still apply.
+    const stdout_tty = common.env.isTty(std.Io.File.stdout().handle);
+    const color = switch (color_when) {
+        .never => false,
+        .always => !killed,
+        .auto => stdout_tty and !killed,
+    };
+    if (killed) std.debug.assert(!color);
+    if (color_when == .never) std.debug.assert(!color);
+    return .{
+        .color = color,
+        .bar = bar_when,
+        .icons = display.icons,
+    };
+}
+
 /// Print a complete memory report for the given MemInfo
 pub fn printReport(
     writer: *std.Io.Writer,
@@ -466,10 +648,13 @@ pub fn printReport(
     use_si: bool,
     show_total: bool,
     wide: bool,
+    render: RenderOptions,
 ) !void {
+    std.debug.assert(prog_name.len != 0);
+    std.debug.assert(@intFromEnum(render.bar) <= 2);
     try printHeader(writer, wide);
-    try printMemRow(writer, "Mem:", info, unit, use_si, wide, false);
-    try printMemRow(writer, "Swap:", info, unit, use_si, wide, true);
+    try printMemRow(writer, "Mem:", info, unit, use_si, wide, false, render);
+    try printMemRow(writer, "Swap:", info, unit, use_si, wide, true, render);
     if (show_total) {
         try printTotalRow(writer, info, unit, use_si, wide);
     }
@@ -569,6 +754,7 @@ fn runFree_displayContinuous(
     use_si: bool,
     show_total: bool,
     wide: bool,
+    render: RenderOptions,
     interval: u32,
     repeat_count: u32,
 ) u8 {
@@ -591,6 +777,7 @@ fn runFree_displayContinuous(
             use_si,
             show_total,
             wide,
+            render,
         );
         if (result != 0) return result;
         stdout_writer.flush() catch {};
@@ -642,6 +829,58 @@ fn runFree_handleEarlyExit(
     return null;
 }
 
+fn reportInvalidWhen(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    err: RenderResolveError,
+    parsed: FreeArgs,
+) u8 {
+    std.debug.assert(err == error.InvalidColor or err == error.InvalidBar);
+    const flag: []const u8 = switch (err) {
+        error.InvalidColor => "--color",
+        error.InvalidBar => "--bar",
+    };
+    const value: []const u8 = switch (err) {
+        error.InvalidColor => parsed.color.?,
+        error.InvalidBar => parsed.bar.?,
+    };
+    // Empty `--color=` / `--bar=` is valid argparse and still an invalid WHEN.
+    // Do not assert on argv length; print the same diagnostic as bogus WHEN.
+    switch (err) {
+        error.InvalidColor => std.debug.assert(parsed.color != null),
+        error.InvalidBar => std.debug.assert(parsed.bar != null),
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "invalid argument '{s}' for '{s}'",
+        .{ value, flag },
+    );
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+fn runFree_rejectZeroCount(
+    allocator: Allocator,
+    parsed: FreeArgs,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) != 0);
+    const count = parsed.count orelse return null;
+    if (count != 0) {
+        std.debug.assert(count != 0);
+        return null;
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "failed to parse count argument: '0': Numerical result out of range",
+        .{},
+    );
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
 pub fn runFree(
     allocator: Allocator,
     io: std.Io,
@@ -661,24 +900,17 @@ pub fn runFree(
         return code;
     }
 
+    const render = resolveRenderOptions(allocator, parsed) catch |err| {
+        return reportInvalidWhen(allocator, stderr_writer, err, parsed);
+    };
+
     const unit = resolveUnit(parsed);
     const use_si = parsed.si;
     const show_total = parsed.total;
     const wide = parsed.wide;
 
-    // A zero count is rejected, matching procps, so that the repeat_count == 0
-    // sentinel below can keep meaning "no -c given, loop unbounded".
-    if (parsed.count) |count| {
-        if (count == 0) {
-            common.printErrorWithProgram(
-                allocator,
-                stderr_writer,
-                prog_name,
-                "failed to parse count argument: '0': Numerical result out of range",
-                .{},
-            );
-            return @intFromEnum(common.ExitCode.general_error);
-        }
+    if (runFree_rejectZeroCount(allocator, parsed, stderr_writer)) |code| {
+        return code;
     }
 
     const repeat_count = parsed.count orelse 0;
@@ -687,7 +919,6 @@ pub fn runFree(
     const interval = parsed.seconds orelse
         if (parsed.count != null) @as(u32, 1) else 0;
 
-    // No continuous mode requested, display once
     if (interval == 0) {
         return displayOnce(
             io,
@@ -698,10 +929,10 @@ pub fn runFree(
             use_si,
             show_total,
             wide,
+            render,
         );
     }
 
-    // Continuous mode
     return runFree_displayContinuous(
         io,
         stdout_writer,
@@ -711,6 +942,7 @@ pub fn runFree(
         use_si,
         show_total,
         wide,
+        render,
         interval,
         repeat_count,
     );
@@ -725,7 +957,10 @@ fn displayOnce(
     use_si: bool,
     show_total: bool,
     wide: bool,
+    render: RenderOptions,
 ) u8 {
+    std.debug.assert(prog_name.len != 0);
+    std.debug.assert(@intFromEnum(common.ExitCode.success) == 0);
     const info = getMemInfo(io) catch {
         common.printErrorWithProgram(
             allocator,
@@ -737,7 +972,7 @@ fn displayOnce(
         return @intFromEnum(common.ExitCode.general_error);
     };
 
-    printReport(stdout_writer, info, unit, use_si, show_total, wide) catch {
+    printReport(stdout_writer, info, unit, use_si, show_total, wide, render) catch {
         return @intFromEnum(common.ExitCode.general_error);
     };
 
@@ -761,6 +996,8 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) void {
         \\      --si        use powers of 1000 instead of 1024
         \\  -t, --total     display a line showing column totals
         \\  -w, --wide      wide output
+        \\      --color=WHEN  color the used column; WHEN is always, auto, never
+        \\      --bar=WHEN    show a 10-cell usage bar; WHEN is always, auto, never
         \\  -s N, --seconds=N   continuously display every N seconds
         \\  -c N, --count=N     repeat printing N times, then exit
         \\      --help      display this help and exit
@@ -892,7 +1129,7 @@ test "printReport with mock data" {
         .swap_free = 2 * 1024 * 1024 * 1024 - 128 * 1024 * 1024,
     };
 
-    try printReport(&stdout_aw.writer, info, .kibi, false, false, false);
+    try printReport(&stdout_aw.writer, info, .kibi, false, false, false, .{});
 
     const output = stdout_aw.writer.buffered();
     // Should contain header and two data lines
@@ -917,7 +1154,7 @@ test "printReport with total line" {
         .swap_free = 1024 * 1024 * 1024,
     };
 
-    try printReport(&stdout_aw.writer, info, .kibi, false, true, false);
+    try printReport(&stdout_aw.writer, info, .kibi, false, true, false, .{});
 
     const output = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, output, "Total:") != null);
@@ -939,7 +1176,7 @@ test "printReport wide mode" {
         .swap_free = 0,
     };
 
-    try printReport(&stdout_aw.writer, info, .kibi, false, false, true);
+    try printReport(&stdout_aw.writer, info, .kibi, false, false, true, .{});
 
     const output = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, output, "buffers") != null);
@@ -962,7 +1199,7 @@ test "printReport human readable" {
         .swap_free = 2 * 1024 * 1024 * 1024 - 128 * 1024 * 1024,
     };
 
-    try printReport(&stdout_aw.writer, info, .human, false, false, false);
+    try printReport(&stdout_aw.writer, info, .human, false, false, false, .{});
 
     const output = stdout_aw.writer.buffered();
     try testing.expect(std.mem.find(u8, output, "Gi") != null);
@@ -1237,7 +1474,7 @@ test "audit: free -w wide mode should show nonzero buffers" {
         .swap_free = 0,
     };
 
-    try printReport(&stdout_aw.writer, info, .kibi, false, false, true);
+    try printReport(&stdout_aw.writer, info, .kibi, false, false, true, .{});
 
     const output = stdout_aw.writer.buffered();
     // In wide mode, the Mem: row has 7 numeric columns:
@@ -1374,4 +1611,469 @@ test "audit: free -s should set seconds not si" {
     // Should produce output (at least one display)
     try testing.expect(stdout_aw.writer.buffered().len > 0);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Mem:") != null);
+}
+
+// ========== Color bands and usage bar (RED until implemented) ==========
+
+const sgr_green = "\x1b[32m";
+const sgr_yellow = "\x1b[33m";
+const sgr_red = "\x1b[31m";
+const sgr_reset = "\x1b[0m";
+const bar_filled = "\xe2\x96\x88";
+const bar_empty = "\xe2\x96\x91";
+
+fn memInfoBytes(used: u64, total: u64, swap_used: u64, swap_total: u64) MemInfo {
+    std.debug.assert(used <= total);
+    std.debug.assert(swap_used <= swap_total);
+    return .{
+        .total = total,
+        .used = used,
+        .free = total - used,
+        .shared = 0,
+        .buff_cache = 0,
+        .available = total - used,
+        .swap_total = swap_total,
+        .swap_used = swap_used,
+        .swap_free = swap_total - swap_used,
+    };
+}
+
+fn linePrefixed(output: []const u8, prefix: []const u8) []const u8 {
+    const start = std.mem.find(u8, output, prefix) orelse return &.{};
+    const end = std.mem.findScalarPos(u8, output, start, '\n') orelse output.len;
+    return output[start..end];
+}
+
+fn writeBytesReport(
+    writer: *std.Io.Writer,
+    used: u64,
+    total: u64,
+    swap_used: u64,
+    swap_total: u64,
+    render: RenderOptions,
+) !void {
+    std.debug.assert(used <= total);
+    std.debug.assert(swap_used <= swap_total);
+    try printReport(
+        writer,
+        memInfoBytes(used, total, swap_used, swap_total),
+        .bytes,
+        false,
+        false,
+        false,
+        render,
+    );
+}
+
+fn expectUsedBand(used: u64, total: u64, sgr: []const u8) !void {
+    std.debug.assert(sgr.len != 0);
+    std.debug.assert(total != 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    try writeBytesReport(&stdout_aw.writer, used, total, 0, 0, .{ .color = true });
+    const output = stdout_aw.writer.buffered();
+    const mem_line = linePrefixed(output, "Mem:");
+    try testing.expect(std.mem.find(u8, mem_line, sgr) != null);
+    try testing.expect(std.mem.find(u8, mem_line, sgr_reset) != null);
+
+    var total_buf: [32]u8 = undefined;
+    const total_s = std.fmt.bufPrint(&total_buf, "{d}", .{total}) catch unreachable;
+    const total_at = std.mem.find(u8, mem_line, total_s) orelse return error.TestExpectedEqual;
+    const csi_at = std.mem.find(u8, mem_line, sgr) orelse return error.TestExpectedEqual;
+    try testing.expect(total_at < csi_at);
+
+    const header_end = std.mem.find(u8, output, "\n") orelse output.len;
+    try testing.expect(std.mem.find(u8, output[0..header_end], "\x1b") == null);
+}
+
+fn stageXtermNoColorUnset() [3]common.env.Override {
+    return .{
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "TERM", .value = "xterm" },
+        .{ .key = "COLORTERM", .value = null },
+    };
+}
+
+test "free colors used-percent green below 70" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    try expectUsedBand(50, 100, sgr_green);
+    try expectUsedBand(69, 100, sgr_green);
+}
+
+test "free colors used-percent yellow from 70" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    try expectUsedBand(70, 100, sgr_yellow);
+    try expectUsedBand(89, 100, sgr_yellow);
+}
+
+test "free colors used-percent red at 90" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    try expectUsedBand(90, 100, sgr_red);
+    try expectUsedBand(100, 100, sgr_red);
+}
+
+test "free auto emits no color when render.color is off" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "COLORTERM", .value = null },
+    };
+    common.env.test_overrides = &staged;
+
+    var off_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer off_aw.deinit();
+    try writeBytesReport(&off_aw.writer, 50, 100, 0, 0, .{});
+    const off_out = off_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, off_out, "\x1b") == null);
+    try testing.expect(std.mem.find(u8, off_out, "Mem:") != null);
+
+    var on_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer on_aw.deinit();
+    try writeBytesReport(&on_aw.writer, 50, 100, 0, 0, .{ .color = true });
+    const on_out = on_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, on_out, "\x1b") != null);
+    try testing.expect(std.mem.find(u8, on_out, "Mem:") != null);
+}
+
+test "free auto emits color when render.color is on" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    try writeBytesReport(&stdout_aw.writer, 50, 100, 0, 0, .{ .color = true });
+    const mem_line = linePrefixed(stdout_aw.writer.buffered(), "Mem:");
+    try testing.expect(std.mem.find(u8, mem_line, sgr_green) != null);
+    const total_at = std.mem.find(u8, mem_line, "100") orelse return error.TestExpectedEqual;
+    const csi_at = std.mem.find(u8, mem_line, sgr_green) orelse return error.TestExpectedEqual;
+    try testing.expect(total_at < csi_at);
+}
+
+test "free emits no color when NO_COLOR is set even with --color=always" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "NO_COLOR", .value = "1" },
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "COLORTERM", .value = null },
+    };
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--color=always"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "\x1b") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Mem:") != null);
+}
+
+test "free emits no color when TERM is dumb even with --color=always" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "TERM", .value = "dumb" },
+        .{ .key = "COLORTERM", .value = null },
+    };
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--color=always"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "\x1b") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Mem:") != null);
+}
+
+test "free --color=never emits no color" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--color=never"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "\x1b") == null);
+}
+
+test "free --color=bogus exits 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--color=bogus"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
+}
+
+test "free --bar=bogus exits 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--bar=bogus"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
+}
+
+test "free --color= empty WHEN exits 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--color="},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
+}
+
+test "free --bar= empty WHEN exits 1" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--bar="},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid") != null);
+}
+
+test "free --bar=always prints a 10-cell usage bar and percent" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    const Case = struct {
+        used: u64,
+        total: u64,
+        filled: usize,
+        empty: usize,
+        pct: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .used = 0, .total = 100, .filled = 0, .empty = 10, .pct = "0%" },
+        .{ .used = 1, .total = 200, .filled = 1, .empty = 9, .pct = "1%" },
+        .{ .used = 50, .total = 100, .filled = 5, .empty = 5, .pct = "50%" },
+        .{ .used = 100, .total = 100, .filled = 10, .empty = 0, .pct = "100%" },
+    };
+    for (cases) |tc| {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        try writeBytesReport(
+            &stdout_aw.writer,
+            tc.used,
+            tc.total,
+            0,
+            0,
+            .{ .bar = .always },
+        );
+        const mem_line = linePrefixed(stdout_aw.writer.buffered(), "Mem:");
+        try testing.expectEqual(tc.filled, std.mem.count(u8, mem_line, bar_filled));
+        try testing.expectEqual(tc.empty, std.mem.count(u8, mem_line, bar_empty));
+        try testing.expect(std.mem.find(u8, mem_line, tc.pct) != null);
+        try testing.expectEqual(@as(usize, 10), tc.filled + tc.empty);
+    }
+
+    // used=1,total=200 ceilings to 1%, not a floored 0%.
+    var ceil_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer ceil_aw.deinit();
+    try writeBytesReport(&ceil_aw.writer, 1, 200, 0, 0, .{ .bar = .always });
+    const ceil_mem = linePrefixed(ceil_aw.writer.buffered(), "Mem:");
+    try testing.expect(std.mem.find(u8, ceil_mem, "1%") != null);
+    try testing.expect(std.mem.find(u8, ceil_mem, "0%") == null);
+
+    var color_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer color_aw.deinit();
+    try writeBytesReport(
+        &color_aw.writer,
+        50,
+        100,
+        0,
+        0,
+        .{ .color = true, .bar = .always },
+    );
+    const color_mem = linePrefixed(color_aw.writer.buffered(), "Mem:");
+    const glyph_at = std.mem.find(u8, color_mem, bar_filled) orelse return error.TestExpectedEqual;
+    const csi_at = std.mem.find(u8, color_mem, sgr_green) orelse return error.TestExpectedEqual;
+    try testing.expect(csi_at < glyph_at);
+    try testing.expect(std.mem.find(u8, color_mem[glyph_at..], sgr_reset) != null);
+}
+
+test "free --bar=never omits bar glyphs" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--bar=never"},
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    const output = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, bar_filled) == null);
+    try testing.expect(std.mem.find(u8, output, bar_empty) == null);
+}
+
+test "free --bar=auto with icons off omits the bar" {
+    var off_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer off_aw.deinit();
+    try writeBytesReport(
+        &off_aw.writer,
+        50,
+        100,
+        0,
+        0,
+        .{ .bar = .auto, .icons = .off },
+    );
+    const off_out = off_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, off_out, bar_filled) == null);
+    try testing.expect(std.mem.find(u8, off_out, bar_empty) == null);
+
+    var on_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer on_aw.deinit();
+    try writeBytesReport(
+        &on_aw.writer,
+        50,
+        100,
+        0,
+        0,
+        .{ .bar = .auto, .icons = .on },
+    );
+    const on_mem = linePrefixed(on_aw.writer.buffered(), "Mem:");
+    try testing.expectEqual(@as(usize, 5), std.mem.count(u8, on_mem, bar_filled));
+    try testing.expectEqual(@as(usize, 5), std.mem.count(u8, on_mem, bar_empty));
+}
+
+test "free swap row uses swap_used/swap_total and zero swap is 0 percent" {
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = stageXtermNoColorUnset();
+    common.env.test_overrides = &staged;
+
+    var zero_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer zero_aw.deinit();
+    try writeBytesReport(
+        &zero_aw.writer,
+        50,
+        100,
+        0,
+        0,
+        .{ .color = true, .bar = .always },
+    );
+    const zero_swap = linePrefixed(zero_aw.writer.buffered(), "Swap:");
+    try testing.expect(std.mem.find(u8, zero_swap, "Swap:") != null);
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, zero_swap, bar_filled));
+    try testing.expectEqual(@as(usize, 10), std.mem.count(u8, zero_swap, bar_empty));
+    try testing.expect(std.mem.find(u8, zero_swap, "0%") != null);
+    try testing.expect(std.mem.find(u8, zero_swap, sgr_green) != null);
+
+    var red_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer red_aw.deinit();
+    try writeBytesReport(
+        &red_aw.writer,
+        50,
+        100,
+        90,
+        100,
+        .{ .color = true, .bar = .always },
+    );
+    const red_mem = linePrefixed(red_aw.writer.buffered(), "Mem:");
+    const red_swap = linePrefixed(red_aw.writer.buffered(), "Swap:");
+    try testing.expect(std.mem.find(u8, red_mem, sgr_green) != null);
+    try testing.expect(std.mem.find(u8, red_swap, sgr_red) != null);
+    try testing.expectEqual(@as(usize, 9), std.mem.count(u8, red_swap, bar_filled));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, red_swap, bar_empty));
+}
+
+test "free --help lists --color=WHEN and --bar=WHEN" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const result = try runFree(
+        testing.allocator,
+        testing.io,
+        &.{"--help"},
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    const help = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, help, "--color=WHEN") != null);
+    try testing.expect(std.mem.find(u8, help, "--bar=WHEN") != null);
 }

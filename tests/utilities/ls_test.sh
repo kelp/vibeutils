@@ -435,6 +435,65 @@ test_ls() {
         print_test_result "ls truecolor icons emit RGB sequences" "FAIL" "No 38;2; truecolor sequence found in output"
     fi
 
+    echo -e "${CYAN}Testing LS_COLORS directory override...${NC}"
+
+    local ls_colors_dir=$(create_temp_dir)
+    mkdir -p "$ls_colors_dir/blue_dir"
+    local ls_colors_output
+    ls_colors_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=01;34' "$binary" --color=always -1 "$ls_colors_dir" 2>/dev/null)
+    if [[ "$ls_colors_output" == *"01;34"* ]]; then
+        print_test_result "ls honors LS_COLORS directory SGR" "PASS"
+    else
+        print_test_result "ls honors LS_COLORS directory SGR" "FAIL" \
+            "Expected 01;34 in output: '$ls_colors_output'"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS di=0 omits end sequence...${NC}"
+
+    # GNU prints ec/CSI-reset only after a color start. di=0 writes no
+    # start, so a custom ec must not appear after the directory name.
+    local uncolored_dir
+    uncolored_dir=$(create_temp_dir)
+    mkdir -p "$uncolored_dir/plain_dir"
+    local uncolored_output
+    uncolored_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=0:ec=WRONGRESET' "$binary" --color=always -1 "$uncolored_dir" 2>/dev/null)
+    if [[ "$uncolored_output" == *"WRONGRESET"* ]]; then
+        print_test_result "ls omits end sequence for uncolored di=0 names" "FAIL" \
+            "Unexpected end sequence in: '$uncolored_output'"
+    elif [[ "$uncolored_output" != *"plain_dir"* ]]; then
+        print_test_result "ls omits end sequence for uncolored di=0 names" "FAIL" \
+            "Expected plain_dir in output: '$uncolored_output'"
+    else
+        print_test_result "ls omits end sequence for uncolored di=0 names" "PASS"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS uncolored symlink target omits end sequence...${NC}"
+
+    local uncolored_link_dir
+    uncolored_link_dir=$(create_temp_dir)
+    create_temp_file "target" "$uncolored_link_dir/target.txt"
+    ln -s target.txt "$uncolored_link_dir/link.txt"
+    local uncolored_link_output
+    # Run from inside the fixture so lstat(target.txt) resolves; listing
+    # the directory from elsewhere treats the relative target as dangling
+    # and would apply the compiled missing-target color instead of fi=0.
+    uncolored_link_output=$(
+        cd "$uncolored_link_dir" &&
+        env -u NO_COLOR TERM=xterm-256color \
+            LS_COLORS='ln=0:fi=0:ec=WRONGRESET' "$binary" --color=always -l . 2>/dev/null
+    )
+    if [[ "$uncolored_link_output" == *"WRONGRESET"* ]]; then
+        print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
+            "Unexpected end sequence in: '$uncolored_link_output'"
+    elif [[ "$uncolored_link_output" != *"link.txt"* ]] || [[ "$uncolored_link_output" != *"target.txt"* ]]; then
+        print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
+            "Expected link.txt and target.txt in output: '$uncolored_link_output'"
+    else
+        print_test_result "ls omits end sequence for uncolored symlink names" "PASS"
+    fi
+
     echo -e "${CYAN}Testing NO_COLOR suppresses escape sequences...${NC}"
 
     # With NO_COLOR=1, no escape sequences should appear at all.
@@ -2488,6 +2547,76 @@ $sect_r_dir/sub:
     fi
 
     unset -f strip_section_noise
+
+    # ------------------------------------------------------------------
+    # Issue #166: `ls -l` sizes the file-operand section using only the
+    # operands that remain after directories are partitioned out. GNU
+    # measures every operand first, so a directory's nlink/owner/group/
+    # size (and ACL marker) still pad the surviving file line.
+    #
+    # A 0-byte file plus a directory with eight subdirs (nlink 10, size
+    # typically 4096) widens nlink and size together. Compared live
+    # against GNU on the same fixture so host uid/gid and directory
+    # st_size do not get hardcoded. The oracle is pinned to an absolute
+    # GNU coreutils binary -- a bare `ls` here would resolve to ours
+    # because integration tests prepend zig-out/bin to PATH.
+    # ------------------------------------------------------------------
+    echo -e "${CYAN}Testing #166 mixed-operand -l column widths...${NC}"
+
+    local w166_dir
+    w166_dir=$(create_temp_dir)
+    mkdir -p "$w166_dir/d_wide"
+    local w166_i
+    for w166_i in 0 1 2 3 4 5 6 7; do
+        mkdir "$w166_dir/d_wide/s$w166_i"
+    done
+    : >"$w166_dir/f_plain"
+    chmod 644 "$w166_dir/f_plain"
+    chmod 755 "$w166_dir/d_wide"
+
+    if [[ -n "$gnu_ls" ]]; then
+        local w166_ours w166_gnu w166_gnu_fileonly
+        w166_ours=$(cd "$w166_dir" && LC_ALL=C TZ=UTC NO_COLOR=1 \
+            "$binary" -ln --color=never f_plain d_wide 2>/dev/null | strip_ansi)
+        w166_gnu=$(cd "$w166_dir" && LC_ALL=C TZ=UTC \
+            "$gnu_ls" -ln --color=never f_plain d_wide 2>/dev/null)
+        w166_gnu_fileonly=$(cd "$w166_dir" && LC_ALL=C TZ=UTC \
+            "$gnu_ls" -ln --color=never f_plain 2>/dev/null)
+
+        local w166_ours_line w166_gnu_line
+        w166_ours_line=$(printf '%s\n' "$w166_ours" | sed -n '1p')
+        w166_gnu_line=$(printf '%s\n' "$w166_gnu" | sed -n '1p')
+
+        # The mixed-operand GNU line must differ from the file-only GNU
+        # line: that is the padding this issue is about. Equal lines mean
+        # the fixture failed to widen any column and a byte-compare would
+        # pass on today's (wrong) output.
+        if [[ -z "$w166_gnu_line" || "$w166_gnu_line" != *f_plain ]]; then
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "FAIL" \
+                "GNU ls capture was empty or missing f_plain -- fixture or reference binary broke: $(printf '%q' "$w166_gnu_line")"
+        elif [[ "$w166_gnu_line" == "$w166_gnu_fileonly" ]]; then
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "FAIL" \
+                "GNU mixed-operand line equals the file-only line, so the fixture did not widen nlink/size: $(printf '%q' "$w166_gnu_line")"
+        elif [[ "$w166_ours_line" == "$w166_gnu_line" ]]; then
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "PASS"
+        else
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "FAIL" \
+                "GNU: $(printf '%q' "$w166_gnu_line"); ours: $(printf '%q' "$w166_ours_line")"
+        fi
+    else
+        print_test_result \
+            "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+            "SKIP" \
+            "No GNU ls on this host to compare against"
+    fi
 
     # ------------------------------------------------------------------
     # Issue #147: `ls -l` must mark an entry carrying an extended ACL with

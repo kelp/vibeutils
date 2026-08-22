@@ -275,7 +275,7 @@ init_test_session() {
     # Verify binary directory exists
     if [[ ! -d "$BIN_DIR" ]]; then
         echo -e "${RED}Error: Binary directory not found at $BIN_DIR${NC}"
-        echo "Run 'make build' first"
+        echo "Run 'just build' first"
         exit 1
     fi
 }
