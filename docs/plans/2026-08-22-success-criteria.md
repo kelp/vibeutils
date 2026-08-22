@@ -94,21 +94,21 @@ program behavior (`land-todo-slice` §4).
    below, then check them:
 
 ```
-- [x] All 47 utilities have GNU-compatible
-      compiled-binary integration tests
-      (`just it` / `tests/utilities/`). The
-      upstream GNU coreutils test harness is
-      not vendored (WONT flags and 80/20
-      design).
+- [x] All 47 utilities have compiled-binary
+      integration tests (`just it` /
+      `tests/utilities/`). The upstream GNU
+      coreutils test harness is not vendored
+      (WONT flags and 80/20 design).
 - [x] 90%+ line coverage via `just coverage`
       (kcov in CI). Measured 91.00% on main
       2026-08-21 and on PR #196 2026-08-22.
       `coverage.sh` reports the percent; it
       does not fail the job below 90.
-- [x] Clean static analysis on every PR:
-      tree-wide Tiger Style (`just tiger-check`)
-      and Audit Pre-Pass (`scripts/audit-check.sh`,
-      NEW findings).
+- [x] Static-analysis regression gates run on
+      every PR: tree-wide Tiger Style
+      (`just tiger-check`) and Audit Pre-Pass
+      (`scripts/audit-check.sh`, NEW findings;
+      the audit baseline is not empty).
 ```
 
 Keep the already-checked privileged and CI/CD
@@ -146,9 +146,43 @@ Implementer commit: rewrite + check the three
 `TODO.md` boxes. Do not edit workflows, Zig,
 or test scripts.
 
-Local gates: `just fmt-check`. Skip `just test`
-and `just it` unless a file besides `TODO.md`
-and this plan changes. Skip privileged tests.
+Local gates: `just fmt-check` and `just test`
+(AGENTS.md local checks, even for docs). Skip
+`just it` and privileged tests: this slice
+adds no utility or fakeroot path.
+
+## Round-1 review decisions
+
+Grok APPROVE. Fable APPROVE. Sol REQUEST CHANGES.
+
+1. **kcov fail-below-90 floor, or leave the
+   coverage box unchecked.** Decision: **no
+   floor this slice.** Grok and Fable treat
+   the dated 91.00% measurements as enough
+   for a milestone checkbox; a floor 1 point
+   under the measured value is a flake risk
+   and a follow-up. The rewritten box must
+   keep saying `coverage.sh` does not fail
+   below 90. Do not imply CI enforces 90%.
+2. **"Clean static analysis" overstates the
+   audit baseline.** Adopted. Wording is
+   "regression gates" and names that the
+   audit baseline is not empty. Do not claim
+   branch-protection "required" (token cannot
+   confirm).
+3. **Skip `just test`.** Adopted Sol: run
+   `just fmt-check` and `just test`.
+4. **"GNU-compatible" is warm.** Adopted.
+   Checkbox says "compiled-binary integration
+   tests" and separately that GNU's harness
+   is not vendored.
+5. **Wait for #197 on `main`.** Decision:
+   **keep stacking off `github/main`.** Same
+   recorded deviation as every other slice
+   this run.
+
+Nit-only + recorded dissent. No second-round
+behavior, files, or spec change.
 
 ## TDD ownership
 
