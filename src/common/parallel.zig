@@ -4,6 +4,7 @@ pub const parallel_workers_max: u32 = 8;
 
 const wait_iterations_max: u32 = 50_000_000;
 const worker_wait_iterations_max: u32 = 200_000_000;
+const yield_period: u32 = 4096;
 
 /// Every participant (workers plus the caller) overshoots the steal index by
 /// at most one, so this bound keeps the shared counter from wrapping.
@@ -231,7 +232,7 @@ fn waitForAtLeast(
     var iteration: u32 = 0;
     while (iteration < iterations_max) : (iteration += 1) {
         if (value.load(.acquire) >= target) return true;
-        std.atomic.spinLoopHint();
+        spinAndMaybeYield(iteration);
     }
     return false;
 }
@@ -243,9 +244,17 @@ fn waitForFlag(value: *const std.atomic.Value(u8), iterations_max: u32) bool {
     var iteration: u32 = 0;
     while (iteration < iterations_max) : (iteration += 1) {
         if (value.load(.acquire) != 0) return true;
-        std.atomic.spinLoopHint();
+        spinAndMaybeYield(iteration);
     }
     return false;
+}
+
+/// Tight spins starve sibling workers on oversubscribed BSD QEMU guests.
+fn spinAndMaybeYield(iteration: u32) void {
+    std.debug.assert(yield_period > 1);
+    std.debug.assert(yield_period & (yield_period - 1) == 0);
+    std.atomic.spinLoopHint();
+    if (iteration & (yield_period - 1) == 0) std.Thread.yield() catch {};
 }
 
 test "parallel runBounded with 0 jobs is a no-op" {
