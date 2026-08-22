@@ -95,6 +95,14 @@ pub const glob = @import("glob.zig");
 /// Standard main() boilerplate for all vibeutils utilities
 pub const utilityMain = @import("main.zig").utilityMain;
 
+/// Create an unbuffered writer for standard error.
+pub fn unbufferedStderr(io: std.Io, buffer: *[0]u8) std.Io.File.Writer {
+    std.debug.assert(buffer.len == 0);
+    const writer = std.Io.File.stderr().writerStreaming(io, buffer);
+    std.debug.assert(writer.interface.buffer.len == 0);
+    return writer;
+}
+
 /// Human-readable size formatting and block size parsing
 pub const format = @import("format.zig");
 
@@ -522,6 +530,50 @@ test "maybeHint DirNotEmpty suffix follows overlay" {
         " (use rm -r to remove recursively)",
         maybeHint(error.DirNotEmpty, "src", .write).?,
     );
+}
+
+test "utility entry points keep stderr unbuffered" {
+    const testing = std.testing;
+    const io = testing.io;
+    const src_dir = try std.Io.Dir.cwd().openDir(io, build_options.src_dir, .{});
+
+    const paths = [_][]const u8{ "common/main.zig", "env.zig" };
+    const needles = [_][]const u8{
+        "stderr_buffer: [8192]",
+        "stderr_buf: [256]",
+        ".stderr().writerStreaming(",
+    };
+    var violations: std.ArrayListUnmanaged(u8) = .empty;
+    defer violations.deinit(testing.allocator);
+
+    var scanned: u32 = 0;
+    for (paths) |source_path| {
+        const content = try src_dir.readFileAlloc(
+            io,
+            source_path,
+            testing.allocator,
+            .limited(1024 * 1024),
+        );
+        defer testing.allocator.free(content);
+        scanned += 1;
+
+        for (needles) |needle| {
+            if (std.mem.find(u8, content, needle) == null) continue;
+            try violations.appendSlice(testing.allocator, source_path);
+            try violations.appendSlice(testing.allocator, ": contains ");
+            try violations.appendSlice(testing.allocator, needle);
+            try violations.append(testing.allocator, '\n');
+        }
+    }
+
+    if (violations.items.len > 0) {
+        std.debug.print(
+            "\nPOSIX stderr buffering violation:\n{s}\n",
+            .{violations.items},
+        );
+    }
+    try testing.expectEqual(@as(u32, 2), scanned);
+    try testing.expectEqual(@as(usize, 0), violations.items.len);
 }
 
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {

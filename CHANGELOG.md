@@ -105,6 +105,11 @@
   reverting the worktree made the hook report clean. Staged bytes
   now come from `git show :path`; the reported path is unchanged
   (#149).
+- **Standard error is now unbuffered, as required by POSIX.**
+  Diagnostics are visible as soon as they are written instead of sitting in
+  an 8KB buffer until process exit. In particular, `cat MISSING -` reports
+  the missing file before it starts copying stdin, and `env -v` reports its
+  environment changes while it is still waiting for the child command.
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,

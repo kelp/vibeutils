@@ -9,6 +9,7 @@ LIB_DIR="$(dirname "${BASH_SOURCE[0]}")"
 source "$LIB_DIR/common.sh"
 source "$LIB_DIR/flag_parser.sh"
 source "$LIB_DIR/fd_modes.sh"
+source "$LIB_DIR/posix_io.sh"
 
 # Run tests for a specific utility
 run_utility_tests() {
@@ -21,6 +22,7 @@ run_utility_tests() {
     # Initialize test session
     init_test_session
     test_fd_modes "$util"
+    test_posix_io "$util"
     
     # Check if utility-specific test file exists
     if [[ -f "$test_file" ]]; then
@@ -130,6 +132,12 @@ run_all_utility_tests() {
     echo -e "\n${CYAN}File-descriptor mode coverage oracle...${NC}"
     if ! bash "$TESTS_DIR/tools/fd_modes_test.sh"; then
         echo -e "${RED}fd-mode oracle failed${NC}"
+        return 1
+    fi
+
+    echo -e "\n${CYAN}POSIX I/O coverage oracle...${NC}"
+    if ! bash "$TESTS_DIR/tools/posix_io_test.sh"; then
+        echo -e "${RED}POSIX I/O oracle failed${NC}"
         return 1
     fi
     
