@@ -10,16 +10,13 @@
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy, CHANGELOG.md
 
 ## Tiger Style remediation (deferred)
-- [ ] Enable `scripts/tiger-check.sh` in CI after the Tiger Style
-      migration is finished (Phases 3-6 in
-      `docs/tiger-style-review/README.md`). Add a CI job running
-      `scripts/tiger-check.sh --base origin/main` to gate PRs on NEW
-      Tiger Style violations. Deferred deliberately: the pre-commit
-      hook already blocks NEW violations locally, and we want builds
-      green through the migration before enforcing in CI (the tree
-      still carries ~3442 pre-existing violations; `--base` only fails
-      on newly introduced ones, but enable CI once the debt is burned
-      down by the function-length, assertion, and cleanup phases).
+
+- [x] Enable `scripts/tiger-check.sh` in CI. `.github/workflows/tiger-style.yml`
+      runs the scanner self-test then tree-wide `just tiger-check` on every PR
+      and push to `main`. That is stricter than `--base origin/main` (it fails
+      on any gating violation, not only NEW lines in the diff). Phases 3–6 in
+      `docs/tiger-style-review/README.md` are done; tree-wide gating counts
+      are 0. usize-arch remains informational / non-gating.
 
 ## Project Goals
 - **Balance**: 80% of GNU's usefulness with 20% of the complexity
