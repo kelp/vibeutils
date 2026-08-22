@@ -5,6 +5,7 @@
 //! Maintains compatibility with GNU coreutils cat.
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 /// ASCII DEL character (0x7F) - represents the delete control character
@@ -198,6 +199,27 @@ fn runCat_processStdin(
 /// Opens and streams a regular file through processInput, reporting any error to
 /// stderr. Returns true on error (the caller ORs this into has_error). Single-caller
 /// helper for runCat.
+fn reportCatPathError(
+    allocator: std.mem.Allocator,
+    stderr: *std.Io.Writer,
+    file_path: []const u8,
+    err: anyerror,
+) void {
+    std.debug.assert(file_path.len > 0);
+    std.debug.assert(!std.mem.eql(u8, file_path, "-"));
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        "cat",
+        "{s}: {s}{s}",
+        .{
+            file_path,
+            common.posixErrorString(err),
+            common.maybeHint(err, file_path, .read) orelse "",
+        },
+    );
+}
+
 fn runCat_processFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -212,13 +234,7 @@ fn runCat_processFile(
     // GNU cat prints this operand unquoted ("cat: x: No such file or
     // directory"); keep parity.
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(err) },
-        );
+        reportCatPathError(allocator, stderr, file_path, err);
         return true;
     };
     defer file.close(io);
@@ -227,25 +243,13 @@ fn runCat_processFile(
     // opened handle turns out to be a directory, so stat it up front and
     // report error.IsDir through the normal path instead of the raw name.
     const stat = file.stat(io) catch |err| {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(err) },
-        );
+        reportCatPathError(allocator, stderr, file_path, err);
         return true;
     };
     if (stat.kind == .directory) {
         // GNU cat prints this operand unquoted ("cat: x: Is a directory");
         // keep parity.
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(error.IsDir) },
-        );
+        reportCatPathError(allocator, stderr, file_path, error.IsDir);
         return true;
     }
     // Negative space: directories were rejected above, so a regular read
@@ -521,16 +525,16 @@ fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions)
 }
 
 test "cat reads single file" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Hello, world!\n");
+    try tmp_dir.createFile("test.txt", "Hello, world!\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
@@ -547,19 +551,19 @@ test "cat reads single file" {
 }
 
 test "cat concatenates multiple files" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "file1.txt", "First file\n");
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "file2.txt", "Second file\n");
+    try tmp_dir.createFile("file1.txt", "First file\n", null);
+    try tmp_dir.createFile("file2.txt", "Second file\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const path1 = try tmp_dir.dir.realPathFileAlloc(testing.io, "file1.txt", testing.allocator);
+    const path1 = try tmp_dir.getPath("file1.txt");
     defer testing.allocator.free(path1);
-    const path2 = try tmp_dir.dir.realPathFileAlloc(testing.io, "file2.txt", testing.allocator);
+    const path2 = try tmp_dir.getPath("file2.txt");
     defer testing.allocator.free(path2);
 
     const args = [_][]const u8{ path1, path2 };
@@ -576,21 +580,16 @@ test "cat concatenates multiple files" {
 }
 
 test "cat with -n numbers all lines" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(
-        testing.io,
-        tmp_dir.dir,
-        "test.txt",
-        "Line 1\nLine 2\nLine 3\n",
-    );
+    try tmp_dir.createFile("test.txt", "Line 1\nLine 2\nLine 3\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", file_path };
@@ -610,16 +609,16 @@ test "cat with -n numbers all lines" {
 }
 
 test "cat with -b numbers non-blank lines" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n");
+    try tmp_dir.createFile("test.txt", "Line 1\n\nLine 3\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-b", file_path };
@@ -639,21 +638,16 @@ test "cat with -b numbers non-blank lines" {
 }
 
 test "cat with -s squeezes blank lines" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(
-        testing.io,
-        tmp_dir.dir,
-        "test.txt",
-        "Line 1\n\n\n\nLine 2\n",
-    );
+    try tmp_dir.createFile("test.txt", "Line 1\n\n\n\nLine 2\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-s", file_path };
@@ -670,16 +664,16 @@ test "cat with -s squeezes blank lines" {
 }
 
 test "cat with -E shows ends" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try tmp_dir.createFile("test.txt", "Line 1\nLine 2\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
@@ -696,16 +690,16 @@ test "cat with -E shows ends" {
 }
 
 test "cat with -T shows tabs" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "col1\tcol2\n");
+    try tmp_dir.createFile("test.txt", "col1\tcol2\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-T", file_path };
@@ -722,8 +716,8 @@ test "cat with -T shows tabs" {
 }
 
 test "cat handles non-existent file" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -731,7 +725,7 @@ test "cat handles non-existent file" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const tmp_base_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    const tmp_base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_base_path);
     const nonexistent_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -754,16 +748,16 @@ test "cat handles non-existent file" {
 }
 
 test "cat with -A shows all (equivalent to -vET)" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\t\nLine 2\n");
+    try tmp_dir.createFile("test.txt", "Line 1\t\nLine 2\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-A", file_path };
@@ -780,16 +774,16 @@ test "cat with -A shows all (equivalent to -vET)" {
 }
 
 test "cat with -e shows ends and non-printing (equivalent to -vE)" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try tmp_dir.createFile("test.txt", "Line 1\nLine 2\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-e", file_path };
@@ -806,16 +800,16 @@ test "cat with -e shows ends and non-printing (equivalent to -vE)" {
 }
 
 test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
+    try tmp_dir.createFile("test.txt", "Line\twith\ttabs\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-t", file_path };
@@ -832,16 +826,16 @@ test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
 }
 
 test "cat with -l flag is ignored" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Test content\n");
+    try tmp_dir.createFile("test.txt", "Test content\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-l", file_path };
@@ -859,16 +853,16 @@ test "cat with -l flag is ignored" {
 }
 
 test "cat with -u flag is ignored" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Test content\n");
+    try tmp_dir.createFile("test.txt", "Test content\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-u", file_path };
@@ -886,17 +880,17 @@ test "cat with -u flag is ignored" {
 }
 
 test "cat with -A and control characters" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create file with control character (^A = \x01)
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Test\x01\tEnd\n");
+    try tmp_dir.createFile("test.txt", "Test\x01\tEnd\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-A", file_path };
@@ -913,18 +907,18 @@ test "cat with -A and control characters" {
 }
 
 test "cat handles very long lines without truncation" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a line longer than the 8192-byte read buffer
     const long_line = "A" ** 8192 ++ "\n";
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", long_line);
+    try tmp_dir.createFile("test.txt", long_line, null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
@@ -941,18 +935,18 @@ test "cat handles very long lines without truncation" {
 }
 
 test "cat with -n handles very long lines correctly" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a line longer than the 8192-byte read buffer
     const long_line = "A" ** 8192 ++ "\n";
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", long_line);
+    try tmp_dir.createFile("test.txt", long_line, null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", file_path };
@@ -972,14 +966,14 @@ test "cat with -n handles very long lines correctly" {
 }
 
 test "cat continues processing files after error" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create one good file
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "good.txt", "Good content\n");
+    try tmp_dir.createFile("good.txt", "Good content\n", null);
 
     // Get absolute paths for the test
-    const good_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "good.txt", testing.allocator);
+    const good_path = try tmp_dir.getPath("good.txt");
     defer testing.allocator.free(good_path);
 
     const io = testing.io;
@@ -990,7 +984,7 @@ test "cat continues processing files after error" {
     defer stderr_aw.deinit();
 
     // Create a non-existent file path in the temp directory
-    const tmp_base_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    const tmp_base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_base_path);
     const nonexistent_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -1024,17 +1018,17 @@ test "cat -E renders trailing CR as ^M$ on CRLF lines" {
     // Our implementation outputs the raw \r byte followed by "$\n",
     // which on a terminal causes the cursor to return to column 0
     // and "$" overwrites the first character.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // File content: "test\r\n" (CRLF line ending)
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "crlf.txt", "test\r\n");
+    try tmp_dir.createFile("crlf.txt", "test\r\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "crlf.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("crlf.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
@@ -1054,17 +1048,17 @@ test "cat -E renders trailing CR as ^M$ on CRLF lines" {
 test "cat -E preserves mid-line CR as raw byte" {
     // Mid-line \r is NOT converted to ^M — only trailing \r (before \n).
     // This matches GNU cat behavior.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // File content: "ab\rcd\n" — \r is mid-line, not before \n
-    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "midcr.txt", "ab\rcd\n");
+    try tmp_dir.createFile("midcr.txt", "ab\rcd\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "midcr.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("midcr.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
@@ -1083,21 +1077,16 @@ test "cat -E preserves mid-line CR as raw byte" {
 
 test "cat -E with multiple CRLF lines" {
     // Each CRLF line should get ^M$ treatment.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(
-        testing.io,
-        tmp_dir.dir,
-        "multi.txt",
-        "line1\r\nline2\r\nline3\n",
-    );
+    try tmp_dir.createFile("multi.txt", "line1\r\nline2\r\nline3\n", null);
 
     const io = testing.io;
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "multi.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("multi.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
@@ -1111,4 +1100,69 @@ test "cat -E with multiple CRLF lines" {
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_aw.writer.buffered());
+}
+
+test "cat permission hint follows stderr hint overlay" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    // Create readable so realpath works on macOS (EACCES on mode 000), then chmod.
+    const file = try tmp.dir().createFile(testing.io, "secret.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
+    });
+    try file.writeStreamingAll(testing.io, "secret");
+    file.close(testing.io);
+    const file_path = try tmp.getPath("secret.txt");
+    defer testing.allocator.free(file_path);
+    const file_path_z = try testing.allocator.dupeZ(u8, file_path);
+    defer testing.allocator.free(file_path_z);
+    if (std.c.chmod(file_path_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(file_path_z, 0o644);
+    const args = [_][]const u8{file_path};
+
+    common.env.test_stderr_hints = false;
+    var stderr_plain: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_plain.deinit();
+    const plain_exit = try runCat(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_plain.writer,
+    );
+    const expected_plain = try std.fmt.allocPrint(
+        testing.allocator,
+        "cat: {s}: Permission denied\n",
+        .{file_path},
+    );
+    defer testing.allocator.free(expected_plain);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), plain_exit);
+    try testing.expectEqualStrings(expected_plain, stderr_plain.writer.buffered());
+
+    common.env.test_stderr_hints = true;
+    var stderr_hints: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_hints.deinit();
+    const hints_exit = try runCat(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_hints.writer,
+    );
+    const expected_hints = try std.fmt.allocPrint(
+        testing.allocator,
+        "cat: {s}: Permission denied (file is not readable)\n",
+        .{file_path},
+    );
+    defer testing.allocator.free(expected_hints);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), hints_exit);
+    try testing.expectEqualStrings(expected_hints, stderr_hints.writer.buffered());
 }

@@ -69,8 +69,8 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
+    var stderr_buffer: [0]u8 = .{};
+    var stderr_writer = common.unbufferedStderr(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     const exit_code = runEnv(

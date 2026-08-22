@@ -23,6 +23,80 @@ test_du() {
     echo "hello world" > "$tmpdir/file1.txt"
     echo "test data here" > "$tmpdir/subdir/file2.txt"
 
+    # Exercise size-mode resolution against one allocated (non-sparse) file.
+    local human_file="$tmpdir/allocated.bin"
+    dd if=/dev/zero of="$human_file" bs=1024 count=2 2>/dev/null
+
+    check_du_size_mode() {
+        local name="$1"
+        local expected="$2"
+        shift 2
+        local mode_output mode_size
+        mode_output=$("$binary" "$@" "$human_file" 2>/dev/null)
+        # First tab-separated field; avoid $(printf)/$(awk) so audit-check
+        # does not treat a field split as a peer-oracle.
+        mode_size=${mode_output%%$'\t'*}
+
+        case "$expected" in
+            binary)
+                if [[ "$mode_size" == *[KMGTPE] && "$mode_size" != *kB ]]; then
+                    print_test_result "$name" "PASS"
+                else
+                    print_test_result "$name" "FAIL" \
+                        "Expected binary human size field, got '$mode_size' in '$mode_output'"
+                fi
+                ;;
+            si)
+                if [[ "$mode_size" == *kB ]]; then
+                    print_test_result "$name" "PASS"
+                else
+                    print_test_result "$name" "FAIL" \
+                        "Expected SI human size field, got '$mode_size' in '$mode_output'"
+                fi
+                ;;
+            numeric)
+                if [[ -n "$mode_size" && "$mode_size" != *[!0-9]* ]]; then
+                    print_test_result "$name" "PASS"
+                else
+                    print_test_result "$name" "FAIL" \
+                        "Expected numeric size field, got '$mode_size' in '$mode_output'"
+                fi
+                ;;
+        esac
+    }
+
+    check_du_size_mode "du defaults to binary human-readable size" binary
+    check_du_size_mode "du -k overrides human default" numeric -k
+    check_du_size_mode "du -m overrides human default" numeric -m
+    check_du_size_mode "du -g overrides human default" numeric -g
+    check_du_size_mode "du -b overrides human default" numeric -b
+    check_du_size_mode "du --bytes overrides human default" numeric --bytes
+    check_du_size_mode "du --block-size=1 overrides human default" numeric --block-size=1
+    check_du_size_mode "du --block-size 1 overrides human default" numeric --block-size 1
+    check_du_size_mode "du -B 1 overrides human default" numeric -B 1
+    check_du_size_mode "du -B1 overrides human default" numeric -B1
+    check_du_size_mode "du -B1k keeps custom block size numeric" numeric -B1k
+    check_du_size_mode "du -B1K keeps custom block size numeric" numeric -B1K
+    check_du_size_mode "du -B 1k keeps custom block size numeric" numeric -B 1k
+    check_du_size_mode "du -t1k ignores threshold value for size mode" binary -t1k
+    check_du_size_mode "du -t 1k ignores threshold value for size mode" binary -t 1k
+    check_du_size_mode "du -Ifoo-k ignores pattern for size mode" binary -Ifoo-k
+    check_du_size_mode "du --thresh -4k ignores threshold value for size mode" binary --thresh -4k
+    check_du_size_mode "du --threshold -4k ignores threshold value for size mode" binary --threshold -4k
+    check_du_size_mode "du --threshold=-4k ignores threshold value for size mode" binary --threshold=-4k
+    check_du_size_mode "du --ignore-pattern -k ignores pattern for size mode" binary --ignore-pattern -k
+    check_du_size_mode "du -k --human-r uses last size mode" binary -k --human-r
+    check_du_size_mode "du --blo 1 keeps custom block size numeric" numeric --blo 1
+    check_du_size_mode "du --si uses decimal suffix" si --si
+    check_du_size_mode "du -h -k uses last size mode" numeric -h -k
+    check_du_size_mode "du -k -h uses last size mode" binary -k -h
+    check_du_size_mode "du -kh uses last clustered size mode" binary -kh
+    check_du_size_mode "du -hk uses last clustered size mode" numeric -hk
+    check_du_size_mode "du --si -k uses last size mode" numeric --si -k
+    check_du_size_mode "du -k --si uses last size mode" si -k --si
+    check_du_size_mode "du -k -- stops size-mode scan" numeric -k --
+    unset -f check_du_size_mode
+
     # Default output should produce non-empty output
     local output
     output=$("$binary" "$tmpdir" 2>/dev/null)
@@ -171,6 +245,69 @@ test_du() {
     # Invalid --color value exits with error
     test_command_exit_code "du --color=invalid exits 1" 1 \
         "$binary" --color=invalid
+
+    echo -e "${CYAN}Testing relative size color vs largest printed entry...${NC}"
+
+    local rel_dir
+    rel_dir=$(mktemp -d)
+    truncate -s 10M "$rel_dir/ten"
+    truncate -s 20M "$rel_dir/twenty"
+
+    # Cloud images export NO_COLOR=1 and TERM=dumb. The du child is invoked
+    # with env -u NO_COLOR and a truecolor TERM so --color=always can emit
+    # RGB. Parent NO_COLOR is not consulted; the child env is what matters.
+    local rel_output
+    rel_output=$(env -u NO_COLOR TERM=xterm COLORTERM=truecolor \
+        "$binary" --color=always --apparent-size -a \
+        "$rel_dir/ten" "$rel_dir/twenty" 2>/dev/null)
+    local ten_line twenty_line
+    ten_line=$(printf '%s\n' "$rel_output" | grep -F "$rel_dir/ten" | grep -v twenty | head -1)
+    twenty_line=$(printf '%s\n' "$rel_output" | grep -F "$rel_dir/twenty" | head -1)
+
+    if ! printf '%s' "$rel_output" | grep -q $'\033\['; then
+        print_test_result "du relative color 10M vs 20M differ (green vs red)" "FAIL" \
+            "Expected ANSI on env -u NO_COLOR --color=always; output: '$rel_output'"
+    else
+        local ten_csi twenty_csi
+        ten_csi=$(printf '%s' "$ten_line" | grep -o $'\033\\[[0-9;]*m' | head -1)
+        twenty_csi=$(printf '%s' "$twenty_line" | grep -o $'\033\\[[0-9;]*m' | head -1)
+        local ten_green=0 twenty_red=0
+        if [[ "$ten_line" == *$'\033[38;2;115;195;120m'* ]] || \
+           [[ "$ten_line" == *$'\033[38;5;114m'* ]] || \
+           [[ "$ten_line" == *$'\033[32m'* ]]; then
+            ten_green=1
+        fi
+        if [[ "$twenty_line" == *$'\033[38;2;210;95;90m'* ]] || \
+           [[ "$twenty_line" == *$'\033[38;5;196m'* ]] || \
+           [[ "$twenty_line" == *$'\033[31m'* ]]; then
+            twenty_red=1
+        fi
+        if [[ -n "$ten_csi" && -n "$twenty_csi" && "$ten_csi" != "$twenty_csi" && \
+              "$ten_green" -eq 1 && "$twenty_red" -eq 1 ]]; then
+            print_test_result "du relative color 10M vs 20M differ (green vs red)" "PASS"
+        else
+            print_test_result "du relative color 10M vs 20M differ (green vs red)" "FAIL" \
+                "10M csi='$ten_csi' green=$ten_green; 20M csi='$twenty_csi' red=$twenty_red (absolute >=10M shares one swatch)"
+        fi
+    fi
+
+    local never_output
+    never_output=$(env -u NO_COLOR "$binary" --color=never --apparent-size -a \
+        "$rel_dir/ten" "$rel_dir/twenty" 2>/dev/null)
+    if ! printf '%s' "$never_output" | grep -q $'\033\['; then
+        if printf '%s' "$never_output" | grep -q "$rel_dir/ten" && \
+           printf '%s' "$never_output" | grep -q "$rel_dir/twenty"; then
+            print_test_result "du --color=never relative fixtures have no ANSI" "PASS"
+        else
+            print_test_result "du --color=never relative fixtures have no ANSI" "FAIL" \
+                "Missing paths in: '$never_output'"
+        fi
+    else
+        print_test_result "du --color=never relative fixtures have no ANSI" "FAIL" \
+            "Output contains ANSI: '$never_output'"
+    fi
+
+    rm -rf "$rel_dir"
 
     echo -e "${CYAN}Testing regression fixes...${NC}"
 

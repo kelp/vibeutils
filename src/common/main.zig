@@ -3,7 +3,7 @@
 //! This module provides `utilityMain`, a composite wrapper that standardizes:
 //! - Arena allocator setup
 //! - Process argument parsing
-//! - 8KB buffered stdout/stderr writers
+//! - 8KB buffered stdout and unbuffered stderr writers
 //! - Calling the run function
 //! - Flushing buffers
 //! - Exiting with the returned code
@@ -16,8 +16,9 @@ const lib = @import("lib.zig");
 
 /// Composite wrapper for utility main functions.
 ///
-/// Sets up arena allocator, parses process arguments, creates buffered writers,
-/// calls the run function, flushes buffers, and exits with the returned code.
+/// Parses process arguments, then delegates 8KB `writerStreaming` setup and
+/// flush-before-return to `runWithStreamingFiles` on process stdout/stderr.
+/// Exits with the returned code. Empty `argv[0]` is legal and must not trap.
 ///
 /// The run function signature must be:
 ///   fn(std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8
@@ -39,8 +40,8 @@ pub fn utilityMain(
 
     // Parse process arguments
     const args = init.minimal.args.toSlice(allocator) catch |err| {
-        var stderr_buf: [256]u8 = undefined;
-        var stderr_w = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
+        var stderr_buffer: [0]u8 = .{};
+        var stderr_w = lib.unbufferedStderr(io, &stderr_buffer);
         const stderr = &stderr_w.interface;
         stderr.print(
             "error: failed to allocate arguments: {s}\n",
@@ -50,36 +51,73 @@ pub fn utilityMain(
         std.process.exit(1);
     };
 
-    // Every OS-launched process supplies argv[0], so the parsed slice always
-    // has at least one element; the args[1..] slice below depends on this.
+    // Every OS-launched process supplies argv[0]; args[1..] depends on that.
+    // Empty argv[0] is legal, so do not assert args[0].len > 0.
     std.debug.assert(args.len >= 1);
 
-    // Set up 8KB buffered writers for stdout and stderr
+    const stdout_file = std.Io.File.stdout();
+    const stderr_file = std.Io.File.stderr();
+    std.debug.assert(stdout_file.handle >= 0);
+    std.debug.assert(stderr_file.handle >= 0);
+
+    const exit_code = runWithStreamingFiles(
+        runFn,
+        allocator,
+        io,
+        args,
+        stdout_file,
+        stderr_file,
+    );
+    std.process.exit(exit_code);
+}
+
+/// File-backed writer setup: the path `runUtil` unit tests never see.
+///
+/// Same `runFn` contract as `utilityMain`. `args[0]` is the program name and
+/// is stripped (`args[1..]`). Does not call `std.process.exit`.
+///
+/// On uncaught `runFn` error, flush stderr only — today's `utilityMain` `catch`
+/// used to `process.exit(1)` before the success-path `stdout.flush()`.
+pub fn runWithStreamingFiles(
+    comptime runFn: fn (
+        std.mem.Allocator,
+        std.Io,
+        []const []const u8,
+        *std.Io.Writer,
+        *std.Io.Writer,
+    ) anyerror!u8,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_file: std.Io.File,
+    stderr_file: std.Io.File,
+) u8 {
+    std.debug.assert(args.len >= 1);
+
+    // Buffer stdout for throughput while keeping stderr immediately visible.
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
+    var stdout_writer = stdout_file.writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
+    // Zero-length buffer keeps stderr immediately visible (POSIX I/O
+    // suite) while still writing through the caller-supplied file so
+    // runWithStreamingFiles tests can capture diagnostics.
+    var stderr_buffer: [0]u8 = .{};
+    var stderr_writer = stderr_file.writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    // Keep the documented "8KB buffered stdout/stderr" intent in sync: a future
-    // edit must change both buffer sizes together, not just one.
-    std.debug.assert(stdout_buffer.len == stderr_buffer.len);
+    std.debug.assert(stdout_buffer.len == 8192);
+    std.debug.assert(stderr_writer.interface.buffer.len == 0);
 
-    // Call the run function (skip program name: args[1..])
     const exit_code = runFn(allocator, io, args[1..], stdout, stderr) catch |err| {
         stderr.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
         stderr.flush() catch {};
-        std.process.exit(1);
+        return 1;
     };
 
-    // Flush buffers before exit
     stdout.flush() catch {};
     stderr.flush() catch {};
-
-    // Exit with the returned code
-    std.process.exit(exit_code);
+    return exit_code;
 }
 
 /// Testable inner loop: same logic as `utilityMain` but accepts an explicit
@@ -319,4 +357,161 @@ test "runWithBufferedIO: empty args slice (program name only) passes empty slice
         &stderr_aw.writer,
     );
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+}
+
+// ---------------------------------------------------------------------------
+// File-backed tests for runWithStreamingFiles (writer setup + catch flush)
+// ---------------------------------------------------------------------------
+
+/// Short payload that stays in the 8KB buffer until the success-path flush.
+fn runStreamingShort(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const []const u8,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
+) anyerror!u8 {
+    try stdout.writeAll("short-payload\n");
+    return 0;
+}
+
+/// 9000-byte write: first 8192 drain on buffer fill; the tail needs flush.
+fn runStreamingLong(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const []const u8,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
+) anyerror!u8 {
+    var payload: [9000]u8 = undefined;
+    @memset(&payload, 'Z');
+    try stdout.writeAll(&payload);
+    return 0;
+}
+
+/// Pending short stdout write, then an uncaught error (catch-path probe).
+fn runStreamingPendingThenError(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const []const u8,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
+) anyerror!u8 {
+    try stdout.writeAll("pending-short");
+    return error.StreamingCatchProbe;
+}
+
+test "runWithStreamingFiles: short write flushes to stdout file" {
+    const io = testing.io;
+    var test_dir = lib.test_dir.TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("stdout.txt", "", null);
+    try test_dir.createFile("stderr.txt", "", null);
+    const stdout_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stdout.txt",
+        .{ .mode = .write_only },
+    );
+    const stderr_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stderr.txt",
+        .{ .mode = .write_only },
+    );
+
+    const argv = [_][]const u8{"prog"};
+    const code = runWithStreamingFiles(
+        runStreamingShort,
+        testing.allocator,
+        io,
+        &argv,
+        stdout_file,
+        stderr_file,
+    );
+    stdout_file.close(io);
+    stderr_file.close(io);
+
+    try testing.expectEqual(@as(u8, 0), code);
+    try test_dir.expectFileContent("stdout.txt", "short-payload\n");
+}
+
+test "runWithStreamingFiles: write over 8192 persists full payload including tail" {
+    const io = testing.io;
+    var test_dir = lib.test_dir.TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("stdout.txt", "", null);
+    try test_dir.createFile("stderr.txt", "", null);
+    const stdout_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stdout.txt",
+        .{ .mode = .write_only },
+    );
+    const stderr_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stderr.txt",
+        .{ .mode = .write_only },
+    );
+
+    const argv = [_][]const u8{"prog"};
+    const code = runWithStreamingFiles(
+        runStreamingLong,
+        testing.allocator,
+        io,
+        &argv,
+        stdout_file,
+        stderr_file,
+    );
+    stdout_file.close(io);
+    stderr_file.close(io);
+
+    var expected: [9000]u8 = undefined;
+    @memset(&expected, 'Z');
+    try testing.expectEqual(@as(u8, 0), code);
+    try test_dir.expectFileContent("stdout.txt", &expected);
+}
+
+test "runWithStreamingFiles: uncaught runFn error returns 1, flushes stderr, not stdout" {
+    const io = testing.io;
+    var test_dir = lib.test_dir.TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("stdout.txt", "", null);
+    try test_dir.createFile("stderr.txt", "", null);
+    const stdout_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stdout.txt",
+        .{ .mode = .write_only },
+    );
+    const stderr_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stderr.txt",
+        .{ .mode = .write_only },
+    );
+
+    const argv = [_][]const u8{"prog"};
+    const code = runWithStreamingFiles(
+        runStreamingPendingThenError,
+        testing.allocator,
+        io,
+        &argv,
+        stdout_file,
+        stderr_file,
+    );
+    stdout_file.close(io);
+    stderr_file.close(io);
+
+    const err_content = try test_dir.readFileAlloc("stderr.txt");
+    defer testing.allocator.free(err_content);
+    const out_content = try test_dir.readFileAlloc("stdout.txt");
+    defer testing.allocator.free(out_content);
+
+    try testing.expectEqual(@as(u8, 1), code);
+    try testing.expect(std.mem.indexOf(u8, err_content, "error: ") != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        err_content,
+        lib.posixErrorString(error.StreamingCatchProbe),
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, out_content, "pending-short") == null);
 }

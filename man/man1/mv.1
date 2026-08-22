@@ -25,6 +25,16 @@ In its second form, it moves each named
 to the destination
 .Ar directory .
 .Pp
+When a move crosses filesystems,
+.Nm
+falls back to copying and then removing the source.
+If standard error is a terminal and copying one regular file takes
+longer than 2 seconds, a status line showing the file name, bytes
+copied, and percentage is displayed on standard error, refreshed in
+place, and cleared when the copy completes.
+Same-filesystem renames never display a status line, and neither
+does a non-terminal standard error.
+.Pp
 The options are as follows:
 .Bl -tag -width indent
 .It Fl f , Fl Fl force

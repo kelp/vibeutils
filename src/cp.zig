@@ -602,8 +602,12 @@ fn copySingleFile_resolve(
             allocator,
             stderr_writer,
             "cp",
-            "cannot stat '{s}': {s}",
-            .{ source, common.posixErrorString(err) },
+            "cannot stat '{s}': {s}{s}",
+            .{
+                source,
+                common.posixErrorString(err),
+                common.maybeHint(err, source, .read) orelse "",
+            },
         );
         return null;
     };
@@ -904,6 +908,43 @@ fn copyRegularFile(
         options,
     ) orelse return false;
 
+    // One tracker per file, TTY-gated inside makeCopyTracker per file
+    // (macOS isatty class); all three byte-copy paths below share it.
+    var tracker_storage = makeCopyTracker(io, stderr_writer, source_path, source_info.size);
+
+    return copyRegularFile_dispatch(
+        allocator,
+        io,
+        stderr_writer,
+        source_path,
+        dest_path,
+        options,
+        source_info,
+        dest_unlinked,
+        if (tracker_storage) |*t| t else null,
+    );
+}
+
+/// Route one regular-file copy to the matching byte-copy path: preserve
+/// (-p), overwrite-in-place, or simple create-and-copy. Extracted from
+/// copyRegularFile so the parent stays within the 70-line limit after
+/// gaining the progress tracker.
+fn copyRegularFile_dispatch(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+    source_info: common.file.FileInfo,
+    dest_unlinked: bool,
+    tracker: ?*common.progress.Tracker,
+) bool {
+    // Forwarded from copyRegularFile, which stats the source successfully
+    // before dispatching; both operands still name the diagnostics below.
+    assert(source_path.len > 0);
+    assert(source_info.mode & std.c.S.IFMT != 0);
+
     if (options.preserve) {
         common.file_ops.copyFileWithAttributes(
             allocator,
@@ -913,6 +954,7 @@ fn copyRegularFile(
             source_path,
             dest_path,
             source_info,
+            tracker,
         ) catch {
             return false;
         };
@@ -921,7 +963,7 @@ fn copyRegularFile(
     if (!dest_unlinked and fileExists(io, dest_path)) {
         // Destination exists and was not unlinked: overwrite in place to
         // preserve the inode (and thus hard links).
-        copyInPlace(allocator, io, stderr_writer, source_path, dest_path) catch {
+        copyInPlace(allocator, io, stderr_writer, source_path, dest_path, tracker) catch {
             return false;
         };
         return true;
@@ -933,7 +975,32 @@ fn copyRegularFile(
         source_path,
         dest_path,
         source_info.mode,
+        tracker,
     );
+}
+
+/// Build the auto-progress tracker for one regular-file copy, or null when
+/// stderr is not a TTY (or the test overlay disables it). Extracted so
+/// copyRegularFile stays within the 70-line limit.
+fn makeCopyTracker(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    total: u64,
+) ?common.progress.Tracker {
+    // The path labels the status line and cp asserts non-empty operands
+    // upstream; an empty label would render "cp: copying " with no name.
+    assert(source_path.len > 0);
+    const tracker = common.progress.forCopy(
+        stderr_writer,
+        "cp",
+        source_path,
+        total,
+        common.progress.nowNs(io),
+    );
+    // forCopy either declines (no TTY) or hands back an enabled tracker.
+    assert(tracker == null or tracker.?.enabled);
+    return tracker;
 }
 
 /// Apply the GNU force-overwrite rule before copying a regular file: "if an
@@ -979,6 +1046,7 @@ fn copyRegularFile_simpleCopy(
     source_path: []const u8,
     dest_path: []const u8,
     source_mode: std.posix.mode_t,
+    tracker: ?*common.progress.Tracker,
 ) bool {
     // Sole caller copyRegularFile forwards its own asserted non-empty source.
     assert(source_path.len > 0);
@@ -1006,14 +1074,18 @@ fn copyRegularFile_simpleCopy(
             allocator,
             stderr_writer,
             "cp",
-            "cannot create '{s}': {s}",
-            .{ dest_path, common.posixErrorString(err) },
+            "cannot create '{s}': {s}{s}",
+            .{
+                dest_path,
+                common.posixErrorString(err),
+                common.maybeHint(err, dest_path, .write) orelse "",
+            },
         );
         return false;
     };
     defer dest_file.close(io);
 
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -1034,6 +1106,7 @@ fn copyInPlace(
     stderr_writer: *std.Io.Writer,
     source_path: []const u8,
     dest_path: []const u8,
+    tracker: ?*common.progress.Tracker,
 ) !void {
     // Sole caller copyRegularFile forwards its own non-empty operands here.
     assert(source_path.len > 0);
@@ -1060,8 +1133,12 @@ fn copyInPlace(
             allocator,
             stderr_writer,
             "cp",
-            "cannot open '{s}' for writing: {s}",
-            .{ dest_path, common.posixErrorString(err) },
+            "cannot open '{s}' for writing: {s}{s}",
+            .{
+                dest_path,
+                common.posixErrorString(err),
+                common.maybeHint(err, dest_path, .write) orelse "",
+            },
         );
         return error.DestinationNotWritable;
     };
@@ -1079,7 +1156,7 @@ fn copyInPlace(
         return error.DestinationNotWritable;
     };
 
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -2143,6 +2220,153 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
 }
 
 // Tests
+
+test "cp progress covers a plain file copy" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'p');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress covers preserve mode" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'r');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress covers overwrite in place" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'i');
+    try test_dir.createFile("source.bin", content, null);
+    try test_dir.createFile("dest.bin", "old", null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.bin");
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress stays silent when disabled" {
+    common.progress.test_enabled = false;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 's');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") == null);
+    try test_dir.expectFileContent("dest.bin", content);
+}
 
 test "cp: single file copy" {
     var test_dir = TestDir.init(testing.allocator);
@@ -5368,4 +5592,167 @@ test "issue 99 U2: fchmod EROFS maps to ReadOnlyFileSystem, not Unexpected" {
     // file system" (posixErrorString(error.ReadOnlyFileSystem)).
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "Read-only file system") != null);
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "Unexpected error") == null);
+}
+
+test "cp existing read-only destination hint follows stderr hint overlay" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.createFile("source.txt", "new content", 0o644);
+    try test_dir.createFile("dest.txt", "old content", 0o444);
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+    const args = [_][]const u8{ source_path, dest_path };
+
+    common.env.test_stderr_hints = false;
+    var stderr_plain: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_plain.deinit();
+    const plain_exit = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_plain.writer,
+    );
+    const expected_plain = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot open '{s}' for writing: Permission denied\n",
+        .{dest_path},
+    );
+    defer testing.allocator.free(expected_plain);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), plain_exit);
+    try testing.expectEqualStrings(expected_plain, stderr_plain.writer.buffered());
+
+    common.env.test_stderr_hints = true;
+    var stderr_hints: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_hints.deinit();
+    const hints_exit = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_hints.writer,
+    );
+    const expected_hints = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot open '{s}' for writing: Permission denied" ++
+            " (file is not writable)\n",
+        .{dest_path},
+    );
+    defer testing.allocator.free(expected_hints);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), hints_exit);
+    try testing.expectEqualStrings(expected_hints, stderr_hints.writer.buffered());
+}
+
+test "cp unreadable source appends readable-file hint" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    // Create readable so realpath works on macOS (EACCES on mode 000), then chmod.
+    try test_dir.createFile("source.txt", "secret", 0o644);
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const source_z = try testing.allocator.dupeZ(u8, source_path);
+    defer testing.allocator.free(source_z);
+    if (std.c.chmod(source_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(source_z, 0o644);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/dest.txt",
+        .{base_path},
+    );
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot stat '{s}': Permission denied (file is not readable)\n",
+        .{source_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+}
+
+test "cp absent destination under unwritable parent has no file hint" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.createFile("source.txt", "content", 0o644);
+    try test_dir.createDir("locked");
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const parent_path = try test_dir.getPath("locked");
+    defer testing.allocator.free(parent_path);
+    const dest_path = try std.fmt.allocPrint(
+        testing.allocator,
+        "{s}/dest.txt",
+        .{parent_path},
+    );
+    defer testing.allocator.free(dest_path);
+    const parent_path_z = try testing.allocator.dupeZ(u8, parent_path);
+    defer testing.allocator.free(parent_path_z);
+    if (std.c.chmod(parent_path_z.ptr, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(parent_path_z.ptr, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "cp: cannot create '{s}': Permission denied\n",
+        .{dest_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "(") == null);
 }

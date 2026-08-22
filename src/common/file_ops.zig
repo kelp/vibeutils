@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const lib = @import("lib.zig");
 const env = @import("env.zig");
+const progress = @import("progress.zig");
 const assert = std.debug.assert;
 
 /// Set file permissions using the most reliable method available
@@ -254,23 +255,48 @@ pub const COPY_BUFFER_SIZE = 64 * 1024;
 /// Reads from source_file and writes to dest_file until EOF. Returns
 /// an error if any read or write fails.
 pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.File) !void {
+    return copyFileContentsWithProgress(io, source_file, dest_file, null);
+}
+
+/// Copy file contents through the progress-aware API.
+///
+/// After every successful write the tracker (when present) observes the
+/// running byte total, and the tracker is finished on EVERY return — success
+/// and error alike — so a caller's diagnostic always starts on a clean line
+/// instead of gluing to (or being wiped by) a live status line.
+pub fn copyFileContentsWithProgress(
+    io: std.Io,
+    source_file: std.Io.File,
+    dest_file: std.Io.File,
+    tracker: ?*progress.Tracker,
+) !void {
     // Compile-time-constant sanity check: a zero-size buffer would make every
     // read return 0 and loop forever on a non-empty source.
     assert(COPY_BUFFER_SIZE > 0);
 
+    var copied: u64 = 0;
     var buffer: [COPY_BUFFER_SIZE]u8 = undefined;
     while (true) { // tiger:allow:unbounded-loop reads until short/zero read (EOF)
         const buf_slice: []u8 = &buffer;
         const bytes_read = source_file.readStreaming(io, &.{buf_slice}) catch |err| switch (err) {
             error.EndOfStream => break,
-            else => return err,
+            else => {
+                if (tracker) |t| t.finish(t.now(io));
+                return err;
+            },
         };
         // readStreaming's only destination is buffer, so it can never report
         // more bytes than the buffer holds; bounds the slice below.
         assert(bytes_read <= buffer.len);
         if (bytes_read == 0) break;
-        try dest_file.writeStreamingAll(io, buffer[0..bytes_read]);
+        dest_file.writeStreamingAll(io, buffer[0..bytes_read]) catch |err| {
+            if (tracker) |t| t.finish(t.now(io));
+            return err;
+        };
+        copied += bytes_read;
+        if (tracker) |t| t.update(t.now(io), copied);
     }
+    if (tracker) |t| t.finish(t.now(io));
 }
 
 /// Copy one regular file preserving mode, timestamps, and ownership.
@@ -294,6 +320,10 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
 /// succeeded) and EPERM on chown is silent because a non-root user cannot chown
 /// to another owner, while a failed mode preservation returns
 /// error.ModeNotPreserved so the caller exits nonzero.
+///
+/// The optional tracker feeds the cp/mv auto-progress line; the content copy
+/// finishes it on every return, so the error prints below always start on a
+/// clean line. Pass null when no progress is wanted.
 pub fn copyFileWithAttributes(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -302,6 +332,7 @@ pub fn copyFileWithAttributes(
     source_path: []const u8,
     dest_path: []const u8,
     source_info: lib.file.FileInfo,
+    tracker: ?*progress.Tracker,
 ) !void {
     // A shared leaf must self-guard its inputs for both the cp and mv callers:
     // an empty program_name would mislabel diagnostics, and empty paths would
@@ -310,36 +341,21 @@ pub fn copyFileWithAttributes(
     assert(source_path.len > 0);
     assert(dest_path.len > 0);
 
-    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
-        lib.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            program_name,
-            "cannot open '{s}': {s}",
-            .{ source_path, lib.posixErrorString(err) },
-        );
-        return error.SourceNotReadable;
-    };
+    const files = try copyFileWithAttributesOpen(
+        allocator,
+        io,
+        stderr_writer,
+        program_name,
+        source_path,
+        dest_path,
+        source_info,
+    );
+    const source_file = files.source;
     defer source_file.close(io);
-
-    // Owner bits only, matching GNU: the real mode is applied by the trailing
-    // chmod, and a narrow creation mode keeps the copy from being briefly
-    // group/other-accessible while still owned by the copying user.
-    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(source_info.mode & 0o700),
-    }) catch |err| {
-        lib.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            program_name,
-            "cannot create '{s}': {s}",
-            .{ dest_path, lib.posixErrorString(err) },
-        );
-        return error.DestinationNotWritable;
-    };
+    const dest_file = files.dest;
     defer dest_file.close(io);
 
-    copyFileContents(io, source_file, dest_file) catch |err| {
+    copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         lib.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -372,6 +388,61 @@ pub fn copyFileWithAttributes(
         dest_file,
         source_info,
     );
+}
+
+/// The opened source and freshly created destination of an
+/// attribute-preserving copy. The caller owns closing both files.
+const CopyFilePair = struct {
+    source: std.Io.File,
+    dest: std.Io.File,
+};
+
+/// Open the source and create the destination for copyFileWithAttributes,
+/// reporting failures under the caller's program name. Extracted so the
+/// parent stays within the 70-line limit after gaining the tracker hook.
+fn copyFileWithAttributesOpen(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stderr_writer: anytype,
+    program_name: []const u8,
+    source_path: []const u8,
+    dest_path: []const u8,
+    source_info: lib.file.FileInfo,
+) !CopyFilePair {
+    // Shares copyFileWithAttributes's preconditions: empty inputs would
+    // mislabel or unname the diagnostics printed below.
+    assert(program_name.len > 0);
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
+    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot open '{s}': {s}",
+            .{ source_path, lib.posixErrorString(err) },
+        );
+        return error.SourceNotReadable;
+    };
+
+    // Owner bits only, matching GNU: the real mode is applied by the trailing
+    // chmod, and a narrow creation mode keeps the copy from being briefly
+    // group/other-accessible while still owned by the copying user.
+    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
+        .permissions = std.Io.File.Permissions.fromMode(source_info.mode & 0o700),
+    }) catch |err| {
+        source_file.close(io);
+        lib.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            program_name,
+            "cannot create '{s}': {s}",
+            .{ dest_path, lib.posixErrorString(err) },
+        );
+        return error.DestinationNotWritable;
+    };
+    return .{ .source = source_file, .dest = dest_file };
 }
 
 /// Restore the source file's uid/gid and then its exact mode onto the copy.
@@ -579,6 +650,153 @@ test "isSameFile" {
     try std.testing.expect(!isSameFile(io, path1, "/nonexistent_file_abc123"));
 }
 
+test "copyFileContentsWithProgress updates and emits for every copied block" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const size: usize = 3 * COPY_BUFFER_SIZE;
+    const content = try std.testing.allocator.alloc(u8, size);
+    defer std.testing.allocator.free(content);
+    @memset(content, 'x');
+
+    const source_create = try tmp_dir.dir.createFile(io, "source.bin", .{});
+    try source_create.writeStreamingAll(io, content);
+    source_create.close(io);
+    const source = try tmp_dir.dir.openFile(io, "source.bin", .{});
+    defer source.close(io);
+    const dest = try tmp_dir.dir.createFile(io, "dest.bin", .{});
+    defer dest.close(io);
+
+    var progress_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer progress_output.deinit();
+    var tracker = progress.Tracker{
+        .writer = &progress_output.writer,
+        .program = "cp",
+        .label = "source.bin",
+        .total = @intCast(size),
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .copy_line,
+    };
+
+    try copyFileContentsWithProgress(io, source, dest, &tracker);
+
+    try std.testing.expectEqual(@as(u64, @intCast(size)), tracker.bytes_done);
+    try std.testing.expect(std.mem.find(u8, progress_output.writer.buffered(), "\r") != null);
+}
+
+/// Drain one copy-sized buffer from a pipe read end, then close it so the
+/// writer's next buffer fails after a successful `update` (`shown == true`).
+fn consumeOneCopyBufferThenClose(io: std.Io, file: std.Io.File) void {
+    var buf: [COPY_BUFFER_SIZE]u8 = undefined;
+    var got: usize = 0;
+    var reads: u32 = 0;
+    while (got < COPY_BUFFER_SIZE and reads < COPY_BUFFER_SIZE) : (reads += 1) {
+        const n = std.posix.read(file.handle, buf[got..]) catch break;
+        if (n == 0) break;
+        got += n;
+    }
+    assert(got <= COPY_BUFFER_SIZE);
+    assert(reads <= COPY_BUFFER_SIZE);
+    file.close(io);
+}
+
+test "copyFileContentsWithProgress finishes before a mid-copy write error diagnostic" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const size: usize = 3 * COPY_BUFFER_SIZE;
+    const content = try std.testing.allocator.alloc(u8, size);
+    defer std.testing.allocator.free(content);
+    @memset(content, 'x');
+
+    const source_create = try tmp_dir.dir.createFile(io, "source.bin", .{});
+    try source_create.writeStreamingAll(io, content);
+    source_create.close(io);
+    const source = try tmp_dir.dir.openFile(io, "source.bin", .{});
+    defer source.close(io);
+
+    const pipe_fds = try std.Io.Threaded.pipe2(.{});
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.fcntl(pipe_fds[0], std.os.linux.F.SETPIPE_SZ, COPY_BUFFER_SIZE);
+    }
+    const pipe_read = std.Io.File{ .handle = pipe_fds[0], .flags = .{ .nonblocking = false } };
+    const pipe_write = std.Io.File{ .handle = pipe_fds[1], .flags = .{ .nonblocking = false } };
+    const reader = try std.Thread.spawn(.{}, consumeOneCopyBufferThenClose, .{ io, pipe_read });
+    defer {
+        pipe_write.close(io);
+        reader.join();
+    }
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var tracker = progress.Tracker{
+        .writer = &output.writer,
+        .program = "cp",
+        .label = "source.bin",
+        .total = @intCast(size),
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .copy_line,
+    };
+
+    if (copyFileContentsWithProgress(io, source, pipe_write, &tracker)) |_| {
+        try std.testing.expect(false);
+    } else |err| {
+        try output.writer.print("cp: cannot copy: {s}\n", .{lib.posixErrorString(err)});
+    }
+
+    const diagnostic = "cp: cannot copy:";
+    const rendered = output.writer.buffered();
+    try std.testing.expect(std.mem.find(u8, rendered, diagnostic) != null);
+    const last_cr = std.mem.lastIndexOfScalar(u8, rendered, '\r').?;
+    const after_cr = rendered[last_cr + 1 ..];
+    try std.testing.expect(std.mem.startsWith(u8, after_cr, diagnostic));
+    try std.testing.expect(std.mem.find(u8, after_cr, "copying") == null);
+    try std.testing.expect(!tracker.shown);
+    try std.testing.expect(tracker.bytes_done >= COPY_BUFFER_SIZE);
+}
+
+test "copyFileContents without a tracker still copies bytes" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source_create = try tmp_dir.dir.createFile(io, "source.txt", .{});
+    try source_create.writeStreamingAll(io, "plain copy");
+    source_create.close(io);
+    const source = try tmp_dir.dir.openFile(io, "source.txt", .{});
+    defer source.close(io);
+    const dest = try tmp_dir.dir.createFile(io, "dest.txt", .{});
+    defer dest.close(io);
+
+    try copyFileContents(io, source, dest);
+
+    const copied = try tmp_dir.dir.readFileAlloc(
+        io,
+        "dest.txt",
+        std.testing.allocator,
+        .unlimited,
+    );
+    defer std.testing.allocator.free(copied);
+    try std.testing.expectEqualStrings("plain copy", copied);
+    try std.testing.expectEqual(@as(usize, 10), copied.len);
+}
+
 test "setPermissions with file" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -678,6 +896,7 @@ test "copyFileWithAttributes bypasses the process umask for a new destination" {
         source_path,
         dest_path,
         source_info,
+        null,
     );
 
     // KEY RED ASSERTION: today the mode is set only as createFile's O_CREAT
@@ -724,6 +943,7 @@ test "copyFileWithAttributes preserves mtime independent of the mode fix" {
         source_path,
         dest_path,
         source_info,
+        null,
     );
 
     const dest_info = try lib.file.FileInfo.stat(io, dest_path);
@@ -776,6 +996,7 @@ test "copyFileWithAttributes updates an existing destination's mode and truncate
         source_path,
         dest_path,
         source_info,
+        null,
     );
 
     // KEY RED ASSERTION: O_CREAT's mode argument is ignored by the kernel
@@ -843,6 +1064,7 @@ test "copyFileWithAttributes preserves setuid by chowning before the final chmod
         source_path,
         dest_path,
         source_info,
+        null,
     );
 
     // KEY RED ASSERTION -- ordering: chown must run BEFORE the final chmod,
@@ -904,6 +1126,7 @@ test "copyFileWithAttributes preserves a source mode with no owner permission bi
         source_path,
         dest_path,
         source_info,
+        null,
     );
 
     // KEY RED ASSERTION: today the mode is set only via createFile's O_CREAT

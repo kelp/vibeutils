@@ -16,6 +16,8 @@ implementation is cross-platform.
 | -s N | -- | -- | -- | n/a | yes | KEEP |
 | -c N | -- | -- | -- | n/a | yes | KEEP |
 | --si | -- | -- | -- | n/a | -- | WONT |
+| --color=WHEN | -- | -- | -- | n/a | yes | KEEP |
+| --bar=WHEN | -- | -- | -- | n/a | yes | KEEP |
 
 Note: GNU column is marked n/a because the GNU (procps)
 version is Linux-only and serves as the de facto reference
