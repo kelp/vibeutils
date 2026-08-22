@@ -88,7 +88,7 @@ const linux_c = if (is_linux) struct {
 
 // FreeBSD 14 sys/mount.h. Do not reuse the macOS StatFs layout.
 const freebsd_c = if (builtin.os.tag == .freebsd) struct {
-    const StatFs = extern struct {
+    const MountStat = extern struct {
         f_version: u32,
         f_type: u32,
         f_flags: u64,
@@ -112,13 +112,13 @@ const freebsd_c = if (builtin.os.tag == .freebsd) struct {
         f_mntfromname: [1024]u8,
         f_mntonname: [1024]u8,
     };
-    extern "c" fn getfsstat(buf: ?[*]StatFs, bufsize: c_long, mode: c_int) c_int;
-    extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+    extern "c" fn getfsstat(buf: ?[*]MountStat, bufsize: c_long, mode: c_int) c_int;
+    extern "c" fn statfs(path: [*:0]const u8, buf: *MountStat) c_int;
 } else struct {};
 
 // OpenBSD 7.x sys/mount.h. mount_info is a 160-byte union (__align[160]).
 const openbsd_c = if (builtin.os.tag == .openbsd) struct {
-    const StatFs = extern struct {
+    const MountStat = extern struct {
         f_flags: u32,
         f_bsize: u32,
         f_iosize: u32,
@@ -142,8 +142,8 @@ const openbsd_c = if (builtin.os.tag == .openbsd) struct {
         f_mntfromspec: [90]u8,
         mount_info: [160]u8,
     };
-    extern "c" fn getfsstat(buf: ?[*]StatFs, bufsize: usize, mode: c_int) c_int;
-    extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+    extern "c" fn getfsstat(buf: ?[*]MountStat, bufsize: usize, mode: c_int) c_int;
+    extern "c" fn statfs(path: [*:0]const u8, buf: *MountStat) c_int;
 } else struct {};
 
 // NetBSD 10 sys/statvfs.h. libc renames these to the *90 symbols.
@@ -684,9 +684,9 @@ fn getMountedFilesystems(io: std.Io, allocator: Allocator) ![]FsInfo {
     } else if (comptime is_linux) {
         return getMountedFilesystemsLinux(io, allocator);
     } else if (comptime builtin.os.tag == .freebsd) {
-        return getMountedFilesystemsGetfsstat(allocator, freebsd_c.StatFs, freebsd_c.getfsstat);
+        return getMountedFilesystemsGetfsstat(allocator, freebsd_c.MountStat, freebsd_c.getfsstat);
     } else if (comptime builtin.os.tag == .openbsd) {
-        return getMountedFilesystemsGetfsstat(allocator, openbsd_c.StatFs, openbsd_c.getfsstat);
+        return getMountedFilesystemsGetfsstat(allocator, openbsd_c.MountStat, openbsd_c.getfsstat);
     } else if (comptime builtin.os.tag == .netbsd) {
         return getMountedFilesystemsGetfsstat(allocator, netbsd_c.StatVfs, netbsd_c.getvfsstat);
     } else {
@@ -744,9 +744,19 @@ fn getFilesystemForPath(io: std.Io, allocator: Allocator, path: []const u8) !FsI
     } else if (comptime is_linux) {
         return getFilesystemForPathLinux(io, allocator, path);
     } else if (comptime builtin.os.tag == .freebsd) {
-        return getFilesystemForPathGetfsstat(allocator, path, freebsd_c.StatFs, freebsd_c.statfs);
+        return getFilesystemForPathGetfsstat(
+            allocator,
+            path,
+            freebsd_c.MountStat,
+            freebsd_c.statfs,
+        );
     } else if (comptime builtin.os.tag == .openbsd) {
-        return getFilesystemForPathGetfsstat(allocator, path, openbsd_c.StatFs, openbsd_c.statfs);
+        return getFilesystemForPathGetfsstat(
+            allocator,
+            path,
+            openbsd_c.MountStat,
+            openbsd_c.statfs,
+        );
     } else if (comptime builtin.os.tag == .netbsd) {
         return getFilesystemForPathGetfsstat(allocator, path, netbsd_c.StatVfs, netbsd_c.statvfs);
     } else {
