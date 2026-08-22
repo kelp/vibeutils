@@ -46,6 +46,13 @@
   BSD defines none (#93).
 
 ### Changed
+- **`df --total` accumulates byte sums in 128-bit integers.** Two
+  large filesystems could wrap the Size/Used/Avail totals at 16 EiB
+  (`u64max`), and `used + avail` for the percent column overflowed
+  independently. Both the default total row and `--output` now fold
+  in `u128`, so a 2e19-byte aggregate prints as 20000000000000000000
+  rather than a wrapped residue, and the percent stays the true
+  ceiling of used/(used+avail) (#158).
 - **`grep` with no pattern prints GNU's Usage line.** Bare `grep` and
   `grep --` wrote `grep: no pattern specified`; GNU prints
   `Usage: grep [OPTION]... PATTERNS [FILE]...` and the Try-help line,
