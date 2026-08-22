@@ -637,17 +637,15 @@ pub const NameLookup = struct {
 pub fn lookupUserName(uid: u32, buf: []u8) !NameLookup {
     // A u32 needs ten digits, and the fallback below must always fit.
     std.debug.assert(buf.len >= 10);
-    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
-        const c_uid = @as(std.c.uid_t, @intCast(uid));
-        const pw_ptr = std.c.getpwuid(c_uid);
-        if (pw_ptr) |pw| {
-            // The name field is optional, check if it exists
-            if (pw.name) |name_ptr| {
-                const name = std.mem.span(name_ptr);
-                if (name.len < buf.len) {
-                    @memcpy(buf[0..name.len], name);
-                    return .{ .name = buf[0..name.len], .resolved = true };
-                }
+    const c_uid = @as(std.c.uid_t, @intCast(uid));
+    const pw_ptr = user_group.getpwuid(c_uid);
+    if (pw_ptr) |pw| {
+        // The name field is optional, check if it exists
+        if (pw.name) |name_ptr| {
+            const name = std.mem.span(name_ptr);
+            if (name.len < buf.len) {
+                @memcpy(buf[0..name.len], name);
+                return .{ .name = buf[0..name.len], .resolved = true };
             }
         }
     }
@@ -661,17 +659,15 @@ pub fn lookupUserName(uid: u32, buf: []u8) !NameLookup {
 /// lookupUserName does for a uid.
 pub fn lookupGroupName(gid: u32, buf: []u8) !NameLookup {
     std.debug.assert(buf.len >= 10);
-    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
-        const c_gid = @as(std.c.gid_t, @intCast(gid));
-        const gr_ptr = getgrgid(c_gid);
-        if (gr_ptr) |gr| {
-            // The name field is optional, check if it exists
-            if (gr.name) |name_ptr| {
-                const name = std.mem.span(name_ptr);
-                if (name.len < buf.len) {
-                    @memcpy(buf[0..name.len], name);
-                    return .{ .name = buf[0..name.len], .resolved = true };
-                }
+    const c_gid = @as(std.c.gid_t, @intCast(gid));
+    const gr_ptr = getgrgid(c_gid);
+    if (gr_ptr) |gr| {
+        // The name field is optional, check if it exists
+        if (gr.name) |name_ptr| {
+            const name = std.mem.span(name_ptr);
+            if (name.len < buf.len) {
+                @memcpy(buf[0..name.len], name);
+                return .{ .name = buf[0..name.len], .resolved = true };
             }
         }
     }
@@ -842,7 +838,7 @@ test "FileInfo.stat basic" {
 
     // Get the path
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const path_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..path_len];
     const path = try std.fmt.bufPrint(path_buf[path_len..], "{s}/test.txt", .{dir_path});
 

@@ -30,7 +30,7 @@ fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     // paths relative to the cwd, without asserting isAbsolute. Avoid
     // cwd().realPath (issue #51: broken under Threaded io; readlinks AT_FDCWD).
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    const len = try path_utils.realPathFromCwd(io, path, &buf);
     std.debug.assert(len > 0);
     std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
@@ -155,7 +155,7 @@ fn resolveLogicalWithMode(
         // Avoid cwd().realPath (issue #51: broken under Threaded io; it
         // readlinks the AT_FDCWD pseudo-fd and fails with ENOENT).
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf) catch
+        const cwd_len = path_utils.realPathFromCwd(io, ".", &cwd_buf) catch
             return error.FileNotFound;
         break :blk try std.fs.path.join(allocator, &.{ cwd_buf[0..cwd_len], path });
     };
@@ -825,11 +825,18 @@ test "realpath: existing path with symlink resolution" {
         return err;
     };
 
-    // Both paths resolve to the same absolute path
+    // Both names canonicalize to the same target. TestDir.realPathFile does
+    // not follow the last component (stat tests need the symlink path), so
+    // this check uses libc realpath — the same fallback production uses when
+    // Zig Dir.realPathFile is OperationUnsupported.
+    const link_joined = try tmp_dir.getPath("link_to_file.txt");
+    defer testing.allocator.free(link_joined);
+    const real_joined = try tmp_dir.getPath("real_file.txt");
+    defer testing.allocator.free(real_joined);
     var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const link_len = try tmp_dir.dir().realPathFile(io, "link_to_file.txt", &path_buf1);
-    const real_len = try tmp_dir.dir().realPathFile(io, "real_file.txt", &path_buf2);
+    const link_len = try path_utils.realPathLibc(link_joined, &path_buf1);
+    const real_len = try path_utils.realPathLibc(real_joined, &path_buf2);
 
     try testing.expectEqualStrings(path_buf2[0..real_len], path_buf1[0..link_len]);
 }
@@ -1597,7 +1604,7 @@ test "realpath: default mode resolves canonical path when last component missing
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.realPathFile(".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1651,7 +1658,7 @@ test "realpath: default mode dotdot past root is clamped" {
 
     const real_tmp = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try std.Io.Dir.realPathFileAbsolute(io, "/tmp", &_rp_buf);
+        const _rp_len = try path_utils.realPathLibc("/tmp", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(real_tmp);
@@ -1678,7 +1685,7 @@ test "realpath: -m dotdot past root is clamped" {
 
     const real_tmp = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try std.Io.Dir.realPathFileAbsolute(io, "/tmp", &_rp_buf);
+        const _rp_len = try path_utils.realPathLibc("/tmp", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(real_tmp);

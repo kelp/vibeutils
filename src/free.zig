@@ -114,7 +114,65 @@ pub fn getMemInfo(io: std.Io) !MemInfo {
     return switch (@import("builtin").os.tag) {
         .macos => getMemInfoMacOS(),
         .linux => getMemInfoLinux(io),
+        .freebsd, .openbsd, .netbsd => getMemInfoBsd(),
         else => error.UnsupportedPlatform,
+    };
+}
+
+fn sysctlByName(comptime T: type, name: [:0]const u8) !T {
+    var value: T = 0;
+    var len: usize = @sizeOf(T);
+    if (std.c.sysctlbyname(name, &value, &len, null, 0) != 0) {
+        return error.SysctlFailed;
+    }
+    std.debug.assert(len > 0);
+    std.debug.assert(len <= @sizeOf(T));
+    return value;
+}
+
+fn sysctlFirstU64(names: []const [:0]const u8) !u64 {
+    std.debug.assert(names.len > 0);
+    for (names) |name| {
+        if (sysctlByName(u64, name)) |v| return v else |_| {}
+        if (sysctlByName(u32, name)) |v| return @as(u64, v) else |_| {}
+    }
+    return error.SysctlFailed;
+}
+
+/// Physical memory via sysctl. Page-count keys exist on FreeBSD/NetBSD;
+/// OpenBSD exposes tot/usable sizes. Swap is best-effort and may be zero.
+fn getMemInfoBsd() !MemInfo {
+    const total = try sysctlFirstU64(&.{ "hw.physmem64", "hw.physmem", "hw.realmem" });
+    std.debug.assert(total > 0);
+
+    const page_size = sysctlFirstU64(&.{ "vm.stats.vm.v_page_size", "hw.pagesize" }) catch
+        @as(u64, @intCast(c.getpagesize()));
+    std.debug.assert(page_size > 0);
+
+    const free_pages = sysctlFirstU64(&.{"vm.stats.vm.v_free_count"}) catch 0;
+    const inactive_pages = sysctlFirstU64(&.{"vm.stats.vm.v_inactive_count"}) catch 0;
+    const cache_pages = sysctlFirstU64(&.{"vm.stats.vm.v_cache_count"}) catch 0;
+    const free = if (free_pages > 0)
+        free_pages * page_size
+    else
+        sysctlFirstU64(&.{"hw.usermem"}) catch 0;
+    const buff_cache = (inactive_pages + cache_pages) * page_size;
+    const available = if (free > 0) free + buff_cache else total;
+    const used = total -| available;
+
+    const swap_total = sysctlFirstU64(&.{ "vm.swap_total", "vm.swap_size" }) catch 0;
+    const swap_used = sysctlFirstU64(&.{"vm.swap_reserved"}) catch 0;
+
+    return MemInfo{
+        .total = total,
+        .used = used,
+        .free = free,
+        .shared = 0,
+        .buff_cache = buff_cache,
+        .available = available,
+        .swap_total = swap_total,
+        .swap_used = swap_used,
+        .swap_free = swap_total -| swap_used,
     };
 }
 

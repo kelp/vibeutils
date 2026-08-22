@@ -2310,7 +2310,7 @@ test "stat default output on regular file" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2348,7 +2348,7 @@ test "stat -c format: file name" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2379,7 +2379,7 @@ test "stat -c format: size" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2405,7 +2405,7 @@ test "stat -c format: file type" {
     try tmp_dir.dir().createDir(testing.io, "subdir", std.Io.File.Permissions.fromMode(0o755));
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "subdir", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("subdir", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2432,7 +2432,7 @@ test "stat -c format: inode number" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2466,7 +2466,7 @@ test "stat -c format: permissions octal" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2509,7 +2509,7 @@ test "stat -c format: permissions human readable" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2538,7 +2538,7 @@ test "stat -c format: user and group IDs" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2571,7 +2571,7 @@ test "stat -c format: user and group names" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2603,7 +2603,7 @@ test "stat -c format: timestamps" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2649,7 +2649,7 @@ test "stat --printf interprets escapes" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2677,7 +2677,7 @@ test "stat --format=FMT syntax" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2705,7 +2705,7 @@ test "stat -t terse output" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2736,7 +2736,7 @@ test "stat empty file shows regular empty file" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "empty.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("empty.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2762,7 +2762,7 @@ test "stat directory type" {
     try tmp_dir.dir().createDir(testing.io, "subdir", std.Io.File.Permissions.fromMode(0o755));
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "subdir", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("subdir", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2792,7 +2792,7 @@ test "stat symlink without dereference" {
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link_path_len = try tmp_dir.dir().realPathFile(testing.io, "link.txt", &path_buf);
+    const link_path_len = try tmp_dir.realPathFile("link.txt", &path_buf);
     const link_path = path_buf[0..link_path_len];
 
     // Without -L: should show "symbolic link"
@@ -2801,7 +2801,7 @@ test "stat symlink without dereference" {
 
     // Note: realpath resolves symlinks, so we need to construct the path manually
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(symlink_path);
@@ -2834,7 +2834,7 @@ test "stat symlink with dereference" {
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(symlink_path);
@@ -2869,10 +2869,10 @@ test "stat multiple files" {
     file2.close(testing.io);
 
     var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
-    const path1_len = try tmp_dir.dir().realPathFile(testing.io, "a.txt", &path_buf1);
+    const path1_len = try tmp_dir.realPathFile("a.txt", &path_buf1);
     const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const path2_len = try tmp_dir.dir().realPathFile(testing.io, "b.txt", &path_buf2);
+    const path2_len = try tmp_dir.realPathFile("b.txt", &path_buf2);
     const path2 = path_buf2[0..path2_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2899,7 +2899,7 @@ test "stat -f file system info" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2930,7 +2930,7 @@ test "stat -c format: hard links" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2957,7 +2957,7 @@ test "stat -c format: device number" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2986,7 +2986,7 @@ test "stat -c format: multiple directives" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3014,7 +3014,7 @@ test "stat partial failure with multiple files" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "exists.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("exists.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3108,7 +3108,7 @@ test "stat -- separator" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3167,7 +3167,7 @@ test "stat permission denied error message is not No such file" {
 
     // Get the full path to the file inside
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const inner_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -3222,7 +3222,7 @@ test "stat default output has no spurious plus on numeric fields" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3266,7 +3266,7 @@ test "stat -f -c format string is honored" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3302,7 +3302,7 @@ test "stat -t terse output has 16 fields like GNU" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3349,7 +3349,7 @@ test "stat -f produces sane block size on this platform" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3403,7 +3403,7 @@ test "stat default output Device line uses GNU major,minor format" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3443,7 +3443,7 @@ test "stat -c format: blocks allocated %b" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3478,7 +3478,7 @@ test "stat -c format: group name %G" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3516,7 +3516,7 @@ test "stat -c format: %N regular file is quoted" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3548,7 +3548,7 @@ test "stat -c format: %N symlink shows arrow" {
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(symlink_path);
@@ -3602,7 +3602,7 @@ test "stat -c format: %N rule 2 lone apostrophe uses double quotes" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3636,7 +3636,7 @@ test "stat -c format: %N rule 2 apostrophe with space uses double quotes" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's space", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's space", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3668,7 +3668,7 @@ test "stat -c format: %N rule 3 apostrophe with dollar splices single quotes" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's and $var", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's and $var", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3706,7 +3706,7 @@ test "stat -c format: %N rule 3 apostrophe with double quote splices single quot
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's\"dq", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's\"dq", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3741,7 +3741,7 @@ test "stat -c format: %N rule 3 apostrophe with backslash splices single quotes"
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's\\slash", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's\\slash", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3776,7 +3776,7 @@ test "stat -c format: %N rule 3 apostrophe with backtick splices single quotes" 
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's `tick`", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's `tick`", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3811,7 +3811,7 @@ test "stat -c format: %N rule 1 lone double quote stays single-quoted" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "dq\"name", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("dq\"name", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3841,7 +3841,7 @@ test "stat -c format: %N rule 1 embedded space stays single-quoted" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "with space", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("with space", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3876,7 +3876,7 @@ test "stat -c format: %N non-printable byte passes through verbatim (no ANSI-C s
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "nl\nname", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("nl\nname", &path_buf);
     const test_path = path_buf[0..test_path_len];
     // The fixture is only meaningful if the raw newline survived into the path.
     try testing.expect(std.mem.findScalar(u8, test_path, '\n') != null);
@@ -3912,7 +3912,7 @@ test "stat -c format: %N symlink quotes link name and target independently (rule
     try tmp_dir.dir().symLink(testing.io, "it's", "lnk2", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/lnk2", .{dir_path});
     defer testing.allocator.free(symlink_path);
@@ -3952,7 +3952,7 @@ test "stat -c format: %N symlink quotes target independently (rule 3 splice on t
     try tmp_dir.dir().symLink(testing.io, "it's and $var", "lnk3", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/lnk3", .{dir_path});
     defer testing.allocator.free(symlink_path);
@@ -3990,7 +3990,7 @@ test "stat -c format: %N symlink quotes link name independently (rule 2 on link 
     try tmp_dir.dir().symLink(testing.io, "plain", "it's_link", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_path_buf);
     const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -4036,7 +4036,7 @@ test "stat -c format: %N embedded in a longer format string quotes identically" 
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4071,7 +4071,7 @@ test "stat default record File: line stays unquoted for names needing %N quoting
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "it's", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("it's", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4111,7 +4111,7 @@ test "stat -c format: %y mtime human-readable timestamp" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4150,7 +4150,7 @@ test "stat --printf does not add trailing newline" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4191,7 +4191,7 @@ test "stat -n suppresses trailing newline with -c format" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4221,7 +4221,7 @@ test "stat -n suppresses final newline of default output but keeps interior ones
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4257,7 +4257,7 @@ test "stat -n suppresses trailing newline with -t terse output" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4287,7 +4287,7 @@ test "stat -n suppresses trailing newline with -f file system output" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4320,7 +4320,7 @@ test "stat -n leaves --printf output unchanged" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4353,10 +4353,10 @@ test "stat -n drops the record terminator for every operand" {
     file2.close(testing.io);
 
     var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
-    const path1_len = try tmp_dir.dir().realPathFile(testing.io, "a.txt", &path_buf1);
+    const path1_len = try tmp_dir.realPathFile("a.txt", &path_buf1);
     const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const path2_len = try tmp_dir.dir().realPathFile(testing.io, "b.txt", &path_buf2);
+    const path2_len = try tmp_dir.realPathFile("b.txt", &path_buf2);
     const path2 = path_buf2[0..path2_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4468,7 +4468,7 @@ test "stat -q does not change a successful stat" {
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4502,7 +4502,7 @@ test "stat -f with a stray format operand still fails and reports it (issue 79)"
     test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4558,13 +4558,10 @@ fn testStatBoth(
 }
 
 /// Test-only: absolute path of `name` inside `dir`. Caller frees the result.
-fn testAbsPath(dir: std.Io.Dir, name: []const u8) ![]u8 {
+/// `name` need not exist yet (fifo/mkfifo tests create it after).
+fn testAbsPath(dir: *TestDir, name: []const u8) ![]u8 {
     std.debug.assert(name.len > 0);
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const len = try dir.realPathFile(testing.io, ".", &buf);
-    std.debug.assert(len > 0);
-    std.debug.assert(len <= buf.len);
-    return std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ buf[0..len], name });
+    return dir.join(name);
 }
 
 /// Test-only: split `line` on runs of spaces into `dest`, returning the count.
@@ -4702,7 +4699,7 @@ test "stat -c %d device number has GNU's dev_t width" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "d.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "d.txt");
+    const path = try testAbsPath(&tmp_dir, "d.txt");
     defer testing.allocator.free(path);
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4730,7 +4727,7 @@ test "stat default Device line matches the kernel major,minor" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "d.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "d.txt");
+    const path = try testAbsPath(&tmp_dir, "d.txt");
     defer testing.allocator.free(path);
 
     const truth = try testTruth(path, true);
@@ -4759,7 +4756,7 @@ test "stat -r renders sixteen raw fields ending in the file name" {
     const file = try tmp_dir.dir().createFile(testing.io, "raw.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "raw.txt");
+    const path = try testAbsPath(&tmp_dir, "raw.txt");
     defer testing.allocator.free(path);
     const mode = try testMode(tmp_dir.dir(), "raw.txt", false);
 
@@ -4791,7 +4788,7 @@ test "stat -r raw fields match the kernel's own numbers" {
     const file = try tmp_dir.dir().createFile(testing.io, "raw.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "raw.txt");
+    const path = try testAbsPath(&tmp_dir, "raw.txt");
     defer testing.allocator.free(path);
 
     const truth = try testTruth(path, false);
@@ -4826,7 +4823,7 @@ test "stat -r on a directory reports the directory mode" {
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
     try tmp_dir.dir().createDir(testing.io, "sub", .default_dir);
-    const path = try testAbsPath(tmp_dir.dir(), "sub");
+    const path = try testAbsPath(&tmp_dir, "sub");
     defer testing.allocator.free(path);
     const mode = try testMode(tmp_dir.dir(), "sub", false);
 
@@ -4852,7 +4849,7 @@ test "stat -r reports the symlink itself, and -L the target" {
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
-    const path = try testAbsPath(tmp_dir.dir(), "link.txt");
+    const path = try testAbsPath(&tmp_dir, "link.txt");
     defer testing.allocator.free(path);
 
     var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4891,7 +4888,7 @@ test "stat -s renders the fifteen shell assignments in order" {
     const file = try tmp_dir.dir().createFile(testing.io, "sh.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "sh.txt");
+    const path = try testAbsPath(&tmp_dir, "sh.txt");
     defer testing.allocator.free(path);
     const mode = try testMode(tmp_dir.dir(), "sh.txt", false);
 
@@ -4931,7 +4928,7 @@ test "stat -s values match the kernel's own numbers" {
     const file = try tmp_dir.dir().createFile(testing.io, "sh.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "sh.txt");
+    const path = try testAbsPath(&tmp_dir, "sh.txt");
     defer testing.allocator.free(path);
 
     const truth = try testTruth(path, false);
@@ -4977,7 +4974,7 @@ test "stat -s -L on a symlink reports the target size" {
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
-    const path = try testAbsPath(tmp_dir.dir(), "link.txt");
+    const path = try testAbsPath(&tmp_dir, "link.txt");
     defer testing.allocator.free(path);
 
     var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5003,7 +5000,7 @@ test "stat -l renders the ls-style line for a regular file" {
     const file = try tmp_dir.dir().createFile(testing.io, "ls.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "ls.txt");
+    const path = try testAbsPath(&tmp_dir, "ls.txt");
     defer testing.allocator.free(path);
 
     const mode = try testMode(tmp_dir.dir(), "ls.txt", false);
@@ -5035,7 +5032,7 @@ test "stat -l on a directory shows the directory permissions" {
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
     try tmp_dir.dir().createDir(testing.io, "sub", .default_dir);
-    const path = try testAbsPath(tmp_dir.dir(), "sub");
+    const path = try testAbsPath(&tmp_dir, "sub");
     defer testing.allocator.free(path);
 
     const mode = try testMode(tmp_dir.dir(), "sub", false);
@@ -5062,7 +5059,7 @@ test "stat -l appends the arrow for a symlink and -L drops it" {
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
-    const path = try testAbsPath(tmp_dir.dir(), "link.txt");
+    const path = try testAbsPath(&tmp_dir, "link.txt");
     defer testing.allocator.free(path);
 
     var link_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5101,7 +5098,7 @@ test "stat -F on a plain file renders exactly the -l line" {
     const file = try tmp_dir.dir().createFile(testing.io, "plain.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "plain.txt");
+    const path = try testAbsPath(&tmp_dir, "plain.txt");
     defer testing.allocator.free(path);
 
     var ls_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5128,7 +5125,7 @@ test "stat -F marks an executable file with an asterisk" {
         .{ .permissions = .executable_file },
     );
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "run.sh");
+    const path = try testAbsPath(&tmp_dir, "run.sh");
     defer testing.allocator.free(path);
 
     // Guard the premise: an umask that stripped every execute bit would make
@@ -5150,7 +5147,7 @@ test "stat -F marks a directory with a slash" {
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
     try tmp_dir.dir().createDir(testing.io, "sub", .default_dir);
-    const path = try testAbsPath(tmp_dir.dir(), "sub");
+    const path = try testAbsPath(&tmp_dir, "sub");
     defer testing.allocator.free(path);
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5169,7 +5166,7 @@ test "stat -F marks a symlink with an at sign before the arrow" {
     const file = try tmp_dir.dir().createFile(testing.io, "target.txt", .{});
     file.close(testing.io);
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
-    const path = try testAbsPath(tmp_dir.dir(), "link.txt");
+    const path = try testAbsPath(&tmp_dir, "link.txt");
     defer testing.allocator.free(path);
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5186,7 +5183,7 @@ test "stat -F marks a symlink with an at sign before the arrow" {
 test "stat -F marks a fifo with a pipe" {
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
-    const dir_path = try testAbsPath(tmp_dir.dir(), "pipe");
+    const dir_path = try testAbsPath(&tmp_dir, "pipe");
     defer testing.allocator.free(dir_path);
 
     const c_path = try testing.allocator.dupeZ(u8, dir_path);
@@ -5208,7 +5205,7 @@ test "stat -F -l and -l -F both render the LSF format" {
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
     try tmp_dir.dir().createDir(testing.io, "sub", .default_dir);
-    const path = try testAbsPath(tmp_dir.dir(), "sub");
+    const path = try testAbsPath(&tmp_dir, "sub");
     defer testing.allocator.free(path);
 
     var plain: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5241,7 +5238,7 @@ test "stat -x renders the eight labelled verbose lines" {
     const file = try tmp_dir.dir().createFile(testing.io, "vx.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "vx.txt");
+    const path = try testAbsPath(&tmp_dir, "vx.txt");
     defer testing.allocator.free(path);
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5278,7 +5275,7 @@ test "stat -x uses the literal BSD spacing on the Size, Mode and Device lines" {
     const file = try tmp_dir.dir().createFile(testing.io, "vx.txt", .{});
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "vx.txt");
+    const path = try testAbsPath(&tmp_dir, "vx.txt");
     defer testing.allocator.free(path);
 
     const mode = try testMode(tmp_dir.dir(), "vx.txt", false);
@@ -5321,7 +5318,7 @@ test "stat -x Device line carries the kernel major and minor" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "vx.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "vx.txt");
+    const path = try testAbsPath(&tmp_dir, "vx.txt");
     defer testing.allocator.free(path);
 
     const truth = try testTruth(path, false);
@@ -5349,9 +5346,9 @@ test "stat -x names the file type of a directory and a symlink" {
     file.close(testing.io);
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
 
-    const dir_path = try testAbsPath(tmp_dir.dir(), "sub");
+    const dir_path = try testAbsPath(&tmp_dir, "sub");
     defer testing.allocator.free(dir_path);
-    const link_path = try testAbsPath(tmp_dir.dir(), "link.txt");
+    const link_path = try testAbsPath(&tmp_dir, "link.txt");
     defer testing.allocator.free(link_path);
 
     var dir_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5392,7 +5389,7 @@ test "stat -x time lines carry a rendered timestamp, not an epoch" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "vx.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "vx.txt");
+    const path = try testAbsPath(&tmp_dir, "vx.txt");
     defer testing.allocator.free(path);
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5429,7 +5426,7 @@ test "stat rejects two BSD display modes with exit 1" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "x.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "x.txt");
+    const path = try testAbsPath(&tmp_dir, "x.txt");
     defer testing.allocator.free(path);
 
     const Case = struct { first: []const u8, second: []const u8, msg: []const u8 };
@@ -5460,7 +5457,7 @@ test "stat -F conflicts with every display mode except -l" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "x.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "x.txt");
+    const path = try testAbsPath(&tmp_dir, "x.txt");
     defer testing.allocator.free(path);
 
     const Case = struct { mode: []const u8, msg: []const u8 };
@@ -5490,7 +5487,7 @@ test "stat display modes accept -n, -q and -L without conflict" {
     try file.writeStreamingAll(testing.io, "hello\n");
     file.close(testing.io);
     try tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{});
-    const path = try testAbsPath(tmp_dir.dir(), "link.txt");
+    const path = try testAbsPath(&tmp_dir, "link.txt");
     defer testing.allocator.free(path);
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5517,7 +5514,7 @@ test "stat rejects a BSD display mode combined with -c or --printf" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "x.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "x.txt");
+    const path = try testAbsPath(&tmp_dir, "x.txt");
     defer testing.allocator.free(path);
 
     var c_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -5546,7 +5543,7 @@ test "stat rejects a BSD display mode combined with -t or -f" {
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "x.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "x.txt");
+    const path = try testAbsPath(&tmp_dir, "x.txt");
     defer testing.allocator.free(path);
 
     var t_out: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -6320,7 +6317,7 @@ test "stat GNU Birth line and %w dash for macOS /dev/null's zero birthtimespec (
     defer tmp_dir.deinit();
     const file = try tmp_dir.dir().createFile(testing.io, "born.txt", .{});
     file.close(testing.io);
-    const path = try testAbsPath(tmp_dir.dir(), "born.txt");
+    const path = try testAbsPath(&tmp_dir, "born.txt");
     defer testing.allocator.free(path);
 
     const file_buf = try doStat(path, true);

@@ -1436,7 +1436,7 @@ test "cut with file input bytes" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1459,7 +1459,7 @@ test "cut with file input fields" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1501,7 +1501,7 @@ test "cut: -n flag is accepted with -b" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1530,7 +1530,7 @@ test "cut: -n -b preserves multi-byte characters" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1561,7 +1561,7 @@ test "cut: -w splits on whitespace" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1584,7 +1584,7 @@ test "cut: -w handles multiple consecutive spaces" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1607,7 +1607,7 @@ test "cut: -w skips leading whitespace" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1630,7 +1630,7 @@ test "cut: -w with no whitespace prints whole line" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1734,7 +1734,7 @@ test "cut: -n without -b has no effect on field mode" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

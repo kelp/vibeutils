@@ -631,7 +631,7 @@ test "isSameFile" {
 
     // Same file via same path should match
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
 
     const path1 = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.txt", .{dir_path});
@@ -873,7 +873,7 @@ test "copyFileWithAttributes bypasses the process umask for a new destination" {
     source_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
     const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
     defer std.testing.allocator.free(source_path);
@@ -923,7 +923,7 @@ test "copyFileWithAttributes preserves mtime independent of the mode fix" {
     source_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
     const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
     defer std.testing.allocator.free(source_path);
@@ -975,7 +975,7 @@ test "copyFileWithAttributes updates an existing destination's mode and truncate
     const dest_stat_before = try tmp_dir.dir.statFile(io, "dst.txt", .{});
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
     const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
     defer std.testing.allocator.free(source_path);
@@ -1036,7 +1036,7 @@ test "copyFileWithAttributes preserves setuid by chowning before the final chmod
     source_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
     const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
     defer std.testing.allocator.free(source_path);
@@ -1095,7 +1095,7 @@ test "copyFileWithAttributes preserves a source mode with no owner permission bi
     source_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
     const source_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/src.txt", .{dir_path});
     defer std.testing.allocator.free(source_path);

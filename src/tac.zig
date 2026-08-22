@@ -442,7 +442,7 @@ test "tac reverses lines of a file" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -464,7 +464,7 @@ test "tac reverses lines without trailing newline" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -486,7 +486,7 @@ test "tac handles single line" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -507,7 +507,7 @@ test "tac handles empty file" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -529,7 +529,7 @@ test "tac with custom separator" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -551,7 +551,7 @@ test "tac with multi-byte separator" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -577,7 +577,7 @@ test "tac with --before flag" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -603,10 +603,10 @@ test "tac with multiple files" {
     file2.close(io);
 
     var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path1_len = try tmp_dir.dir().realPathFile(io, "a.txt", &path_buf1);
+    const path1_len = try tmp_dir.realPathFile("a.txt", &path_buf1);
     const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path2_len = try tmp_dir.dir().realPathFile(io, "b.txt", &path_buf2);
+    const path2_len = try tmp_dir.realPathFile("b.txt", &path_buf2);
     const path2 = path_buf2[0..path2_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -704,7 +704,7 @@ test "tac -b with single-byte custom separator" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -728,7 +728,7 @@ test "tac -b with multi-byte separator" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

@@ -202,7 +202,7 @@ test "privileged: file permission operations" {
     // We don't have a Zig-native chmod on Io.File in 0.16; shell out for
     // the actual permission change. Build the absolute path via realPath.
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try temp_dir_handle.realPath(io, &path_buf);
+    const dir_len = try @import("test_dir.zig").tmpDirRealPath(temp_dir, &path_buf);
     const dir_path = path_buf[0..dir_len];
 
     const file_path = try std.fmt.allocPrint(allocator, "{s}/test_perms.txt", .{dir_path});
@@ -252,7 +252,7 @@ test "privileged: directory permission operations" {
     try temp_dir_handle.createDir(io, "test_dir", .default_dir);
 
     // Use the external chmod command for directories.
-    const temp_path = try temp_dir_handle.realPathFileAlloc(io, ".", allocator);
+    const temp_path = try @import("test_dir.zig").tmpDirRealPathFileAlloc(temp_dir, ".", allocator);
     const dir_path = try std.fmt.allocPrint(allocator, "{s}/test_dir", .{temp_path});
 
     const chmod_result = try utils.runCommand(&[_][]const u8{

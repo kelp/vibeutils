@@ -679,6 +679,9 @@ fn parseBlockSize(s: []const u8) ?u64 {
 // ============================================================================
 
 fn getMountedFilesystems(io: std.Io, allocator: Allocator) ![]FsInfo {
+    if (comptime !dfMountOsSupported(builtin.os.tag)) {
+        @compileError("df: unsupported platform");
+    }
     if (comptime is_darwin) {
         return getMountedFilesystemsDarwin(allocator);
     } else if (comptime is_linux) {
@@ -739,6 +742,9 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
 }
 
 fn getFilesystemForPath(io: std.Io, allocator: Allocator, path: []const u8) !FsInfo {
+    if (comptime !dfMountOsSupported(builtin.os.tag)) {
+        @compileError("df: unsupported platform");
+    }
     if (comptime is_darwin) {
         return getFilesystemForPathDarwin(allocator, path);
     } else if (comptime is_linux) {

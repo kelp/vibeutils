@@ -2210,7 +2210,7 @@ test "du on a file reports its size" {
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(io, "testfile.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("testfile.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2242,7 +2242,7 @@ test "du on a directory reports size" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2275,7 +2275,7 @@ test "du -s shows only total for argument" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2309,7 +2309,7 @@ test "du -c shows grand total" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2342,7 +2342,7 @@ test "du -a shows all files" {
     f2.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2373,7 +2373,7 @@ test "du -h formats human-readable" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2404,7 +2404,7 @@ test "du defaults to current directory" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2434,7 +2434,7 @@ test "du -d 0 is like -s" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_d0_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2498,7 +2498,7 @@ test "du getFileSize apparent vs disk" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(io, "test.bin", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("test.bin", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     const stat_buf = try doStat(test_path, false);
@@ -2789,7 +2789,7 @@ test "du -r produces same output as du" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     // Run without -r
@@ -2873,7 +2873,7 @@ test "du -H follows symlinks given as command-line arguments" {
     };
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const base_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const base_path = path_buf[0..base_path_len];
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_dir", .{base_path});
     defer testing.allocator.free(link_path);
@@ -2914,7 +2914,7 @@ test "du -H does not follow symlinks found during traversal" {
     };
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const parent_path_len = try tmp_dir.dir().realPathFile(io, "parent_dir", &path_buf);
+    const parent_path_len = try tmp_dir.realPathFile("parent_dir", &path_buf);
     const parent_path = path_buf[0..parent_path_len];
 
     // du -H on parent_dir: should NOT follow symlink_subdir during traversal
@@ -3000,7 +3000,7 @@ test "du -P does not follow symlinks" {
 
     // Use parent realpath + symlink name (realpath would resolve the symlink)
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const base_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const base_path = path_buf[0..base_path_len];
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_dir", .{base_path});
     defer testing.allocator.free(link_path);
@@ -3039,7 +3039,7 @@ test "du -P overrides -L when specified last" {
 
     // Use parent realpath + symlink name (realpath would resolve the symlink)
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const base_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const base_path = path_buf[0..base_path_len];
     const sym_path = try std.fmt.allocPrint(testing.allocator, "{s}/sym", .{base_path});
     defer testing.allocator.free(sym_path);
@@ -3079,7 +3079,7 @@ test "du -A flag is accepted and acts as --apparent-size" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(io, "testfile.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("testfile.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     // -A should show apparent size (14 bytes for "Hello, world!\n")
@@ -3106,7 +3106,7 @@ test "du -B flag sets block size" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const test_path_len = try tmp_dir.dir().realPathFile(io, "testfile.txt", &path_buf);
+    const test_path_len = try tmp_dir.realPathFile("testfile.txt", &path_buf);
     const test_path = path_buf[0..test_path_len];
 
     // -B 1 with -A should show apparent bytes
@@ -3237,7 +3237,7 @@ test "du -I flag does not change output (stub)" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     // Without -I
@@ -3347,7 +3347,7 @@ test "du -n acts as -P (no follow symlinks)" {
     };
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const base_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const base_path = path_buf[0..base_path_len];
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_dir", .{base_path});
     defer testing.allocator.free(link_path);
@@ -3429,7 +3429,7 @@ test "du -t filters entries below threshold" {
     f_large.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     // -t 50 -a -b: only entries >= 50 bytes should appear
@@ -3469,7 +3469,7 @@ test "du -t with negative threshold shows entries at or below size" {
     f_large.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     // -t -50 -a -b: only entries <= 50 bytes should appear
@@ -3573,7 +3573,7 @@ test "du --si shows SI units in output" {
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3690,7 +3690,7 @@ test "du -L does not double-count file reachable via symlink" {
     };
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3734,7 +3734,7 @@ test "du -b directory total equals sum of file apparent sizes (no dir metadata)"
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3786,7 +3786,7 @@ test "du -S shows sum of direct files, not directory inode size" {
     f_top.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3832,11 +3832,11 @@ test "du -S subdirectory shows sum of its own direct files" {
     f_top.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const sub_path_len = try tmp_dir.dir().realPathFile(io, "sub", &path_buf);
+    const sub_path_len = try tmp_dir.realPathFile("sub", &path_buf);
     const sub_path = path_buf[0..sub_path_len];
 
     var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, ".", &dir_buf);
+    const dir_path_len = try tmp_dir.realPathFile(".", &dir_buf);
     const dir_path = dir_buf[0..dir_path_len];
 
     var stdout_buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3919,7 +3919,7 @@ test "du subtree size accumulates onto the post-order unwind (parent = own + chi
     f2.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path = path_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &path_buf))];
+    const dir_path = path_buf[0..(try tmp_dir.realPathFile(".", &path_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -3961,11 +3961,11 @@ test "du multi-level tree rolls descendant sizes into every ancestor" {
     fd.close(io);
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
     var mid_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const mid_path = mid_buf[0..(try tmp_dir.dir().realPathFile(io, "mid", &mid_buf))];
+    const mid_path = mid_buf[0..(try tmp_dir.realPathFile("mid", &mid_buf))];
     var deep_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const deep_path = deep_buf[0..(try tmp_dir.dir().realPathFile(io, "mid/deep", &deep_buf))];
+    const deep_path = deep_buf[0..(try tmp_dir.realPathFile("mid/deep", &deep_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4001,9 +4001,9 @@ test "du -c grand total equals sum across multiple operands" {
     f2.close(io);
 
     var one_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const one_path = one_buf[0..(try tmp_dir.dir().realPathFile(io, "one", &one_buf))];
+    const one_path = one_buf[0..(try tmp_dir.realPathFile("one", &one_buf))];
     var two_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const two_path = two_buf[0..(try tmp_dir.dir().realPathFile(io, "two", &two_buf))];
+    const two_path = two_buf[0..(try tmp_dir.realPathFile("two", &two_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4036,9 +4036,9 @@ test "du counts a hard-linked file once across the whole walk" {
     f.close(io);
 
     var orig_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const orig_abs = orig_buf[0..(try tmp_dir.dir().realPathFile(io, "original.txt", &orig_buf))];
+    const orig_abs = orig_buf[0..(try tmp_dir.realPathFile("original.txt", &orig_buf))];
     var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_abs = dir_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &dir_buf))];
+    const dir_abs = dir_buf[0..(try tmp_dir.realPathFile(".", &dir_buf))];
 
     const link_abs = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{dir_abs});
     defer testing.allocator.free(link_abs);
@@ -4084,9 +4084,9 @@ test "du -l counts a hard-linked file every time it is encountered" {
     f.close(io);
 
     var orig_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const orig_abs = orig_buf[0..(try tmp_dir.dir().realPathFile(io, "original.txt", &orig_buf))];
+    const orig_abs = orig_buf[0..(try tmp_dir.realPathFile("original.txt", &orig_buf))];
     var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_abs = dir_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &dir_buf))];
+    const dir_abs = dir_buf[0..(try tmp_dir.realPathFile(".", &dir_buf))];
 
     const link_abs = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{dir_abs});
     defer testing.allocator.free(link_abs);
@@ -4137,9 +4137,9 @@ test "du -S directory total excludes subdirectory subtrees but root total still 
     fs.close(io);
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
     var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const sub_path = sub_buf[0..(try tmp_dir.dir().realPathFile(io, "sub", &sub_buf))];
+    const sub_path = sub_buf[0..(try tmp_dir.realPathFile("sub", &sub_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4177,9 +4177,9 @@ test "du -S in disk-usage mode includes the directory's own block allocation" {
     ft.close(io);
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
     var file_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const file_path = file_buf[0..(try tmp_dir.dir().realPathFile(io, "direct.txt", &file_buf))];
+    const file_path = file_buf[0..(try tmp_dir.realPathFile("direct.txt", &file_buf))];
 
     // Compute the expected disk-usage -S value directly from stat: the
     // directory's own blocks plus its single direct file's blocks.
@@ -4232,11 +4232,11 @@ test "du -d 1 hides deep entries but still accumulates their sizes upward" {
     fd.close(io);
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
     var mid_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const mid_path = mid_buf[0..(try tmp_dir.dir().realPathFile(io, "mid", &mid_buf))];
+    const mid_path = mid_buf[0..(try tmp_dir.realPathFile("mid", &mid_buf))];
     var deep_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const deep_path = deep_buf[0..(try tmp_dir.dir().realPathFile(io, "mid/deep", &deep_buf))];
+    const deep_path = deep_buf[0..(try tmp_dir.realPathFile("mid/deep", &deep_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4272,7 +4272,7 @@ test "du -a prints every file while default prints only directories" {
     f2.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path = path_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &path_buf))];
+    const dir_path = path_buf[0..(try tmp_dir.realPathFile(".", &path_buf))];
 
     // Default (no -a): individual files are NOT printed.
     var out_default: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4318,7 +4318,7 @@ test "du default (-P) reports symlink size, not its target's subtree" {
     };
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4357,7 +4357,7 @@ test "du -L follows symlinked directory and counts the target subtree" {
     };
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4397,7 +4397,7 @@ test "du -aL reports a dangling symlink and exits 1 (issue #47)" {
     };
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4437,7 +4437,7 @@ test "du -L reports a symlink loop (ELOOP) and exits 1 (issue #47)" {
     };
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4475,7 +4475,7 @@ test "du -H follows an operand symlink but not symlinks discovered during the wa
     };
 
     var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_path = base_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &base_buf))];
+    const base_path = base_buf[0..(try tmp_dir.realPathFile(".", &base_buf))];
     const operand = try std.fmt.allocPrint(testing.allocator, "{s}/operand_link", .{base_path});
     defer testing.allocator.free(operand);
 
@@ -4511,7 +4511,7 @@ test "du -b apparent size differs from default disk usage for a sub-block file" 
     f.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const file_path = path_buf[0..(try tmp_dir.dir().realPathFile(io, "one_byte", &path_buf))];
+    const file_path = path_buf[0..(try tmp_dir.realPathFile("one_byte", &path_buf))];
 
     // Apparent size in bytes: exactly 1.
     var out_apparent: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4559,7 +4559,7 @@ test "du survives a symlink cycle without infinite recursion (-L)" {
     };
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path = path_buf[0..(try tmp_dir.dir().realPathFile(io, "dir_a", &path_buf))];
+    const dir_path = path_buf[0..(try tmp_dir.realPathFile("dir_a", &path_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4594,7 +4594,7 @@ test "du -L prunes an ancestor symlink loop and reports it as a cycle (issue #61
     };
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path = path_buf[0..(try tmp_dir.dir().realPathFile(io, "cyc", &path_buf))];
+    const dir_path = path_buf[0..(try tmp_dir.realPathFile("cyc", &path_buf))];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -4647,9 +4647,9 @@ test "du emits directory operand in post-order: children printed before their pa
     f.close(io);
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
     var child_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const child_path = child_buf[0..(try tmp_dir.dir().realPathFile(io, "child", &child_buf))];
+    const child_path = child_buf[0..(try tmp_dir.realPathFile("child", &child_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -4709,9 +4709,9 @@ test "du -x stays on one filesystem and fully traverses the single-device tree" 
     deep.close(io);
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_path = root_buf[0..(try tmp_dir.dir().realPathFile(io, ".", &root_buf))];
+    const root_path = root_buf[0..(try tmp_dir.realPathFile(".", &root_buf))];
     var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const sub_path = sub_buf[0..(try tmp_dir.dir().realPathFile(io, "sub", &sub_buf))];
+    const sub_path = sub_buf[0..(try tmp_dir.realPathFile("sub", &sub_buf))];
 
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();

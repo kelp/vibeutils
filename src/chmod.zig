@@ -1235,8 +1235,7 @@ test "privileged: applyModeSpecToFile basic functionality" {
             const mode_spec = ModeSpec{ .octal = mode };
             const options = ChmodOptions{ .verbose = true };
 
-            const abs_path = try tmp_dir.dir().realPathFileAlloc(
-                testing.io,
+            const abs_path = try tmp_dir.realPathFileAlloc(
                 test_file_path,
                 inner_allocator,
             );
@@ -1278,8 +1277,7 @@ test "privileged: chmodFiles handles multiple files" {
                 const file = try tmp_dir.dir().createFile(testing.io, filename, .{});
                 file.close(testing.io);
 
-                const abs_path = try tmp_dir.dir().realPathFileAlloc(
-                    testing.io,
+                const abs_path = try tmp_dir.realPathFileAlloc(
                     filename,
                     inner_allocator,
                 );
@@ -1361,8 +1359,7 @@ test "privileged: chmod integration test with octal mode" {
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            const abs_path = try tmp_dir.dir().realPathFileAlloc(
-                testing.io,
+            const abs_path = try tmp_dir.realPathFileAlloc(
                 test_file_path,
                 inner_allocator,
             );
@@ -2808,9 +2805,9 @@ test "char: -R applies mode to every entry across a multi-level tree" {
         "a/b",
         "a/b/c",
     };
-    var abs_paths: [paths.len][:0]u8 = undefined;
+    var abs_paths: [paths.len][]u8 = undefined;
     for (paths, 0..) |rel, idx| {
-        abs_paths[idx] = try tmp_dir.dir().realPathFileAlloc(testing.io, rel, testing.allocator);
+        abs_paths[idx] = try tmp_dir.realPathFileAlloc(rel, testing.allocator);
     }
     defer for (abs_paths) |p| testing.allocator.free(p);
 
@@ -3043,8 +3040,7 @@ test "char: deep tree (~100 levels) completes without stack overflow" {
     const bottom = try tmp_dir.dir().createFile(testing.io, path_buf.items, .{});
     bottom.close(testing.io);
 
-    const bottom_abs = try tmp_dir.dir().realPathFileAlloc(
-        testing.io,
+    const bottom_abs = try tmp_dir.realPathFileAlloc(
         path_buf.items,
         testing.allocator,
     );
@@ -3159,7 +3155,7 @@ test "char: wide directory - every entry receives the mode" {
     idx = 0;
     while (idx < count) : (idx += 1) {
         const name = try std.fmt.bufPrint(&name_buf, "wide/f{d}.txt", .{idx});
-        const abs = try tmp_dir.dir().realPathFileAlloc(testing.io, name, testing.allocator);
+        const abs = try tmp_dir.realPathFileAlloc(name, testing.allocator);
         defer testing.allocator.free(abs);
         try setFileModeOctal(abs, 0o700);
     }
@@ -3186,7 +3182,7 @@ test "char: wide directory - every entry receives the mode" {
     idx = 0;
     while (idx < count) : (idx += 1) {
         const name = try std.fmt.bufPrint(&name_buf, "wide/f{d}.txt", .{idx});
-        const abs = try tmp_dir.dir().realPathFileAlloc(testing.io, name, testing.allocator);
+        const abs = try tmp_dir.realPathFileAlloc(name, testing.allocator);
         defer testing.allocator.free(abs);
         try testing.expectEqual(@as(u32, 0o750), try getFileMode(abs));
     }

@@ -8,13 +8,58 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Resolve `path` with libc `realpath(3)`.
+///
+/// Zig 0.16 `Dir.realPath` / `realPathFile` is `error.OperationUnsupported` on
+/// OpenBSD and NetBSD: `realPathPosix` only implements fd-to-path for Darwin,
+/// Linux, and FreeBSD. libc realpath takes a path string and works on every
+/// POSIX host this tree targets.
+pub fn realPathLibc(path: []const u8, out: []u8) !usize {
+    std.debug.assert(path.len > 0);
+    if (path.len >= std.posix.PATH_MAX) return error.NameTooLong;
+
+    const src = try std.posix.toPosixPath(path);
+    var dest: [std.posix.PATH_MAX]u8 = undefined;
+    @memset(&dest, 0);
+    const resolved = std.c.realpath(&src, &dest) orelse {
+        return switch (std.c._errno().*) {
+            @intFromEnum(std.c.E.NOENT) => error.FileNotFound,
+            @intFromEnum(std.c.E.NOTDIR) => error.NotDir,
+            @intFromEnum(std.c.E.ACCES) => error.AccessDenied,
+            @intFromEnum(std.c.E.NAMETOOLONG) => error.NameTooLong,
+            @intFromEnum(std.c.E.LOOP) => error.SymLinkLoop,
+            @intFromEnum(std.c.E.NOMEM) => error.SystemResources,
+            else => error.Unexpected,
+        };
+    };
+    const len = std.mem.len(resolved);
+    std.debug.assert(len > 0);
+    if (len > out.len) return error.NameTooLong;
+    @memcpy(out[0..len], resolved[0..len]);
+    return len;
+}
+
+/// Resolve `path` against the process cwd. Prefer Zig `realPathFile`; on
+/// OpenBSD/NetBSD fall back to libc realpath of the same path string.
+pub fn realPathFromCwd(io: std.Io, path: []const u8, out: []u8) !usize {
+    std.debug.assert(path.len > 0);
+    if (std.Io.Dir.cwd().realPathFile(io, path, out)) |len| {
+        std.debug.assert(len > 0);
+        std.debug.assert(len <= out.len);
+        return len;
+    } else |err| switch (err) {
+        error.OperationUnsupported => return realPathLibc(path, out),
+        else => return err,
+    }
+}
+
 /// Resolve a path to its canonical absolute form, returning a heap-allocated
 /// `[]u8` slice (not sentinel-terminated). Using `allocator.dupe` avoids the
 /// debug-allocator size mismatch that occurs when `realPathFileAlloc` returns
 /// `[:0]u8` and the caller frees it as `[]u8`.
 fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    const len = try realPathFromCwd(io, path, &buf);
     std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
@@ -22,8 +67,14 @@ fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
 /// Resolve an absolute path to its canonical form, returning a heap-allocated
 /// `[]u8` slice. Same rationale as `realPathDupe`.
 fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    std.debug.assert(std.fs.path.isAbsolute(path));
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    const len = if (std.Io.Dir.realPathFileAbsolute(io, path, &buf)) |n|
+        n
+    else |err| switch (err) {
+        error.OperationUnsupported => try realPathLibc(path, &buf),
+        else => return err,
+    };
     std.debug.assert(len <= buf.len);
     return allocator.dupe(u8, buf[0..len]);
 }
@@ -153,7 +204,7 @@ fn canonicalizeMissing_absolutePath(
         // Avoid cwd().realPath (issue #51: broken under Threaded io; it
         // readlinks the AT_FDCWD pseudo-fd and fails with ENOENT).
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_len = try std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf);
+        const cwd_len = try realPathFromCwd(io, ".", &cwd_buf);
         std.debug.assert(cwd_len > 0);
         std.debug.assert(cwd_len <= cwd_buf.len);
         const cwd = cwd_buf[0..cwd_len];
@@ -383,8 +434,15 @@ test "canonicalizeMissing: relative path resolves against cwd (issue #51)" {
         saved_cwd_dir.close(io);
     }
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(tmp_abs);
+    const rel = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}",
+        .{tmp_dir.sub_path},
+    );
+    defer testing.allocator.free(rel);
+    var tmp_abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmp_abs_len = try realPathFromCwd(io, rel, &tmp_abs_buf);
+    const tmp_abs = tmp_abs_buf[0..tmp_abs_len];
 
     try std.Io.Threaded.chdir(tmp_abs);
 
@@ -496,8 +554,14 @@ test "canonicalizeParentMustExist: file as parent fails with NotDir" {
     const f = try tmp.dir.createFile(io, "real_file", .{});
     try f.writeStreamingAll(io, "x");
     f.close(io);
+    const rel = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(rel);
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPath(io, &path_buf);
+    const dir_len = try realPathFromCwd(io, rel, &path_buf);
     const dir_path = path_buf[0..dir_len];
     const bad = try std.fmt.allocPrint(testing.allocator, "{s}/real_file/ghost", .{dir_path});
     defer testing.allocator.free(bad);

@@ -30,22 +30,54 @@
 const std = @import("std");
 const testing = std.testing;
 const test_utils = @import("test_utils.zig");
+const path_mod = @import("path.zig");
+
+/// Reconstruct the absolute path of a `testing.TmpDir` without `Dir.realPath`.
+/// Zig 0.16 fd-to-path is unsupported on OpenBSD and NetBSD; tmp dirs always
+/// live at `<cwd>/.zig-cache/tmp/<sub_path>`.
+fn resolveTmpDirBasePath(allocator: std.mem.Allocator, tmp: testing.TmpDir) ![]u8 {
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.process.currentPath(testing.io, &cwd_buf);
+    std.debug.assert(cwd_len > 0);
+    std.debug.assert(cwd_len <= cwd_buf.len);
+    const constructed = try std.fmt.allocPrint(
+        allocator,
+        "{s}/.zig-cache/tmp/{s}",
+        .{ cwd_buf[0..cwd_len], tmp.sub_path },
+    );
+    defer allocator.free(constructed);
+    std.debug.assert(constructed.len > 0);
+    var resolved_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try path_mod.realPathLibc(constructed, &resolved_buf);
+    std.debug.assert(n > 0);
+    return try allocator.dupe(u8, resolved_buf[0..n]);
+}
 
 /// Test directory helper for managing temporary file systems in tests
 pub const TestDir = struct {
     tmp_dir: testing.TmpDir,
     allocator: std.mem.Allocator,
+    /// Canonical absolute path of the sandbox, captured at init so later
+    /// `chdirToBase` cannot invalidate reconstruction from getcwd.
+    base_path: []u8,
 
     /// Initialize a test directory
     pub fn init(allocator: std.mem.Allocator) TestDir {
+        var tmp = testing.tmpDir(.{});
+        const base_path = resolveTmpDirBasePath(allocator, tmp) catch {
+            tmp.cleanup();
+            @panic("unable to resolve tmp dir path for testing");
+        };
         return TestDir{
-            .tmp_dir = testing.tmpDir(.{}),
+            .tmp_dir = tmp,
             .allocator = allocator,
+            .base_path = base_path,
         };
     }
 
     /// Clean up test directory
     pub fn deinit(self: *TestDir) void {
+        self.allocator.free(self.base_path);
         self.tmp_dir.cleanup();
     }
 
@@ -64,20 +96,52 @@ pub const TestDir = struct {
         if (std.mem.eql(u8, name, ".")) {
             return self.getBasePath();
         }
-        const io = testing.io;
-        // realPathFileAlloc returns [:0]u8 (sentinel-terminated); dupe strips the
-        // sentinel so callers can free via allocator.free([]u8) without size mismatch.
-        const sentinel_path = try self.tmp_dir.dir.realPathFileAlloc(io, name, self.allocator);
-        defer self.allocator.free(sentinel_path);
-        return try self.allocator.dupe(u8, sentinel_path[0..sentinel_path.len]);
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const n = try self.realPathFile(name, &buf);
+        return try self.allocator.dupe(u8, buf[0..n]);
     }
 
     /// Get the absolute path of the temp directory itself
     pub fn getBasePath(self: *TestDir) ![]u8 {
-        const io = testing.io;
+        std.debug.assert(self.base_path.len > 0);
+        return try self.allocator.dupe(u8, self.base_path);
+    }
+
+    /// Copy the sandbox absolute path into `buf`. Replaces `dir().realPath`,
+    /// which is OperationUnsupported on OpenBSD and NetBSD.
+    pub fn realPath(self: *const TestDir, buf: []u8) !usize {
+        std.debug.assert(self.base_path.len > 0);
+        if (self.base_path.len > buf.len) return error.NameTooLong;
+        @memcpy(buf[0..self.base_path.len], self.base_path);
+        return self.base_path.len;
+    }
+
+    /// Absolute path of `name` inside the sandbox. Joins onto the stored
+    /// canonical base and does not realpath the last component, so a symlink
+    /// operand stays a symlink (libc realpath would follow it).
+    pub fn realPathFile(self: *TestDir, name: []const u8, buf: []u8) !usize {
+        std.debug.assert(name.len > 0);
+        if (std.mem.eql(u8, name, ".")) return self.realPath(buf);
+        const is_link = self.isSymlink(name) catch false;
+        if (!self.fileExists(name) and !is_link) return error.FileNotFound;
+        const joined = try std.fs.path.join(self.allocator, &.{ self.base_path, name });
+        defer self.allocator.free(joined);
+        std.debug.assert(joined.len > 0);
+        if (joined.len > buf.len) return error.NameTooLong;
+        @memcpy(buf[0..joined.len], joined);
+        return joined.len;
+    }
+
+    /// Heap-allocated canonical path of `name`. Callers free with `allocator`.
+    pub fn realPathFileAlloc(
+        self: *TestDir,
+        name: []const u8,
+        allocator: std.mem.Allocator,
+    ) ![]u8 {
+        std.debug.assert(name.len > 0);
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const len = try self.tmp_dir.dir.realPath(io, &buf);
-        return try self.allocator.dupe(u8, buf[0..len]);
+        const n = try self.realPathFile(name, &buf);
+        return try allocator.dupe(u8, buf[0..n]);
     }
 
     /// Join a relative name onto the sandbox without requiring it to exist.
@@ -211,6 +275,47 @@ pub const TestDir = struct {
         return try self.tmp_dir.dir.statFile(io, name, .{});
     }
 };
+
+/// Absolute path of a raw `testing.TmpDir` without `Dir.realPath`.
+/// Do not call after a process chdir; use `TestDir` which stores the path.
+pub fn tmpDirRealPath(tmp: testing.TmpDir, buf: []u8) !usize {
+    const base = try resolveTmpDirBasePath(testing.allocator, tmp);
+    defer testing.allocator.free(base);
+    std.debug.assert(base.len > 0);
+    if (base.len > buf.len) return error.NameTooLong;
+    @memcpy(buf[0..base.len], base);
+    return base.len;
+}
+
+/// Canonical path of `name` inside a raw `testing.TmpDir` via libc realpath.
+pub fn tmpDirRealPathFile(tmp: testing.TmpDir, name: []const u8, buf: []u8) !usize {
+    std.debug.assert(name.len > 0);
+    const base = try resolveTmpDirBasePath(testing.allocator, tmp);
+    defer testing.allocator.free(base);
+    if (std.mem.eql(u8, name, ".")) {
+        if (base.len > buf.len) return error.NameTooLong;
+        @memcpy(buf[0..base.len], base);
+        return base.len;
+    }
+    const joined = try std.fs.path.join(testing.allocator, &.{ base, name });
+    defer testing.allocator.free(joined);
+    std.debug.assert(joined.len > 0);
+    if (joined.len > buf.len) return error.NameTooLong;
+    @memcpy(buf[0..joined.len], joined);
+    return joined.len;
+}
+
+/// Heap-allocated canonical path of `name` inside a raw `testing.TmpDir`.
+pub fn tmpDirRealPathFileAlloc(
+    tmp: testing.TmpDir,
+    name: []const u8,
+    allocator: std.mem.Allocator,
+) ![]u8 {
+    std.debug.assert(name.len > 0);
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmpDirRealPathFile(tmp, name, &buf);
+    return try allocator.dupe(u8, buf[0..n]);
+}
 
 // Tests for TestDir functionality
 

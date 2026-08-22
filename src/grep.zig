@@ -5253,7 +5253,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     const allocator = arena.allocator();
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_len = try tmp.dir().realPath(io, &root_buf);
+    const root_len = try tmp.realPath(&root_buf);
     const root = try allocator.dupe(u8, root_buf[0..root_len]);
 
     const patterns = [_]CompiledPattern{

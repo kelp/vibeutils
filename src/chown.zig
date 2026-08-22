@@ -949,7 +949,7 @@ test "privileged: chown basic functionality" {
 
             // Get real path for the temporary directory
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -992,7 +992,7 @@ test "chown with invalid owner specification" {
     file.close(testing.io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+    const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const tmp_path = path_buf[0..tmp_path_len];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
@@ -1034,7 +1034,7 @@ test "privileged: chown user only specification" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1080,7 +1080,7 @@ test "privileged: chown group only specification" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1130,7 +1130,7 @@ test "privileged: chown with reference file" {
             target_file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const ref_path = try std.fmt.allocPrint(
@@ -1210,7 +1210,7 @@ test "getOwnershipFromReference" {
     file.close(testing.io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+    const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const tmp_path = path_buf[0..tmp_path_len];
 
     const ref_path = try std.fmt.allocPrint(testing.allocator, "{s}/ref.txt", .{tmp_path});
@@ -1239,7 +1239,7 @@ test "privileged: changeOwnership with same values" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1275,7 +1275,7 @@ test "privileged: chownSingle basic operation" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1332,7 +1332,7 @@ test "privileged: chown recursive option" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_dir = try std.fmt.allocPrint(inner_allocator, "{s}/testdir", .{tmp_path});
@@ -1383,7 +1383,7 @@ test "privileged: chown with verbose option" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1429,7 +1429,7 @@ test "privileged: chown with changes option" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1481,7 +1481,7 @@ test "privileged: chown with no-dereference option" {
             };
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_link = try std.fmt.allocPrint(inner_allocator, "{s}/link.txt", .{tmp_path});
@@ -1551,7 +1551,7 @@ test "privileged: chown traverse options" {
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1867,7 +1867,7 @@ test "runChown production path with valid file and owner spec" {
     file.close(testing.io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+    const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
     const tmp_path = path_buf[0..tmp_path_len];
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
@@ -1923,7 +1923,7 @@ test "privileged: chown -RP should not follow cmdline symlink to directory" {
             try tmp_dir.dir().symLink(testing.io, "target", "link", .{});
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.realPathFile(".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const link_path = try std.fmt.allocPrint(inner_allocator, "{s}/link", .{tmp_path});
@@ -2002,7 +2002,7 @@ fn characterizationTmpRealpath(
     tmp_dir: *TestDir,
     path_buf: *[std.Io.Dir.max_path_bytes]u8,
 ) ![]const u8 {
-    const len = try tmp_dir.dir().realPathFile(testing.io, ".", path_buf);
+    const len = try tmp_dir.realPathFile(".", path_buf);
     return inner_allocator.dupe(u8, path_buf[0..len]);
 }
 

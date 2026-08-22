@@ -209,6 +209,18 @@
 
 ### Fixed
 
+- **`realpath`, `readlink`, and `ln -r` work on OpenBSD and NetBSD.**
+  Zig 0.16 `Dir.realPath` / `realPathFile` is
+  `error.OperationUnsupported` there (fd-to-path is only implemented
+  for Darwin, Linux, and FreeBSD). Those utilities now fall back to
+  libc `realpath(3)` of the path string.
+- **`free` reports memory on FreeBSD, OpenBSD, and NetBSD.** Those
+  hosts have no `/proc/meminfo`; they now read `hw.physmem` and
+  related sysctl keys instead of exiting 1.
+- **User and group names resolve on BSD.** `getUserName` /
+  `getGroupName` only called `getpwuid` / `getgrgid` on Linux and
+  macOS, so `ls -l`, `stat %G`, and `find -group` printed raw ids
+  on FreeBSD, OpenBSD, and NetBSD.
 - **`df` enumerates mounts on FreeBSD, OpenBSD, and NetBSD.** Those
   targets used to fail at compile time with `df: unsupported
   platform`. They now call `getfsstat` (NetBSD: `getvfsstat`) and

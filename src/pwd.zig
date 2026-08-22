@@ -239,7 +239,7 @@ test "getWorkingDirectory logical mode with valid PWD" {
 
     // Get the temp directory path
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const temp_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
+    const temp_len = try tmp_dir.realPathFile(".", &path_buf);
     const temp_path = path_buf[0..temp_len];
 
     // Test the validation function directly

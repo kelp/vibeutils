@@ -895,7 +895,7 @@ fn createSingleLink_computeRelativeTarget(
         if (std.fs.path.isAbsolute(target)) {
             break :blk target;
         } else {
-            const len = std.Io.Dir.cwd().realPathFile(io, target, &target_abs_buf) catch |err| {
+            const len = common.path.realPathFromCwd(io, target, &target_abs_buf) catch |err| {
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,
@@ -915,7 +915,7 @@ fn createSingleLink_computeRelativeTarget(
         if (std.fs.path.isAbsolute(link_dir)) {
             break :blk link_dir;
         } else {
-            const len = std.Io.Dir.cwd().realPathFile(io, link_dir, &link_dir_abs_buf) catch
+            const len = common.path.realPathFromCwd(io, link_dir, &link_dir_abs_buf) catch
                 break :blk ".";
             break :blk link_dir_abs_buf[0..len];
         }
