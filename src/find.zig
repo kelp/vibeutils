@@ -7183,15 +7183,23 @@ test "find: -group matches files by group name" {
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "grpfile.txt", .{});
+    _ = std.c.fchown(f.handle, std.c.geteuid(), std.c.getegid());
     f.close(testing.io);
 
     const dir_path = try tmp.getBasePath();
 
     // Get the GID of the test file, then look up the group name. Same reason
     // as -user above: the shared module owns the libc binding, not find.
-    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "grpfile.txt" });
-    const stat_buf = try doStat(file_path, false);
-    const group_info = try common.user_group.getGroupById(@intCast(stat_buf.gid), allocator);
+    // A guest workspace can be setgid to a host gid missing from NSS; skip
+    // when getgrgid is still null after the chown attempt.
+    const file_gid = try tmp.fileGid("grpfile.txt");
+    try common.test_dir.skipUnlessNamedEgidGroup(file_gid);
+    const group_info = common.user_group.getGroupById(@intCast(file_gid), allocator) catch |err| {
+        if (err == error.GroupNotFound) {
+            try common.test_dir.skipUnlessGroupNamed(file_gid);
+        }
+        return err;
+    };
     try testing.expect(group_info.name.len > 0);
     const groupname = group_info.name;
 
@@ -7223,9 +7231,15 @@ test "find: -nogroup matches nothing for normal files" {
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "normalfile.txt", .{});
+    _ = std.c.fchown(f.handle, std.c.geteuid(), std.c.getegid());
     f.close(testing.io);
 
     const dir_path = try tmp.getBasePath();
+    // `-nogroup` matches when getgrgid is null. That is GNU-correct on a
+    // guest whose file gid is missing from NSS, so the "normal files have
+    // a named group" premise is skipped rather than inverted.
+    const file_gid = try tmp.fileGid("normalfile.txt");
+    try common.test_dir.skipUnlessNamedEgidGroup(file_gid);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

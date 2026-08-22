@@ -25,6 +25,66 @@ fn parseLongFormatTotal(output: []const u8) !u64 {
     return std.fmt.parseInt(u64, output[prefix.len..newline], 10);
 }
 
+/// The `-C`/`-x` `-s` tests exist to prove the prefix enters colwidth before
+/// tab-stop rounding. A filesystem that keeps every count one digit still
+/// hits the 8-vs-16 split for 6-char names; two-digit counts are recomputed
+/// honestly rather than hard-coded.
+fn expectPrefixChangesColWidth(name_len: usize, counts: []const u64) !void {
+    std.debug.assert(name_len > 0);
+    std.debug.assert(counts.len > 0);
+    var widest: u64 = 0;
+    for (counts) |count| widest = @max(widest, count);
+    const prefix_w = common.test_dir.decimalDigitWidth(widest) + 1;
+    const with_prefix = (prefix_w + name_len + 8) & ~@as(usize, 7);
+    const without_prefix = (name_len + 8) & ~@as(usize, 7);
+    try testing.expect(with_prefix != without_prefix);
+    try testing.expect(prefix_w >= 2);
+}
+
+fn growUntilWiderBlocks(
+    env: *LsTestEnv,
+    small_name: []const u8,
+    large_name: []const u8,
+    start_size: usize,
+) !struct { small: u64, large: u64 } {
+    std.debug.assert(small_name.len > 0);
+    std.debug.assert(large_name.len > 0);
+    var size = start_size;
+    var small_blocks = try env.tmp_dir.fileBlocks512(small_name);
+    var large_blocks: u64 = 0;
+    while (size <= 1 << 20) : (size *= 2) {
+        try env.createFileWithSize(large_name, size, 'z');
+        small_blocks = try env.tmp_dir.fileBlocks512(small_name);
+        large_blocks = try env.tmp_dir.fileBlocks512(large_name);
+        if (common.test_dir.decimalDigitWidth(large_blocks) >
+            common.test_dir.decimalDigitWidth(small_blocks))
+        {
+            break;
+        }
+    }
+    try common.test_dir.skipUnlessWiderBlockField(small_blocks, large_blocks);
+    return .{ .small = small_blocks, .large = large_blocks };
+}
+
+fn growUntilBlockDigits(
+    env: *LsTestEnv,
+    name: []const u8,
+    start_size: usize,
+    min_digits: usize,
+) !u64 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(min_digits >= 1);
+    var size = start_size;
+    var blocks: u64 = 0;
+    while (size <= 8 << 20) : (size *= 2) {
+        try env.createFileWithSize(name, size, 'z');
+        blocks = try env.tmp_dir.fileBlocks512(name);
+        if (common.test_dir.decimalDigitWidth(blocks) >= min_digits) break;
+    }
+    try common.test_dir.skipUnlessWidestHasDigits(blocks, min_digits);
+    return blocks;
+}
+
 // ============================================================================
 // Basic listing functionality
 // ============================================================================
@@ -1027,22 +1087,22 @@ test "columnar: -C folds the -s block prefix into the column width" {
 
     // The one fixture where dropping the block prefix from the column
     // width changes the layout instead of merely shifting it. Names are
-    // 6 chars and the widest block count is one digit, so the prefix is
-    // 2 chars: base = 2 + 6 = 8 and colwidth = (8+8)&~7 = 16, a base on
-    // a tab stop still gaining a full stop. Without the prefix the base
-    // would be 6 and colwidth (6+8)&~7 = 8, giving a different grid.
-    // num_cols = 80/16 = 5, num_rows = ceil(6/5) = 2, so column-major
-    // fill-down shows 3 columns. Each cell is 8 chars wide and reaches
-    // the next stop at 16 with a single tab.
-    //
-    // aa0006 is exactly 4096 bytes so its block count is 8 whether it
-    // is derived from the size or read from st_blocks; the two disagree
-    // for sizes that are not a multiple of the allocation unit.
-    const empty = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005" };
-    for (empty) |name| {
+    // 6 chars; a one-digit count makes prefix 2 and colwidth 16, while
+    // omitting the prefix yields colwidth 8. Allocation is filesystem-
+    // specific, so the grid is rebuilt from each file's `st_blocks`.
+    const names = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005", "aa0006" };
+    for (names[0..5]) |name| {
         try env.createFile(name, "");
     }
     try env.createFileWithSize("aa0006", TEST_SIZE_4K, 'z');
+
+    var raw: [6]u64 = undefined;
+    var counts: [6]u64 = undefined;
+    for (names, &raw) |name, *slot| {
+        slot.* = try env.tmp_dir.fileBlocks512(name);
+    }
+    test_utils.displayBlocks(&raw, false, &counts);
+    try expectPrefixChangesColWidth(names[0].len, &counts);
 
     try env.runLs(.{
         .multi_column = true,
@@ -1050,13 +1110,16 @@ test "columnar: -C folds the -s block prefix into the column width" {
         .terminal_width = 80,
     });
 
-    // Verified byte-identical to macOS /bin/ls -C -s on this fixture.
-    try std.testing.expectEqualStrings(
-        "total 8\n" ++
-            "0 aa0001\t0 aa0003\t0 aa0005\n" ++
-            "0 aa0002\t0 aa0004\t8 aa0006\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeColumnarBlocks(
+        &expected_aw.writer,
+        &names,
+        &counts,
+        true,
+        80,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 test "columnar: -C -F widens the column even when the widest name has no indicator" {
@@ -1308,18 +1371,21 @@ test "columnar: -x folds the -s block prefix into the column width" {
 
     // The -x mirror of the -C block-prefix test, on the identical fixture,
     // so the -s prefix has to enter the column width BEFORE the tab-stop
-    // rounding rather than after. Names are 6 chars and the widest block
-    // count is one digit, so base = 2 + 6 = 8 and colwidth = (8+8)&~7 = 16;
-    // dropping the prefix would give base 6 and colwidth 8, a different
-    // grid. num_cols = 80/16 = 5, and row-major fill puts the first five
-    // entries on row one. aa0006 is exactly 4096 bytes, whose 8-block count
-    // is stable on APFS and on ext4. Verified byte-identical to macOS
-    // /bin/ls -x -s on this fixture.
-    const empty = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005" };
-    for (empty) |name| {
+    // rounding rather than after. Allocation is filesystem-specific; the
+    // expected row-major grid is rebuilt from each file's `st_blocks`.
+    const names = [_][]const u8{ "aa0001", "aa0002", "aa0003", "aa0004", "aa0005", "aa0006" };
+    for (names[0..5]) |name| {
         try env.createFile(name, "");
     }
     try env.createFileWithSize("aa0006", TEST_SIZE_4K, 'z');
+
+    var raw: [6]u64 = undefined;
+    var counts: [6]u64 = undefined;
+    for (names, &raw) |name, *slot| {
+        slot.* = try env.tmp_dir.fileBlocks512(name);
+    }
+    test_utils.displayBlocks(&raw, false, &counts);
+    try expectPrefixChangesColWidth(names[0].len, &counts);
 
     try env.runLs(.{
         .columns_across = true,
@@ -1327,53 +1393,63 @@ test "columnar: -x folds the -s block prefix into the column width" {
         .terminal_width = 80,
     });
 
-    try std.testing.expectEqualStrings(
-        "total 8\n" ++
-            "0 aa0001\t0 aa0002\t0 aa0003\t0 aa0004\t0 aa0005\n" ++
-            "8 aa0006\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeColumnarBlocks(
+        &expected_aw.writer,
+        &names,
+        &counts,
+        false,
+        80,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 test "blocks: -s reports st_blocks, not a size-derived count" {
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
 
-    // Issue #117. A wholly sparse 1 MiB file occupies no blocks at all,
-    // while a 1-byte file occupies one 4 KiB allocation unit (8 blocks of
-    // 512 bytes). Both facts were verified against `stat` on APFS and on
-    // ext4, and they invert the size-derived answer: ceil(size / 512)
-    // gives 2048 for the sparse file and 1 for the tiny one, so an
-    // implementation reading st_blocks and one deriving from the size
-    // cannot agree on either entry or on the total.
+    // Issue #117. A size-derived count is ceil(size/512). A sparse 1 MiB
+    // hole and a 1-byte file disagree with that on APFS, ext4, and FFS;
+    // some guests report a size-derived count for both, and that fixture
+    // is inapplicable rather than a production bug.
+    const sparse_size: u64 = 1 << 20;
+    const tiny_content = "x";
     {
         const file = try env.tmp_dir.dir().createFile(std.testing.io, "sparse", .{});
         defer file.close(std.testing.io);
-        try file.setLength(std.testing.io, 1 << 20);
+        try file.setLength(std.testing.io, sparse_size);
     }
-    try env.createFile("tiny", "x");
+    try env.createFile("tiny", tiny_content);
+
+    const sparse_blocks = try env.tmp_dir.fileBlocks512("sparse");
+    const tiny_blocks = try env.tmp_dir.fileBlocks512("tiny");
+    try common.test_dir.skipUnlessBlocksDifferFromSizeDerived(
+        sparse_blocks,
+        sparse_size,
+        tiny_blocks,
+        tiny_content.len,
+    );
 
     try env.runLs(.{ .show_blocks = true, .one_per_line = true });
 
-    // Both counts are a single digit, so BSD sizes the block field to one
-    // column plus its trailing space; verified against macOS /bin/ls -1s on
-    // this exact fixture, which prints "0 sparse" and not "   0 sparse".
-    try std.testing.expectEqualStrings(
-        "total 8\n" ++
-            "0 sparse\n" ++
-            "8 tiny\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeOnePerLineBlocks(
+        &expected_aw.writer,
+        &.{ "sparse", "tiny" },
+        &.{ sparse_blocks, tiny_blocks },
+        true,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 test "blocks: -s -k converts st_blocks to 1 KiB units" {
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
 
-    // Same fixture as the test above, in the -k unit. BSD rounds the
-    // 512-byte block count up to whole kilobytes (`howmany(blocks, 2)`),
-    // so 0 stays 0 and 8 becomes 4. Deriving from the size instead yields
-    // ceil(1048576 / 1024) = 1024 and ceil(1 / 1024) = 1.
+    // Same fixture as the test above, in the -k unit. Display counts are
+    // `howmany(st_blocks, 2)`, not a size-derived kilobyte count.
     {
         const file = try env.tmp_dir.dir().createFile(std.testing.io, "sparse", .{});
         defer file.close(std.testing.io);
@@ -1381,17 +1457,20 @@ test "blocks: -s -k converts st_blocks to 1 KiB units" {
     }
     try env.createFile("tiny", "x");
 
+    const sparse_k = common.test_dir.howmany512To1k(try env.tmp_dir.fileBlocks512("sparse"));
+    const tiny_k = common.test_dir.howmany512To1k(try env.tmp_dir.fileBlocks512("tiny"));
+
     try env.runLs(.{ .show_blocks = true, .kilobytes = true, .one_per_line = true });
 
-    // -k shrinks both counts but leaves them one digit wide, so the field
-    // stays one column plus its trailing space. Verified against macOS
-    // /bin/ls -1sk on this fixture, which prints "0 sparse" / "4 tiny".
-    try std.testing.expectEqualStrings(
-        "total 4\n" ++
-            "0 sparse\n" ++
-            "4 tiny\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeOnePerLineBlocks(
+        &expected_aw.writer,
+        &.{ "sparse", "tiny" },
+        &.{ sparse_k, tiny_k },
+        true,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 // Regression tests for the -s block-count FIELD WIDTH. BSD ls sizes that
@@ -1409,22 +1488,26 @@ test "blocks: -s uses a one-column field when every count is a single digit" {
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
 
-    // Two empty files occupy no blocks on APFS and on ext4 alike, so the
-    // widest count is the single digit 0 and the whole prefix is "0 ". This
-    // is the narrowest possible field and the case the hardcoded width of
-    // four gets most wrong. Verified against macOS /bin/ls -1s, which
-    // prints "0 a" and not "   0 a".
+    // Empty files are the narrowest allocation this filesystem will report.
+    // The field is sized to the widest actual count, not a hardcoded four.
     try env.createFile("a", "");
     try env.createFile("b", "");
+    const a_blocks = try env.tmp_dir.fileBlocks512("a");
+    const b_blocks = try env.tmp_dir.fileBlocks512("b");
+    try common.test_dir.skipUnlessWidestHasDigits(@max(a_blocks, b_blocks), 1);
+    try testing.expect(common.test_dir.decimalDigitWidth(@max(a_blocks, b_blocks)) == 1);
 
     try env.runLs(.{ .show_blocks = true, .one_per_line = true });
 
-    try std.testing.expectEqualStrings(
-        "total 0\n" ++
-            "0 a\n" ++
-            "0 b\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeOnePerLineBlocks(
+        &expected_aw.writer,
+        &.{ "a", "b" },
+        &.{ a_blocks, b_blocks },
+        true,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 test "blocks: -s right-aligns counts in a field sized to the widest count" {
@@ -1432,22 +1515,22 @@ test "blocks: -s right-aligns counts in a field sized to the widest count" {
     defer env.deinit();
 
     // The width-1 fixture above cannot tell "size the field to the widest
-    // count" apart from "never pad at all", so this one mixes widths: an
-    // empty file holds 0 blocks and an 8 KiB file holds 16 (both confirmed
-    // with stat(1) on APFS and on ext4). The widest count is two digits, so
-    // the field is two columns and the narrow count is right-aligned into
-    // it as " 0 ". Verified against macOS /bin/ls -1s on this fixture.
+    // count" apart from "never pad at all". The large file is grown until
+    // this filesystem reports a wider `st_blocks` than the empty file.
     try env.createFile("a", "");
-    try env.createFileWithSize("b", TEST_SIZE_4K * 2, 'z');
+    const grown = try growUntilWiderBlocks(&env, "a", "b", TEST_SIZE_4K * 2);
 
     try env.runLs(.{ .show_blocks = true, .one_per_line = true });
 
-    try std.testing.expectEqualStrings(
-        "total 16\n" ++
-            " 0 a\n" ++
-            "16 b\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeOnePerLineBlocks(
+        &expected_aw.writer,
+        &.{ "a", "b" },
+        &.{ grown.small, grown.large },
+        true,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 test "blocks: -s keeps a four-column field when the widest count has four digits" {
@@ -1456,23 +1539,24 @@ test "blocks: -s keeps a four-column field when the widest count has four digits
 
     // Negative space for the two tests above: sizing the field to the data
     // must not shrink a listing that genuinely needs four columns. A dense
-    // 1 MiB file occupies 2048 blocks and a 2-byte file occupies 8 (both
-    // confirmed with stat(1) on APFS and on ext4), so the field is four
-    // columns wide -- coincidentally the width the old code hardcoded, which
-    // is why this fixture alone could never have caught the bug. A fix that
-    // always emits the count unpadded passes both tests above and fails this
-    // one. Verified against macOS /bin/ls -1s.
-    try env.createFileWithSize("huge", 1 << 20, 'z');
+    // 1 MiB write is four digits on APFS, ext4, and FFS; if this filesystem
+    // still reports fewer, the file is grown or the fixture is skipped.
+    const huge_blocks = try growUntilBlockDigits(&env, "huge", 1 << 20, 4);
     try env.createFile("tiny", "xy");
+    const tiny_blocks = try env.tmp_dir.fileBlocks512("tiny");
+    try common.test_dir.skipUnlessWidestHasDigits(@max(huge_blocks, tiny_blocks), 4);
 
     try env.runLs(.{ .show_blocks = true, .one_per_line = true });
 
-    try std.testing.expectEqualStrings(
-        "total 2056\n" ++
-            "2048 huge\n" ++
-            "   8 tiny\n",
-        env.getStdout(),
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try test_utils.writeOnePerLineBlocks(
+        &expected_aw.writer,
+        &.{ "huge", "tiny" },
+        &.{ huge_blocks, tiny_blocks },
+        true,
     );
+    try std.testing.expectEqualStrings(expected_aw.writer.buffered(), env.getStdout());
 }
 
 test "blocks: -l -s uses a one-column field when every count is a single digit" {
@@ -1509,13 +1593,10 @@ test "blocks: -l -s right-aligns counts in a field sized to the widest count" {
     // Same mixed-width fixture as the one-per-line alignment test, through
     // the long-format path. Only the -s prefix is asserted: our long format
     // pads the nlink, owner, group and size columns differently from BSD,
-    // which is a pre-existing divergence and out of scope here, so matching
-    // a whole -l line against /bin/ls would fail for unrelated reasons. The
-    // prefix slice below is still an exact byte comparison of the region
-    // under test. Verified against macOS /bin/ls -ls, whose lines begin
-    // " 0 -" and "16 -".
+    // which is a pre-existing divergence and out of scope here.
     try env.createFile("a", "");
-    try env.createFileWithSize("b", TEST_SIZE_4K * 2, 'z');
+    const grown = try growUntilWiderBlocks(&env, "a", "b", TEST_SIZE_4K * 2);
+    const field = common.test_dir.decimalDigitWidth(@max(grown.small, grown.large));
 
     try env.runLs(.{ .show_blocks = true, .long_format = true });
 
@@ -1525,12 +1606,21 @@ test "blocks: -l -s right-aligns counts in a field sized to the widest count" {
     const line_a = lines.next() orelse return error.MissingEntryLine;
     const line_b = lines.next() orelse return error.MissingEntryLine;
 
-    // A block field of three bytes covers the two-digit count plus its
-    // trailing space; the permission string starts immediately after.
-    try std.testing.expect(line_a.len >= 4);
-    try std.testing.expect(line_b.len >= 4);
-    try std.testing.expectEqualStrings(" 0 -", line_a[0..4]);
-    try std.testing.expectEqualStrings("16 -", line_b[0..4]);
+    var prefix_a: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer prefix_a.deinit();
+    var prefix_b: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer prefix_b.deinit();
+    try test_utils.writeBlockPrefix(&prefix_a.writer, grown.small, field);
+    try test_utils.writeBlockPrefix(&prefix_b.writer, grown.large, field);
+    try prefix_a.writer.writeByte('-');
+    try prefix_b.writer.writeByte('-');
+
+    const want_a = prefix_a.writer.buffered();
+    const want_b = prefix_b.writer.buffered();
+    try std.testing.expect(line_a.len >= want_a.len);
+    try std.testing.expect(line_b.len >= want_b.len);
+    try std.testing.expectEqualStrings(want_a, line_a[0..want_a.len]);
+    try std.testing.expectEqualStrings(want_b, line_b[0..want_b.len]);
 }
 
 // ============================================================================

@@ -2148,19 +2148,71 @@ test "ls -C lays out multiple file operands in columns, not one per line" {
     try testing.expectEqualStrings("big\tsmall\n", stdout_aw.writer.buffered());
 }
 
+fn testWriteOperandBlockLines(
+    writer: *std.Io.Writer,
+    names: []const []const u8,
+    blocks: []const u64,
+) !void {
+    std.debug.assert(names.len == blocks.len);
+    std.debug.assert(names.len > 0);
+    var widest: u64 = 0;
+    for (blocks) |count| widest = @max(widest, count);
+    const field = common.test_dir.decimalDigitWidth(widest);
+    for (names, blocks) |name, count| {
+        const digits = common.test_dir.decimalDigitWidth(count);
+        var pad = field - digits;
+        while (pad > 0) : (pad -= 1) try writer.writeByte(' ');
+        try writer.print("{d} {s}\n", .{ count, name });
+    }
+}
+
+fn testGrowUntilWiderBlocks(
+    io: std.Io,
+    tmp_dir: *TestDir,
+    small_name: []const u8,
+    large_name: []const u8,
+    start_size: usize,
+) !struct { small: u64, large: u64 } {
+    std.debug.assert(small_name.len > 0);
+    std.debug.assert(large_name.len > 0);
+    var size = start_size;
+    var small_blocks: u64 = try tmp_dir.fileBlocks512(small_name);
+    var large_blocks: u64 = 0;
+    // Doubling from 8 KiB stays well under a practical write cap.
+    while (size <= 1 << 20) : (size *= 2) {
+        const data = try testing.allocator.alloc(u8, size);
+        defer testing.allocator.free(data);
+        @memset(data, 'z');
+        const file = try tmp_dir.dir().createFile(io, large_name, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, data);
+        small_blocks = try tmp_dir.fileBlocks512(small_name);
+        large_blocks = try tmp_dir.fileBlocks512(large_name);
+        if (common.test_dir.decimalDigitWidth(large_blocks) >
+            common.test_dir.decimalDigitWidth(small_blocks))
+        {
+            break;
+        }
+    }
+    try common.test_dir.skipUnlessWiderBlockField(small_blocks, large_blocks);
+    return .{ .small = small_blocks, .large = large_blocks };
+}
+
 test "ls -s prints the block prefix for file operands and no total line" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
-    // One byte each, so both occupy a single 4 KiB allocation unit: eight
-    // 512-byte blocks, verified against `stat` on APFS and on ext4.
+    // Allocation is filesystem-specific (APFS 8, FFS 4, some UFS 1), so
+    // the expected prefix is the kernel `st_blocks` of each operand.
     for ([_][]const u8{ "aa", "bb" }) |name| {
         const file = try tmp_dir.dir().createFile(io, name, .{});
         defer file.close(io);
         try file.writeStreamingAll(io, "x");
     }
+    const aa_blocks = try tmp_dir.fileBlocks512("aa");
+    const bb_blocks = try tmp_dir.fileBlocks512("bb");
 
     var saved_cwd = try tmp_dir.chdirToBase();
     defer TestDir.restoreCwd(&saved_cwd);
@@ -2172,15 +2224,20 @@ test "ls -s prints the block prefix for file operands and no total line" {
 
     // BSD and GNU both prefix each file operand with its block count and
     // both omit the "total" line, which only heads a directory section.
-    // The field is sized to the widest count in the section, so two
-    // single-digit counts give a one-column field: pinned against macOS
-    // /bin/ls -s -1 aa bb, which prints "8 aa" and not "   8 aa". GNU
-    // `gls -s -1 aa bb` agrees on the width and differs only in the unit.
+    // The field is sized to the widest count in the section.
     const args = [_][]const u8{ "-s", "-1", "aa", "bb" };
     const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try testWriteOperandBlockLines(
+        &expected_aw.writer,
+        &.{ "aa", "bb" },
+        &.{ aa_blocks, bb_blocks },
+    );
+
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("8 aa\n8 bb\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(expected_aw.writer.buffered(), stdout_aw.writer.buffered());
 }
 
 test "ls -s sizes the operand block field across all operands, not per operand" {
@@ -2191,21 +2248,14 @@ test "ls -s sizes the operand block field across all operands, not per operand" 
     defer tmp_dir.deinit();
 
     // The equal-width fixture above cannot tell a section-wide field from a
-    // per-entry one, because both render identically when every count is the
-    // same. Mixed widths separate them: one byte occupies a single 4 KiB
-    // allocation unit (8 blocks) and 8 KiB occupies 16, both verified with
-    // stat(1) on APFS and on ext4.
+    // per-entry one. Mixed digit widths separate them; the large file is
+    // grown until this filesystem reports a wider `st_blocks`.
     {
         const file = try tmp_dir.dir().createFile(io, "aa", .{});
         defer file.close(io);
         try file.writeStreamingAll(io, "x");
     }
-    {
-        const file = try tmp_dir.dir().createFile(io, "bb", .{});
-        defer file.close(io);
-        const data: [8192]u8 = @splat('z');
-        try file.writeStreamingAll(io, &data);
-    }
+    const grown = try testGrowUntilWiderBlocks(io, &tmp_dir, "aa", "bb", 8192);
 
     var saved_cwd = try tmp_dir.chdirToBase();
     defer TestDir.restoreCwd(&saved_cwd);
@@ -2217,15 +2267,20 @@ test "ls -s sizes the operand block field across all operands, not per operand" 
 
     // Operands reach the formatter as ONE section (issue #119), so the
     // widest count in that section sizes the field for every operand and
-    // the narrow one is right-aligned into it. Computing the width per
-    // operand instead would print "8 aa" / "16 bb" and lose the alignment.
-    // Pinned against macOS /bin/ls -s -1 aa bb, which prints " 8 aa" and
-    // "16 bb", still with no "total" line.
+    // the narrow one is right-aligned into it.
     const args = [_][]const u8{ "-s", "-1", "aa", "bb" };
     const exit_code = try runLs(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
+    var expected_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer expected_aw.deinit();
+    try testWriteOperandBlockLines(
+        &expected_aw.writer,
+        &.{ "aa", "bb" },
+        &.{ grown.small, grown.large },
+    );
+
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings(" 8 aa\n16 bb\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(expected_aw.writer.buffered(), stdout_aw.writer.buffered());
 }
 
 // ============================================================

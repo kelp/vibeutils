@@ -1830,13 +1830,42 @@ test {}
 fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *TestDir) ![]u8 {
     const file = try tmp_dir.dir().createFile(io, "allocated.bin", .{});
     defer file.close(io);
-    const data = [_]u8{'x'} ** 2048;
+    // 64 KiB of real bytes so `-h` still prints a K/kB suffix on ext4,
+    // APFS, and FFS. A 2048-byte write can stay under 1 KiB allocated on
+    // some FreeBSD guests, where `formatHumanReadable` has no suffix.
+    const data = [_]u8{'x'} ** 65536;
     try file.writeStreamingAll(io, &data);
 
     const path = try tmp_dir.getPath("allocated.bin");
     std.debug.assert(path.len > 0);
     std.debug.assert(std.fs.path.isAbsolute(path));
     return path;
+}
+
+fn testSkipUnlessDuHumanSuffix(tmp_dir: *TestDir) !void {
+    const blocks = try tmp_dir.fileBlocks512("allocated.bin");
+    std.debug.assert(blocks == blocks);
+    try common.test_dir.skipUnlessAllocatedAtLeast1KiB(blocks);
+}
+
+fn testCreateDuThresholdFile(io: std.Io, tmp_dir: *TestDir) ![]u8 {
+    const file = try tmp_dir.dir().createFile(io, "threshold.bin", .{});
+    defer file.close(io);
+    // 2048 data bytes typically allocate 2-4 KiB, so `--threshold=-4k`
+    // still includes the file while `-h` keeps a K suffix.
+    const data = [_]u8{'x'} ** 2048;
+    try file.writeStreamingAll(io, &data);
+
+    const path = try tmp_dir.getPath("threshold.bin");
+    std.debug.assert(path.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(path));
+    return path;
+}
+
+fn testSkipUnlessDuThreshold4k(tmp_dir: *TestDir) !void {
+    const blocks = try tmp_dir.fileBlocks512("threshold.bin");
+    std.debug.assert(blocks == blocks);
+    try common.test_dir.skipUnlessAllocatedBetween1KiBAnd4KiB(blocks);
 }
 
 fn testRunDuSizeField(
@@ -1894,6 +1923,7 @@ test "du defaults allocated file output to binary human-readable size" {
     defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
+    try testSkipUnlessDuHumanSuffix(&tmp_dir);
 
     try testExpectDuSizeKind(io, &.{path}, .binary_human);
 }
@@ -1925,6 +1955,7 @@ test "du --si prints an allocated file with a decimal suffix" {
     defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
+    try testSkipUnlessDuHumanSuffix(&tmp_dir);
 
     try testExpectDuSizeKind(io, &.{ "--si", path }, .si_human);
 }
@@ -1948,7 +1979,10 @@ test "du size modes use argv last-wins order and stop at double dash" {
         .{ .args = &.{ "-k", "--si", path }, .expected = .si_human },
         .{ .args = &.{ "-k", "--", path }, .expected = .numeric },
     };
-    for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
+    for (cases) |case| {
+        if (case.expected != .numeric) try testSkipUnlessDuHumanSuffix(&tmp_dir);
+        try testExpectDuSizeKind(io, case.args, case.expected);
+    }
 }
 
 test "du size-mode scan ignores block size threshold and ignore option values" {
@@ -1957,10 +1991,13 @@ test "du size-mode scan ignores block size threshold and ignore option values" {
     defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
+    const small = try testCreateDuThresholdFile(io, &tmp_dir);
+    defer testing.allocator.free(small);
 
     const cases = [_]struct {
         args: []const []const u8,
         expected: TestDuSizeKind,
+        needs_4k_cap: bool = false,
     }{
         .{ .args = &.{ "-B1k", path }, .expected = .numeric },
         .{ .args = &.{ "-B1K", path }, .expected = .numeric },
@@ -1968,14 +2005,35 @@ test "du size-mode scan ignores block size threshold and ignore option values" {
         .{ .args = &.{ "-t1k", path }, .expected = .binary_human },
         .{ .args = &.{ "-t", "1k", path }, .expected = .binary_human },
         .{ .args = &.{ "-Ifoo-k", path }, .expected = .binary_human },
-        .{ .args = &.{ "--thresh", "-4k", path }, .expected = .binary_human },
-        .{ .args = &.{ "--threshold", "-4k", path }, .expected = .binary_human },
-        .{ .args = &.{ "--threshold=-4k", path }, .expected = .binary_human },
+        .{
+            .args = &.{ "--thresh", "-4k", small },
+            .expected = .binary_human,
+            .needs_4k_cap = true,
+        },
+        .{
+            .args = &.{ "--threshold", "-4k", small },
+            .expected = .binary_human,
+            .needs_4k_cap = true,
+        },
+        .{
+            .args = &.{ "--threshold=-4k", small },
+            .expected = .binary_human,
+            .needs_4k_cap = true,
+        },
         .{ .args = &.{ "--ignore-pattern", "-k", path }, .expected = .binary_human },
         .{ .args = &.{ "-k", "--human-r", path }, .expected = .binary_human },
         .{ .args = &.{ "--blo", "1", path }, .expected = .numeric },
     };
-    for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
+    for (cases) |case| {
+        // `-t1k` excludes a file under 1 KiB allocated. `-4k` also
+        // excludes a file over 4 KiB allocated.
+        if (case.needs_4k_cap) {
+            try testSkipUnlessDuThreshold4k(&tmp_dir);
+        } else if (case.expected != .numeric) {
+            try testSkipUnlessDuHumanSuffix(&tmp_dir);
+        }
+        try testExpectDuSizeKind(io, case.args, case.expected);
+    }
 }
 
 test "parseBlockSize - pure numeric" {

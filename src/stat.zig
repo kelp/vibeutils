@@ -3605,7 +3605,11 @@ test "stat -c format: group name %G" {
     defer tmp_dir.deinit();
 
     const test_file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
+    _ = std.c.fchown(test_file.handle, std.c.geteuid(), std.c.getegid());
     test_file.close(testing.io);
+    // `%G` prints the numeric gid when getgrgid is null, which is GNU-
+    // correct. Skip rather than requiring a name the guest NSS lacks.
+    try common.test_dir.skipUnlessNamedEgidGroup(try tmp_dir.fileGid("test.txt"));
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
@@ -4841,10 +4845,18 @@ test "stat -c %d device number has GNU's dev_t width" {
     const n = testSplit(std.mem.trimEnd(u8, out.writer.buffered(), "\n"), &fields);
     try testing.expectEqual(@as(u32, 2), n);
 
-    // A real dev_t fits in 32 bits on both platforms we target; the synthetic
-    // composition needs 40, which is exactly how the bug shows up.
     const dev = try std.fmt.parseInt(u64, fields[0], 10);
-    try testing.expect(dev < @as(u64, 1) << 32);
+    switch (builtin.os.tag) {
+        // Linux-only composition bug: `((major<<32)|minor)` needs 40 bits.
+        .linux => try testing.expect(dev < @as(u64, 1) << 32),
+        // FreeBSD `st_dev` is u64 and can have high bits; compare `%d` to
+        // the kernel value rather than asserting a 32-bit width.
+        .freebsd, .openbsd, .netbsd, .macos => {
+            const kernel_dev = try tmp_dir.fileDev("d.txt");
+            try testing.expectEqual(kernel_dev, dev);
+        },
+        else => {},
+    }
 
     // %D must be the same number, just in hex.
     var hex_buf: [32]u8 = undefined;

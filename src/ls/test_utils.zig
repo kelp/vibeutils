@@ -507,6 +507,155 @@ pub const PlatformHelpers = struct {
 };
 
 const builtin = @import("builtin");
+const TestDirMod = common.test_dir;
+
+/// Right-aligned `-s` prefix (`"{pad}{count} "`) sized to `field_width`.
+pub fn writeBlockPrefix(
+    writer: *std.Io.Writer,
+    count: u64,
+    field_width: usize,
+) !void {
+    const digits = TestDirMod.decimalDigitWidth(count);
+    std.debug.assert(field_width >= digits);
+    std.debug.assert(digits >= 1);
+    var pad = field_width - digits;
+    while (pad > 0) : (pad -= 1) {
+        try writer.writeByte(' ');
+    }
+    try writer.print("{d} ", .{count});
+}
+
+/// One-per-line `-s` body: optional `total`, then one right-aligned prefix
+/// per name. Field width is the digit width of the max count in `display`.
+pub fn writeOnePerLineBlocks(
+    writer: *std.Io.Writer,
+    names: []const []const u8,
+    counts: []const u64,
+    include_total: bool,
+) !void {
+    std.debug.assert(names.len == counts.len);
+    std.debug.assert(names.len > 0);
+    var total: u64 = 0;
+    var widest: u64 = 0;
+    for (counts) |count| {
+        total += count;
+        widest = @max(widest, count);
+    }
+    if (include_total) {
+        try writer.print("total {d}\n", .{total});
+    }
+    const field = TestDirMod.decimalDigitWidth(widest);
+    for (names, counts) |name, count| {
+        try writeBlockPrefix(writer, count, field);
+        try writer.print("{s}\n", .{name});
+    }
+}
+
+const tab_width: usize = 8;
+
+/// Column-major (`-C`) or row-major (`-x`) `-s` listing. Prefix width enters
+/// the column width before tab-stop rounding, matching `printColumnar_layout`.
+pub fn writeColumnarBlocks(
+    writer: *std.Io.Writer,
+    names: []const []const u8,
+    counts: []const u64,
+    order_down: bool,
+    term_width: usize,
+) !void {
+    std.debug.assert(names.len == counts.len);
+    std.debug.assert(names.len > 0);
+    var total: u64 = 0;
+    var widest: u64 = 0;
+    var max_name: usize = 0;
+    for (names, counts) |name, count| {
+        total += count;
+        widest = @max(widest, count);
+        max_name = @max(max_name, name.len);
+    }
+    const field = TestDirMod.decimalDigitWidth(widest);
+    const prefix_w = field + 1;
+    const col_w = (prefix_w + max_name + tab_width) & ~(tab_width - 1);
+    const num_cols = @max(1, term_width / col_w);
+    const num_rows = (names.len + num_cols - 1) / num_cols;
+    try writer.print("total {d}\n", .{total});
+    var row: usize = 0;
+    while (row < num_rows) : (row += 1) {
+        try writeColumnarRow(
+            writer,
+            names,
+            counts,
+            field,
+            prefix_w,
+            col_w,
+            num_cols,
+            num_rows,
+            row,
+            order_down,
+        );
+    }
+}
+
+fn writeColumnarRow(
+    writer: *std.Io.Writer,
+    names: []const []const u8,
+    counts: []const u64,
+    field: usize,
+    prefix_w: usize,
+    col_w: usize,
+    num_cols: usize,
+    num_rows: usize,
+    row: usize,
+    order_down: bool,
+) !void {
+    std.debug.assert(row < num_rows);
+    std.debug.assert(num_cols >= 1);
+    var chcnt: usize = 0;
+    var endcol = col_w;
+    for (0..num_cols) |col| {
+        const idx = if (order_down) col * num_rows + row else row * num_cols + col;
+        if (idx >= names.len) break;
+        try writeBlockPrefix(writer, counts[idx], field);
+        try writer.print("{s}", .{names[idx]});
+        chcnt += prefix_w + names[idx].len;
+        if (col + 1 >= num_cols) break;
+        const next_idx = if (order_down)
+            (col + 1) * num_rows + row
+        else
+            row * num_cols + (col + 1);
+        if (next_idx >= names.len) break;
+        chcnt = try writeColumnarTabs(writer, chcnt, endcol);
+        endcol += col_w;
+    }
+    try writer.writeByte('\n');
+}
+
+fn writeColumnarTabs(
+    writer: *std.Io.Writer,
+    chcnt: usize,
+    endcol: usize,
+) !usize {
+    std.debug.assert(endcol >= tab_width);
+    std.debug.assert(chcnt < endcol);
+    var cursor = chcnt;
+    for (0..@divFloor(endcol, tab_width) + 1) |_| {
+        const next = (cursor + tab_width) & ~(tab_width - 1);
+        if (next > endcol) break;
+        try writer.writeByte('\t');
+        cursor = next;
+    }
+    std.debug.assert(cursor >= chcnt);
+    std.debug.assert(cursor <= endcol);
+    return cursor;
+}
+
+/// Display counts for `-s` (512-byte units) or `-s -k` (`howmany` to 1 KiB).
+pub fn displayBlocks(blocks_512: []const u64, kilobytes: bool, out: []u64) void {
+    std.debug.assert(blocks_512.len == out.len);
+    std.debug.assert(blocks_512.len > 0);
+    for (blocks_512, out) |raw, *dest| {
+        dest.* = if (kilobytes) TestDirMod.howmany512To1k(raw) else raw;
+    }
+}
 
 // Tests for the test utilities themselves
 const testing = std.testing;
