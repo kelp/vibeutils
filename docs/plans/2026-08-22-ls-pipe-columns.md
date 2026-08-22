@@ -52,12 +52,14 @@ program behavior (`land-todo-slice` §4).
 
 ## In scope
 
-1. Re-run `just it-util ls` (or the #113-named
-   cases) on unmodified HEAD and confirm the
-   existing names PASS:
-   - `ls #113: default output piped is one entry per line`
-   - `ls #113: default output redirected to a file is one entry per line`
-   - `ls #113: default piped output has no trailing whitespace`
+1. Re-run `env -u NO_COLOR just it-util ls` on
+   unmodified HEAD and confirm **every** `#113`
+   named case PASS (piped default, redirected
+   file, no trailing whitespace, `-C`/`-x`/`-m`
+   keep layouts, `-1`/`-l` unchanged, `-R`
+   one-per-line per section). The Cloud image
+   exports `NO_COLOR=1`; scrub it so the
+   unrelated truecolor case is not a false fail.
 2. Confirm `grep` of `src/ls/` still sets
    `one_per_line` when stdout is not a terminal.
 3. Implementer checks the `## Bugs` box in
@@ -91,10 +93,21 @@ bug (separate from this check-off).
 Implementer commit: check the one `TODO.md` box.
 Do not edit `ls_test.sh` or `src/ls/`.
 
-Local gates: `just fmt-check`. `just it-util ls`
-on the test-writer/verifier pass (or the planner
-records a green run in the PR). Skip `just test`
-unless Zig is forced (it must not be).
+Local gates: `just fmt-check`, `just test`, and
+`env -u NO_COLOR just it-util ls`. Skip
+privileged tests: this slice adds no fakeroot
+path.
+
+## Round-1 review decisions
+
+Grok APPROVE. Fable APPROVE. Sol REQUEST CHANGES.
+
+1. **Wait for #196 on `main`.** Decision: **keep
+   stacking off `github/main`.** Same recorded
+   deviation as every other slice this run.
+2. **`just test` / `env -u NO_COLOR`.** Adopted
+   (Fable/Grok nits). Not a second-round
+   behavior change.
 
 ## TDD ownership
 
