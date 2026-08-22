@@ -51,18 +51,20 @@ pub const Tracker = struct {
     }
 
     pub fn finish(self: *Tracker, now_ns: i128) void {
-        // A cleared width always fits the clear buffer, and a tracker that
-        // never emitted has nothing on screen to clean up.
+        // Width is always bounded by the line buffer. A second finish
+        // (or one after a diagnostic) is a no-op: shown is already
+        // false while last_width still records the painted width.
         assert(self.last_width <= line_bytes_max);
-        assert(self.shown or self.last_width == 0 or !self.enabled);
 
         if (!self.enabled or !self.shown) return;
+        assert(self.enabled);
+        assert(self.shown);
         switch (self.kind) {
             .copy_line => self.clearCopyLine(),
             .gnu_xfer => self.emitGnuLine(now_ns, true),
         }
-        // Idempotence: a second finish (or one after a diagnostic) is a
-        // no-op because the line is no longer considered shown.
+        // Idempotence: leave last_width so a later pad/clear still
+        // knows the painted width; only shown gates a second emit.
         self.shown = false;
     }
 
