@@ -356,3 +356,160 @@ test "runWithBufferedIO: empty args slice (program name only) passes empty slice
     );
     try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
+
+// ---------------------------------------------------------------------------
+// File-backed tests for runWithStreamingFiles (writer setup + catch flush)
+// ---------------------------------------------------------------------------
+
+/// Short payload that stays in the 8KB buffer until the success-path flush.
+fn runStreamingShort(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const []const u8,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
+) anyerror!u8 {
+    try stdout.writeAll("short-payload\n");
+    return 0;
+}
+
+/// 9000-byte write: first 8192 drain on buffer fill; the tail needs flush.
+fn runStreamingLong(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const []const u8,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
+) anyerror!u8 {
+    var payload: [9000]u8 = undefined;
+    @memset(&payload, 'Z');
+    try stdout.writeAll(&payload);
+    return 0;
+}
+
+/// Pending short stdout write, then an uncaught error (catch-path probe).
+fn runStreamingPendingThenError(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const []const u8,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
+) anyerror!u8 {
+    try stdout.writeAll("pending-short");
+    return error.StreamingCatchProbe;
+}
+
+test "runWithStreamingFiles: short write flushes to stdout file" {
+    const io = testing.io;
+    var test_dir = lib.test_dir.TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("stdout.txt", "", null);
+    try test_dir.createFile("stderr.txt", "", null);
+    const stdout_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stdout.txt",
+        .{ .mode = .write_only },
+    );
+    const stderr_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stderr.txt",
+        .{ .mode = .write_only },
+    );
+
+    const argv = [_][]const u8{"prog"};
+    const code = runWithStreamingFiles(
+        runStreamingShort,
+        testing.allocator,
+        io,
+        &argv,
+        stdout_file,
+        stderr_file,
+    );
+    stdout_file.close(io);
+    stderr_file.close(io);
+
+    try testing.expectEqual(@as(u8, 0), code);
+    try test_dir.expectFileContent("stdout.txt", "short-payload\n");
+}
+
+test "runWithStreamingFiles: write over 8192 persists full payload including tail" {
+    const io = testing.io;
+    var test_dir = lib.test_dir.TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("stdout.txt", "", null);
+    try test_dir.createFile("stderr.txt", "", null);
+    const stdout_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stdout.txt",
+        .{ .mode = .write_only },
+    );
+    const stderr_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stderr.txt",
+        .{ .mode = .write_only },
+    );
+
+    const argv = [_][]const u8{"prog"};
+    const code = runWithStreamingFiles(
+        runStreamingLong,
+        testing.allocator,
+        io,
+        &argv,
+        stdout_file,
+        stderr_file,
+    );
+    stdout_file.close(io);
+    stderr_file.close(io);
+
+    var expected: [9000]u8 = undefined;
+    @memset(&expected, 'Z');
+    try testing.expectEqual(@as(u8, 0), code);
+    try test_dir.expectFileContent("stdout.txt", &expected);
+}
+
+test "runWithStreamingFiles: uncaught runFn error returns 1, flushes stderr, not stdout" {
+    const io = testing.io;
+    var test_dir = lib.test_dir.TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("stdout.txt", "", null);
+    try test_dir.createFile("stderr.txt", "", null);
+    const stdout_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stdout.txt",
+        .{ .mode = .write_only },
+    );
+    const stderr_file = try test_dir.tmp_dir.dir.openFile(
+        io,
+        "stderr.txt",
+        .{ .mode = .write_only },
+    );
+
+    const argv = [_][]const u8{"prog"};
+    const code = runWithStreamingFiles(
+        runStreamingPendingThenError,
+        testing.allocator,
+        io,
+        &argv,
+        stdout_file,
+        stderr_file,
+    );
+    stdout_file.close(io);
+    stderr_file.close(io);
+
+    const err_content = try test_dir.readFileAlloc("stderr.txt");
+    defer testing.allocator.free(err_content);
+    const out_content = try test_dir.readFileAlloc("stdout.txt");
+    defer testing.allocator.free(out_content);
+
+    try testing.expectEqual(@as(u8, 1), code);
+    try testing.expect(std.mem.indexOf(u8, err_content, "error: ") != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        err_content,
+        lib.posixErrorString(error.StreamingCatchProbe),
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, out_content, "pending-short") == null);
+}
