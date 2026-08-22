@@ -2030,15 +2030,13 @@ fn runDdStatusFixture(
     status_operand: ?[]const u8,
 ) !u8 {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", "0123456789");
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.bin", "0123456789");
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.bin");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(base_path);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    const output_path = try tmp_dir.join("output.bin");
     defer testing.allocator.free(output_path);
     const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
     defer testing.allocator.free(if_arg);
@@ -2622,19 +2620,17 @@ test "runDd status=progress finished line includes the flushed short block" {
     defer common.progress.test_delay_ns = null;
 
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // ibs=obs=512 without bs= so simple_copy is false; 1000 is not a
     // multiple of 512, so the last 488 bytes sit in out_buf until finish.
     const payload: [1000]u8 = @splat('A');
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", &payload);
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.bin", &payload);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.bin");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(base_path);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    const output_path = try tmp_dir.join("output.bin");
     defer testing.allocator.free(output_path);
     const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
     defer testing.allocator.free(if_arg);
@@ -2767,10 +2763,10 @@ test "runDd conv=noerror completion does not panic after a recovered read error"
     defer common.progress.test_now_ns = null;
 
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", "abcdefgh");
-    var out_file = try tmp_dir.dir.createFile(io, "output.bin", .{});
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.bin", "abcdefgh");
+    var out_file = try tmp_dir.dir().createFile(io, "output.bin", .{});
     defer out_file.close(io);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2830,7 +2826,7 @@ test "runDd conv=noerror completion does not panic after a recovered read error"
     tracker.delay_ns = 1;
     common.progress.test_now_ns = tracker.start_ns;
 
-    var input_file = try tmp_dir.dir.openFile(io, "input.bin", .{});
+    var input_file = try tmp_dir.dir().openFile(io, "input.bin", .{});
     defer input_file.close(io);
     const plan = DdPlan{
         .input_file = input_file,
@@ -2866,9 +2862,9 @@ test "runDd noerror+sync synthesized write updates progress before finish" {
     defer common.progress.test_now_ns = null;
 
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    var out_file = try tmp_dir.dir.createFile(io, "output.bin", .{});
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    var out_file = try tmp_dir.dir().createFile(io, "output.bin", .{});
     defer out_file.close(io);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
