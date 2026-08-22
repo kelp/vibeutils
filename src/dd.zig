@@ -1682,13 +1682,7 @@ fn runDd_advanceAfterReadError(
     // media), so continue; only the large skip cap bounds this path.
     if (ctx.io.vtable.fileSeekBy(ctx.io.userdata, input_file, @intCast(ibs))) |_| {
         if (read_errors_stalled.* >= dd_read_error_skip_max) {
-            common.printErrorWithProgram(
-                ctx.allocator,
-                ctx.stderr,
-                "dd",
-                "too many consecutive read errors while skipping; aborting",
-                .{},
-            );
+            ddNote(ctx, "too many consecutive read errors while skipping; aborting", .{});
             printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
             return @intFromEnum(common.ExitCode.general_error);
         }
@@ -1698,13 +1692,7 @@ fn runDd_advanceAfterReadError(
         // advanced, so this is a genuine zero-progress stall. Abort at the
         // small bound rather than spinning forever.
         if (read_errors_stalled.* >= dd_read_error_stall_max) {
-            common.printErrorWithProgram(
-                ctx.allocator,
-                ctx.stderr,
-                "dd",
-                "too many consecutive read errors without progress; aborting",
-                .{},
-            );
+            ddNote(ctx, "too many consecutive read errors without progress; aborting", .{});
             printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
             return @intFromEnum(common.ExitCode.general_error);
         }

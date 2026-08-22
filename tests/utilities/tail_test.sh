@@ -115,6 +115,30 @@ test_tail() {
     
     # Empty stdin
     test_command_output "tail empty stdin" "" bash -c "echo -n '' | '$binary'"
+
+    echo -e "${CYAN}Testing stdin follow mode...${NC}"
+
+    # POSIX: with -f, tail shall not terminate at end of input. GNU
+    # streams the dump then keeps following stdin until killed; before
+    # the fix we exited immediately after the dump.
+    local follow_rc=0
+    local follow_out
+    follow_out=$(printf 'f1\nf2\nf3\n' | run_with_limit 0.8 "$binary" -f) || follow_rc=$?
+    if [[ "$follow_out" == $'f1\nf2\nf3' && "$follow_rc" -eq 124 ]]; then
+        print_test_result "tail -f with no operand follows stdin" "PASS"
+    else
+        print_test_result "tail -f with no operand follows stdin" "FAIL" \
+            "out='$follow_out' rc=$follow_rc (want data + 124)"
+    fi
+
+    follow_rc=0
+    follow_out=$(printf 'd1\nd2\n' | run_with_limit 0.8 "$binary" -f -) || follow_rc=$?
+    if [[ "$follow_out" == $'d1\nd2' && "$follow_rc" -eq 124 ]]; then
+        print_test_result "tail -f - follows stdin via dash operand" "PASS"
+    else
+        print_test_result "tail -f - follows stdin via dash operand" "FAIL" \
+            "out='$follow_out' rc=$follow_rc (want data + 124)"
+    fi
     
     echo -e "${CYAN}Testing zero-terminated flag...${NC}"
     

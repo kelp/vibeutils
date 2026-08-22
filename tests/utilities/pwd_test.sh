@@ -147,6 +147,25 @@ test_pwd() {
             "expected '$lg_physical_expected', got '$lg_relative'"
     fi
 
+    # POSIX: when both -L and -P are given, the last one applies.
+    local lg_p_l
+    lg_p_l=$(cd "$lg_link" && "$binary" -P -L 2>/dev/null)
+    if [[ "$lg_p_l" == "$lg_link" ]]; then
+        print_test_result "pwd -P -L applies last flag (logical)" "PASS"
+    else
+        print_test_result "pwd -P -L applies last flag (logical)" "FAIL" \
+            "expected '$lg_link', got '$lg_p_l'"
+    fi
+
+    local lg_l_p
+    lg_l_p=$(cd "$lg_link" && "$binary" -L -P 2>/dev/null)
+    if [[ "$lg_l_p" == "$lg_physical_expected" ]]; then
+        print_test_result "pwd -L -P applies last flag (physical)" "PASS"
+    else
+        print_test_result "pwd -L -P applies last flag (physical)" "FAIL" \
+            "expected '$lg_physical_expected', got '$lg_l_p'"
+    fi
+
     rm -f "$lg_link"
     rm -rf "$lg_real"
 

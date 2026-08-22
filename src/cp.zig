@@ -752,7 +752,9 @@ fn copySingleFile_maybePrintOverwriteHint(
     if (options.interactive) return;
     if (options.force) return;
     if (hinted_overwrite.*) return;
-    if (std.c.isatty(std.Io.File.stderr().handle) == 0) return;
+    // Same seam as the other hint sites: testable overlay, honors the
+    // NO_COLOR-adjacent env policy, and stays silent on piped stderr.
+    if (!common.env.stderrHintsEnabled()) return;
 
     common.printHintWithProgram(
         allocator,
@@ -5643,9 +5645,13 @@ test "cp existing read-only destination hint follows stderr hint overlay" {
         common.null_writer,
         &stderr_hints.writer,
     );
+    // With the hint overlay forcing tty mode, the one-time overwrite
+    // hint fires too (it was dead here only when tests ran under a
+    // piped stderr); expect both diagnostics in emission order.
     const expected_hints = try std.fmt.allocPrint(
         testing.allocator,
-        "cp: cannot open '{s}' for writing: Permission denied" ++
+        "cp: hint: use -i for interactive prompts before overwriting\n" ++
+            "cp: cannot open '{s}' for writing: Permission denied" ++
             " (file is not writable)\n",
         .{dest_path},
     );

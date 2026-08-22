@@ -75,17 +75,23 @@ pub fn runPwd(
     };
     defer allocator.free(parsed_args.positionals);
 
-    if (parsed_args.help) {
+    // POSIX: "If both -L and -P are specified, the last one shall
+    // apply." The shared parser records presence, not order, so recover
+    // order with a pre-scan over the same argv.
+    var opts = parsed_args;
+    applyLastLogicalPhysical(&opts.logical, &opts.physical, args);
+
+    if (opts.help) {
         try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
-    if (parsed_args.version) {
+    if (opts.version) {
         try stdout_writer.print("pwd ({s}) {s}\n", .{ common.name, common.version });
         return @intFromEnum(common.ExitCode.success);
     }
 
-    const cwd = getWorkingDirectory(allocator, io, parsed_args) catch |err| {
+    const cwd = getWorkingDirectory(allocator, io, opts) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -172,6 +178,40 @@ pub fn getWorkingDirectory(allocator: std.mem.Allocator, io: std.Io, args: PwdAr
 
     // Physical mode (default): resolve all symlinks
     return getCwdAlloc(allocator, io);
+}
+
+/// Apply POSIX last-flag-wins ordering for -L/-P over the raw argv.
+/// Stops at "--"; short clusters apply left to right; long forms match
+/// exactly. Unknown flags are left for the parser to have already
+/// rejected before this runs.
+fn applyLastLogicalPhysical(logical: *bool, physical: *bool, argv: []const []const u8) void {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return;
+        if (!std.mem.startsWith(u8, arg, "-") or std.mem.eql(u8, arg, "-")) continue;
+        if (std.mem.startsWith(u8, arg, "--")) {
+            if (std.mem.eql(u8, arg, "--logical")) {
+                logical.* = true;
+                physical.* = false;
+            } else if (std.mem.eql(u8, arg, "--physical")) {
+                logical.* = false;
+                physical.* = true;
+            }
+            continue;
+        }
+        for (arg[1..]) |c| {
+            switch (c) {
+                'L' => {
+                    logical.* = true;
+                    physical.* = false;
+                },
+                'P' => {
+                    logical.* = false;
+                    physical.* = true;
+                },
+                else => {},
+            }
+        }
+    }
 }
 
 /// Validate PWD environment variable refers to current directory
@@ -299,6 +339,38 @@ test "isValidPwd security validation" {
 
     // Invalid: absolute path that doesn't exist
     try testing.expect(!isValidPwd(io, "/nonexistent/directory", current_dir));
+}
+
+test "applyLastLogicalPhysical honors POSIX last-flag-wins" {
+    var logical: bool = false;
+    var physical: bool = false;
+
+    applyLastLogicalPhysical(&logical, &physical, &.{"-L"});
+    try testing.expect(logical and !physical);
+
+    applyLastLogicalPhysical(&logical, &physical, &.{ "-P", "-L" });
+    try testing.expect(logical and !physical);
+
+    applyLastLogicalPhysical(&logical, &physical, &.{ "-L", "-P" });
+    try testing.expect(!logical and physical);
+
+    // Clusters apply left to right.
+    applyLastLogicalPhysical(&logical, &physical, &.{"-PL"});
+    try testing.expect(logical and !physical);
+
+    // Long forms.
+    applyLastLogicalPhysical(&logical, &physical, &.{"--physical"});
+    try testing.expect(!logical and physical);
+
+    // "--" ends option scanning.
+    applyLastLogicalPhysical(&logical, &physical, &.{ "--", "-L" });
+    try testing.expect(!logical and physical);
+
+    // Operands and unknown shorts are inert here.
+    logical = false;
+    physical = false;
+    applyLastLogicalPhysical(&logical, &physical, &.{ "dir", "-x", "-L", "file" });
+    try testing.expect(logical and !physical);
 }
 
 test "PwdArgs defaults" {

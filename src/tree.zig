@@ -785,21 +785,26 @@ fn printTree(
     std.debug.assert(@intFromPtr(writer) != 0);
     try writeEntry(root, display, style, writer);
     try writer.writeByte('\n');
-    var frames: [1024]PrintFrame = undefined;
+    var frames: [print_stack_max]PrintFrame = undefined;
     frames[0] = .{ .node = root, .next_child = 0, .is_last = true };
     var sp: u16 = 1;
     try printDescendants(&frames, &sp, display, style, writer);
 }
 
+/// One print frame per walker depth level. The walker caps recursion at
+/// its own max_depth (1024); if either constant changes, change both or
+/// the Debug assert below becomes a ReleaseFast overflow.
+const print_stack_max: u16 = 1024;
+
 fn printDescendants(
-    frames: *[1024]PrintFrame,
+    frames: *[print_stack_max]PrintFrame,
     sp: *u16,
     display: common.display_config.DisplayConfig,
     style: *TreeStyle,
     writer: *std.Io.Writer,
 ) !void {
     std.debug.assert(sp.* >= 1);
-    std.debug.assert(sp.* <= 1024);
+    std.debug.assert(sp.* <= print_stack_max);
     var n: u64 = 0;
     while (n < print_steps_max and sp.* > 0) : (n += 1) {
         const frame = &frames[sp.* - 1];
@@ -815,7 +820,7 @@ fn printDescendants(
         try writeEntry(child, display, style, writer);
         try writer.writeByte('\n');
         if (child.children.items.len > 0) {
-            std.debug.assert(sp.* < 1024);
+            std.debug.assert(sp.* < print_stack_max);
             frames[sp.*] = .{ .node = child, .next_child = 0, .is_last = is_last };
             sp.* += 1;
         }
