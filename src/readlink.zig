@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -315,19 +316,19 @@ pub fn main(init: std.process.Init) noreturn {
 
 test "readlink basic symlink" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a target file and a symlink
-    const target = try tmp_dir.dir.createFile(io, "target.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "target.txt", .{});
     try target.writeStreamingAll(io, "content");
     target.close(io);
-    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    try tmp_dir.dir().symLink(io, "target.txt", "link.txt", .{});
 
     // Get absolute path to the symlink
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -353,15 +354,15 @@ test "readlink basic symlink" {
 
 test "readlink not a symlink" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(io, "regular.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "regular.txt", .{});
     target.close(io);
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -447,16 +448,16 @@ test "readlink quiet suppresses errors" {
 
 test "readlink canonicalize (-f)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(io, "real_file.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "real_file.txt", .{});
     target.close(io);
-    try tmp_dir.dir.symLink(io, "real_file.txt", "link.txt", .{});
+    try tmp_dir.dir().symLink(io, "real_file.txt", "link.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -488,15 +489,15 @@ test "readlink canonicalize (-f)" {
 
 test "readlink canonicalize regular file (-f)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(io, "regular.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "regular.txt", .{});
     target.close(io);
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -522,15 +523,15 @@ test "readlink canonicalize regular file (-f)" {
 
 test "readlink canonicalize-existing (-e)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(io, "exists.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "exists.txt", .{});
     target.close(io);
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -576,12 +577,12 @@ test "readlink canonicalize nonexistent succeeds with -f when parent exists (GNU
 
 test "readlink canonicalize-missing (-m) with nonexistent path" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -618,19 +619,14 @@ test "readlink canonicalize-missing (-m) with nonexistent path" {
 // is the "other caller of canonicalizeMissing" the issue calls out.
 test "readlink -m relative path with missing tail resolves via cwd (issue #51)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/child\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -653,16 +649,16 @@ test "readlink -m relative path with missing tail resolves via cwd (issue #51)" 
 
 test "readlink no-newline (-n)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(io, "target.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "target.txt", .{});
     target.close(io);
-    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    try tmp_dir.dir().symLink(io, "target.txt", "link.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -687,16 +683,16 @@ test "readlink no-newline (-n)" {
 
 test "readlink zero delimiter (-z)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const target = try tmp_dir.dir.createFile(io, "target.txt", .{});
+    const target = try tmp_dir.dir().createFile(io, "target.txt", .{});
     target.close(io);
-    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    try tmp_dir.dir().symLink(io, "target.txt", "link.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -723,19 +719,19 @@ test "readlink zero delimiter (-z)" {
 
 test "readlink multiple files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const t1 = try tmp_dir.dir.createFile(io, "t1.txt", .{});
+    const t1 = try tmp_dir.dir().createFile(io, "t1.txt", .{});
     t1.close(io);
-    const t2 = try tmp_dir.dir.createFile(io, "t2.txt", .{});
+    const t2 = try tmp_dir.dir().createFile(io, "t2.txt", .{});
     t2.close(io);
-    try tmp_dir.dir.symLink(io, "t1.txt", "l1.txt", .{});
-    try tmp_dir.dir.symLink(io, "t2.txt", "l2.txt", .{});
+    try tmp_dir.dir().symLink(io, "t1.txt", "l1.txt", .{});
+    try tmp_dir.dir().symLink(io, "t2.txt", "l2.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -761,16 +757,16 @@ test "readlink multiple files" {
 
 test "readlink mixed success and failure" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const t1 = try tmp_dir.dir.createFile(io, "t1.txt", .{});
+    const t1 = try tmp_dir.dir().createFile(io, "t1.txt", .{});
     t1.close(io);
-    try tmp_dir.dir.symLink(io, "t1.txt", "l1.txt", .{});
+    try tmp_dir.dir().symLink(io, "t1.txt", "l1.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -877,15 +873,15 @@ test "readlink unknown flag" {
 
 test "readlink dangling symlink" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a symlink to a nonexistent target
-    try tmp_dir.dir.symLink(io, "nonexistent_target", "dangling.txt", .{});
+    try tmp_dir.dir().symLink(io, "nonexistent_target", "dangling.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -912,14 +908,14 @@ test "readlink dangling symlink with -f succeeds (GNU compat)" {
     // GNU -f: last component may be missing. A dangling symlink whose
     // target's parent directory exists should resolve successfully.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.symLink(io, "nonexistent_target", "dangling.txt", .{});
+    try tmp_dir.dir().symLink(io, "nonexistent_target", "dangling.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -950,14 +946,14 @@ test "readlink dangling symlink with -f succeeds (GNU compat)" {
 
 test "readlink canonicalize-missing with dangling symlink (-m)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.symLink(io, "nonexistent_target", "dangling.txt", .{});
+    try tmp_dir.dir().symLink(io, "nonexistent_target", "dangling.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -983,12 +979,12 @@ test "readlink canonicalize-missing with dangling symlink (-m)" {
 test "readlink -m dotdot past root returns root" {
     // Use a real tmp directory so the prefix resolves, then traverse past root.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1022,12 +1018,12 @@ test "readlink -m dotdot past root returns root" {
 
 test "readlink -m multi-level dotdot past root returns root" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1082,12 +1078,12 @@ test "readlink -m single component dotdot returns root" {
 
 test "readlink -f nonexistent last component exits 0 (GNU compat)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1121,14 +1117,14 @@ test "readlink -f nonexistent last component exits 0 (GNU compat)" {
 
 test "readlink -f dangling symlink exits 0 (GNU compat)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.symLink(io, "nonexistent_target", "dangling.txt", .{});
+    try tmp_dir.dir().symLink(io, "nonexistent_target", "dangling.txt", .{});
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1158,12 +1154,12 @@ test "readlink -f dangling symlink exits 0 (GNU compat)" {
 
 test "readlink -f dangling symlink with absolute target exits 0 (GNU compat)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1174,7 +1170,7 @@ test "readlink -f dangling symlink with absolute target exits 0 (GNU compat)" {
         .{dir_path},
     );
     defer testing.allocator.free(abs_target);
-    try tmp_dir.dir.symLink(io, abs_target, "dangling_abs.txt", .{});
+    try tmp_dir.dir().symLink(io, abs_target, "dangling_abs.txt", .{});
 
     const link_path = try std.fmt.allocPrint(
         testing.allocator,
@@ -1223,12 +1219,12 @@ test "readlink -f intermediate missing should fail" {
 
 test "readlink -e nonexistent last component should fail" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1256,12 +1252,12 @@ test "readlink -e nonexistent last component should fail" {
 
 test "readlink -f vs -e diverge on missing last component" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1300,12 +1296,12 @@ test "readlink -f vs -e diverge on missing last component" {
 
 test "readlink -f resolves canonical path when parent exists and last component missing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);

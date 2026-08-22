@@ -1641,7 +1641,7 @@ test "id -P puts name, uid and gid in their passwd-entry columns" {
     }
 }
 
-test "id -P fills class, change and expire from the macOS passwd entry" {
+test "id -P fills class, change and expire from the macOS passwd entry (#155)" {
     // macOS is the only platform whose passwd entry has these three columns,
     // and their order is exactly what the hand-rolled glibc struct got wrong.
     // No Linux run can observe this; CI's macos-26 job is what exercises it.
@@ -1675,15 +1675,65 @@ test "id -P fills class, change and expire from the macOS passwd entry" {
     }
     try testing.expectEqual(@as(u32, 10), count);
 
-    var change_buf: [32]u8 = undefined;
-    var expire_buf: [32]u8 = undefined;
     try testing.expectEqualStrings(class, fields[4]);
-    try testing.expectEqualStrings(try std.fmt.bufPrint(&change_buf, "{d}", .{change}), fields[5]);
-    try testing.expectEqualStrings(try std.fmt.bufPrint(&expire_buf, "{d}", .{expire}), fields[6]);
     // Negative space: change and expire are numbers, so a class/change
     // transposition is caught even when both timestamps are zero.
     _ = try std.fmt.parseInt(i64, fields[5], 10);
     _ = try std.fmt.parseInt(i64, fields[6], 10);
+
+    // Issue #155: a typical macOS account has change == expire == 0, so
+    // "0" == "0" cannot detect a change/expire transposition. Skip the
+    // order assertions rather than claiming coverage we do not have. A
+    // fixture with distinct timestamps, or a production formatter the
+    // test-writer must not add, would be stronger; the source-sniff test
+    // below is the Linux-RED stand-in.
+    if (change == expire) return error.SkipZigTest;
+
+    var change_buf: [32]u8 = undefined;
+    var expire_buf: [32]u8 = undefined;
+    const change_str = try std.fmt.bufPrint(&change_buf, "{d}", .{change});
+    const expire_str = try std.fmt.bufPrint(&expire_buf, "{d}", .{expire});
+    try testing.expect(!std.mem.eql(u8, change_str, expire_str));
+    try testing.expectEqualStrings(change_str, fields[5]);
+    try testing.expectEqualStrings(expire_str, fields[6]);
+}
+
+/// Bytes of the Darwin `stdout_writer.print` call in `runId_printPasswdEntry`.
+/// Isolated so a comment elsewhere cannot invert the #155 argument-order check.
+fn testMacosPasswdPrintCall(source: []const u8) []const u8 {
+    const fn_name = "fn runId_printPasswdEntry";
+    const fn_start = std.mem.indexOf(u8, source, fn_name) orelse return &.{};
+    const next_fn = std.mem.indexOfPos(u8, source, fn_start + fn_name.len, "\nfn ") orelse
+        source.len;
+    const fn_body = source[fn_start..next_fn];
+
+    const macos_mark = "os.tag == .macos";
+    const macos_at = std.mem.indexOf(u8, fn_body, macos_mark) orelse return &.{};
+    const macos_arm = fn_body[macos_at..];
+    const else_at = std.mem.indexOf(u8, macos_arm, "} else {") orelse macos_arm.len;
+    const macos_only = macos_arm[0..else_at];
+
+    const print_mark = "stdout_writer.print";
+    const print_at = std.mem.indexOf(u8, macos_only, print_mark) orelse return &.{};
+    const from_print = macos_only[print_at..];
+    const end_at = std.mem.indexOf(u8, from_print, "})") orelse from_print.len;
+    return from_print[0..end_at];
+}
+
+test "id -P macOS print lists passwd.change before passwd.expire (#155)" {
+    // Runtime -P cannot discriminate the two timestamps when both are 0,
+    // which is the typical Darwin account and every Linux skip. Sniffing
+    // the Darwin print argument list is the check that goes red on Linux
+    // if those two fields are swapped. Needles are the identifier
+    // expressions in the print tuple, not words in a nearby comment.
+    const print_call = testMacosPasswdPrintCall(@embedFile("id.zig"));
+    try testing.expect(print_call.len > 0);
+    try testing.expect(std.mem.indexOf(u8, print_call, "passwd.change") != null);
+    try testing.expect(std.mem.indexOf(u8, print_call, "passwd.expire") != null);
+    const change_pos = std.mem.indexOf(u8, print_call, "passwd.change").?;
+    const expire_pos = std.mem.indexOf(u8, print_call, "passwd.expire").?;
+    try testing.expect(change_pos < expire_pos);
+    try testing.expect(std.mem.indexOf(u8, print_call[0..change_pos], "passwd.expire") == null);
 }
 
 test "id -F prints the GECOS field of the current user" {
