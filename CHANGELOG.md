@@ -17,6 +17,12 @@
   green.
 
 ### Added
+- **`tail -f` / `-F` now follow every file operand.** Appends to any
+  followed file appear in stdout, with GNU `\n==> file <==\n` headers
+  when output switches from one operand to another (suppressed by
+  `-q`). Duplicate operands are separate slots. A hard cap of 256 real
+  files applies before any dump I/O. `-F` retries missing or rotated
+  names without stalling the other files.
 - **`free` colors the used column and can draw a usage bar.**
   `--color=WHEN` (always/auto/never) wraps the Mem and Swap used
   fields green below 70%, yellow below 90%, and red otherwise.
@@ -147,6 +153,12 @@
   `-x` keeps its two-space additive padding (#113 follow-up).
 
 ### Fixed
+
+- **`tail -f` prints `cannot open` when a follow reopen fails after a
+  successful dump.** The slot is still omitted from the follow set, but
+  vanishing between dump and reopen no longer exits 1 with empty
+  stderr. `-F` already printed this diagnostic; dump-failed `-f` paths
+  stay silent because the dump already reported them.
 
 - **Concurrent integration runs no longer race `useradd`.** Two
   `scripts/run-integration.sh` processes creating the same
