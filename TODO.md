@@ -411,6 +411,15 @@ For each utility:
       behave as if -L had been specified". Correction to the original
       note: GNU coreutils 9.11 defaults to -P (non-conforming); BSD
       pwd and shell builtins conform.
+- [ ] Decide: uniform `-h`/`-V` short help/version flags vs GNU parity.
+      The shared argparse accepts `-h` (help) and `-V` (version) on
+      every utility; GNU defines those shorts only on some utilities,
+      and rejects them elsewhere (`gcat -h` exits 1). Found by the
+      differential fuzz sweep (scripts/diff-vs-gnu.sh, VU_FUZZ=1).
+      Removing them tree-wide would break our own `-h` tests and the
+      OpenBSD-style ergonomics goal, so it needs a design decision.
+      Related nuance: GNU acts on help mid-cluster (`cat -hx` helps
+      before seeing x); we still reject the cluster.
 - [ ] Fix: honor POSIX "the last one shall apply" when both -L and
       -P are given (`pwd -P -L` should print logically). `-P`
       currently wins regardless of order; the shared argparse gives

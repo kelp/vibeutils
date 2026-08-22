@@ -19,6 +19,19 @@
   green.
 
 ### Added
+
+- **`scripts/diff-vs-gnu.sh`: a GNU differential test harness.** Runs
+  each utility and its GNU twin over shared fixtures with pinned
+  locale, timezone, umask, seed, and a per-invocation watchdog, then
+  compares exit codes and stdout bytes (read-only cases), or exit
+  codes and full tree fingerprints — type, mode, size, checksum,
+  symlink targets — across twin sandboxes (mutating cases). Deliberate
+  divergences from GNU are registered in
+  `scripts/diff-vs-gnu-exceptions.txt` with reasons, so new
+  regressions stand out from known design decisions. `just diff-gnu
+  [utility]` runs it; `VU_FUZZ=1` adds the seeded flag sweep;
+  `just test-diff-vs-gnu` contract-tests the harness itself against
+  sabotaged binaries.
 - **`cp` and `mv` show an auto-progress line for slow copies.** When
   stderr is a TTY and a single regular-file copy runs longer than 2
   seconds, a `cp: copying NAME  DONE/TOTAL  PCT%` status line appears
@@ -211,6 +224,12 @@
 
 ### Fixed
 
+- **Arg parsing acts on the first `--help`/`--version` flag, matching
+  GNU option order.** Utilities now stop scanning argv at the first
+  help or version flag instead of validating the whole line first, so
+  `cat --help --bogus` prints help and exits 0 like GNU rather than
+  failing on the later unknown flag. An unknown flag placed *before*
+  the help flag still errors, also matching GNU.
 - **`pwd` honors `$PWD` by default (POSIX `-L` default).** With neither
   `-L` nor `-P`, pwd now prints `$PWD` when it is an absolute pathname
   of the current directory, falling back to physical resolution when it

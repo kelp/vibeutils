@@ -351,6 +351,15 @@ test-posix-io:
 audit-check:
     @./scripts/audit-check.sh
 
+# Differential parity suite vs GNU coreutils. No utility names = all
+# covered utilities; VU_FUZZ=1 adds the seeded flag sweep.
+diff-gnu util="":
+    @./scripts/diff-vs-gnu.sh {{util}}
+
+# Contract tests for the differential harness itself.
+test-diff-vs-gnu:
+    @bash tests/tools/diff_vs_gnu_test.sh
+
 # Lint CHANGELOG structure: ## Unreleased present, released sections
 # byte-identical to their git tags, no conflict markers.
 lint-changelog:
