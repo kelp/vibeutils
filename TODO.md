@@ -1405,7 +1405,7 @@ passes.
 
 ## Bugs
 
-- [ ] **`ls` does not switch to single-column output when
+- [x] **`ls` does not switch to single-column output when
   stdout is a pipe** (POSIX violation, found 2026-04-25,
   tracked as #113).
   GNU/BSD `ls` auto-detect a non-tty stdout and emit one
