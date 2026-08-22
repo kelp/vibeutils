@@ -500,18 +500,40 @@ test "user_group: std.c.getgrnam is mistyped upstream, so a local decl stays" {
     }
 }
 
+/// Linux `std.c.passwd` has no `pw_fields`, so a Linux host cannot
+/// `@offsetOf` that member. FreeBSD (and DragonFly) append it after expire.
+fn passwdHasFieldsMember() bool {
+    const has_fields = @hasField(std.c.passwd, "fields");
+    const size = @sizeOf(std.c.passwd);
+    // Positive: FreeBSD is the 80-byte layout. Negative: everyone else we
+    // pin is 72 or 48 and therefore has no trailing fields member.
+    if (has_fields) {
+        std.debug.assert(size == 80);
+    } else {
+        std.debug.assert(size == 48 or size == 72);
+    }
+    return has_fields;
+}
+
 test "user_group: platform passwd and group ABI offsets are pinned" {
     // A `comptime` block rather than runtime expectations, because comptime
-    // asserts are evaluated by `zig test --test-no-exec -target aarch64-macos`
-    // even from a Linux-only container. That is what lets this guard the macOS
-    // field order that the hand-rolled glibc copies got wrong.
+    // asserts are evaluated by `zig test --test-no-exec -target` even from a
+    // Linux-only container. Each OS we ship on is a named prong: a catch-all
+    // `else => size == 48` treated FreeBSD as glibc and failed CI.
     comptime {
         std.debug.assert(@offsetOf(std.c.passwd, "name") == 0);
         std.debug.assert(@offsetOf(std.c.passwd, "passwd") == 8);
         std.debug.assert(@offsetOf(std.c.passwd, "uid") == 16);
         std.debug.assert(@offsetOf(std.c.passwd, "gid") == 20);
         switch (@import("builtin").os.tag) {
-            .macos => {
+            .linux => {
+                std.debug.assert(@sizeOf(std.c.passwd) == 48);
+                std.debug.assert(@offsetOf(std.c.passwd, "gecos") == 24);
+                std.debug.assert(@offsetOf(std.c.passwd, "dir") == 32);
+                std.debug.assert(@offsetOf(std.c.passwd, "shell") == 40);
+                std.debug.assert(!passwdHasFieldsMember());
+            },
+            .macos, .openbsd, .netbsd => {
                 std.debug.assert(@sizeOf(std.c.passwd) == 72);
                 std.debug.assert(@offsetOf(std.c.passwd, "change") == 24);
                 std.debug.assert(@offsetOf(std.c.passwd, "class") == 32);
@@ -519,16 +541,27 @@ test "user_group: platform passwd and group ABI offsets are pinned" {
                 std.debug.assert(@offsetOf(std.c.passwd, "dir") == 48);
                 std.debug.assert(@offsetOf(std.c.passwd, "shell") == 56);
                 std.debug.assert(@offsetOf(std.c.passwd, "expire") == 64);
+                std.debug.assert(!passwdHasFieldsMember());
+            },
+            .freebsd => {
+                std.debug.assert(@sizeOf(std.c.passwd) == 80);
+                std.debug.assert(@offsetOf(std.c.passwd, "change") == 24);
+                std.debug.assert(@offsetOf(std.c.passwd, "class") == 32);
+                std.debug.assert(@offsetOf(std.c.passwd, "gecos") == 40);
+                std.debug.assert(@offsetOf(std.c.passwd, "dir") == 48);
+                std.debug.assert(@offsetOf(std.c.passwd, "shell") == 56);
+                std.debug.assert(@offsetOf(std.c.passwd, "expire") == 64);
+                std.debug.assert(passwdHasFieldsMember());
+                std.debug.assert(@offsetOf(std.c.passwd, "fields") == 72);
             },
             else => {
-                std.debug.assert(@sizeOf(std.c.passwd) == 48);
-                std.debug.assert(@offsetOf(std.c.passwd, "gecos") == 24);
-                std.debug.assert(@offsetOf(std.c.passwd, "dir") == 32);
-                std.debug.assert(@offsetOf(std.c.passwd, "shell") == 40);
+                // Not a glibc-sized fallback. If `.linux` is deleted, this
+                // prong is taken on Linux and the assert fires at comptime.
+                std.debug.assert(@import("builtin").os.tag != .linux);
             },
         }
-        // struct group is identical on both platforms; pinning it keeps a
-        // future "harmless" reshuffle from going unnoticed.
+        // struct group is identical on Linux, macOS, and the BSDs; pinning
+        // it keeps a future "harmless" reshuffle from going unnoticed.
         std.debug.assert(@sizeOf(std.c.group) == 32);
         std.debug.assert(@offsetOf(std.c.group, "gid") == 16);
         std.debug.assert(@offsetOf(std.c.group, "mem") == 24);
