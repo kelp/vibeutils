@@ -2660,6 +2660,112 @@ test "runDd status=progress finished line includes the flushed short block" {
     try testing.expect(std.mem.find(u8, finished, "512 bytes") == null);
 }
 
+/// Drain `want` bytes from a pipe read end, then close it so the next
+/// obs-sized write fails after earlier flushes already succeeded.
+fn consumePipeBytesThenClose(io: std.Io, file: std.Io.File, want: usize) void {
+    std.debug.assert(want > 0);
+    var buf: [4096]u8 = undefined;
+    var got: usize = 0;
+    var reads: u32 = 0;
+    const read_max: u32 = @intCast(want);
+    while (got < want and reads < read_max) : (reads += 1) {
+        const n = std.posix.read(file.handle, buf[0..@min(buf.len, want - got)]) catch break;
+        if (n == 0) break;
+        got += n;
+    }
+    std.debug.assert(got <= want);
+    std.debug.assert(reads <= read_max);
+    file.close(io);
+}
+
+/// Live status=progress text after the last `\r` and before records /
+/// the write diagnostic. Null when the overlay never painted.
+fn progressLiveLineBeforeStats(output: []const u8) ?[]const u8 {
+    std.debug.assert(output.len > 0);
+    var cut: ?usize = null;
+    for ([_][]const u8{ "records in", "records out", "write error" }) |marker| {
+        const idx = std.mem.find(u8, output, marker) orelse continue;
+        if (cut == null or idx < cut.?) cut = idx;
+    }
+    const prefix = output[0 .. cut orelse return null];
+    const last_cr = std.mem.lastIndexOfScalar(u8, prefix, '\r') orelse return null;
+    std.debug.assert(last_cr < prefix.len);
+    return prefix[last_cr..];
+}
+
+test "runDd status=progress mid-helper write success leaves progress stale" {
+    // writeBufferedBlock can flush one obs (bytes_copied advances) and
+    // then fail on the next flush in the same call. The copy loop only
+    // updates the tracker after the helper returns success, so finish
+    // still paints the prior iteration's total.
+    common.progress.test_enabled = true;
+    defer common.progress.test_enabled = null;
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+
+    const io = testing.io;
+    const obs: usize = 4096;
+    const ibs: usize = 6144;
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+
+    // Two ibs reads: first flushes one obs and leaves a remainder so
+    // the second call fills two obs (one success, then the failing write).
+    var payload: [2 * ibs]u8 = @splat('A');
+    try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.bin", &payload);
+
+    const pipe_fds = try std.Io.Threaded.pipe2(.{});
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.fcntl(pipe_fds[0], std.os.linux.F.SETPIPE_SZ, 2 * obs);
+    }
+    const pipe_read = std.Io.File{ .handle = pipe_fds[0], .flags = .{ .nonblocking = false } };
+    const pipe_write = std.Io.File{ .handle = pipe_fds[1], .flags = .{ .nonblocking = false } };
+    const reader = try std.Thread.spawn(
+        .{},
+        consumePipeBytesThenClose,
+        .{ io, pipe_read, 2 * obs },
+    );
+    defer {
+        pipe_write.close(io);
+        reader.join();
+    }
+
+    const input_path = try tmp_dir.getPath("input.bin");
+    defer testing.allocator.free(input_path);
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(
+        testing.allocator,
+        "of=/dev/fd/{d}",
+        .{pipe_write.handle},
+    );
+    defer testing.allocator.free(of_arg);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    // ibs=/obs= without bs= so simple_copy is false (writeBufferedBlock).
+    const args = [_][]const u8{ if_arg, of_arg, "ibs=6144", "obs=4096", "status=progress" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@intFromEnum(common.ExitCode.general_error), exit_code);
+
+    const output = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, "write error") != null);
+    try testing.expect(std.mem.find(u8, output, "8192 bytes") != null);
+
+    const finished = progressLiveLineBeforeStats(output) orelse
+        return error.TestUnexpectedResult;
+    // printStats has the post-flush 2*obs total; finish must not still
+    // show the first-iteration obs count as the transfer total.
+    try testing.expect(std.mem.find(u8, finished, "4096 bytes") == null);
+    try testing.expect(std.mem.find(u8, finished, "8192 bytes") != null);
+}
+
 test "runDd write errors begin after a shown progress line" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
