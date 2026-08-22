@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const types = @import("types.zig");
 const display = @import("display.zig");
 const entry_collector = @import("entry_collector.zig");
@@ -202,7 +203,7 @@ pub const TEST_TERMINAL_WIDTH = 40;
 /// Complete test environment for ls integration tests.
 /// Manages temporary directory, buffers, and provides convenient helpers.
 pub const LsTestEnv = struct {
-    tmp_dir: std.testing.TmpDir,
+    tmp_dir: TestDir,
     test_dir: std.Io.Dir,
     stdout_aw: std.Io.Writer.Allocating,
     stderr_aw: std.Io.Writer.Allocating,
@@ -210,10 +211,10 @@ pub const LsTestEnv = struct {
 
     /// Initialize test environment with fresh temporary directory and buffers.
     pub fn init(allocator: std.mem.Allocator) !LsTestEnv {
-        var tmp_dir = std.testing.tmpDir(.{});
-        errdefer tmp_dir.cleanup();
+        var tmp_dir = TestDir.init(allocator);
+        errdefer tmp_dir.deinit();
 
-        var test_dir = try tmp_dir.dir.openDir(std.testing.io, ".", .{ .iterate = true });
+        var test_dir = try tmp_dir.dir().openDir(std.testing.io, ".", .{ .iterate = true });
         errdefer test_dir.close(std.testing.io);
 
         return LsTestEnv{
@@ -230,7 +231,7 @@ pub const LsTestEnv = struct {
         self.stdout_aw.deinit();
         self.stderr_aw.deinit();
         self.test_dir.close(std.testing.io);
-        self.tmp_dir.cleanup();
+        self.tmp_dir.deinit();
     }
 
     /// Clear output buffers for fresh output (use before a second runLs call in the same test).
@@ -241,7 +242,7 @@ pub const LsTestEnv = struct {
 
     /// Create a regular file with specified name and content.
     pub fn createFile(self: *LsTestEnv, name: []const u8, content: []const u8) !void {
-        const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
+        const file = try self.tmp_dir.dir().createFile(std.testing.io, name, .{});
         defer file.close(std.testing.io);
         try file.writeStreamingAll(std.testing.io, content);
     }
@@ -253,7 +254,7 @@ pub const LsTestEnv = struct {
         size: usize, // tiger:allow:usize-arch byte size is usize
         fill_char: u8,
     ) !void {
-        const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
+        const file = try self.tmp_dir.dir().createFile(std.testing.io, name, .{});
         defer file.close(std.testing.io);
 
         const data = try self.allocator.alloc(u8, size);
@@ -264,31 +265,31 @@ pub const LsTestEnv = struct {
 
     /// Create an executable file with specified permissions.
     pub fn createExecutableFile(self: *LsTestEnv, name: []const u8) !void {
-        const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
+        const file = try self.tmp_dir.dir().createFile(std.testing.io, name, .{});
         file.close(std.testing.io);
         // Set executable bit via fchmodat relative to the tmp dir
         const name_z = try std.testing.allocator.dupeZ(u8, name);
         defer std.testing.allocator.free(name_z);
-        _ = std.c.fchmodat(self.tmp_dir.dir.handle, name_z, 0o755, 0);
+        _ = std.c.fchmodat(self.tmp_dir.dir().handle, name_z, 0o755, 0);
     }
 
     /// Create a directory with specified name.
     pub fn createDir(self: *LsTestEnv, name: []const u8) !void {
-        try self.tmp_dir.dir.createDir(std.testing.io, name, .default_dir);
+        try self.tmp_dir.dir().createDir(std.testing.io, name, .default_dir);
     }
 
     /// Create a symbolic link pointing to target.
     pub fn createSymlink(self: *LsTestEnv, target: []const u8, link_name: []const u8) !void {
-        try self.tmp_dir.dir.symLink(std.testing.io, target, link_name, .{});
+        try self.tmp_dir.dir().symLink(std.testing.io, target, link_name, .{});
     }
 
     /// Create a directory and return an opened handle for further operations.
     pub fn createDirAndOpen(self: *LsTestEnv, name: []const u8) !std.Io.Dir {
-        self.tmp_dir.dir.createDir(std.testing.io, name, .default_dir) catch |err| switch (err) {
+        self.tmp_dir.dir().createDir(std.testing.io, name, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {}, // Directory already exists, that's fine
             else => return err,
         };
-        return try self.tmp_dir.dir.openDir(std.testing.io, name, .{});
+        return try self.tmp_dir.dir().openDir(std.testing.io, name, .{});
     }
 
     /// Run ls with specified options and capture output to buffers.

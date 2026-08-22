@@ -13,6 +13,8 @@
 .Op Fl s Ar N
 .Op Fl c Ar N
 .Op Fl Fl si
+.Op Fl Fl color Ns = Ns Ar WHEN
+.Op Fl Fl bar Ns = Ns Ar WHEN
 .Op Fl V
 .Sh DESCRIPTION
 The
@@ -51,6 +53,30 @@ into separate
 and
 .Cm cache
 columns.
+.It Fl Fl color Ns = Ns Ar WHEN
+Color the used column by usage percent: green below 70, yellow
+below 90, red otherwise.
+.Ar WHEN
+is
+.Cm always ,
+.Cm auto
+(the default), or
+.Cm never .
+.Ev NO_COLOR
+and
+.Ev TERM Ns = Ns Cm dumb
+disable color even with
+.Cm always .
+.It Fl Fl bar Ns = Ns Ar WHEN
+Draw a 10-cell usage bar after each Mem and Swap row.
+.Ar WHEN
+is
+.Cm always ,
+.Cm auto
+(the default), or
+.Cm never .
+.Cm auto
+follows TTY/icon detection.
 .It Fl s Ar N , Fl Fl seconds Ns = Ns Ar N
 Continuously display the result every
 .Ar N

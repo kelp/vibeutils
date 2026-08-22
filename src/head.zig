@@ -1,6 +1,7 @@
 //! head - output the first part of files
 
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const std = @import("std");
 const testing = std.testing;
 
@@ -578,19 +579,19 @@ const TEST_NEGATIVE_VALUE: []const u8 = "-5";
 
 test "head outputs first 10 lines by default" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with 15 lines
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
         "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n" ++
         "Line 11\nLine 12\nLine 13\nLine 14\nLine 15\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
@@ -610,16 +611,16 @@ test "head outputs first 10 lines by default" {
 
 test "head with -n 5 outputs first 5 lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "5", file_path };
@@ -640,20 +641,15 @@ test "head with -n 5 outputs first 5 lines" {
 
 test "head with -c 10 outputs first 10 bytes" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(
-        io,
-        tmp_dir.dir,
-        "test.txt",
-        "Hello, World! This is a test.\n",
-    );
+    try tmp_dir.createFile("test.txt", "Hello, World! This is a test.\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "10", file_path };
@@ -671,15 +667,15 @@ test "head with -c 10 outputs first 10 bytes" {
 
 test "head handles fewer lines than requested" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try tmp_dir.createFile("test.txt", "Line 1\nLine 2\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // Request 10 lines (default) but file only has 2
@@ -698,15 +694,15 @@ test "head handles fewer lines than requested" {
 
 test "head handles fewer bytes than requested" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Short");
+    try tmp_dir.createFile("test.txt", "Short", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // Request 1000 bytes but file only has 5
@@ -725,15 +721,15 @@ test "head handles fewer bytes than requested" {
 
 test "head handles empty input" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "");
+    try tmp_dir.createFile("test.txt", "", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
@@ -751,15 +747,15 @@ test "head handles empty input" {
 
 test "head with -n 0 outputs nothing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try tmp_dir.createFile("test.txt", "Line 1\nLine 2\nLine 3\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "0", file_path };
@@ -777,15 +773,15 @@ test "head with -n 0 outputs nothing" {
 
 test "head with -c 0 outputs nothing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Hello, World!\n");
+    try tmp_dir.createFile("test.txt", "Hello, World!\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "0", file_path };
@@ -803,8 +799,8 @@ test "head with -c 0 outputs nothing" {
 
 test "head handles lines longer than read buffer (regression: StreamTooLong)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Build a file whose first line is 9000 bytes long (> default 8192
     // read buffer). takeDelimiterInclusive returns StreamTooLong when a
@@ -818,12 +814,12 @@ test "head handles lines longer than read buffer (regression: StreamTooLong)" {
         break :blk buf;
     };
     defer testing.allocator.free(content);
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "long.txt", content);
+    try tmp_dir.createFile("long.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "long.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("long.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "1", file_path };
@@ -844,18 +840,18 @@ test "head handles lines longer than read buffer (regression: StreamTooLong)" {
 
 test "head processes lines efficiently" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with many lines, request only the first 3
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
         "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "3", file_path };
@@ -873,15 +869,15 @@ test "head processes lines efficiently" {
 
 test "head processes bytes efficiently" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "ABCDEFGHIJKLMNOP");
+    try tmp_dir.createFile("test.txt", "ABCDEFGHIJKLMNOP", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "5", file_path };
@@ -940,15 +936,15 @@ test "head version flag works" {
 
 test "head with line count larger than available lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Only one line\n");
+    try tmp_dir.createFile("test.txt", "Only one line\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // Request 100 lines but file only has 1
@@ -967,15 +963,15 @@ test "head with line count larger than available lines" {
 
 test "head byte count takes precedence over line count" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try tmp_dir.createFile("test.txt", "Line 1\nLine 2\nLine 3\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // Use -c (bytes) which should override default line count
@@ -994,18 +990,18 @@ test "head byte count takes precedence over line count" {
 
 test "head continues after file error and outputs remaining files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const content = "Line 1\nLine 2\nLine 3\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "valid.txt", content);
+    try tmp_dir.createFile("valid.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const valid_path = try tmp_dir.dir.realPathFileAlloc(io, "valid.txt", testing.allocator);
+    const valid_path = try tmp_dir.getPath("valid.txt");
     defer testing.allocator.free(valid_path);
 
     // First file is nonexistent, second is valid
@@ -1034,18 +1030,18 @@ test "head continues after file error and outputs remaining files" {
 
 test "head with multiple files shows headers" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "file1.txt", "Content A\n");
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "file2.txt", "Content B\n");
+    try tmp_dir.createFile("file1.txt", "Content A\n", null);
+    try tmp_dir.createFile("file2.txt", "Content B\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const path1 = try tmp_dir.dir.realPathFileAlloc(io, "file1.txt", testing.allocator);
+    const path1 = try tmp_dir.getPath("file1.txt");
     defer testing.allocator.free(path1);
-    const path2 = try tmp_dir.dir.realPathFileAlloc(io, "file2.txt", testing.allocator);
+    const path2 = try tmp_dir.getPath("file2.txt");
     defer testing.allocator.free(path2);
 
     const args = [_][]const u8{ path1, path2 };
@@ -1070,17 +1066,17 @@ test "head with multiple files shows headers" {
 
 test "head with -z uses NUL as line delimiter" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with NUL-separated "lines"
     const content = "Line 1\x00Line 2\x00Line 3\x00Line 4\x00Line 5\x00";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", "-n", "3", file_path };
@@ -1098,18 +1094,18 @@ test "head with -z uses NUL as line delimiter" {
 
 test "head with -z and default line count" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with 15 NUL-separated "lines"
     const content = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00" ++
         "L9\x00L10\x00L11\x00L12\x00L13\x00L14\x00L15\x00";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", file_path };
@@ -1129,17 +1125,17 @@ test "head with -z and default line count" {
 
 test "head with -z and fewer items than requested" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with 2 NUL-separated "lines"
     const content = "Line A\x00Line B\x00";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", "-n", "10", file_path };
@@ -1227,17 +1223,17 @@ test "head directory does not produce stack trace on stderr" {
 test "head directory continues processing remaining files" {
     const io = testing.io;
     // GNU head processes remaining files after a directory error
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "valid.txt", "hello\n");
+    try tmp_dir.createFile("valid.txt", "hello\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    const valid_path = try tmp_dir.dir.realPathFileAlloc(io, "valid.txt", testing.allocator);
+    const valid_path = try tmp_dir.getPath("valid.txt");
     defer testing.allocator.free(valid_path);
 
     const args = [_][]const u8{ "/tmp", valid_path };
@@ -1257,16 +1253,16 @@ test "head directory continues processing remaining files" {
 
 test "head with obsolete -NUM syntax" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-3", file_path };
@@ -1286,20 +1282,20 @@ test "head --silent is alias for --quiet" {
     const io = testing.io;
     // BUG: --silent is not recognized (exits 1). GNU coreutils accepts
     // --silent as a synonym for --quiet/-q to suppress file headers.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const content1 = "File A line 1\nFile A line 2\n";
     const content2 = "File B line 1\nFile B line 2\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "a.txt", content1);
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "b.txt", content2);
+    try tmp_dir.createFile("a.txt", content1, null);
+    try tmp_dir.createFile("b.txt", content2, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const path_a = try tmp_dir.dir.realPathFileAlloc(io, "a.txt", testing.allocator);
+    const path_a = try tmp_dir.getPath("a.txt");
     defer testing.allocator.free(path_a);
-    const path_b = try tmp_dir.dir.realPathFileAlloc(io, "b.txt", testing.allocator);
+    const path_b = try tmp_dir.getPath("b.txt");
     defer testing.allocator.free(path_b);
 
     const args = [_][]const u8{ "--silent", path_a, path_b };
@@ -1323,16 +1319,16 @@ test "head -n -3 outputs all but last 3 lines" {
     const io = testing.io;
     // BUG: -n -3 (negative count) is not implemented. GNU head treats
     // -n -NUM as "output all but the last NUM lines". Currently exits 1.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
+    try tmp_dir.createFile("test.txt", content, null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -n -3 means "all but the last 3 lines" = first 2 lines

@@ -1152,6 +1152,14 @@ fn ceilDiv(numerator: u64, denominator: u64) u64 {
     return result;
 }
 
+fn ceilDiv128(numerator: u128, denominator: u64) u128 {
+    std.debug.assert(denominator > 0);
+    const d: u128 = denominator;
+    const result = @divTrunc(numerator, d) + @intFromBool(@rem(numerator, d) != 0);
+    std.debug.assert((result == 0) == (numerator == 0));
+    return result;
+}
+
 fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []const u8 {
     const bytes = blocks * fs_block_size;
 
@@ -1190,27 +1198,36 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
 /// most one. We are exact everywhere, so our digit can differ from GNU's above
 /// that bound (issue #144).
 fn calcUsagePercent(used: u64, total: u64) u8 {
+    const result = calcUsagePercent128(@as(u128, used), @as(u128, total));
+    std.debug.assert(result <= 100);
+    std.debug.assert(total != 0 or result == 0);
+    return result;
+}
+
+/// Same ceiling percent as calcUsagePercent, for --total byte sums that
+/// no longer fit in u64 (issue #158).
+fn calcUsagePercent128(used: u128, total: u128) u8 {
     if (total == 0) return 0;
-    const scaled: u128 = @as(u128, used) * 100;
-    const denominator: u128 = total;
-    const pct = @divTrunc(scaled, denominator) +
-        @intFromBool(@rem(scaled, denominator) != 0);
-    // Callers pass used = f_blocks - f_bfree and total = used + avail, so used
-    // cannot exceed total and the clamp is dead weight for them. It is kept
-    // because the exported contract is a percentage, and a caller that does
-    // pass used > total -- a summed total that wrapped, say -- must get 100
-    // rather than a value @intCast cannot hold.
+    const scaled: u128 = used * 100;
+    const pct = @divTrunc(scaled, total) +
+        @intFromBool(@rem(scaled, total) != 0);
     const result: u8 = @intCast(@min(pct, 100));
-    // Rounding up means any nonzero usage occupies at least one percent;
-    // a @divTrunc regression would report 0% for a nearly-empty filesystem.
+    std.debug.assert(result <= 100);
     std.debug.assert((result == 0) == (used == 0));
     return result;
 }
 
 fn formatPercent(buf: []u8, used: u64, total: u64) []const u8 {
+    std.debug.assert(buf.len >= 2);
+    const rendered = formatPercent128(buf, @as(u128, used), @as(u128, total));
+    std.debug.assert(rendered.len > 0);
+    return rendered;
+}
+
+fn formatPercent128(buf: []u8, used: u128, total: u128) []const u8 {
+    std.debug.assert(buf.len >= 2);
     if (total == 0) return "-";
-    const pct = calcUsagePercent(used, total);
-    // calcUsagePercent clamps to 100, so the value formatted here is bounded.
+    const pct = calcUsagePercent128(used, total);
     std.debug.assert(pct <= 100);
     return std.fmt.bufPrint(buf, "{d}%", .{pct}) catch "?";
 }
@@ -1882,31 +1899,44 @@ fn printFsRow_inodes(stdout: *std.Io.Writer, fs: *const FsInfo, opts: DfOptions)
     }
 }
 
-// Multiply-accumulate block totals into byte sums (shared by printTotal and
-// printTotalDynamic). Push fors down: the parent keeps no loop of its own.
+// Multiply-accumulate block totals into byte sums (shared by
+// printTotalDynamic and outputSumTotals). Push fors down: the parent
+// keeps no loop of its own.
 fn printTotal_sumBytes(
     filesystems: []const FsInfo,
-    sum_total: *u64,
-    sum_used: *u64,
-    sum_avail: *u64,
+    sum_total: *u128,
+    sum_used: *u128,
+    sum_avail: *u128,
 ) void {
     std.debug.assert(sum_total.* == 0);
     std.debug.assert(sum_used.* == 0);
+    std.debug.assert(sum_avail.* == 0);
     for (filesystems) |fs| {
-        sum_total.* += fs.total_blocks * fs.block_size;
-        sum_used.* += fs.used_blocks * fs.block_size;
-        sum_avail.* += fs.avail_blocks * fs.block_size;
+        const bs: u128 = fs.block_size;
+        sum_total.* += @as(u128, fs.total_blocks) * bs;
+        sum_used.* += @as(u128, fs.used_blocks) * bs;
+        sum_avail.* += @as(u128, fs.avail_blocks) * bs;
     }
 }
 
 // Format one byte total into a display field (human/si/divTrunc/commas),
 // shared by printTotal and printTotalDynamic. Returns a slice into buf.
-fn printTotal_formatField(buf: []u8, bytes: u64, display_block: u64, opts: DfOptions) []const u8 {
-    std.debug.assert(buf.len >= 16);
-    if (opts.human_readable) return formatHumanReadable(buf, bytes, false);
-    if (opts.si) return formatHumanReadable(buf, bytes, true);
-    const val = ceilDiv(bytes, display_block);
-    if (opts.thousands_grouping) return formatWithCommas(buf, val);
+fn printTotal_formatField(buf: []u8, bytes: u128, display_block: u64, opts: DfOptions) []const u8 {
+    std.debug.assert(buf.len >= 32);
+    std.debug.assert(display_block > 0);
+    if (opts.human_readable or opts.si) {
+        if (bytes > std.math.maxInt(u64)) {
+            return std.fmt.bufPrint(buf, "{d}", .{bytes}) catch "?";
+        }
+        // Same order as formatSize: -h / default human wins over -H, so the
+        // total row does not switch to SI when both flags are set.
+        const use_si = opts.si and !opts.human_readable;
+        return formatHumanReadable(buf, @intCast(bytes), use_si);
+    }
+    const val = ceilDiv128(bytes, display_block);
+    if (opts.thousands_grouping and val <= std.math.maxInt(u64)) {
+        return formatWithCommas(buf, @intCast(val));
+    }
     return std.fmt.bufPrint(buf, "{d}", .{val}) catch "?";
 }
 
@@ -2193,26 +2223,27 @@ fn printTotalDynamic(
     s: anytype,
 ) !void {
     // Sum bytes across all filesystems
-    var sum_total_bytes: u64 = 0;
-    var sum_used_bytes: u64 = 0;
-    var sum_avail_bytes: u64 = 0;
+    var sum_total_bytes: u128 = 0;
+    var sum_used_bytes: u128 = 0;
+    var sum_avail_bytes: u128 = 0;
     printTotal_sumBytes(filesystems, &sum_total_bytes, &sum_used_bytes, &sum_avail_bytes);
 
     const display_block: u64 = if (opts.block_size) |bs| bs else 1024;
 
-    var total_buf: [32]u8 = undefined;
-    var used_buf: [32]u8 = undefined;
-    var avail_buf: [32]u8 = undefined;
+    var total_buf: [40]u8 = undefined;
+    var used_buf: [40]u8 = undefined;
+    var avail_buf: [40]u8 = undefined;
     var pct_buf: [16]u8 = undefined;
 
     const total_str = printTotal_formatField(&total_buf, sum_total_bytes, display_block, opts);
     const used_str = printTotal_formatField(&used_buf, sum_used_bytes, display_block, opts);
     const avail_str = printTotal_formatField(&avail_buf, sum_avail_bytes, display_block, opts);
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
-    // The percentage is shared with the per-filesystem rows rather than
-    // recomputed here, so the overflow-safe arithmetic lives in one place.
-    const percent = calcUsagePercent(sum_used_bytes, sum_use_total);
-    const pct_str = formatPercent(&pct_buf, sum_used_bytes, sum_use_total);
+    // used+avail is the same overflow site as the Size column: two
+    // filesystems past 8 EiB each wrap a u64 add, so percent uses
+    // the 128-bit path rather than the per-row u64 wrapper.
+    const percent = calcUsagePercent128(sum_used_bytes, sum_use_total);
+    const pct_str = formatPercent128(&pct_buf, sum_used_bytes, sum_use_total);
     // Asserted here rather than left to the emit helpers: the colored total
     // path only re-checks this when it actually draws a usage bar, so in
     // colored non-bar mode nothing downstream would catch a bad value.
@@ -2717,9 +2748,9 @@ const OutputWidths = [output_field_max]u32;
 
 /// Byte and inode sums backing the --total row under --output.
 const OutputTotals = struct {
-    size_bytes: u64 = 0,
-    used_bytes: u64 = 0,
-    avail_bytes: u64 = 0,
+    size_bytes: u128 = 0,
+    used_bytes: u128 = 0,
+    avail_bytes: u128 = 0,
     itotal: u64 = 0,
     iused: u64 = 0,
     iavail: u64 = 0,
@@ -2812,7 +2843,7 @@ fn outputTotalCellText(
         .size => printTotal_formatField(buf, totals.size_bytes, display_block, opts),
         .used => printTotal_formatField(buf, totals.used_bytes, display_block, opts),
         .avail => printTotal_formatField(buf, totals.avail_bytes, display_block, opts),
-        .pcent => formatPercent(
+        .pcent => formatPercent128(
             buf,
             totals.used_bytes,
             totals.used_bytes + totals.avail_bytes,
@@ -4101,6 +4132,69 @@ test "printTotalDynamic - percent ceils above the threshold (issue #144)" {
     try testing.expect(std.mem.find(u8, row, "50%") == null);
 }
 
+// Issue #158: `df --total` accumulates byte counts in u64. Two filesystems of
+// 1e19 bytes sum to 2e19, past u64max (16 EiB). Distinct from #144, whose
+// vectors stay at 4e17 bytes so a failure there is the percentage multiply,
+// not the sums. makeFsInfo halves used/avail, so used+avail overflows here
+// too; the next test isolates that add so a Size-only fix still goes red.
+test "printTotalDynamic - size sum past 16 EiB (issue #158)" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // Products fit in u64; only the SUM wraps. `-B 1` with human off keeps
+    // the printed Size equal to the byte total, so the assertion is 2e19
+    // rather than a wrapped 1K-block count.
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 10_000_000_000_000_000_000, 1);
+    const fs2 = makeFsInfo("/dev/disk2s1", "/home", 10_000_000_000_000_000_000, 1);
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.human_readable = false;
+    opts.block_size = 1;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    const items = [_]FsInfo{ fs1, fs2 };
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
+    const row = aw.writer.buffered();
+    // The true sum is 2e19; wrapping u64 yields 1553255926290458384.
+    try testing.expect(std.mem.find(u8, row, "20000000000000000000") != null);
+    try testing.expect(std.mem.find(u8, row, "1553255926290458384") == null);
+}
+
+test "printTotalDynamic - used plus avail past 16 EiB (issue #158)" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    // Size stays at 200 bytes so printTotal_sumBytes does not wrap. Each
+    // used/avail is 9e18, so the column sums fit and only
+    // `sum_used + sum_avail` (3.6e19) overflows. Equal used and avail make
+    // the true percentage 50%; wrapping the add prints "-" and feeding Size
+    // to the percent (a Size-only fix) clamps to 100%.
+    var fs1 = makeFsInfo("/dev/disk1s1", "/", 100, 1);
+    fs1.used_blocks = 9_000_000_000_000_000_000;
+    fs1.avail_blocks = 9_000_000_000_000_000_000;
+    var fs2 = makeFsInfo("/dev/disk2s1", "/home", 100, 1);
+    fs2.used_blocks = 9_000_000_000_000_000_000;
+    fs2.avail_blocks = 9_000_000_000_000_000_000;
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.human_readable = false;
+    opts.block_size = 1;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    const items = [_]FsInfo{ fs1, fs2 };
+    const widths = computeColumnWidths(&items, opts);
+    try printTotalDynamic(&aw.writer, &items, opts, widths, testStyle(&aw.writer, .none));
+    const row = aw.writer.buffered();
+    try testExpectTokens(&.{
+        "total",
+        "200",
+        "18000000000000000000",
+        "18000000000000000000",
+        "50%",
+        "-",
+    }, testFirstLine(row));
+    try testing.expect(std.mem.find(u8, row, "100%") == null);
+}
+
 test "printHeaderDynamic - full mode shows Usage column" {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
@@ -4579,6 +4673,23 @@ test "printTotal_formatField - u64max bytes rejects a saturating fix (issue #138
     opts.human_readable = false;
     const result = printTotal_formatField(&buf, std.math.maxInt(u64), 1024, opts);
     try testing.expectEqualStrings("18014398509481984", result);
+}
+
+// human_readable defaults to true, so bare -H sets both flags. formatSize
+// still prefers the binary path; the total row must not switch to SI alone.
+test "printTotal_formatField - human_readable wins over si like formatSize" {
+    var row_buf: [32]u8 = undefined;
+    var tot_buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = true;
+    opts.si = true;
+    const row = formatSize(&row_buf, 1500, 1, opts);
+    const tot = printTotal_formatField(&tot_buf, 1500, 1, opts);
+    try testing.expectEqualStrings(row, tot);
+    try testing.expectEqualStrings("1.5K", tot);
+    opts.human_readable = false;
+    const si_only = printTotal_formatField(&tot_buf, 1500, 1, opts);
+    try testing.expectEqualStrings("1.5k", si_only);
 }
 
 test "formatSize - 1M blocks" {
@@ -5395,6 +5506,47 @@ test "outputTotalCellText - pcent above the overflow threshold (issue #144)" {
         .avail_bytes = 198_000_000_000_000_000,
     };
     try testing.expectEqualStrings("51%", outputTotalCellText(&buf, .pcent, ceils, opts));
+}
+
+// Issue #158: --output --total stores the same byte sums in OutputTotals, so
+// a printTotalDynamic-only widen still wraps here. `-B 1` makes Size the
+// byte total; wrapping u64 prints 1553255926290458384 instead of 2e19.
+test "outputSumTotals - size sum past 16 EiB (issue #158)" {
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 10_000_000_000_000_000_000, 1);
+    const fs2 = makeFsInfo("/dev/disk2s1", "/home", 10_000_000_000_000_000_000, 1);
+    const items = [_]FsInfo{ fs1, fs2 };
+    const totals = outputSumTotals(&items);
+    var size_buf: [64]u8 = undefined;
+    var used_buf: [64]u8 = undefined;
+    var opts = DfOptions{};
+    opts.total = true;
+    opts.human_readable = false;
+    opts.block_size = 1;
+    try testing.expectEqualStrings(
+        "20000000000000000000",
+        outputTotalCellText(&size_buf, .size, totals, opts),
+    );
+    try testing.expectEqualStrings(
+        "10000000000000000000",
+        outputTotalCellText(&used_buf, .used, totals, opts),
+    );
+}
+
+test "outputTotalCellText - pcent used plus avail past 16 EiB (issue #158)" {
+    var buf: [64]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = 1;
+    // Size stays in range so only the pcent add overflows. Equal used and
+    // avail make the true percentage 50%; wrapping the add yields "-" and
+    // saturating it to u64max yields ~55%.
+    const totals = OutputTotals{
+        .size_bytes = 200,
+        .used_bytes = 10_000_000_000_000_000_000,
+        .avail_bytes = 10_000_000_000_000_000_000,
+    };
+    try testing.expectEqualStrings("50%", outputTotalCellText(&buf, .pcent, totals, opts));
+    try testing.expectEqualStrings("200", outputTotalCellText(&buf, .size, totals, opts));
 }
 
 test "runDf - output rejects an unknown field" {
