@@ -362,6 +362,11 @@ fn parseFileType(str: []const u8) !FileType {
 // Stat helper
 // ============================================================================
 
+const Timespec = struct {
+    sec: i64 = 0,
+    nsec: i64 = 0,
+};
+
 /// Cross-platform stat result. On Linux c.Stat is void, so we use our own struct.
 const StatInfo = struct {
     dev: i64 = 0,
@@ -373,11 +378,11 @@ const StatInfo = struct {
     size: i64 = 0,
     blksize: i64 = 0,
     blocks: i64 = 0,
-    atim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
-    mtim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
-    ctim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    atim: Timespec = .{},
+    mtim: Timespec = .{},
+    ctim: Timespec = .{},
     /// macOS-only: birthtime. Zero on Linux.
-    birthtimespec: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    birthtimespec: Timespec = .{},
     /// macOS-only: file flags (chflags). Zero on Linux.
     flags: u32 = 0,
 };
@@ -443,10 +448,51 @@ fn doStat_buildStatInfoLinux(stx: std.os.linux.Statx) StatInfo {
     };
 }
 
+/// Widen a platform `st_dev` to a u64 bit pattern.
+///
+/// Darwin/OpenBSD `dev_t` is a signed i32; FreeBSD/NetBSD use u64.
+/// `@intCast` sign-extends a high-bit i32 and traps a u64 above i64 max.
+/// Reinterpret the bits and zero-extend, matching `file.widenDev`.
+fn widenDev(dev: anytype) u64 {
+    const T = @TypeOf(dev);
+    const bits = @bitSizeOf(T);
+    std.debug.assert(bits == 32 or bits == 64);
+    std.debug.assert(@typeInfo(T) == .int);
+    const unsigned: @Int(.unsigned, bits) = @bitCast(dev);
+    return @as(u64, unsigned);
+}
+
+/// Read a timespec by Darwin name (`atimespec`) or POSIX name (`atim`).
+/// Missing both names (birth time on some BSDs) yields zeros.
+fn timespecField(
+    stat_buf: anytype,
+    comptime darwin_name: []const u8,
+    comptime posix_name: []const u8,
+) Timespec {
+    std.debug.assert(darwin_name.len > 0);
+    std.debug.assert(posix_name.len > 0);
+    std.debug.assert(!std.mem.eql(u8, darwin_name, posix_name));
+    const T = @TypeOf(stat_buf);
+    const has_darwin = @hasField(T, darwin_name);
+    const has_posix = @hasField(T, posix_name);
+    // A platform uses one spelling, never both Darwin and POSIX names.
+    const both_names = has_darwin and has_posix;
+    std.debug.assert(!both_names);
+    if (has_darwin) {
+        const ts = @field(stat_buf, darwin_name);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+    if (has_posix) {
+        const ts = @field(stat_buf, posix_name);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+    return .{ .sec = 0, .nsec = 0 };
+}
+
 /// Build StatInfo from a c.Stat result (macOS/BSD).
 fn doStat_buildStatInfoBsd(stat_buf: c.Stat) StatInfo {
     return StatInfo{
-        .dev = @intCast(stat_buf.dev),
+        .dev = @bitCast(widenDev(stat_buf.dev)),
         .ino = @intCast(stat_buf.ino),
         .mode = @intCast(stat_buf.mode),
         .nlink = @intCast(stat_buf.nlink),
@@ -455,22 +501,10 @@ fn doStat_buildStatInfoBsd(stat_buf: c.Stat) StatInfo {
         .size = @intCast(stat_buf.size),
         .blksize = @intCast(stat_buf.blksize),
         .blocks = @intCast(stat_buf.blocks),
-        .atim = .{
-            .sec = @intCast(stat_buf.atimespec.sec),
-            .nsec = @intCast(stat_buf.atimespec.nsec),
-        },
-        .mtim = .{
-            .sec = @intCast(stat_buf.mtimespec.sec),
-            .nsec = @intCast(stat_buf.mtimespec.nsec),
-        },
-        .ctim = .{
-            .sec = @intCast(stat_buf.ctimespec.sec),
-            .nsec = @intCast(stat_buf.ctimespec.nsec),
-        },
-        .birthtimespec = .{
-            .sec = @intCast(stat_buf.birthtimespec.sec),
-            .nsec = @intCast(stat_buf.birthtimespec.nsec),
-        },
+        .atim = timespecField(stat_buf, "atimespec", "atim"),
+        .mtim = timespecField(stat_buf, "mtimespec", "mtim"),
+        .ctim = timespecField(stat_buf, "ctimespec", "ctim"),
+        .birthtimespec = timespecField(stat_buf, "birthtimespec", "birthtim"),
         .flags = if (@hasField(@TypeOf(stat_buf), "flags")) @intCast(stat_buf.flags) else 0,
     };
 }
