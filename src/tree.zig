@@ -647,6 +647,24 @@ fn reportWalkerError(
     );
 }
 
+/// Readdir on filesystems that omit d_type reports `.unknown`. Classify
+/// those with lstat on the parent fd so `-d`, summaries, and icons treat
+/// real directories as directories. A failed lstat keeps `.unknown`.
+fn resolveEntryKind(entry: common.walker.Entry) FileKind {
+    std.debug.assert(entry.basename.len > 0);
+    std.debug.assert(entry.basename.len <= std.Io.Dir.max_path_bytes);
+    if (entry.kind != .unknown) return entry.kind;
+    const parent = entry.parent_dir orelse return .unknown;
+    var scratch: [std.Io.Dir.max_path_bytes + 64]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const info = common.file.FileInfo.lstatDir(
+        fba.allocator(),
+        parent,
+        entry.basename,
+    ) catch return .unknown;
+    return info.kind;
+}
+
 fn consumeEntry(
     arena: Allocator,
     walker: *common.walker.Walker,
@@ -657,29 +675,30 @@ fn consumeEntry(
 ) !void {
     std.debug.assert(parents.items.len >= 1);
     std.debug.assert(entry.basename.len > 0);
+    const kind = resolveEntryKind(entry);
     if (entry.depth == 0) {
         if (walk_opts.max_level) |max| {
-            if (max == 0 and entry.kind == .directory) walker.pruneCurrent();
+            if (max == 0 and kind == .directory) walker.pruneCurrent();
         }
         return;
     }
-    if (shouldSkip(entry, walk_opts)) {
-        if (entry.kind == .directory) walker.pruneCurrent();
+    if (shouldSkip(entry, kind, walk_opts)) {
+        if (kind == .directory) walker.pruneCurrent();
         return;
     }
-    const node = try makeNode(arena, entry.basename, entry.kind);
+    const node = try makeNode(arena, entry.basename, kind);
     try attachChild(arena, parents, node, entry.depth, counts);
-    if (entry.kind == .directory) {
+    if (kind == .directory) {
         if (walk_opts.max_level) |max| {
             if (entry.depth >= max) walker.pruneCurrent();
         }
     }
 }
 
-fn shouldSkip(entry: common.walker.Entry, walk_opts: WalkFilter) bool {
+fn shouldSkip(entry: common.walker.Entry, kind: FileKind, walk_opts: WalkFilter) bool {
     std.debug.assert(entry.basename.len > 0);
     std.debug.assert(entry.depth > 0);
-    if (walk_opts.directories_only and entry.kind != .directory) return true;
+    if (walk_opts.directories_only and kind != .directory) return true;
     if (!walk_opts.all and isHidden(entry.basename)) return true;
     if (nameIgnored(entry.basename, walk_opts.ignore_patterns)) return true;
     if (walk_opts.max_level) |max| {
@@ -1514,4 +1533,97 @@ test "tree plan 16: directory symlink is listed but not followed" {
     try testing.expect(std.mem.find(u8, result.stdout(), "link") != null);
     try testing.expect(std.mem.find(u8, result.stdout(), "secret.txt") == null);
     try testing.expect(std.mem.find(u8, result.stdout(), " -> ") == null);
+}
+
+fn walkerTestEntry(
+    name: []const u8,
+    kind: FileKind,
+    parent: ?std.Io.Dir,
+) common.walker.Entry {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(name.len <= std.Io.Dir.max_path_bytes);
+    return .{
+        .path = name,
+        .basename = name,
+        .kind = kind,
+        .depth = 1,
+        .visit = .pre,
+        .stat = null,
+        .parent_dir = parent,
+    };
+}
+
+const UnknownKindFixture = struct {
+    tmp_dir: testing.TmpDir,
+    parent: std.Io.Dir,
+
+    fn init() !UnknownKindFixture {
+        var tmp_dir = testing.tmpDir(.{});
+        errdefer tmp_dir.cleanup();
+        try tmp_dir.dir.createDir(testing.io, "adir", .default_dir);
+        try treeTestCreateFile(tmp_dir.dir, "afile");
+        tmp_dir.dir.symLink(testing.io, "afile", "alink", .{}) catch |err| {
+            if (err == error.AccessDenied) return error.SkipZigTest;
+            return err;
+        };
+        const parent = try tmp_dir.dir.openDir(testing.io, ".", .{});
+        return .{ .tmp_dir = tmp_dir, .parent = parent };
+    }
+
+    fn deinit(self: *UnknownKindFixture) void {
+        std.debug.assert(self.parent.handle >= 0);
+        std.debug.assert(self.tmp_dir.dir.handle >= 0);
+        self.parent.close(testing.io);
+        self.tmp_dir.cleanup();
+    }
+
+    fn unknown(self: *const UnknownKindFixture, name: []const u8) common.walker.Entry {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(self.parent.handle >= 0);
+        return walkerTestEntry(name, .unknown, self.parent);
+    }
+};
+
+test "tree: unknown dirent kind resolves directories via parent_dir lstat" {
+    var fixture = try UnknownKindFixture.init();
+    defer fixture.deinit();
+    const dir_entry = fixture.unknown("adir");
+    const file_entry = fixture.unknown("afile");
+    try testing.expectEqual(FileKind.unknown, dir_entry.kind);
+    try testing.expectEqual(FileKind.directory, resolveEntryKind(dir_entry));
+    try testing.expectEqual(FileKind.unknown, file_entry.kind);
+    try testing.expectEqual(FileKind.file, resolveEntryKind(file_entry));
+
+    const dirs_only = WalkFilter{
+        .all = true,
+        .directories_only = true,
+        .max_level = null,
+        .ignore_patterns = &.{},
+    };
+    try testing.expect(!shouldSkip(dir_entry, resolveEntryKind(dir_entry), dirs_only));
+    try testing.expect(shouldSkip(file_entry, resolveEntryKind(file_entry), dirs_only));
+
+    var counts = Counts{};
+    countNode(&counts, resolveEntryKind(dir_entry));
+    countNode(&counts, resolveEntryKind(file_entry));
+    try testing.expectEqual(@as(u32, 1), counts.directories);
+    try testing.expectEqual(@as(u32, 1), counts.files);
+}
+
+test "tree: unknown dirent kind keeps known kinds and failed lstat" {
+    var fixture = try UnknownKindFixture.init();
+    defer fixture.deinit();
+    const known_dir = walkerTestEntry("adir", .directory, null);
+    const known_file = walkerTestEntry("afile", .file, null);
+    try testing.expectEqual(FileKind.directory, resolveEntryKind(known_dir));
+    try testing.expectEqual(FileKind.file, resolveEntryKind(known_file));
+
+    const no_parent = walkerTestEntry("adir", .unknown, null);
+    const missing = fixture.unknown("no-such-entry");
+    try testing.expectEqual(FileKind.unknown, resolveEntryKind(no_parent));
+    try testing.expectEqual(FileKind.unknown, resolveEntryKind(missing));
+
+    const link_entry = fixture.unknown("alink");
+    try testing.expectEqual(FileKind.unknown, link_entry.kind);
+    try testing.expectEqual(FileKind.sym_link, resolveEntryKind(link_entry));
 }

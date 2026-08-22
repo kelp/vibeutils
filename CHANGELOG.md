@@ -14,7 +14,10 @@
   caps depth, `-d` lists directories only, `-I` excludes names
   (repeatable, with `|` alternatives), and `-a` includes hidden
   entries. `--color=WHEN` and `--icons=WHEN` follow `ls`. Directory
-  symlinks are listed, not followed.
+  symlinks are listed, not followed. Entries whose dirent kind is
+  unfilled (`.unknown`) are classified with `lstat` on the parent
+  directory so `-d`, summaries, and icons treat real directories as
+  directories.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so
