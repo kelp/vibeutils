@@ -67,6 +67,7 @@ local_*
 
 # Worktrees
 .worktrees/
+.claude/worktrees/
 
 # Gale local state (gale.lock is tracked, .gale/ store is not)
 .gale/
