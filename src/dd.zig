@@ -1106,6 +1106,7 @@ fn runDd_handleReadError(
                 };
                 ctx.stats.full_blocks_out += 1;
                 ctx.stats.bytes_copied += ibs;
+                runDd_updateProgress(ctx);
             }
         }
         return .continue_loop;
