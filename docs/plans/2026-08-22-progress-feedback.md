@@ -67,6 +67,18 @@ blocking item.
 | 70-line sites | Do not grow `copyFileWithAttributes` (already ~79). Extract tracker construction so `copyRegularFile` and `runDd_copyLoop` stay ≤70. |
 | Stacking | Campaign authorization recorded above. Not a code blocker. |
 
+## Plan revision (r3)
+
+r2: Fable **APPROVE**. Grok and Sol **REQUEST
+CHANGES** on leftover test/lifecycle holes. This
+revision is those holes only.
+
+| Item | Decision |
+|---|---|
+| `copyTreeFile` tooth | Overlay test through `crossFilesystemMove` on a **directory** with a regular file (`src/a.txt` larger than `COPY_BUFFER_SIZE`). Captured stderr has `\r` and `copying`. The single-file EXDEV test does not cover this caller. |
+| finish-before-diag tooth | Require `delay_ns = 0`, at least one successful `update` (`shown == true`), **then** a later write error. A dest that fails on the first write never shows, so `finish` is a no-op and cannot catch a wipe. |
+| dd diagnostics vs live line | `runDd_writeError` and the `conv=noerror` diagnostic path call `tracker.finish(now)` **before** `printErrorWithProgram`. Recoverable noerror may `update` again afterward (delay already elapsed, so the next update may emit on the following line). Test `runDd_writeError` with a shown `.gnu_xfer` tracker: the write-error text is present and not spaces. Parse-time errors (before the copy loop) need no finish. |
+
 ## Classification
 
 KEEP auto-progress for `cp`/`mv` (no flag in
@@ -226,6 +238,12 @@ without changing GNU flag semantics.
    auto-progress default/`none`/`noxfer`.
    SIGUSR1/SIGINFO reprint is out of scope. Extract
    the update call so `runDd_copyLoop` stays ≤70.
+   Copy-loop diagnostics (`runDd_writeError`,
+   `conv=noerror` read-error messages) call
+   `finish` on the tracker before printing so a live
+   `\r` line cannot glue to or wipe the diagnostic.
+   After a recoverable noerror, later `update`s may
+   emit again.
 
 6. Check the four `TODO.md` boxes. CHANGELOG
    Unreleased: cp/mv TTY auto-progress after 2s; dd
@@ -314,11 +332,13 @@ is a stdin filter: tests must use `if=` or
    `tracker.bytes_done` equals the file size, and
    the writer contains `\r`. `copyFileContents`
    (null tracker) still copies and writes nothing
-   to a dummy tracker-less stderr. A copy that
-   fails (closed dest, or a tiny helper that
-   surfaces a write error) calls `finish` **before**
-   the caller prints; the error text on the same
-   writer is not wiped to spaces.
+   to a dummy tracker-less stderr.    A copy that
+   fails **after** at least one successful `update`
+   (`delay_ns = 0` so `shown == true`, then a later
+   write error — not a dest that fails on the first
+   write) calls `finish` **before** the caller
+   prints; the error text on the same writer is not
+   wiped to spaces.
 
 3. `src/cp.zig` — positive emission through
    `runCp`, using the test overlay (not a PTY):
@@ -335,11 +355,14 @@ is a stdin filter: tests must use `if=` or
    stderr has no `\r`. The live `isatty` hop is the
    overlay's production fallback; no PTY test.
 
-4. `src/mv.zig` — positive emission on the copy
-   fallback, same overlay, assert `\r` + `copying`.
-   Use the existing forced-copy / non-rename helper
-   (the issue #81 EXDEV tests already exercise
-   `copyFileWithAttributes` without a real EXDEV).
+4. `src/mv.zig` — positive emission on **both**
+   EXDEV callers, same overlay, assert `\r` +
+   `copying`:
+   - single-file `crossFilesystemMove` (issue #81
+     helper; no real EXDEV)
+   - directory `crossFilesystemMove` of a tree with
+     a regular file larger than `COPY_BUFFER_SIZE`
+     (`copyTreeFile`)
    Same-filesystem rename: overlay enabled, stderr
    has no `\r`.
 
@@ -353,6 +376,10 @@ is a stdin filter: tests must use `if=` or
    Without the overlay, a sub-second copy with
    `status=progress` has **no** `\r` (GNU 1s delay)
    and still has final `printStats`.
+   `runDd_writeError` with a shown `.gnu_xfer`
+   tracker: captured stderr contains the
+   `write error:` diagnostic and that text is not
+   replaced by spaces.
 
 6. `tests/utilities/dd_test.sh`: `status=progress`
    still prints records in/out (final stats).
