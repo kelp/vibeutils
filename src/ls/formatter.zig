@@ -450,8 +450,9 @@ fn formatTimeWithStyle_full(mtime_ns: i128, buf: []u8) ![]const u8 {
 }
 
 /// Width of every long-format column, sized to the widest value present in
-/// one section the way GNU ls sizes them. A section is a single
-/// printEntries_longFormat call, so these never carry across directories.
+/// one section the way GNU ls sizes them. A directory listing measures its
+/// own contents; the file-operand section measures every command-line
+/// operand, including directories that print later as their own listings.
 const LongFormatWidths = struct {
     block_prefix: usize, // tiger:allow:usize-arch matches blockCountWidth
     nlink: usize, // tiger:allow:usize-arch column width is usize
@@ -632,6 +633,24 @@ fn printLongFormatEntryAligned(
         try printLongFormatEntryAligned_symlinkTarget(style, writer, target);
     }
     try writer.writeByte('\n');
+    try printLongFormatAclDump(entry, writer, options);
+}
+
+/// After a long-format line, dump the POSIX ACL when `-e` is set.
+/// Only the dump captured at probe time is printed: `entry.name` is a
+/// basename in directory listings, so a cwd fallback would attach the
+/// wrong file's ACL to this row.
+fn printLongFormatAclDump(
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+) !void {
+    std.debug.assert(options.long_format);
+    if (!options.show_acls) return;
+    if (!entry.has_acl) return;
+    const dump = entry.acl_dump orelse return;
+    std.debug.assert(dump.len > 0);
+    try writer.writeAll(dump);
 }
 
 /// Write " -> target" for a symlink, colored by the target's file type.
@@ -1044,6 +1063,48 @@ fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
     return 0;
 }
 
+/// Raw `st_blocks` (512-byte units), or 0 when the entry could not be
+/// stat'ed. The long-format `total` line sums this and then converts;
+/// `-s` prefixes keep `calculateDisplayBlocks` so BSD-pinned field
+/// widths stay in 512-byte units unless `-k`.
+fn allocatedBlocks512(entry: Entry) u64 {
+    const blocks = if (entry.stat) |stat| stat.blocks else 0;
+    std.debug.assert(entry.stat != null or blocks == 0);
+    std.debug.assert(entry.stat == null or blocks == entry.stat.?.blocks);
+    return blocks;
+}
+
+/// GNU's default `ls -l` total: 1024-byte units via howmany(st_blocks, 2).
+/// Shift-or-odd avoids overflowing `n + 1` when `n` is `u64` max.
+fn gnuKiBTotal(blocks_512: u64) u64 {
+    const kib = (blocks_512 >> 1) + (blocks_512 & 1);
+    std.debug.assert(kib >= @divFloor(blocks_512, 2));
+    std.debug.assert(blocks_512 == 0 or kib >= 1);
+    return kib;
+}
+
+/// Directory-section `total` line for `-l`. Empty directories still emit
+/// `total 0`. `-h` humanizes allocated bytes (`st_blocks * 512`); otherwise
+/// the count is GNU's 1024-byte default. `--block-size` is WONT.
+fn writeLongFormatTotal(
+    writer: anytype,
+    options: LsOptions,
+    blocks_512: u64,
+) !void {
+    std.debug.assert(options.long_format);
+    if (options.human_readable) {
+        const bytes = std.math.mul(u64, blocks_512, 512) catch std.math.maxInt(u64);
+        var buf: [32]u8 = undefined;
+        const human = try common.file.formatSizeHuman(bytes, &buf);
+        std.debug.assert(human.len > 0);
+        try writer.print("total {s}\n", .{human});
+        return;
+    }
+    const kib = gnuKiBTotal(blocks_512);
+    std.debug.assert(kib >= @divFloor(blocks_512, 2));
+    try writer.print("total {d}\n", .{kib});
+}
+
 /// Print entries in columnar format sorted across rows (-x flag)
 pub fn printColumnarAcross(
     allocator: std.mem.Allocator,
@@ -1104,8 +1165,18 @@ pub fn printEntries(
 ) !u64 {
     var total_blocks: u64 = 0;
 
-    // Calculate total blocks for -s or -l
-    if (options.show_blocks or options.long_format) {
+    // -l totals sum raw 512-byte st_blocks and convert at print time.
+    // -s without -l still uses calculateDisplayBlocks (512, or 1024 with -k).
+    if (options.long_format) {
+        for (entries) |entry| {
+            // Saturate: a wrapped sum would print a too-small total.
+            total_blocks = std.math.add(
+                u64,
+                total_blocks,
+                allocatedBlocks512(entry),
+            ) catch std.math.maxInt(u64);
+        }
+    } else if (options.show_blocks) {
         for (entries) |entry| {
             total_blocks += calculateDisplayBlocks(entry, options);
         }
@@ -1119,7 +1190,7 @@ pub fn printEntries(
     // Totals are only accumulated for the two formats that display them.
     std.debug.assert(total_blocks == 0 or options.show_blocks or options.long_format);
 
-    try printSection(allocator, entries, writer, options, style, total_blocks, true);
+    try printSection(allocator, entries, writer, options, style, total_blocks, true, entries);
     std.debug.assert(entries.len > 0 or total_blocks == 0);
     return total_blocks;
 }
@@ -1128,23 +1199,31 @@ pub fn printEntries(
 /// the same layout and git-column decisions a directory section makes. The
 /// "total" line is the one difference: it heads a directory listing only, and
 /// neither BSD nor GNU emits it for operands (issue #119).
+///
+/// `column_peers` is the set GNU measures -l widths against: every operand,
+/// files and directories together. Directory listings still measure only
+/// their own contents; only this mixed-operand file group looks past itself
+/// (#166).
 pub fn printOperandSection(
     allocator: std.mem.Allocator,
     entries: []Entry,
     writer: anytype,
     options: LsOptions,
     style: anytype,
+    column_peers: []const Entry,
 ) !void {
     // Every caller partitions operands before reaching here, so an empty
     // group is never printed as a section.
     std.debug.assert(entries.len > 0);
     std.debug.assert(entries.len <= std.math.maxInt(u32));
-    try printSection(allocator, entries, writer, options, style, 0, false);
+    std.debug.assert(column_peers.len >= entries.len);
+    try printSection(allocator, entries, writer, options, style, 0, false, column_peers);
 }
 
 /// Format one section's entries, after any "total" line the caller owns.
 /// `print_total` reaches printEntries_longFormat, which prints its total
-/// inline rather than ahead of the entries.
+/// inline rather than ahead of the entries. `column_peers` is the set the
+/// long-format columns are sized against; every other layout ignores it.
 fn printSection(
     allocator: std.mem.Allocator,
     entries: []Entry,
@@ -1153,6 +1232,7 @@ fn printSection(
     style: anytype,
     total_blocks: u64,
     print_total: bool,
+    column_peers: []const Entry,
 ) !void {
     // A suppressed total has nothing to report, so the count must be unset.
     std.debug.assert(print_total or total_blocks == 0);
@@ -1177,6 +1257,7 @@ fn printSection(
             style,
             total_blocks,
             print_total,
+            column_peers,
         );
     } else if (options.comma_format) {
         // Comma-separated format
@@ -1251,19 +1332,22 @@ fn printEntries_longFormat(
     style: anytype,
     total_blocks: u64,
     print_total: bool,
+    column_peers: []const Entry,
 ) !void {
     std.debug.assert(options.long_format);
     std.debug.assert(print_total or total_blocks == 0);
-    // A directory section is headed by its total; an operand group is not.
-    if (print_total and entries.len > 0) {
-        try writer.print("total {d}\n", .{total_blocks});
+    // A directory section is headed by its total, including `total 0` for
+    // an empty directory. Operand groups never print one (issue #119).
+    if (print_total) {
+        try writeLongFormatTotal(writer, options, total_blocks);
     }
 
     // Nothing else to print, and every column width below is a reduction that
     // needs at least one entry to reduce over.
     if (entries.len == 0) return;
+    std.debug.assert(column_peers.len >= entries.len);
 
-    const widths = try measureLongFormatWidths(allocator, entries, options);
+    const widths = try measureLongFormatWidths(allocator, column_peers, options);
 
     // Print each entry in long format
     for (entries) |entry| {
@@ -1276,7 +1360,7 @@ fn printEntries_longFormat(
 /// entries a second time, so the -s width is folded in below instead.
 fn measureLongFormatWidths(
     allocator: std.mem.Allocator,
-    entries: []Entry,
+    entries: []const Entry,
     options: LsOptions,
 ) !LongFormatWidths {
     std.debug.assert(entries.len > 0);
