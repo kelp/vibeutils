@@ -224,6 +224,11 @@
 
 ### Fixed
 
+- **Utilities die by SIGPIPE like GNU when stdout's reader closes
+  early.** `util | head` now exits 141 silently instead of reporting a
+  write error with exit 1, so pipelines under `set -e` / `pipefail`
+  behave as scripts expect. `tee -p` keeps its POSIX semantics and
+  diagnoses write failures instead of dying to the signal.
 - **`tail -f` follows standard input.** With no operand, or with the
   `-` operand, tail now keeps reading after the initial dump and holds
   past EOF until killed, as POSIX requires; previously it exited as if
