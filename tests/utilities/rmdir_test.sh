@@ -410,4 +410,36 @@ test_rmdir() {
             "Expected: '$abbrev_v_expected', got exit=$abbrev_v_exit stderr='$abbrev_v_err'"
     fi
 
+    echo -e "${CYAN}Testing TTY-gated actionable hints...${NC}"
+
+    # Redirected stderr is not a TTY, so the GNU diagnostic remains exact.
+    local hint_pipe_dir="$TEMP_DIR/rmdir_hint_pipe"
+    mkdir -p "$hint_pipe_dir"
+    create_temp_file "content" "$hint_pipe_dir/file.txt"
+    local hp_cmd="" hp_out="" hp_err="" hp_exit=""
+    run_command hp_cmd hp_out hp_err hp_exit "$binary" "$hint_pipe_dir"
+    local hp_expected="rmdir: failed to remove '$hint_pipe_dir': Directory not empty"
+    if [[ $hp_exit -eq 1 && "$hp_err" == "$hp_expected" && "$hp_err" != *"("* ]]; then
+        print_test_result "rmdir piped stderr omits actionable hint" "PASS"
+    else
+        print_test_result "rmdir piped stderr omits actionable hint" "FAIL" \
+            "Expected exit 1 and exactly '$hp_expected', got exit=$hp_exit stderr='$hp_err'"
+    fi
+    rm -rf "$hint_pipe_dir"
+
+    # A PTY on stderr exercises the production isatty path.
+    local hint_tty_dir="$TEMP_DIR/rmdir_hint_tty"
+    mkdir -p "$hint_tty_dir"
+    create_temp_file "content" "$hint_tty_dir/file.txt"
+    local ht_err=""
+    ht_err=$(run_with_stderr_tty "$binary" "$hint_tty_dir")
+    local ht_suffix="Directory not empty (use rm -r to remove recursively)"
+    if [[ "$ht_err" == *"$ht_suffix"* ]]; then
+        print_test_result "rmdir TTY stderr appends actionable hint" "PASS"
+    else
+        print_test_result "rmdir TTY stderr appends actionable hint" "FAIL" \
+            "Expected suffix '$ht_suffix', got stderr='$ht_err'"
+    fi
+    rm -rf "$hint_tty_dir"
+
 }

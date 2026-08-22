@@ -14,6 +14,11 @@ const build_options = @import("build_options");
 const force_import_lint = @import("force_import_lint.zig");
 const testdir_lint = @import("testdir_lint.zig");
 
+// Same shape as force_import_lint: the live-tree caller lives here so dropping
+// `_ = @import("main_io_lint.zig")` from the force-import block cannot take
+// the writer-setup scan down with the fixture tests.
+const main_io_lint = @import("main_io_lint.zig");
+
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
 
@@ -266,6 +271,43 @@ pub fn printErrorWithProgram(
     }
 }
 
+/// Whether a diagnostic suffix is for a read or a write.
+pub const HintOp = enum { read, write };
+
+/// Suffix for a TTY diagnostic, or null.
+pub fn actionableHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
+    return switch (err) {
+        error.DirNotEmpty => " (use rm -r to remove recursively)",
+        error.AccessDenied => ownedModeHint(operand, op),
+        else => null,
+    };
+}
+
+fn ownedModeHint(operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    if (std.c.geteuid() == 0) return null;
+    const info = file.FileInfo.lstat(operand) catch return null;
+    if (info.uid != @as(u32, @intCast(std.c.geteuid()))) return null;
+    std.debug.assert(info.uid == @as(u32, @intCast(std.c.geteuid())));
+    const owner_read = info.mode & 0o400 != 0;
+    const owner_write = info.mode & 0o200 != 0;
+    return switch (op) {
+        .read => if (!owner_read) " (file is not readable)" else null,
+        .write => if (!owner_write) " (file is not writable)" else null,
+    };
+}
+
+/// Combine the TTY seam with `actionableHint`. Call sites append
+/// `maybeHint(...) orelse ""`.
+pub fn maybeHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
+    if (!env.stderrHintsEnabled()) return null;
+    return actionableHint(err, operand, op);
+}
+
 /// Print hint message with custom program name to a specific writer
 ///
 /// Hints are informational suggestions for the user, displayed in cyan.
@@ -472,6 +514,19 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     // green — which is how this lint could have gone quietly blind (issue #95).
     // src/ holds 48 utilities plus src/common and src/ls.
     try testing.expect(scanned >= 48);
+}
+
+test "maybeHint DirNotEmpty suffix follows overlay" {
+    const testing = std.testing;
+    const saved = env.test_stderr_hints;
+    defer env.test_stderr_hints = saved;
+    env.test_stderr_hints = false;
+    try testing.expect(maybeHint(error.DirNotEmpty, "src", .write) == null);
+    env.test_stderr_hints = true;
+    try testing.expectEqualStrings(
+        " (use rm -r to remove recursively)",
+        maybeHint(error.DirNotEmpty, "src", .write).?,
+    );
 }
 
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {
@@ -743,6 +798,7 @@ test {
     _ = @import("icons.zig");
     _ = @import("ls_colors.zig");
     _ = @import("main.zig");
+    _ = @import("main_io_lint.zig");
     _ = @import("mode.zig");
     _ = @import("parallel.zig");
     _ = @import("path.zig");
@@ -783,6 +839,26 @@ test "every src/common module with tests is force-imported (issue #95)" {
         std.debug.print("{s}", .{report.writer.buffered()});
         return err;
     };
+}
+
+// Lives in lib.zig, the test root, on purpose. If this test lived only in
+// main_io_lint.zig, dropping that module from the force-import block would
+// take the live-tree scan down with the fixtures.
+test "utilityMain writer-setup needles are present in production main.zig" {
+    var report: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer report.deinit();
+
+    try std.testing.expect(build_options.common_source_dir.len > 0);
+    main_io_lint.verifyMainZig(
+        std.testing.allocator,
+        std.testing.io,
+        build_options.common_source_dir,
+        &report.writer,
+    ) catch |err| {
+        std.debug.print("{s}", .{report.writer.buffered()});
+        return err;
+    };
+    try std.testing.expectEqual(@as(usize, 0), report.writer.buffered().len);
 }
 
 // Lives in lib.zig for the same hole-close as the #95 test: if testdir_lint.zig
