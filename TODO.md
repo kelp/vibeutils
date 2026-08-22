@@ -1311,14 +1311,14 @@ full design.
   visibility
 
 ### 5. `tree` Utility
-- [ ] Recursive directory listing with box-drawing lines
-- [ ] File-type icons via common/icons
-- [ ] Truecolor/256/basic icon coloring (reuse ls pattern)
-- [ ] `-L` depth limit, `-d` directories only
-- [ ] `-I` pattern exclusion
-- [ ] Summary line (N directories, M files)
-- [ ] `--color=auto/always/never`, respect NO_COLOR
-- [ ] Man page
+- [x] Recursive directory listing with box-drawing lines
+- [x] File-type icons via common/icons
+- [x] Truecolor/256/basic icon coloring (reuse ls pattern)
+- [x] `-L` depth limit, `-d` directories only
+- [x] `-I` pattern exclusion
+- [x] Summary line (N directories, M files)
+- [x] `--color=auto/always/never`, respect NO_COLOR
+- [x] Man page
 
 ### 6. Progress Feedback for `cp`/`mv`/`dd`
 - [ ] Progress module in `src/common/`

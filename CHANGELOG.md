@@ -17,6 +17,14 @@
   green.
 
 ### Added
+- **`tree` lists directories as a UTF-8 box-drawing tree.** `-L`
+  caps depth, `-d` lists directories only, `-I` excludes names
+  (repeatable, with `|` alternatives), and `-a` includes hidden
+  entries. `--color=WHEN` and `--icons=WHEN` follow `ls`. Directory
+  symlinks are listed, not followed. Entries whose dirent kind is
+  unfilled (`.unknown`) are classified with `lstat` on the parent
+  directory so `-d`, summaries, and icons treat real directories as
+  directories.
 - **`ls` honors GNU `LS_COLORS` when color is on.** Type and suffix
   keys overlay the compiled palette; an invalid value prints a
   diagnostic and disables color for that invocation.
