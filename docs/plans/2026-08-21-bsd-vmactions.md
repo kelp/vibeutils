@@ -84,8 +84,10 @@ Wire a pin-check that actually runs on Linux CI (issue #133:
   runs `bash tests/tools/bsd-workflow_test.sh` so the pins cannot
   rot without a Linux job going red.
 
-Check the TODO box. No CHANGELOG (CI-only, not user-visible). No Zig
-unless CI shows a BSD-tag mismatch that must `SkipZigTest`.
+Check the TODO box. No CHANGELOG (CI-only, not user-visible). No
+Zig in this slice unless a guest job names a portability bug;
+then diagnose and fix it. Do not add Zig only to insert
+`SkipZigTest`.
 
 ## Out of scope
 
@@ -170,8 +172,20 @@ and checkout-before-VM). GPT REQUEST CHANGES (unconditional tool
 test + just recipe + Linux CI; independent jobs not a matrix
 `fail-fast`). Fable APPROVE. This revision locks those.
 
-Round 2 (this revision): owner PUT of `selected-actions` is
-still 403. Change the guest jobs from `uses: vmactions/…@SHA`
-to clone-at-SHA plus `uses: ./_vmactions/<os>-vm` so the
-workflow can start without expanding the allowlist. Do not
-vendor `node_modules`. Do not add a new TODO heading.
+Round 2: owner PUT of `selected-actions` is still 403. Change
+the guest jobs from `uses: vmactions/…@SHA` to clone-at-SHA
+plus `uses: ./_vmactions/<os>-vm`. Grok APPROVE. Fable
+APPROVE. GPT REQUEST CHANGES: do not treat SkipZigTest as the
+first response to a red guest job.
+
+Round 3: all three guest jobs required green. Diagnose and
+fix portability bugs. Skip only for a documented inapplicable
+test or upstream limitation. Pin-check assert 3 is per-job
+clone URL + `git checkout <sha>`. Do not write
+`uses: vmactions/` in comments. Grok APPROVE. Fable APPROVE.
+GPT REQUEST CHANGES: In-scope still said “No Zig unless
+SkipZigTest,” which contradicted diagnose-and-fix.
+
+Round 4 (this revision): that In-scope sentence now matches
+r3. Zig only to fix a guest-named portability bug, never to
+insert `SkipZigTest`.
