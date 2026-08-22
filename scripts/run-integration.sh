@@ -62,9 +62,34 @@ run_isolated() {
 # run. Both are gone.
 run_isolated_and_exit() {
     local rc=0
+    restore_zig_out_owner
     reap_stale_run_dirs "${TMPDIR:-/tmp}" 'vibeutils-run-*'
     run_isolated "$@" || rc=$?
     exit "$rc"
+}
+
+# The #150 contract test mkdir's zig-out/bin as root. A root-owned
+# install dir makes the next `zig build` in the same checkout fail with
+# AccessDenied. Hand the bin dir back to the checkout owner. Never walk
+# the whole zig-out tree: a recursive chown after `just test` blows the
+# contract test's 20s run_with_limit (ARM and ubuntu-latest both lost
+# the lock-waiter to SIGKILL before it could print).
+restore_zig_out_owner() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ -d "$PROJECT_ROOT/zig-out" ] || return 0
+    local repo_ugid out_ugid bin_ugid
+    repo_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT")" || return 0
+    out_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT/zig-out")" || return 0
+    [ "$out_ugid" = "$repo_ugid" ] ||
+        chown "$repo_ugid" "$PROJECT_ROOT/zig-out" || true
+    [ -d "$PROJECT_ROOT/zig-out/bin" ] || return 0
+    bin_ugid="$(stat -c '%u:%g' "$PROJECT_ROOT/zig-out/bin" 2>/dev/null ||
+        stat -f '%u:%g' "$PROJECT_ROOT/zig-out/bin")" || return 0
+    [ "$bin_ugid" = "$repo_ugid" ] && return 0
+    chown -R "$repo_ugid" "$PROJECT_ROOT/zig-out/bin" || true
+    chmod -R u+w "$PROJECT_ROOT/zig-out/bin" || true
 }
 
 # Not root, or explicitly told not to demote: run the suite directly.
@@ -77,8 +102,71 @@ if ! command -v setpriv >/dev/null 2>&1; then
     run_isolated_and_exit "$@"
 fi
 
+# Announce before any chown or lock wait so a SIGKILL'd runner still
+# greps as having started. write(2) is unbuffered; do not wrap this in
+# `2>/dev/null` — that discarded the line on CI, and the lock-waiter
+# then looked like it never executed (#150). `|| true` so a missing
+# python3 cannot abort the demotion path under `set -e`.
+python3 -c 'import os; os.write(2, b"integration: provisioning\n")' \
+    || echo "integration: provisioning '$TEST_USER'" >&2 \
+    || true
+
+restore_zig_out_owner
+
+# Serialize the id-check + useradd + home-chown window for this test
+# user. Two runners racing useradd can leave the home owned by a uid
+# that passwd no longer has, and setpriv then dies with "uid N not
+# found" (issue #150). flock(1) is Linux; mkdir is the macOS fallback.
+# Hold the lock only for provisioning, never for the suite itself.
+# The path is always /tmp, not $TMPDIR: useradd is machine-global, so
+# two runners that share VIBEUTILS_TEST_USER but not TMPDIR must still
+# serialize. /tmp is 1777, so an unprivileged runner can create the lock.
+USER_LOCK_FILE="/tmp/vibeutils-useradd-${TEST_USER}.lock"
+USER_LOCK_DIR="/tmp/vibeutils-useradd-${TEST_USER}.lockdir"
+USER_LOCK_KIND=""
+
+acquire_test_user_lock() {
+    local i=0
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$USER_LOCK_FILE" || return 1
+        flock -w 15 9 || return 1
+        USER_LOCK_KIND=flock
+        return 0
+    fi
+    while [ "$i" -lt 300 ]; do
+        if mkdir "$USER_LOCK_DIR" 2>/dev/null; then
+            USER_LOCK_KIND=mkdir
+            return 0
+        fi
+        sleep 0.05
+        i=$((i + 1))
+    done
+    return 1
+}
+
+release_test_user_lock() {
+    if [ "$USER_LOCK_KIND" = flock ]; then
+        flock -u 9 2>/dev/null || true
+        exec 9>&- 2>/dev/null || true
+    elif [ "$USER_LOCK_KIND" = mkdir ]; then
+        rmdir "$USER_LOCK_DIR" 2>/dev/null || true
+    fi
+    USER_LOCK_KIND=""
+}
+
+# A set -e abort between acquire and the explicit release would otherwise
+# hold the lock until this process dies, and the sibling's flock -w 15
+# plus the 20s SIGKILL leaves it with nothing to grep.
+trap 'release_test_user_lock' EXIT
+
+if ! acquire_test_user_lock; then
+    echo "integration: timed out waiting to provision '$TEST_USER'" >&2
+    run_isolated_and_exit "$@"
+fi
+
 if ! id "$TEST_USER" >/dev/null 2>&1; then
     if ! useradd -m -s /bin/bash "$TEST_USER" >/dev/null 2>&1; then
+        release_test_user_lock
         echo "integration: could not create '$TEST_USER'; permission-denied tests will fail" >&2
         run_isolated_and_exit "$@"
     fi
@@ -89,12 +177,10 @@ test_gid="$(id -g "$TEST_USER")"
 test_home="$(getent passwd "$TEST_USER" | cut -d: -f6)"
 test_tmp="${TMPDIR:-/tmp}/vibeutils-integration-$test_uid"
 
-# useradd is not concurrency-safe: two runs racing to create the same user
-# can leave the home directory owned by a uid that /etc/passwd no longer
-# agrees with, and a test user that cannot write its own home fails ~66
-# assertions for a reason unrelated to the code. Repair the ownership
-# rather than assume it. The race itself is issue #150.
+# Repair a leftover from a predecessor that raced before this lock
+# existed. Under the lock the owner should already match.
 chown "$test_uid:$test_gid" "$test_home" 2>/dev/null || true
+release_test_user_lock
 
 mkdir -p "$test_tmp"
 chown "$test_uid:$test_gid" "$test_tmp"
@@ -107,8 +193,14 @@ fi
 
 # The test user needs to read the binaries and the test scripts, but never
 # to write inside the tree — everything it creates goes under $TMPDIR — so
-# the checkout stays root-owned.
-chmod -R a+rX "$PROJECT_ROOT/zig-out" "$PROJECT_ROOT/tests" 2>/dev/null || true
+# the checkout stays root-owned. Do not recurse into zig-out: a just-built
+# tree is already a+rX, and walking it contends with the sibling runner
+# under the same 20s budget.
+chmod a+rX "$PROJECT_ROOT/zig-out" "$PROJECT_ROOT/zig-out/bin" \
+    2>/dev/null || true
+chmod a+rX "$PROJECT_ROOT/zig-out/bin"/* 2>/dev/null || true
+chmod -R a+rX "$PROJECT_ROOT/tests" 2>/dev/null || true
+restore_zig_out_owner
 
 echo "integration: dropping to '$TEST_USER' so permission-denied tests are meaningful"
 
