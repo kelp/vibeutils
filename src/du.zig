@@ -1,8 +1,8 @@
 //! du - estimate file space usage
 //!
 //! The du utility displays the disk usage of files and directories.
-//! By default it reports disk usage in 1024-byte blocks for each
-//! directory argument and its subdirectories.
+//! By default it reports disk usage in human-readable 1024-based
+//! units. `-k` / `--block-size` restore numeric block counts.
 //!
 //! This implementation follows GNU coreutils du behavior.
 
@@ -89,7 +89,7 @@ const DuOptions = struct {
         },
         .human_readable = .{
             .short = 'h',
-            .desc = "Print sizes in human readable format (1K, 234M, 2G)",
+            .desc = "Print sizes in human readable format (default; 1K, 234M, 2G)",
         },
         .kilobytes = .{ .short = 'k', .desc = "Like --block-size=1K" },
         .gigabytes = .{ .short = 'g', .desc = "Like --block-size=1G" },
@@ -204,6 +204,275 @@ fn resolveDerefMode(args: []const []const u8) DereferenceMode {
         }
     }
     return mode;
+}
+
+/// KEEP default vs last explicit size flag on argv. Independent argparse
+/// bools do not record order, so `du -k -h` and `du -h -k` look the same
+/// in DuOptions; this scan matches GNU last-wins the way resolveDerefMode
+/// does for -P/-H/-L.
+const SizeDisplay = enum {
+    human_1024,
+    human_si,
+    kilobytes,
+    megabytes,
+    gigabytes,
+    bytes,
+    custom_block,
+};
+
+fn resolveSizeMode(args: []const []const u8) SizeDisplay {
+    // CLI argv is tiny; the bound is the scan's explicit ceiling.
+    assert(args.len < 65536);
+    var mode: SizeDisplay = .human_1024;
+    var saw_size_flag = false;
+    var last_was_k = false;
+    var i: u32 = 0;
+    const args_len: u32 = @intCast(args.len);
+    while (i < args_len) {
+        const arg = args[i];
+        i += 1;
+        if (std.mem.eql(u8, arg, "--")) break;
+        if (arg.len < 2 or arg[0] != '-') continue;
+        if (arg[1] == '-') {
+            switch (applySizeModeLong(arg, &mode)) {
+                .no => {},
+                .yes => {
+                    saw_size_flag = true;
+                    last_was_k = false;
+                },
+                .yes_skip_next => {
+                    saw_size_flag = true;
+                    last_was_k = false;
+                    if (i < args_len) i += 1;
+                },
+                .skip_next => {
+                    if (i < args_len) i += 1;
+                },
+            }
+        } else {
+            const consume_value = applySizeModeCluster(
+                arg,
+                &mode,
+                &saw_size_flag,
+                &last_was_k,
+            );
+            if (consume_value and i < args_len) i += 1;
+        }
+    }
+    if (!saw_size_flag) assert(mode == .human_1024);
+    if (last_was_k) assert(mode == .kilobytes);
+    return mode;
+}
+
+const SizeModeLongHit = enum { no, yes, yes_skip_next, skip_next };
+
+/// Hyphenated long spellings argparse knows for DuOptions. Unique-prefix
+/// resolution must use this full set so `--s` stays ambiguous, matching GNU.
+const du_long_flags = [_][]const u8{
+    "all",
+    "bytes",
+    "total",
+    "max-depth",
+    "human-readable",
+    "kilobytes",
+    "gigabytes",
+    "megabytes",
+    "dereference",
+    "dereference-args",
+    "no-dereference",
+    "no-follow",
+    "report-errors",
+    "summarize",
+    "separate-dirs",
+    "one-file-system",
+    "apparent-size",
+    "block-size",
+    "count-links",
+    "ignore-pattern",
+    "threshold",
+    "si",
+    "help",
+    "version",
+    "color",
+    "icons",
+};
+
+fn applySizeModeLong(arg: []const u8, mode: *SizeDisplay) SizeModeLongHit {
+    assert(arg.len >= 3);
+    assert(arg[0] == '-');
+    assert(arg[1] == '-');
+    const body = arg[2..];
+    const has_eq = std.mem.indexOfScalar(u8, body, '=') != null;
+    const canonical = resolveDuLongName(body) orelse return .no;
+    if (std.mem.eql(u8, canonical, "human-readable")) {
+        mode.* = .human_1024;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "si")) {
+        mode.* = .human_si;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "bytes")) {
+        mode.* = .bytes;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "kilobytes")) {
+        mode.* = .kilobytes;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "megabytes")) {
+        mode.* = .megabytes;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "gigabytes")) {
+        mode.* = .gigabytes;
+        return .yes;
+    }
+    if (std.mem.eql(u8, canonical, "block-size")) {
+        mode.* = .custom_block;
+        return if (has_eq) .yes else .yes_skip_next;
+    }
+    if (has_eq) return .no;
+    if (isValuedLongName(canonical)) return .skip_next;
+    return .no;
+}
+
+/// Exact match first, then the unique GNU prefix, same order as argparse.
+fn resolveDuLongName(body: []const u8) ?[]const u8 {
+    assert(body.len > 0);
+    const name = if (std.mem.indexOfScalar(u8, body, '=')) |eq| body[0..eq] else body;
+    if (name.len == 0) return null;
+    for (du_long_flags) |long| {
+        if (std.mem.eql(u8, long, name)) return long;
+    }
+    var match: ?[]const u8 = null;
+    var count: u32 = 0;
+    const bound: u32 = du_long_flags.len;
+    var i: u32 = 0;
+    while (i < bound) : (i += 1) {
+        const long = du_long_flags[i];
+        if (std.mem.startsWith(u8, long, name)) {
+            count += 1;
+            match = long;
+        }
+    }
+    if (count == 1) {
+        assert(match != null);
+        return match;
+    }
+    assert(count != 1);
+    return null;
+}
+
+fn isValuedLongName(canonical: []const u8) bool {
+    assert(canonical.len > 0);
+    assert(std.mem.indexOfScalar(u8, canonical, '=') == null);
+    const names = [_][]const u8{
+        "threshold",
+        "ignore-pattern",
+        "max-depth",
+        "color",
+        "icons",
+    };
+    for (names) |name| {
+        if (std.mem.eql(u8, canonical, name)) return true;
+    }
+    return false;
+}
+
+/// Returns true when a value-taking short (`-B`/`-d`/`-I`/`-t`) has no
+/// attached argument, so the next argv token is the value. Size-mode
+/// letters after that point belong to the value, not the cluster.
+fn applySizeModeCluster(
+    arg: []const u8,
+    mode: *SizeDisplay,
+    saw: *bool,
+    last_was_k: *bool,
+) bool {
+    assert(arg.len >= 2);
+    assert(arg[0] == '-');
+    assert(arg[1] != '-');
+    var consume_next = false;
+    var j: u32 = 1;
+    const arg_len: u32 = @intCast(arg.len);
+    while (j < arg_len) : (j += 1) {
+        switch (arg[j]) {
+            'h' => {
+                mode.* = .human_1024;
+                saw.* = true;
+                last_was_k.* = false;
+            },
+            'k' => {
+                mode.* = .kilobytes;
+                saw.* = true;
+                last_was_k.* = true;
+            },
+            'm' => {
+                mode.* = .megabytes;
+                saw.* = true;
+                last_was_k.* = false;
+            },
+            'g' => {
+                mode.* = .gigabytes;
+                saw.* = true;
+                last_was_k.* = false;
+            },
+            'b' => {
+                mode.* = .bytes;
+                saw.* = true;
+                last_was_k.* = false;
+            },
+            'B' => {
+                mode.* = .custom_block;
+                saw.* = true;
+                last_was_k.* = false;
+                if (j + 1 < arg_len) break;
+                consume_next = true;
+            },
+            'd', 'I', 't' => {
+                if (j + 1 < arg_len) break;
+                consume_next = true;
+            },
+            else => {},
+        }
+    }
+    return consume_next;
+}
+
+fn applySizeDisplay(config: *DuConfig, mode: SizeDisplay) void {
+    assert(config.block_size != 0);
+    switch (mode) {
+        .human_1024 => {
+            config.human_readable = true;
+            config.si = false;
+        },
+        .human_si => {
+            config.human_readable = true;
+            config.si = true;
+        },
+        .kilobytes => {
+            config.human_readable = false;
+            config.block_size = 1024;
+        },
+        .megabytes => {
+            config.human_readable = false;
+            config.block_size = 1048576;
+        },
+        .gigabytes => {
+            config.human_readable = false;
+            config.block_size = 1073741824;
+        },
+        .bytes => {
+            config.human_readable = false;
+            config.apparent_size = true;
+            config.block_size = 1;
+        },
+        .custom_block => config.human_readable = false,
+    }
+    switch (mode) {
+        .human_1024, .human_si => {},
+        else => assert(!config.human_readable),
+    }
 }
 
 /// Parse a threshold value string, supporting optional sign and size suffixes.
@@ -1146,8 +1415,9 @@ pub fn runDu(
     }
 
     const deref_mode = resolveDerefMode(args);
-    const config = resolveConfig(allocator, opts, deref_mode) catch |err|
+    var config = resolveConfig(allocator, opts, deref_mode) catch |err|
         return runDu_resolveConfigError(allocator, stderr, opts, err);
+    applySizeDisplay(&config, resolveSizeMode(args));
 
     // Initialize styling based on resolved display config
     const style = runDu_initStyle(allocator, stdout, config);
@@ -1344,7 +1614,7 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) void {
         \\  -d, --max-depth=N     print the total for a directory only if it is N
         \\                          or fewer levels below the command line argument
         \\  -g                    like --block-size=1G
-        \\  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
+        \\  -h, --human-readable  print sizes in human readable format (default)
         \\  -H, --dereference-args  dereference only command-line symlink arguments
         \\  -I PATTERN            exclude files matching PATTERN
         \\  -k                    like --block-size=1K
@@ -1368,7 +1638,7 @@ fn printHelp(allocator: Allocator, writer: *std.Io.Writer) void {
         \\
         \\Display values are in units of the first available SIZE from --block-size,
         \\and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
-        \\Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
+        \\By default sizes are human-readable (powers of 1024). Use -k for 1024-byte blocks.
         \\
         \\SIZE is an integer and optional unit (example: 10K is 10*1024).
         \\Units are K, M, G, T, P, E (powers of 1024) or KB, MB, ... (powers of 1000).
@@ -1383,6 +1653,170 @@ fn printVersion(writer: *std.Io.Writer) void {
 // ============================================================================
 // TESTS
 // ============================================================================
+
+const TestDuSizeKind = enum {
+    binary_human,
+    si_human,
+    numeric,
+};
+
+// Empty test so the helpers below sit after the file's first test block.
+// audit-check treats private fns declared there as test-section code, not
+// production paths that decayed into test-only use.
+test {}
+
+fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
+    const file = try tmp_dir.dir.createFile(io, "allocated.bin", .{});
+    defer file.close(io);
+    const data = [_]u8{'x'} ** 2048;
+    try file.writeStreamingAll(io, &data);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "allocated.bin", &path_buf);
+    const path = path_buf[0..path_len];
+    std.debug.assert(path.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(path));
+    return testing.allocator.dupe(u8, path);
+}
+
+fn testRunDuSizeField(
+    io: std.Io,
+    args: []const []const u8,
+) ![]u8 {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(args[args.len - 1].len > 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const output = stdout_aw.writer.buffered();
+    const tab = std.mem.indexOfScalar(u8, output, '\t') orelse
+        return error.MissingDuSizeField;
+    try testing.expect(tab > 0);
+    return testing.allocator.dupe(u8, output[0..tab]);
+}
+
+fn testExpectDuSizeKind(
+    io: std.Io,
+    args: []const []const u8,
+    expected: TestDuSizeKind,
+) !void {
+    const field = try testRunDuSizeField(io, args);
+    defer testing.allocator.free(field);
+    try testing.expect(field.len > 0);
+
+    switch (expected) {
+        .binary_human => {
+            try testing.expect(std.mem.endsWith(u8, field, "K"));
+            try testing.expect(!std.mem.endsWith(u8, field, "kB"));
+        },
+        .si_human => {
+            try testing.expect(std.mem.endsWith(u8, field, "kB"));
+            try testing.expect(!std.mem.endsWith(u8, field, "K"));
+        },
+        .numeric => {
+            for (field) |byte| try testing.expect(std.ascii.isDigit(byte));
+            try testing.expect(std.mem.indexOfAny(u8, field, "KMGTPEkB") == null);
+        },
+    }
+}
+
+test "du defaults allocated file output to binary human-readable size" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    try testExpectDuSizeKind(io, &.{path}, .binary_human);
+}
+
+test "du explicit size overrides keep output numeric" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_][]const []const u8{
+        &.{ "-k", path },
+        &.{ "-m", path },
+        &.{ "-g", path },
+        &.{ "-b", path },
+        &.{ "--bytes", path },
+        &.{ "--block-size=1", path },
+        &.{ "--block-size", "1", path },
+        &.{ "-B", "1", path },
+        &.{ "-B1", path },
+    };
+    for (cases) |args| try testExpectDuSizeKind(io, args, .numeric);
+}
+
+test "du --si prints an allocated file with a decimal suffix" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    try testExpectDuSizeKind(io, &.{ "--si", path }, .si_human);
+}
+
+test "du size modes use argv last-wins order and stop at double dash" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_]struct {
+        args: []const []const u8,
+        expected: TestDuSizeKind,
+    }{
+        .{ .args = &.{ "-h", "-k", path }, .expected = .numeric },
+        .{ .args = &.{ "-k", "-h", path }, .expected = .binary_human },
+        .{ .args = &.{ "-kh", path }, .expected = .binary_human },
+        .{ .args = &.{ "-hk", path }, .expected = .numeric },
+        .{ .args = &.{ "--si", "-k", path }, .expected = .numeric },
+        .{ .args = &.{ "-k", "--si", path }, .expected = .si_human },
+        .{ .args = &.{ "-k", "--", path }, .expected = .numeric },
+    };
+    for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
+}
+
+test "du size-mode scan ignores block size threshold and ignore option values" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateDuAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_]struct {
+        args: []const []const u8,
+        expected: TestDuSizeKind,
+    }{
+        .{ .args = &.{ "-B1k", path }, .expected = .numeric },
+        .{ .args = &.{ "-B1K", path }, .expected = .numeric },
+        .{ .args = &.{ "-B", "1k", path }, .expected = .numeric },
+        .{ .args = &.{ "-t1k", path }, .expected = .binary_human },
+        .{ .args = &.{ "-t", "1k", path }, .expected = .binary_human },
+        .{ .args = &.{ "-Ifoo-k", path }, .expected = .binary_human },
+        .{ .args = &.{ "--thresh", "-4k", path }, .expected = .binary_human },
+        .{ .args = &.{ "--threshold", "-4k", path }, .expected = .binary_human },
+        .{ .args = &.{ "--threshold=-4k", path }, .expected = .binary_human },
+        .{ .args = &.{ "--ignore-pattern", "-k", path }, .expected = .binary_human },
+        .{ .args = &.{ "-k", "--human-r", path }, .expected = .binary_human },
+        .{ .args = &.{ "--blo", "1", path }, .expected = .numeric },
+    };
+    for (cases) |case| try testExpectDuSizeKind(io, case.args, case.expected);
+}
 
 test "parseBlockSize - pure numeric" {
     try testing.expectEqual(@as(?u64, 512), parseBlockSize("512"));

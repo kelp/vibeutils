@@ -68,6 +68,13 @@
   BSD defines none (#93).
 
 ### Changed
+- **`du` and `ls -l` print human-readable sizes by default**,
+  matching `df`. Bare `du` uses 1024-based unit suffixes; `-k`,
+  `-m`, `-g`, `-b`, and `--block-size` restore numeric counts
+  (last flag wins). Bare `ls -l` uses human sizes; `-k` restores
+  kilobytes unless `-h` is also given. Explicit `-h` still selects
+  relative timestamps on `ls`; the new default does not. Scripts
+  that parse raw `du` / `ls -l` numbers should pass `-k`.
 - **TTY stderr may append a parenthetical hint** on
   `Permission denied` (`cat`, `cp`) and `Directory not
   empty` (`rmdir`, `rm -d`). Piped stderr stays GNU-shaped.

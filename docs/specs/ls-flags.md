@@ -72,3 +72,8 @@
 | --block-size | no | no | no    | yes | no   | WONT |
 | --author | no | no   | no      | yes | no   | WONT |
 | --dereference-command-line-symlink-to-dir | no | no | no | yes | no | WONT |
+
+KEEP default (not a flag): `ls -l` prints 1024-based human-readable
+sizes, matching `df`. `-k` restores kilobyte counts unless `-h` is
+also given. `--block-size` stays WONT. GNU flag semantics are
+unchanged.
