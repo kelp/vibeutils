@@ -141,6 +141,11 @@ fn getCwdAlloc(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
 /// neither option is specified). -P forces physical resolution and wins
 /// when both flags are present.
 pub fn getWorkingDirectory(allocator: std.mem.Allocator, io: std.Io, args: PwdArgs) ![]const u8 {
+    // -L requests what is already the default (POSIX: pwd behaves as if -L
+    // were given), so accepting the flag has no observable effect; only
+    // -P can select physical resolution. Explicit discard documents that
+    // the flag is consumed by design, not ignored by accident.
+    _ = args.logical;
     const use_logical = !args.physical;
 
     if (use_logical) {
