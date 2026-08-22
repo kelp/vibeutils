@@ -1484,7 +1484,9 @@ test "ls long symlink target uses LS_COLORS regular file SGR" {
         const file = try tmp_dir.dir().createFile(io, "target.txt", .{});
         file.close(io);
     }
-    try tmp_dir.dir().symLink(io, "target.txt", "link.txt", .{});
+    const target_path = try tmp_dir.getPath("target.txt");
+    defer testing.allocator.free(target_path);
+    try tmp_dir.dir().symLink(io, target_path, "link.txt", .{});
     const root = try tmp_dir.getBasePath();
     defer testing.allocator.free(root);
 
@@ -1589,7 +1591,9 @@ test "ls long symlink omits end sequence when ln=0 and fi=0 leave names uncolore
         const file = try tmp_dir.dir().createFile(io, "target.txt", .{});
         file.close(io);
     }
-    try tmp_dir.dir().symLink(io, "target.txt", "link.txt", .{});
+    const target_path = try tmp_dir.getPath("target.txt");
+    defer testing.allocator.free(target_path);
+    try tmp_dir.dir().symLink(io, target_path, "link.txt", .{});
     const root = try tmp_dir.getBasePath();
     defer testing.allocator.free(root);
 
