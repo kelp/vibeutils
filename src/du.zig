@@ -825,6 +825,8 @@ const PrintedListing = struct {
     rows: std.ArrayListUnmanaged(PrintedRow) = .empty,
     max_bytes: u64 = 0,
     buffering: bool,
+    /// Set when a path copy or row append fails. The listing is not emitted.
+    oom: bool = false,
 
     fn init(allocator: Allocator, buffering: bool) PrintedListing {
         const listing = PrintedListing{
@@ -833,6 +835,7 @@ const PrintedListing = struct {
         };
         assert(listing.rows.items.len == 0);
         assert(listing.max_bytes == 0);
+        assert(!listing.oom);
         return listing;
     }
 
@@ -856,7 +859,15 @@ const PrintedListing = struct {
     ) void {
         assert(self.buffering);
         assert(path.len > 0);
-        const copy = self.allocator.dupe(u8, path) catch return;
+        if (self.oom) {
+            assert(self.oom);
+            return;
+        }
+        const copy = self.allocator.dupe(u8, path) catch {
+            self.oom = true;
+            assert(self.oom);
+            return;
+        };
         self.rows.append(self.allocator, .{
             .size_bytes = size_bytes,
             .path = copy,
@@ -864,6 +875,8 @@ const PrintedListing = struct {
             .is_link = is_link,
         }) catch {
             self.allocator.free(copy);
+            self.oom = true;
+            assert(self.oom);
             return;
         };
         if (size_bytes > self.max_bytes) self.max_bytes = size_bytes;
@@ -1589,6 +1602,17 @@ fn runDu_processPaths(
 
     if (config.total) {
         printEntry(&out, grand_total, config, "total", false, false);
+    }
+    if (listing.oom) {
+        assert(listing.oom);
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "cannot record listing: out of memory",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
     }
     emitPrintedListing(&out, config);
 
