@@ -692,6 +692,85 @@ test "copyFileContentsWithProgress updates and emits for every copied block" {
     try std.testing.expect(std.mem.find(u8, progress_output.writer.buffered(), "\r") != null);
 }
 
+/// Drain one copy-sized buffer from a pipe read end, then close it so the
+/// writer's next buffer fails after a successful `update` (`shown == true`).
+fn consumeOneCopyBufferThenClose(io: std.Io, file: std.Io.File) void {
+    var buf: [COPY_BUFFER_SIZE]u8 = undefined;
+    var got: usize = 0;
+    var reads: u32 = 0;
+    while (got < COPY_BUFFER_SIZE and reads < COPY_BUFFER_SIZE) : (reads += 1) {
+        const n = std.posix.read(file.handle, buf[got..]) catch break;
+        if (n == 0) break;
+        got += n;
+    }
+    assert(got <= COPY_BUFFER_SIZE);
+    assert(reads <= COPY_BUFFER_SIZE);
+    file.close(io);
+}
+
+test "copyFileContentsWithProgress finishes before a mid-copy write error diagnostic" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const size: usize = 3 * COPY_BUFFER_SIZE;
+    const content = try std.testing.allocator.alloc(u8, size);
+    defer std.testing.allocator.free(content);
+    @memset(content, 'x');
+
+    const source_create = try tmp_dir.dir.createFile(io, "source.bin", .{});
+    try source_create.writeStreamingAll(io, content);
+    source_create.close(io);
+    const source = try tmp_dir.dir.openFile(io, "source.bin", .{});
+    defer source.close(io);
+
+    const pipe_fds = try std.Io.Threaded.pipe2(.{});
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.fcntl(pipe_fds[0], std.os.linux.F.SETPIPE_SZ, COPY_BUFFER_SIZE);
+    }
+    const pipe_read = std.Io.File{ .handle = pipe_fds[0], .flags = .{ .nonblocking = false } };
+    const pipe_write = std.Io.File{ .handle = pipe_fds[1], .flags = .{ .nonblocking = false } };
+    const reader = try std.Thread.spawn(.{}, consumeOneCopyBufferThenClose, .{ io, pipe_read });
+    defer {
+        pipe_write.close(io);
+        reader.join();
+    }
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var tracker = progress.Tracker{
+        .writer = &output.writer,
+        .program = "cp",
+        .label = "source.bin",
+        .total = @intCast(size),
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .copy_line,
+    };
+
+    if (copyFileContentsWithProgress(io, source, pipe_write, &tracker)) |_| {
+        try std.testing.expect(false);
+    } else |err| {
+        try output.writer.print("cp: cannot copy: {s}\n", .{lib.posixErrorString(err)});
+    }
+
+    const diagnostic = "cp: cannot copy:";
+    const rendered = output.writer.buffered();
+    try std.testing.expect(std.mem.find(u8, rendered, diagnostic) != null);
+    const last_cr = std.mem.lastIndexOfScalar(u8, rendered, '\r').?;
+    const after_cr = rendered[last_cr + 1 ..];
+    try std.testing.expect(std.mem.startsWith(u8, after_cr, diagnostic));
+    try std.testing.expect(std.mem.find(u8, after_cr, "copying") == null);
+    try std.testing.expect(!tracker.shown);
+    try std.testing.expect(tracker.bytes_done >= COPY_BUFFER_SIZE);
+}
+
 test "copyFileContents without a tracker still copies bytes" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
