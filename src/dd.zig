@@ -2665,21 +2665,43 @@ test "runDd status=progress finished line includes the flushed short block" {
     try testing.expect(std.mem.find(u8, finished, "512 bytes") == null);
 }
 
-/// Drain `want` bytes from a pipe read end, then close it so the next
-/// obs-sized write fails after earlier flushes already succeeded.
-fn consumePipeBytesThenClose(io: std.Io, file: std.Io.File, want: usize) void {
+/// True only when SETPIPE_SZ actually left the pipe holding two obs
+/// flushes and not three. A discarded or oversized cap lets every
+/// flush fit in the default 64KiB buffer and the write never fails.
+fn linuxPipeCappedToTwoObs(read_fd: std.posix.fd_t, obs: usize) bool {
+    std.debug.assert(obs > 0);
+    const want: usize = 2 * obs;
+    const set_rc = std.os.linux.fcntl(read_fd, std.os.linux.F.SETPIPE_SZ, want);
+    if (std.os.linux.errno(set_rc) != .SUCCESS) return false;
+    const got = std.os.linux.fcntl(read_fd, std.os.linux.F.GETPIPE_SZ, 0);
+    if (std.os.linux.errno(got) != .SUCCESS) return false;
+    std.debug.assert(got > 0);
+    return got >= want and got < 3 * obs;
+}
+
+/// Wait until the pipe holds `want` unread bytes, then close the read
+/// end so the next obs flush fails. Never drain: consuming frees space
+/// and can let the third flush succeed before we close.
+fn closePipeReadWhenFull(io: std.Io, file: std.Io.File, want: usize) void {
     std.debug.assert(want > 0);
-    var buf: [4096]u8 = undefined;
-    var got: usize = 0;
-    var reads: u32 = 0;
-    const read_max: u32 = @intCast(want);
-    while (got < want and reads < read_max) : (reads += 1) {
-        const n = std.posix.read(file.handle, buf[0..@min(buf.len, want - got)]) catch break;
-        if (n == 0) break;
-        got += n;
+    var polls: u32 = 0;
+    const poll_max: u32 = 1_000_000;
+    while (polls < poll_max) : (polls += 1) {
+        var pfds = [1]std.posix.pollfd{.{
+            .fd = file.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        _ = std.posix.poll(&pfds, -1) catch break;
+        var avail: c_int = 0;
+        _ = std.os.linux.ioctl(
+            file.handle,
+            std.os.linux.T.FIONREAD,
+            @intFromPtr(&avail),
+        );
+        if (avail >= want) break;
     }
-    std.debug.assert(got <= want);
-    std.debug.assert(reads <= read_max);
+    std.debug.assert(polls <= poll_max);
     file.close(io);
 }
 
@@ -2708,6 +2730,8 @@ test "runDd status=progress mid-helper write success leaves progress stale" {
     common.progress.test_delay_ns = 0;
     defer common.progress.test_delay_ns = null;
 
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
     const io = testing.io;
     const obs: usize = 4096;
     const ibs: usize = 6144;
@@ -2720,20 +2744,21 @@ test "runDd status=progress mid-helper write success leaves progress stale" {
     try common.test_utils.createTestFile(io, tmp_dir.dir(), "input.bin", &payload);
 
     const pipe_fds = try std.Io.Threaded.pipe2(.{});
-    if (comptime builtin.os.tag == .linux) {
-        _ = std.os.linux.fcntl(pipe_fds[0], std.os.linux.F.SETPIPE_SZ, 2 * obs);
-    }
     const pipe_read = std.Io.File{ .handle = pipe_fds[0], .flags = .{ .nonblocking = false } };
     const pipe_write = std.Io.File{ .handle = pipe_fds[1], .flags = .{ .nonblocking = false } };
-    const reader = try std.Thread.spawn(
+    defer pipe_write.close(io);
+    if (!linuxPipeCappedToTwoObs(pipe_fds[0], obs)) {
+        pipe_read.close(io);
+        return error.SkipZigTest;
+    }
+    // Close only after 2*obs is buffered. Draining would free space
+    // and let the third flush succeed (exit 0, tooth never bites).
+    const closer = try std.Thread.spawn(
         .{},
-        consumePipeBytesThenClose,
+        closePipeReadWhenFull,
         .{ io, pipe_read, 2 * obs },
     );
-    defer {
-        pipe_write.close(io);
-        reader.join();
-    }
+    defer closer.join();
 
     const input_path = try tmp_dir.getPath("input.bin");
     defer testing.allocator.free(input_path);
