@@ -3609,7 +3609,7 @@ test "stat -c format: group name %G" {
     test_file.close(testing.io);
     // `%G` prints the numeric gid when getgrgid is null, which is GNU-
     // correct. Skip rather than requiring a name the guest NSS lacks.
-    try common.test_dir.skipUnlessNamedEgidGroup(try tmp_dir.fileGid("test.txt"));
+    try common.test_dir.skipUnlessGroupNamed(try tmp_dir.fileGid("test.txt"));
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const test_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);

@@ -1844,7 +1844,7 @@ fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *TestDir) ![]u8 {
 
 fn testSkipUnlessDuHumanSuffix(tmp_dir: *TestDir) !void {
     const blocks = try tmp_dir.fileBlocks512("allocated.bin");
-    std.debug.assert(blocks == blocks);
+    std.debug.assert(blocks < std.math.maxInt(u64));
     try common.test_dir.skipUnlessAllocatedAtLeast1KiB(blocks);
 }
 
@@ -1864,7 +1864,7 @@ fn testCreateDuThresholdFile(io: std.Io, tmp_dir: *TestDir) ![]u8 {
 
 fn testSkipUnlessDuThreshold4k(tmp_dir: *TestDir) !void {
     const blocks = try tmp_dir.fileBlocks512("threshold.bin");
-    std.debug.assert(blocks == blocks);
+    std.debug.assert(blocks < std.math.maxInt(u64));
     try common.test_dir.skipUnlessAllocatedBetween1KiBAnd4KiB(blocks);
 }
 

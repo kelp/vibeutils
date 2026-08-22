@@ -282,7 +282,7 @@ pub const TestDir = struct {
     pub fn fileBlocks512(self: *TestDir, name: []const u8) !u64 {
         const st = try kernelStatAt(self.dir().handle, name);
         std.debug.assert(name.len > 0);
-        std.debug.assert(st.blocks == st.blocks);
+        std.debug.assert(st.blocks < std.math.maxInt(u64));
         return st.blocks;
     }
 
@@ -291,7 +291,7 @@ pub const TestDir = struct {
     pub fn fileGid(self: *TestDir, name: []const u8) !u32 {
         const st = try kernelStatAt(self.dir().handle, name);
         std.debug.assert(name.len > 0);
-        std.debug.assert(st.gid == st.gid);
+        std.debug.assert(st.gid <= std.math.maxInt(u32));
         return st.gid;
     }
 
@@ -301,7 +301,7 @@ pub const TestDir = struct {
     pub fn fileDev(self: *TestDir, name: []const u8) !u64 {
         const st = try kernelStatAt(self.dir().handle, name);
         std.debug.assert(name.len > 0);
-        std.debug.assert(st.dev == st.dev);
+        std.debug.assert(st.dev < std.math.maxInt(u64));
         return st.dev;
     }
 
@@ -359,17 +359,6 @@ pub fn howmany512To1k(blocks: u64) u64 {
     std.debug.assert(converted >= @divFloor(blocks, 2));
     std.debug.assert(blocks == 0 or converted >= 1);
     return converted;
-}
-
-/// Skip when a test needs a resolvable group that equals the effective gid.
-/// Linux and macOS stay live; only FreeBSD, OpenBSD, and NetBSD skip.
-pub fn skipUnlessNamedEgidGroup(gid: u32) !void {
-    const tag = builtin.os.tag;
-    if (tag != .freebsd and tag != .openbsd and tag != .netbsd) return;
-    if (std.c.getgrgid(gid) != null and gid == std.c.getegid()) return;
-    try testing.expect(tag == .freebsd or tag == .openbsd or tag == .netbsd);
-    try testing.expect(std.c.getgrgid(gid) == null or gid != std.c.getegid());
-    return error.SkipZigTest;
 }
 
 /// Skip when `getgrgid` cannot name `gid`. Group-name tests (`-group`, `%G`,

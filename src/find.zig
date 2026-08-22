@@ -7193,13 +7193,8 @@ test "find: -group matches files by group name" {
     // A guest workspace can be setgid to a host gid missing from NSS; skip
     // when getgrgid is still null after the chown attempt.
     const file_gid = try tmp.fileGid("grpfile.txt");
-    try common.test_dir.skipUnlessNamedEgidGroup(file_gid);
-    const group_info = common.user_group.getGroupById(@intCast(file_gid), allocator) catch |err| {
-        if (err == error.GroupNotFound) {
-            try common.test_dir.skipUnlessGroupNamed(file_gid);
-        }
-        return err;
-    };
+    try common.test_dir.skipUnlessGroupNamed(file_gid);
+    const group_info = try common.user_group.getGroupById(@intCast(file_gid), allocator);
     try testing.expect(group_info.name.len > 0);
     const groupname = group_info.name;
 
@@ -7239,7 +7234,7 @@ test "find: -nogroup matches nothing for normal files" {
     // guest whose file gid is missing from NSS, so the "normal files have
     // a named group" premise is skipped rather than inverted.
     const file_gid = try tmp.fileGid("normalfile.txt");
-    try common.test_dir.skipUnlessNamedEgidGroup(file_gid);
+    try common.test_dir.skipUnlessGroupNamed(file_gid);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
