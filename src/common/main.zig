@@ -3,7 +3,7 @@
 //! This module provides `utilityMain`, a composite wrapper that standardizes:
 //! - Arena allocator setup
 //! - Process argument parsing
-//! - 8KB buffered stdout/stderr writers
+//! - 8KB buffered stdout and unbuffered stderr writers
 //! - Calling the run function
 //! - Flushing buffers
 //! - Exiting with the returned code
@@ -40,8 +40,8 @@ pub fn utilityMain(
 
     // Parse process arguments
     const args = init.minimal.args.toSlice(allocator) catch |err| {
-        var stderr_buf: [256]u8 = undefined;
-        var stderr_w = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
+        var stderr_buffer: [0]u8 = .{};
+        var stderr_w = lib.unbufferedStderr(io, &stderr_buffer);
         const stderr = &stderr_w.interface;
         stderr.print(
             "error: failed to allocate arguments: {s}\n",
@@ -94,18 +94,17 @@ pub fn runWithStreamingFiles(
 ) u8 {
     std.debug.assert(args.len >= 1);
 
+    // Buffer stdout for throughput while keeping stderr immediately visible.
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = stdout_file.writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = stderr_file.writerStreaming(io, &stderr_buffer);
+    var stderr_buffer: [0]u8 = .{};
+    var stderr_writer = lib.unbufferedStderr(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    // A future edit must keep both buffers at 8KB together; shrinking one
-    // and forgetting to flush the tail is the regression this extract pins.
     std.debug.assert(stdout_buffer.len == 8192);
-    std.debug.assert(stdout_buffer.len == stderr_buffer.len);
+    std.debug.assert(stderr_writer.interface.buffer.len == 0);
 
     const exit_code = runFn(allocator, io, args[1..], stdout, stderr) catch |err| {
         stderr.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};

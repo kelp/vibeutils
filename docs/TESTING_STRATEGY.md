@@ -36,6 +36,31 @@ Integration tests verify interactions between modules and real-world scenarios:
 - **Purpose**: Test complete command workflows
 - **Coverage**: Cross-module interactions, file system operations
 
+### POSIX I/O Contracts
+
+The POSIX I/O suite covers four runtime contracts:
+
+1. `>>` preserves a seeded prefix rather than overwriting it.
+2. A closed stdout pipe is observed as SIGPIPE or EPIPE without hanging.
+3. Stderr is unbuffered.
+4. Plain, help, and unknown-option invocations use the measured POSIX/GNU
+   exit-status table.
+
+`tests/lib/posix_io.sh` applies contracts 1, 2, and 4 to every utility.
+The explicit fixture table is the fifth contract: every name in
+`build/utils.zig`, including `[`, must have deterministic arguments and stdin
+from `/dev/null`. When adding a utility, add its
+`posix_io_has_fixture` row at the same time.
+
+`tests/tools/posix_io_test.sh` is the coverage oracle. Its cat wait-test
+requires a missing-file diagnostic while cat is still blocked on stdin, and
+its env wait-test requires the verbose clearing diagnostic while env is still
+waiting for its child. These two representatives prove stderr is visible
+before process exit without repeating a timing-sensitive wait-test 48 times.
+Per-utility runs use `$TEMP_DIR/posix_io_scratch`, whose name and child files
+must not contain utility names; `test_posix_io` removes it at its single
+return and must not replace the integration runner's `EXIT` trap.
+
 ### Test Utilities
 
 Common testing utilities are provided in:

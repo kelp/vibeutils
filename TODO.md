@@ -1343,11 +1343,11 @@ that would have caught it — and similar bugs — earlier.
 - [x] Test dup'd descriptors (`2>&1 >> file`)
 
 ### 2. POSIX Behavioral Conformance Suite
-- [ ] `>>` must append, not overwrite
-- [ ] Stdout to a closed pipe must produce SIGPIPE/EPIPE
-- [ ] Stderr must be unbuffered
-- [ ] Exit codes conform to POSIX spec
-- [ ] Utility-agnostic: same I/O contract tests run
+- [x] `>>` must append, not overwrite
+- [x] Stdout to a closed pipe must produce SIGPIPE/EPIPE
+- [x] Stderr must be unbuffered
+- [x] Exit codes conform to POSIX spec
+- [x] Utility-agnostic: same I/O contract tests run
       against every binary
 
 ### 3. Adopt Shared TestDir Across All Utilities
