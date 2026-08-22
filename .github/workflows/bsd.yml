@@ -87,6 +87,7 @@ jobs:
           prepare: |
             set -eu
             pkg_add curl
+            pkg_add xz
             export PATH="/usr/local/bin:$PATH"
             curl -fsSL -o /tmp/zig.tar.xz \
               https://ziglang.org/download/0.16.0/zig-x86_64-openbsd-0.16.0.tar.xz
@@ -114,6 +115,7 @@ jobs:
           prepare: |
             set -eu
             pkg_add curl
+            pkg_add xz
             export PATH="/usr/pkg/bin:/usr/local/bin:$PATH"
             curl -fsSL -o /tmp/zig.tar.xz \
               https://ziglang.org/download/0.16.0/zig-x86_64-netbsd-0.16.0.tar.xz
