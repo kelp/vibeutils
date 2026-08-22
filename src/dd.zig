@@ -491,13 +491,6 @@ fn applyConversions(buf: []u8, config: DdConfig) void {
     }
 }
 
-/// Format a byte count as a human-readable string (e.g., "1.5 MB, 1.4 MiB").
-/// Thin delegate to the shared GNU formatter in common.progress so the
-/// final stats and the status=progress live line can never drift apart.
-fn formatByteCount(buf: []u8, bytes: usize) []const u8 {
-    return common.progress.formatGnuBytes(buf, @intCast(bytes));
-}
-
 /// Print transfer statistics to stderr
 fn printStats(io: std.Io, stderr: *std.Io.Writer, stats: DdStats, status: StatusLevel) void {
     if (status == .none) return;
@@ -2319,22 +2312,22 @@ test "applyConversions - no conversion" {
     try testing.expectEqualStrings("Hello World", &buf);
 }
 
-test "formatByteCount - various sizes" {
+test "formatGnuBytes - various sizes" {
     var buf: [128]u8 = undefined;
     {
-        const result = formatByteCount(&buf, 500);
+        const result = common.progress.formatGnuBytes(&buf, 500);
         try testing.expectEqualStrings("500 bytes", result);
     }
     {
-        const result = formatByteCount(&buf, 1500);
+        const result = common.progress.formatGnuBytes(&buf, 1500);
         try testing.expectEqualStrings("1.5 kB, 1.5 KiB", result);
     }
     {
-        const result = formatByteCount(&buf, 1500000);
+        const result = common.progress.formatGnuBytes(&buf, 1_500_000);
         try testing.expectEqualStrings("1.5 MB, 1.4 MiB", result);
     }
     {
-        const result = formatByteCount(&buf, 1500000000);
+        const result = common.progress.formatGnuBytes(&buf, 1_500_000_000);
         try testing.expectEqualStrings("1.5 GB, 1.4 GiB", result);
     }
 }

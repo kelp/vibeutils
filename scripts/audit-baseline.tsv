@@ -97,6 +97,7 @@ stub-flag	src/touch.zig::f	touch -f is parsed and unused. Stage 2 implement-vs-d
 stub-flag	src/tr.zig::ignored_u	POSIX tr -u is accepted and ignored. Stage 2 implement-vs-decline (#157).
 test-only-code	src/chmod.zig::chmod	Private wrapper exercised only by unit tests; runChmod calls the lower-level path directly. Consolidation is a refactor, not a defect fix.
 test-only-code	src/chown.zig::chownFile	Private wrapper exercised only by unit tests; the production path goes through the walker.
+test-only-code	src/dd.zig::runDdStatusFixture	Test harness helper declared above the test section; drives runDd with a 10-byte fixture for status= variants.
 test-only-code	src/df.zig::truncatePath	Path-truncation helper retained for the unit tests that pin its behaviour; no production caller since the column layout was reworked.
 test-only-code	src/ln.zig::createSingleLinkInDir	Test fixture helper declared above the test section.
 test-only-code	src/ln.zig::createTestFile	Test fixture helper declared above the test section.
