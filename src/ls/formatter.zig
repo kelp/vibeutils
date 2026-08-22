@@ -633,6 +633,24 @@ fn printLongFormatEntryAligned(
         try printLongFormatEntryAligned_symlinkTarget(style, writer, target);
     }
     try writer.writeByte('\n');
+    try printLongFormatAclDump(entry, writer, options);
+}
+
+/// After a long-format line, dump the POSIX ACL when `-e` is set.
+/// Only the dump captured at probe time is printed: `entry.name` is a
+/// basename in directory listings, so a cwd fallback would attach the
+/// wrong file's ACL to this row.
+fn printLongFormatAclDump(
+    entry: Entry,
+    writer: anytype,
+    options: LsOptions,
+) !void {
+    std.debug.assert(options.long_format);
+    if (!options.show_acls) return;
+    if (!entry.has_acl) return;
+    const dump = entry.acl_dump orelse return;
+    std.debug.assert(dump.len > 0);
+    try writer.writeAll(dump);
 }
 
 /// Write " -> target" for a symlink, colored by the target's file type.

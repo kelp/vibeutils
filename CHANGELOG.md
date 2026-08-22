@@ -148,6 +148,11 @@
 
 ### Fixed
 
+- **`ls -e` dumps the ACL after each long-format line.** The flag
+  was parsed into `show_acls` and then ignored, and `--help` called
+  it a no-op. `-e` now implies `-l` (BSD) and prints a getfacl-style
+  POSIX ACL after a marked entry; a file with no stored ACL is
+  unchanged from `ls -l` (#147).
 - **`ls -l` `total` now uses GNU's 1024-byte default, and empty
   directories print `total 0`.** The line previously summed raw
   512-byte `st_blocks` (twice GNU) and omitted the header when a
