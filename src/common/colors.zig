@@ -56,6 +56,54 @@ pub fn applySizeColor(s: anytype, size_bytes: u64) !void {
     }
 }
 
+/// Color `size_bytes` relative to the listing's largest printed size.
+///
+/// Tiers match `df`'s `applyUsageColor`: green below 70% of max, yellow
+/// below 90%, red at or above 90%. Percent is `@divFloor(size * 100, max)`
+/// on `u128`; `max == 0` is 0%.
+pub fn applyRelativeSizeColor(s: anytype, size_bytes: u64, max_bytes: u64) !void {
+    const percent: u8 = if (max_bytes == 0) 0 else blk: {
+        const raw = @divFloor(@as(u128, size_bytes) * 100, @as(u128, max_bytes));
+        break :blk @intCast(@min(raw, 100));
+    };
+    if (max_bytes == 0) {
+        std.debug.assert(percent == 0);
+    } else {
+        std.debug.assert(percent <= 100);
+    }
+
+    switch (s.color_mode) {
+        .truecolor => {
+            if (percent < 70) {
+                try s.setRgb(115, 195, 120);
+            } else if (percent < 90) {
+                try s.setRgb(210, 185, 90);
+            } else {
+                try s.setRgb(210, 95, 90);
+            }
+        },
+        .extended => {
+            if (percent < 70) {
+                try s.set256(114);
+            } else if (percent < 90) {
+                try s.set256(220);
+            } else {
+                try s.set256(196);
+            }
+        },
+        .basic => {
+            if (percent < 70) {
+                try s.setColor(.green);
+            } else if (percent < 90) {
+                try s.setColor(.yellow);
+            } else {
+                try s.setColor(.red);
+            }
+        },
+        .none => {},
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -166,4 +214,467 @@ test "applySizeColor basic writes green" {
     const s = makeTestStyle(&aw.writer, .basic);
     try applySizeColor(s, 500);
     try std.testing.expectEqualSlices(u8, "\x1b[32m", aw.writer.buffered());
+}
+
+// Relative color: df applyUsageColor 70/90-of-max. Absolute applySizeColor
+// paints every size >= 10 MiB with one swatch, so 10 MiB of 20 MiB (50%)
+// is the tooth: relative wants df-green, the stub emits the >=10M swatch.
+const rel_mib: u64 = 1024 * 1024;
+const rel_size_10m: u64 = 10 * rel_mib;
+const rel_size_15m: u64 = 15 * rel_mib;
+const rel_size_20m: u64 = 20 * rel_mib;
+const rel_max_20m: u64 = 20 * rel_mib;
+// 10 MiB is 0% of 2 GiB under `@divFloor(size * 100, max)` on u128.
+const rel_max_2g: u64 = 2 * 1024 * rel_mib;
+// Smallest sizes that are 69% and 89% of 20 MiB under that percent.
+const rel_size_69_of_20m: u64 = 14_470_349;
+const rel_size_89_of_20m: u64 = 18_664_653;
+const rel_size_70_of_20m: u64 = 14 * rel_mib;
+const rel_size_90_of_20m: u64 = 18 * rel_mib;
+
+const csi_rgb_green = "\x1b[38;2;115;195;120m";
+const csi_rgb_yellow = "\x1b[38;2;210;185;90m";
+const csi_rgb_red = "\x1b[38;2;210;95;90m";
+const csi_rgb_abs_10m = "\x1b[38;2;210;115;100m";
+const csi_256_green = "\x1b[38;5;114m";
+const csi_256_yellow = "\x1b[38;5;220m";
+const csi_256_red = "\x1b[38;5;196m";
+const csi_256_abs_10m = "\x1b[38;5;209m";
+const csi_basic_green = "\x1b[32m";
+const csi_basic_yellow = "\x1b[33m";
+const csi_basic_red = "\x1b[31m";
+
+fn expectRelativeColor(
+    color_mode: TestStyle.ColorMode,
+    size_bytes: u64,
+    max_bytes: u64,
+    want: []const u8,
+    not_want: []const u8,
+) !void {
+    std.debug.assert(!std.mem.eql(u8, want, not_want));
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, color_mode);
+    try applyRelativeSizeColor(s, size_bytes, max_bytes);
+    const got = aw.writer.buffered();
+    try std.testing.expectEqualSlices(u8, want, got);
+    try std.testing.expect(std.mem.find(u8, got, not_want) == null);
+}
+
+test "applyRelativeSizeColor none writes nothing" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = makeTestStyle(&aw.writer, .none);
+    try applyRelativeSizeColor(s, rel_size_10m, rel_max_20m);
+    try std.testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
+    try std.testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b") == null);
+}
+
+test "applyRelativeSizeColor truecolor 0% is df green not the >=10M swatch" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_10m,
+        rel_max_2g,
+        csi_rgb_green,
+        csi_rgb_abs_10m,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_10m,
+        rel_max_2g,
+        csi_rgb_green,
+        csi_rgb_red,
+    );
+}
+
+test "applyRelativeSizeColor truecolor 50% is df green not the >=10M swatch" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_10m,
+        rel_max_20m,
+        csi_rgb_green,
+        csi_rgb_abs_10m,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_10m,
+        rel_max_20m,
+        csi_rgb_green,
+        csi_rgb_yellow,
+    );
+}
+
+test "applyRelativeSizeColor truecolor 69% is df green" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_69_of_20m,
+        rel_max_20m,
+        csi_rgb_green,
+        csi_rgb_yellow,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_69_of_20m,
+        rel_max_20m,
+        csi_rgb_green,
+        csi_rgb_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor truecolor 70% is df yellow" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_70_of_20m,
+        rel_max_20m,
+        csi_rgb_yellow,
+        csi_rgb_green,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_70_of_20m,
+        rel_max_20m,
+        csi_rgb_yellow,
+        csi_rgb_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor truecolor 89% is df yellow" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_89_of_20m,
+        rel_max_20m,
+        csi_rgb_yellow,
+        csi_rgb_red,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_89_of_20m,
+        rel_max_20m,
+        csi_rgb_yellow,
+        csi_rgb_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor truecolor 90% is df red" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_90_of_20m,
+        rel_max_20m,
+        csi_rgb_red,
+        csi_rgb_yellow,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_90_of_20m,
+        rel_max_20m,
+        csi_rgb_red,
+        csi_rgb_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor truecolor 100% is df red" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_20m,
+        rel_max_20m,
+        csi_rgb_red,
+        csi_rgb_green,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_20m,
+        rel_max_20m,
+        csi_rgb_red,
+        csi_rgb_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor extended 0% is df green" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_10m,
+        rel_max_2g,
+        csi_256_green,
+        csi_256_abs_10m,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_10m,
+        rel_max_2g,
+        csi_256_green,
+        csi_256_red,
+    );
+}
+
+test "applyRelativeSizeColor extended 50% is df green" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_10m,
+        rel_max_20m,
+        csi_256_green,
+        csi_256_abs_10m,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_10m,
+        rel_max_20m,
+        csi_256_green,
+        csi_256_yellow,
+    );
+}
+
+test "applyRelativeSizeColor extended 69% is df green" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_69_of_20m,
+        rel_max_20m,
+        csi_256_green,
+        csi_256_yellow,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_69_of_20m,
+        rel_max_20m,
+        csi_256_green,
+        csi_256_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor extended 70% is df yellow" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_70_of_20m,
+        rel_max_20m,
+        csi_256_yellow,
+        csi_256_green,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_70_of_20m,
+        rel_max_20m,
+        csi_256_yellow,
+        csi_256_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor extended 89% is df yellow" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_89_of_20m,
+        rel_max_20m,
+        csi_256_yellow,
+        csi_256_red,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_89_of_20m,
+        rel_max_20m,
+        csi_256_yellow,
+        csi_256_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor extended 90% is df red" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_90_of_20m,
+        rel_max_20m,
+        csi_256_red,
+        csi_256_yellow,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_90_of_20m,
+        rel_max_20m,
+        csi_256_red,
+        csi_256_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor extended 100% is df red" {
+    try expectRelativeColor(
+        .extended,
+        rel_size_20m,
+        rel_max_20m,
+        csi_256_red,
+        csi_256_green,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_20m,
+        rel_max_20m,
+        csi_256_red,
+        csi_256_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor basic 0% is green" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_10m,
+        rel_max_2g,
+        csi_basic_green,
+        csi_basic_red,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_10m,
+        rel_max_2g,
+        csi_basic_green,
+        csi_basic_yellow,
+    );
+}
+
+test "applyRelativeSizeColor basic 50% is green" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_10m,
+        rel_max_20m,
+        csi_basic_green,
+        csi_basic_yellow,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_10m,
+        rel_max_20m,
+        csi_basic_green,
+        csi_basic_red,
+    );
+}
+
+test "applyRelativeSizeColor basic 69% is green" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_69_of_20m,
+        rel_max_20m,
+        csi_basic_green,
+        csi_basic_yellow,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_69_of_20m,
+        rel_max_20m,
+        csi_basic_green,
+        csi_basic_red,
+    );
+}
+
+test "applyRelativeSizeColor basic 70% is yellow" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_70_of_20m,
+        rel_max_20m,
+        csi_basic_yellow,
+        csi_basic_green,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_70_of_20m,
+        rel_max_20m,
+        csi_basic_yellow,
+        csi_basic_red,
+    );
+}
+
+test "applyRelativeSizeColor basic 75% is yellow" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_15m,
+        rel_max_20m,
+        csi_basic_yellow,
+        csi_basic_green,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_15m,
+        rel_max_20m,
+        csi_basic_yellow,
+        csi_basic_red,
+    );
+}
+
+test "applyRelativeSizeColor basic 89% is yellow" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_89_of_20m,
+        rel_max_20m,
+        csi_basic_yellow,
+        csi_basic_green,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_89_of_20m,
+        rel_max_20m,
+        csi_basic_yellow,
+        csi_basic_red,
+    );
+}
+
+test "applyRelativeSizeColor basic 90% is red" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_90_of_20m,
+        rel_max_20m,
+        csi_basic_red,
+        csi_basic_yellow,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_90_of_20m,
+        rel_max_20m,
+        csi_basic_red,
+        csi_basic_green,
+    );
+}
+
+test "applyRelativeSizeColor basic 100% is red" {
+    try expectRelativeColor(
+        .basic,
+        rel_size_20m,
+        rel_max_20m,
+        csi_basic_red,
+        csi_basic_green,
+    );
+    try expectRelativeColor(
+        .basic,
+        rel_size_20m,
+        rel_max_20m,
+        csi_basic_red,
+        csi_basic_yellow,
+    );
+}
+
+test "applyRelativeSizeColor max==0 is 0% green not the size's absolute swatch" {
+    try expectRelativeColor(
+        .truecolor,
+        rel_size_10m,
+        0,
+        csi_rgb_green,
+        csi_rgb_abs_10m,
+    );
+    try expectRelativeColor(
+        .extended,
+        rel_size_10m,
+        0,
+        csi_256_green,
+        csi_256_abs_10m,
+    );
+}
+
+test "applyRelativeSizeColor near u64-max is 100% red (u128 percent)" {
+    const max_u64 = std.math.maxInt(u64);
+    try expectRelativeColor(
+        .truecolor,
+        max_u64,
+        max_u64,
+        csi_rgb_red,
+        csi_rgb_abs_10m,
+    );
+    try expectRelativeColor(
+        .truecolor,
+        max_u64,
+        max_u64,
+        csi_rgb_red,
+        csi_rgb_green,
+    );
 }

@@ -1,6 +1,7 @@
 //! Main entry point for the ls command with file listing functionality
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 // Import our modules
@@ -136,7 +137,10 @@ const LsArgs = struct {
         },
         .hide_backups = .{ .short = 'B', .desc = "Do not list entries ending with ~" },
         .dired = .{ .short = 'D', .desc = "Generate output suitable for Emacs dired mode" },
-        .show_acls = .{ .short = 'e', .desc = "Display ACL information in long format" },
+        .show_acls = .{
+            .short = 'e',
+            .desc = "Display ACL information after each long-format line",
+        },
         .colorize = .{ .short = 'G', .desc = "Enable colorized output" },
         .ignore_pattern = .{
             .short = 'I',
@@ -253,7 +257,11 @@ fn lsMain(
     const display_config = common.display_config.DisplayConfig.resolve(allocator);
 
     // Build the consolidated options struct from args + resolved config.
-    const options = lsMain_buildOptions(io, stderr_writer, args, allocator, display_config);
+    var options = lsMain_buildOptions(io, stderr_writer, args, allocator, display_config);
+
+    var ls_colors_table: ?common.ls_colors.Table = null;
+    defer if (ls_colors_table) |*table| table.deinit(allocator);
+    try lsMain_loadLsColors(allocator, stderr_writer, &options, &ls_colors_table);
 
     // Initialize GitContext once if git status is requested
     const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
@@ -277,6 +285,75 @@ fn lsMain(
     );
 
     return if (had_error) 2 else 0;
+}
+
+/// True when this invocation would emit color (so LS_COLORS is worth parsing).
+fn lsMain_colorWillEmit(color_mode: ColorMode) bool {
+    std.debug.assert(@intFromEnum(color_mode) <= @intFromEnum(ColorMode.never));
+    if (color_mode == .never) return false;
+    if (common.env.getEnv("NO_COLOR") != null) return false;
+    if (color_mode == .auto) {
+        if (std.c.isatty(std.Io.File.stdout().handle) == 0) return false;
+        if (common.env.getEnv("TERM")) |term| {
+            if (std.mem.eql(u8, term, "dumb")) return false;
+        }
+    }
+    std.debug.assert(color_mode != .never);
+    return true;
+}
+
+fn lsMain_reportLsColorsError(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    report: common.ls_colors.ParseReport,
+) void {
+    std.debug.assert(@intFromPtr(stderr_writer) != 0);
+    std.debug.assert(@intFromPtr(allocator.ptr) != 0);
+    if (report.unrecognized_prefix) |prefix| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "ls",
+            "unrecognized prefix: {s}",
+            .{&prefix},
+        );
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "ls",
+        "unparsable value for LS_COLORS environment variable",
+        .{},
+    );
+}
+
+/// Parse LS_COLORS when color is on. Invalid values disable color for this run.
+fn lsMain_loadLsColors(
+    allocator: std.mem.Allocator,
+    stderr_writer: *std.Io.Writer,
+    options: *LsOptions,
+    table_slot: *?common.ls_colors.Table,
+) !void {
+    std.debug.assert(table_slot.* == null);
+    std.debug.assert(options.ls_colors == null);
+    if (!lsMain_colorWillEmit(options.color_mode)) return;
+    const text = common.env.getEnv("LS_COLORS") orelse return;
+    if (text.len == 0) return;
+    var report = common.ls_colors.ParseReport{};
+    const parsed = common.ls_colors.parseWithReport(allocator, text, &report) catch |err| {
+        switch (err) {
+            error.Unparsable => {
+                lsMain_reportLsColorsError(allocator, stderr_writer, report);
+                options.color_mode = .never;
+                return;
+            },
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    };
+    table_slot.* = parsed;
+    if (table_slot.*) |*table| {
+        options.ls_colors = table;
+    }
 }
 
 /// Resolve ls-specific color/icon modes and time style from args + config.
@@ -417,8 +494,10 @@ fn lsMain_buildOptions(
     return LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
-        .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
-        .human_readable = args.human_readable,
+        .long_format = args.long_format or args.omit_owner or args.omit_group or
+            args.numeric_ids or args.show_acls,
+        .human_readable = lsMain_keepHumanReadable(args, args.long_format or
+            args.omit_owner or args.omit_group or args.numeric_ids or args.show_acls),
         .kilobytes = args.kilobytes,
         .one_per_line = args.one_per_line,
         .directory = args.directory,
@@ -458,7 +537,20 @@ fn lsMain_buildOptions(
         .sort_by_extension = args.sort_by_extension,
         .thousands_grouping = args.thousands_grouping,
         .terminal_width = args.output_width,
+        .show_acls = args.show_acls,
     };
+}
+
+/// KEEP default: long listings are human-readable unless -k is set
+/// without an explicit -h. Do not default the argparse field: that
+/// would also switch time_style to relative.
+fn lsMain_keepHumanReadable(args: LsArgs, long_format: bool) bool {
+    const human_readable = args.human_readable or (long_format and !args.kilobytes);
+    if (args.human_readable) std.debug.assert(human_readable);
+    if (args.kilobytes) {
+        if (!args.human_readable) std.debug.assert(!human_readable);
+    }
+    return human_readable;
 }
 
 /// List all path operands, returning whether any listing error occurred.
@@ -518,9 +610,15 @@ fn lsMain_listOperandGroups(
     std.debug.assert(paths.len > 1);
 
     var files: std.ArrayList(Entry) = .empty;
-    defer files.deinit(allocator);
+    defer {
+        for (files.items) |*entry| entry.freeAclDump(allocator);
+        files.deinit(allocator);
+    }
     var dirs: std.ArrayList(Entry) = .empty;
-    defer dirs.deinit(allocator);
+    defer {
+        for (dirs.items) |*entry| entry.freeAclDump(allocator);
+        dirs.deinit(allocator);
+    }
     var failed: std.ArrayList([]const u8) = .empty;
     defer failed.deinit(allocator);
 
@@ -549,6 +647,7 @@ fn lsMain_listOperandGroups(
         lsMain_printFileOperands(
             io,
             files.items,
+            dirs.items,
             writer,
             stderr_writer,
             options,
@@ -579,6 +678,7 @@ fn lsMain_listOperandGroups(
 fn lsMain_printFileOperands(
     io: std.Io,
     files: []Entry,
+    dirs: []const Entry,
     writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
     options: LsOptions,
@@ -600,8 +700,33 @@ fn lsMain_printFileOperands(
         return err;
     };
 
+    // GNU sizes -l columns from every operand, then extracts directories
+    // (#166). Directory listings still measure only their own contents.
+    const column_peers = try lsMain_concatOperandPeers(allocator, files, dirs);
+    defer allocator.free(column_peers);
+
     lsMain_resolveOperandGitStatus(io, files, options, git_context);
-    try formatter.printOperandSection(allocator, files, writer, options, style);
+    try formatter.printOperandSection(allocator, files, writer, options, style, column_peers);
+}
+
+/// Files, then directories, in that order: the same grouping GNU measures
+/// before it prints the file-operand section. The slice is a copy, so later
+/// directory listings can still own the original dir entries.
+fn lsMain_concatOperandPeers(
+    allocator: std.mem.Allocator,
+    files: []const Entry,
+    dirs: []const Entry,
+) ![]Entry {
+    std.debug.assert(files.len > 0);
+    const n = files.len + dirs.len;
+    std.debug.assert(n >= files.len);
+    const peers = try allocator.alloc(Entry, n);
+    @memcpy(peers[0..files.len], files);
+    if (dirs.len > 0) {
+        @memcpy(peers[files.len..], dirs);
+    }
+    std.debug.assert(peers.len == n);
+    return peers;
 }
 
 /// Sort one operand group the way directory contents are sorted, except that
@@ -701,11 +826,19 @@ fn lsMain_partitionOperands(
                 common.file.hasExtendedAcl(path, stat.kind, true),
         };
         // -d lists a directory operand as an ordinary entry, so it sorts and
-        // prints with the files and never gets a "dir:" header.
+        // prints with the files and never gets a "dir:" header. Only that
+        // file group is a long-format row, so only it needs the dump.
         if (stat.kind == .directory and !options.directory) {
             try dirs.append(allocator, entry);
         } else {
             try files.append(allocator, entry);
+            core.entryAttachAclDump(
+                allocator,
+                &files.items[files.items.len - 1],
+                path,
+                true,
+                options,
+            );
         }
     }
 
@@ -730,7 +863,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --color=WHEN           when to use colors (valid: always, auto, never)
         \\  -,                         format file sizes with thousands grouping
         \\  -D                         generate output for Emacs dired mode (no-op)
-        \\  -e                         display ACL information (no-op)
+        \\  -e                         display ACL information after each long-format line
         \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
         \\  -f, --no-sort              do not sort; list in directory order (implies -a)
@@ -949,9 +1082,11 @@ fn listSingleFileEntry(
         .has_acl = options.long_format and
             common.file.hasExtendedAcl(path, stat.kind, true),
     }};
+    defer entries[0].freeAclDump(allocator);
+    core.entryAttachAclDump(allocator, &entries[0], path, true, options);
 
     lsMain_resolveOperandGitStatus(io, &entries, options, git_context);
-    try formatter.printOperandSection(allocator, &entries, writer, options, style);
+    try formatter.printOperandSection(allocator, &entries, writer, options, style, &entries);
 }
 
 /// Look up the git status of each operand in a group, leaving every entry at
@@ -1163,39 +1298,6 @@ test "initStyle with auto color mode disables colors when stdout is not a TTY" {
 // directly from an interactive terminal.
 // ============================================================
 
-/// Change the process cwd to `tmp_dir` for the duration of a test and
-/// return a handle to the original cwd. lsMain resolves relative operands
-/// against the process cwd (std.Io.Dir.cwd()), not an injectable directory,
-/// so these operand-echo/operand-sort tests must actually chdir -- there is
-/// no way to drive that code path with a relative operand otherwise.
-fn testChdirToTmp(io: std.Io, tmp_dir: *std.testing.TmpDir) !std.Io.Dir {
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    errdefer saved_cwd_dir.close(io);
-
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(tmp_abs);
-    std.debug.assert(tmp_abs.len > 0);
-    std.debug.assert(std.fs.path.isAbsolute(tmp_abs));
-    try std.Io.Threaded.chdir(tmp_abs);
-
-    return saved_cwd_dir;
-}
-
-/// Restore the process cwd saved by `testChdirToTmp` and close the handle.
-/// Uses fchdir (via setCurrentDir on an open handle) rather than getcwd, so
-/// it keeps working in sandboxes where getcwd is unavailable.
-fn testRestoreCwd(io: std.Io, saved_cwd_dir: *std.Io.Dir) void {
-    std.debug.assert(saved_cwd_dir.handle >= 0);
-    std.debug.assert(saved_cwd_dir.handle != std.posix.AT.FDCWD);
-    // A silent failure here leaves every later test in this binary running
-    // with cwd inside a temp dir that TmpDir.cleanup then deletes out from
-    // under it, producing cascading failures misattributed to unrelated
-    // tests. setCurrentDir on a still-open fd should not fail in practice,
-    // so make a failure loud instead of absorbing it.
-    std.process.setCurrentDir(io, saved_cwd_dir.*) catch @panic("failed to restore test cwd");
-    saved_cwd_dir.close(io);
-}
-
 /// Overlay pinning every env var that DisplayConfig.resolve or
 /// getIconModeFromEnv consult, unset for the duration of a test.
 ///
@@ -1228,20 +1330,457 @@ fn testStageDisplayEnvOverrides() []const common.env.Override {
     return saved;
 }
 
-test "ls prints a subdirectory operand exactly as given, not its basename (short format)" {
+fn testLsColorsEnv(ls_colors: ?[]const u8) [7]common.env.Override {
+    std.debug.assert(test_env_overrides.len == 6);
+    std.debug.assert(test_env_overrides[5].value == null);
+    return .{
+        .{ .key = "VIBEUTILS_STYLE", .value = null },
+        .{ .key = "VIBEUTILS_COLOR", .value = null },
+        .{ .key = "VIBEUTILS_ICONS", .value = null },
+        .{ .key = "LS_ICONS", .value = null },
+        .{ .key = "NO_COLOR", .value = null },
+        .{ .key = "TERM", .value = "xterm-256color" },
+        .{ .key = "LS_COLORS", .value = ls_colors },
+    };
+}
+
+test "ls overlays LS_COLORS directory SGR onto the compiled palette" {
+    const staged = testLsColorsEnv("di=01;34");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "blue_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "01;34") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "blue_dir") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[0m") != null);
+}
+
+test "ls color never suppresses LS_COLORS escape sequences" {
+    const staged = testLsColorsEnv("di=01;34");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "plain_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=never", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "plain_dir") != null);
+}
+
+test "ls without LS_COLORS keeps the compiled directory color" {
+    const staged = testLsColorsEnv(null);
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "default_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[94m") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "01;34") == null);
+}
+
+test "ls invalid LS_COLORS diagnoses and disables name coloring" {
+    const staged = testLsColorsEnv("zz=01");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "invalid_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const stderr_output = stderr_aw.writer.buffered();
+    const diagnosed =
+        std.mem.indexOf(u8, stderr_output, "unparsable value for LS_COLORS") != null or
+        std.mem.indexOf(u8, stderr_output, "unrecognized prefix") != null;
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(diagnosed);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "\x1b[") == null);
+}
+
+test "ls long symlink target uses LS_COLORS regular file SGR" {
+    const staged = testLsColorsEnv("fi=01;33");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "target.txt", .{});
+        file.close(io);
+    }
+    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-l", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+    const arrow_pos = std.mem.indexOf(u8, output, "->");
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(arrow_pos != null);
+    try testing.expect(std.mem.indexOf(u8, output[arrow_pos.? + 2 ..], "01;33") != null);
+}
+
+test "ls directory type LS_COLORS beats a matching suffix" {
+    const staged = testLsColorsEnv("*.zip=01;31:di=01;34");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "foo.zip");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "01;34") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "01;31") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "foo.zip") != null);
+}
+
+test "ls omits LS_COLORS end sequence when di=0 leaves the name uncolored" {
+    // GNU emits ec/CSI-reset only after a color start. di=0 is a hit
+    // with no start sequence; a custom ec must not still fire after the
+    // name, or it can leave the terminal in the wrong state.
+    const staged = testLsColorsEnv("di=0:ec=WRONGRESET");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "plain_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "plain_dir") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "WRONGRESET") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+}
+
+test "ls long symlink omits end sequence when ln=0 and fi=0 leave names uncolored" {
+    // Same rule on the long-format symlink-target path: an uncolored
+    // fi=0 target must not still print ec after the target text.
+    const staged = testLsColorsEnv("ln=0:fi=0:ec=WRONGRESET");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "target.txt", .{});
+        file.close(io);
+    }
+    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-l", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "link.txt ->") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "target.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "WRONGRESET") == null);
+}
+
+fn testCreateLsAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
+    const file = try tmp_dir.dir.createFile(io, "allocated.bin", .{});
+    defer file.close(io);
+    const data = [_]u8{'x'} ** 2048;
+    try file.writeStreamingAll(io, &data);
+    const one_hour_ago = common.file.currentTimestampNanoseconds() -
+        3600 * @as(i128, std.time.ns_per_s);
+    try file.setTimestamps(io, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(one_hour_ago) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(one_hour_ago) } },
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "allocated.bin", &path_buf);
+    const path = path_buf[0..path_len];
+    std.debug.assert(path.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(path));
+    return testing.allocator.dupe(u8, path);
+}
+
+fn testRunLsOutput(io: std.Io, args: []const []const u8) ![]u8 {
+    std.debug.assert(args.len > 0);
+    std.debug.assert(args[args.len - 1].len > 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(stderr_aw.writer.buffered().len == 0);
+    return testing.allocator.dupe(u8, stdout_aw.writer.buffered());
+}
+
+fn testLsLongSizeField(output: []const u8) []const u8 {
+    std.debug.assert(output.len > 0);
+    var fields = std.mem.tokenizeAny(u8, output, " \t\n");
+    for (0..4) |_| _ = fields.next() orelse unreachable;
+    const size = fields.next() orelse unreachable;
+    std.debug.assert(size.len > 0);
+    return size;
+}
+
+test "ls -l defaults an allocated file to binary human-readable size" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try tmp_dir.dir.createDirPath(io, "subdir");
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-l", path });
+    defer testing.allocator.free(output);
+    const size = testLsLongSizeField(output);
+    try testing.expectEqualStrings("2.0K", size);
+    try testing.expect(std.mem.endsWith(u8, size, "K"));
+}
+
+test "ls -l human default keeps the clock-style date" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-l", path });
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.indexOfScalar(u8, output, ':') != null);
+    try testing.expect(std.mem.find(u8, output, "ago") == null);
+    try testing.expect(std.mem.find(u8, output, "just now") == null);
+}
+
+test "ls -lk forms override the implicit human size with kilobytes" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_][]const []const u8{
+        &.{ "-lk", path },
+        &.{ "-l", "-k", path },
+    };
+    for (cases) |args| {
+        const output = try testRunLsOutput(io, args);
+        defer testing.allocator.free(output);
+        try testing.expectEqualStrings("2", testLsLongSizeField(output));
+    }
+}
+
+test "ls -lhk and -lkh keep explicit human-readable sizes" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const cases = [_][]const []const u8{
+        &.{ "-lhk", path },
+        &.{ "-lkh", path },
+    };
+    for (cases) |args| {
+        const output = try testRunLsOutput(io, args);
+        defer testing.allocator.free(output);
+        try testing.expectEqualStrings("2.0K", testLsLongSizeField(output));
+    }
+}
+
+test "ls -lh keeps the explicit relative date style" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-lh", path });
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.find(u8, output, "hour") != null);
+    try testing.expect(std.mem.find(u8, output, "ago") != null);
+}
+
+test "ls -s without long format keeps a numeric block field" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try testCreateLsAllocatedFile(io, &tmp_dir);
+    defer testing.allocator.free(path);
+
+    const output = try testRunLsOutput(io, &.{ "-s", path });
+    defer testing.allocator.free(output);
+    var fields = std.mem.tokenizeAny(u8, output, " \t\n");
+    const blocks = fields.next() orelse return error.MissingBlockField;
+    for (blocks) |byte| try testing.expect(std.ascii.isDigit(byte));
+    try testing.expect(std.mem.indexOfAny(u8, blocks, "KMGTPE") == null);
+    try testing.expect(std.mem.endsWith(u8, output, "allocated.bin\n"));
+}
+
+test "ls prints a subdirectory operand exactly as given, not its basename (short format)" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.dir().createDirPath(io, "subdir");
     {
-        const file = try tmp_dir.dir.createFile(io, "subdir/file.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "subdir/file.txt", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1262,16 +1801,16 @@ test "ls -l ends a subdirectory operand's line with the full operand path" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.createDirPath(io, "subdir");
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.dir().createDirPath(io, "subdir");
     {
-        const file = try tmp_dir.dir.createFile(io, "subdir/file.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "subdir/file.txt", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1293,8 +1832,8 @@ test "ls -1t sorts distinct-mtime file operands newest first, ignoring argv orde
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const old_ns: i128 = 1_000_000_000 * 1_000_000_000; // 2001-09-09T01:46:40Z
     const new_ns: i128 = old_ns + 100 * std.time.ns_per_s;
@@ -1306,7 +1845,7 @@ test "ls -1t sorts distinct-mtime file operands newest first, ignoring argv orde
     // style fixture (name order there happens to match time order); it
     // must fail this one.
     {
-        const file = try tmp_dir.dir.createFile(io, "a_older", .{});
+        const file = try tmp_dir.dir().createFile(io, "a_older", .{});
         defer file.close(io);
         try file.setTimestamps(io, .{
             .access_timestamp = .{ .new = .{ .nanoseconds = old_ns } },
@@ -1314,7 +1853,7 @@ test "ls -1t sorts distinct-mtime file operands newest first, ignoring argv orde
         });
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "z_newer", .{});
+        const file = try tmp_dir.dir().createFile(io, "z_newer", .{});
         defer file.close(io);
         try file.setTimestamps(io, .{
             .access_timestamp = .{ .new = .{ .nanoseconds = new_ns } },
@@ -1322,8 +1861,8 @@ test "ls -1t sorts distinct-mtime file operands newest first, ignoring argv orde
         });
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1343,8 +1882,8 @@ test "ls -1S sorts distinct-size file operands largest first, ignoring argv orde
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Names are chosen so name order ("a_small" < "z_big") DISAGREES with
     // size order (z_big is the bigger file). A fix that collects operands
@@ -1353,19 +1892,19 @@ test "ls -1S sorts distinct-size file operands largest first, ignoring argv orde
     // style fixture (name order there happens to match size order); it
     // must fail this one.
     {
-        const file = try tmp_dir.dir.createFile(io, "a_small", .{});
+        const file = try tmp_dir.dir().createFile(io, "a_small", .{});
         defer file.close(io);
         try file.writeStreamingAll(io, "a");
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "z_big", .{});
+        const file = try tmp_dir.dir().createFile(io, "z_big", .{});
         defer file.close(io);
         const data = [_]u8{'X'} ** 1000;
         try file.writeStreamingAll(io, &data);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1385,19 +1924,19 @@ test "ls -1 sorts file operands by name by default, ignoring argv order" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     {
-        const file = try tmp_dir.dir.createFile(io, "z_file", .{});
+        const file = try tmp_dir.dir().createFile(io, "z_file", .{});
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "a_file", .{});
+        const file = try tmp_dir.dir().createFile(io, "a_file", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1422,19 +1961,19 @@ test "ls -1U preserves argv order for file operands (guards against over-sorting
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     {
-        const file = try tmp_dir.dir.createFile(io, "z_file", .{});
+        const file = try tmp_dir.dir().createFile(io, "z_file", .{});
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "a_file", .{});
+        const file = try tmp_dir.dir().createFile(io, "a_file", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1454,19 +1993,19 @@ test "ls -1r reverses the default name sort for file operands" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     {
-        const file = try tmp_dir.dir.createFile(io, "big", .{});
+        const file = try tmp_dir.dir().createFile(io, "big", .{});
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "small", .{});
+        const file = try tmp_dir.dir().createFile(io, "small", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1486,21 +2025,21 @@ test "ls sorts directory operands by name too, so a_dir's header comes before b_
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.createDirPath(io, "b_dir");
-    try tmp_dir.dir.createDirPath(io, "a_dir");
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.dir().createDirPath(io, "b_dir");
+    try tmp_dir.dir().createDirPath(io, "a_dir");
     {
-        const file = try tmp_dir.dir.createFile(io, "a_dir/x", .{});
+        const file = try tmp_dir.dir().createFile(io, "a_dir/x", .{});
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "b_dir/y", .{});
+        const file = try tmp_dir.dir().createFile(io, "b_dir/y", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1537,20 +2076,20 @@ test "ls mixed operands: files first, one blank line before the dir section" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.createDirPath(io, "a_dir");
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.dir().createDirPath(io, "a_dir");
     {
-        const file = try tmp_dir.dir.createFile(io, "a_dir/x", .{});
+        const file = try tmp_dir.dir().createFile(io, "a_dir/x", .{});
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "z_file", .{});
+        const file = try tmp_dir.dir().createFile(io, "z_file", .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1582,15 +2121,15 @@ test "ls -C lays out multiple file operands in columns, not one per line" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     for ([_][]const u8{ "big", "small" }) |name| {
-        const file = try tmp_dir.dir.createFile(io, name, .{});
+        const file = try tmp_dir.dir().createFile(io, name, .{});
         file.close(io);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1611,18 +2150,18 @@ test "ls -s prints the block prefix for file operands and no total line" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     // One byte each, so both occupy a single 4 KiB allocation unit: eight
     // 512-byte blocks, verified against `stat` on APFS and on ext4.
     for ([_][]const u8{ "aa", "bb" }) |name| {
-        const file = try tmp_dir.dir.createFile(io, name, .{});
+        const file = try tmp_dir.dir().createFile(io, name, .{});
         defer file.close(io);
         try file.writeStreamingAll(io, "x");
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1646,8 +2185,8 @@ test "ls -s sizes the operand block field across all operands, not per operand" 
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // The equal-width fixture above cannot tell a section-wide field from a
     // per-entry one, because both render identically when every count is the
@@ -1655,19 +2194,19 @@ test "ls -s sizes the operand block field across all operands, not per operand" 
     // allocation unit (8 blocks) and 8 KiB occupies 16, both verified with
     // stat(1) on APFS and on ext4.
     {
-        const file = try tmp_dir.dir.createFile(io, "aa", .{});
+        const file = try tmp_dir.dir().createFile(io, "aa", .{});
         defer file.close(io);
         try file.writeStreamingAll(io, "x");
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "bb", .{});
+        const file = try tmp_dir.dir().createFile(io, "bb", .{});
         defer file.close(io);
         const data: [8192]u8 = @splat('z');
         try file.writeStreamingAll(io, &data);
     }
 
-    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
-    defer testRestoreCwd(io, &saved_cwd);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1813,7 +2352,7 @@ fn testAttachAcl(rel_path: [:0]const u8, xattr: [:0]const u8, blob: []const u8) 
 /// takes a path rather than a dirfd, and ls resolves its operands against
 /// the process cwd -- so both have to agree on where the fixture lives.
 const AclFixture = struct {
-    tmp: std.testing.TmpDir,
+    tmp: TestDir,
     saved_cwd: std.Io.Dir,
     saved_env: []const common.env.Override,
     out: std.Io.Writer.Allocating,
@@ -1823,9 +2362,9 @@ const AclFixture = struct {
         if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
         const saved_env = testStageDisplayEnvOverrides();
         errdefer common.env.test_overrides = saved_env;
-        var tmp = testing.tmpDir(.{});
-        errdefer tmp.cleanup();
-        const saved_cwd = try testChdirToTmp(testing.io, &tmp);
+        var tmp = TestDir.init(testing.allocator);
+        errdefer tmp.deinit();
+        const saved_cwd = try tmp.chdirToBase();
         std.debug.assert(saved_cwd.handle >= 0);
         std.debug.assert(saved_cwd.handle != std.posix.AT.FDCWD);
         return .{
@@ -1845,8 +2384,8 @@ const AclFixture = struct {
         std.debug.assert(common.env.test_overrides.len == test_env_overrides.len);
         self.out.deinit();
         self.err.deinit();
-        testRestoreCwd(testing.io, &self.saved_cwd);
-        self.tmp.cleanup();
+        TestDir.restoreCwd(&self.saved_cwd);
+        self.tmp.deinit();
         common.env.test_overrides = self.saved_env;
     }
 
@@ -1855,24 +2394,24 @@ const AclFixture = struct {
     fn addFile(self: *AclFixture, name: [:0]const u8, mode: std.c.mode_t) !void {
         std.debug.assert(name.len > 0);
         std.debug.assert(mode <= 0o777);
-        const file = try self.tmp.dir.createFile(testing.io, name, .{});
+        const file = try self.tmp.dir().createFile(testing.io, name, .{});
         file.close(testing.io);
-        const rc = std.c.fchmodat(self.tmp.dir.handle, name, mode, 0);
+        const rc = std.c.fchmodat(self.tmp.dir().handle, name, mode, 0);
         std.debug.assert(rc == 0);
     }
 
     fn addDir(self: *AclFixture, name: [:0]const u8, mode: std.c.mode_t) !void {
         std.debug.assert(name.len > 0);
         std.debug.assert(mode <= 0o777);
-        try self.tmp.dir.createDir(testing.io, name, .default_dir);
-        const rc = std.c.fchmodat(self.tmp.dir.handle, name, mode, 0);
+        try self.tmp.dir().createDir(testing.io, name, .default_dir);
+        const rc = std.c.fchmodat(self.tmp.dir().handle, name, mode, 0);
         std.debug.assert(rc == 0);
     }
 
     fn addSymlink(self: *AclFixture, target: []const u8, link_name: []const u8) !void {
         std.debug.assert(target.len > 0);
         std.debug.assert(link_name.len > 0);
-        try self.tmp.dir.symLink(testing.io, target, link_name, .{});
+        try self.tmp.dir().symLink(testing.io, target, link_name, .{});
     }
 
     /// Run the real ls entry point over the fixture and return its exit
@@ -2263,4 +2802,338 @@ test "ls #147: an ACL entry the section does not list cannot widen it" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try expectLinePrefix(fx.stdout(), ".hidden_acl", "-rw-rw-r--+ 1 ");
     try expectLinePrefix(fx.stdout(), "plain.txt", "-rw-r--r--  1 ");
+}
+
+// ============================================================
+// Issue #147 leftover: BSD/macOS `ls -e` ACL dump.
+//
+// The GNU `+` marker on `ls -l` is already implemented above. What
+// remains is `-e`: Darwin's man page says "Print the Access Control
+// List (ACL) associated with the file, if present, in long (-l)
+// output." After each long-format line, numbered ACE lines follow.
+// `show_acls` is parsed from `-e` and never read, so these tests are
+// expected RED until the dump exists. Do not mark the flag WONT.
+//
+// Linux has no NFSv4 ACE list; the dump is the POSIX ACL already
+// stored as `system.posix_acl_access` (the same xattr the `+` marker
+// probes). Fixtures are created here and `setfacl`'d -- never a
+// system path. Missing setfacl, or a filesystem that stores no ACL,
+// skips rather than asserting against a file that never had one.
+// =====================================================}
+
+/// Grant a named-user ACE on `rel_path` via setfacl(1). Skips when the
+/// tool is absent, the call fails, or the kernel kept no xattr.
+fn testSetfacl(rel_path: [:0]const u8) !void {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    std.debug.assert(rel_path.len > 0);
+    const allocator = testing.allocator;
+    const result = std.process.run(allocator, testing.io, .{
+        .argv = &.{ "setfacl", "-m", "u:1000:rw", rel_path },
+    }) catch return error.SkipZigTest;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.SkipZigTest,
+        else => return error.SkipZigTest,
+    }
+    // A noacl mount can accept setfacl and still store nothing; the
+    // size-0 lgetxattr probe is the same check the marker tests use.
+    var probe: [1]u8 = undefined;
+    const get_rc: isize = @bitCast(std.os.linux.lgetxattr(
+        rel_path.ptr,
+        acl_access_xattr.ptr,
+        &probe,
+        0,
+    ));
+    if (get_rc <= 0) return error.SkipZigTest;
+    std.debug.assert(get_rc > 0);
+}
+
+/// Bytes after the first output line containing `name`. Empty when that
+/// line is the last thing printed (the current -e no-op on a lone file).
+fn testAfterNamedLine(output: []const u8, name: []const u8) ![]const u8 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len >= name.len);
+    const line_max: u32 = 256;
+    var seen: u32 = 0;
+    var start: u32 = 0;
+    while (seen < line_max) : (seen += 1) {
+        if (start >= output.len) break;
+        const rest = output[start..];
+        const nl_off = std.mem.indexOfScalar(u8, rest, '\n');
+        const line_len: u32 = if (nl_off) |off| @intCast(off) else @intCast(rest.len);
+        const line = rest[0..line_len];
+        const step: u32 = if (nl_off != null) 1 else 0;
+        const after_start: u32 = start + line_len + step;
+        if (std.mem.find(u8, line, name) != null) {
+            if (after_start >= output.len) return output[output.len..];
+            return output[after_start..];
+        }
+        start = after_start;
+    }
+    std.debug.print("no line containing '{s}' in:\n{s}\n", .{ name, output });
+    return error.LineNotFound;
+}
+
+/// Fail with AclDumpMissing when `-e` printed only the long line.
+fn testExpectAclDump(output: []const u8, name: []const u8) !void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len > 0);
+    const extra = try testAfterNamedLine(output, name);
+    const extra_trim = std.mem.trim(u8, extra, " \t\n");
+    if (extra_trim.len == 0) {
+        std.debug.print(
+            "ACL dump is missing after the long line for '{s}':\n{s}\n",
+            .{ name, output },
+        );
+        return error.AclDumpMissing;
+    }
+    // POSIX getfacl writes "user::rw-" / "user:name:rw-"; a BSD-style
+    // numbered dump still carries a "user:" token for the named ACE.
+    if (std.mem.find(u8, extra, "user:") == null) {
+        std.debug.print(
+            "ACL dump after '{s}' is missing POSIX ACL text (user:):\n{s}\n",
+            .{ name, extra },
+        );
+        return error.AclDumpMissing;
+    }
+}
+
+/// A file with no ACL must not grow a fake dump after its long line.
+fn testExpectNoAclDump(output: []const u8, name: []const u8) !void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len > 0);
+    const extra = try testAfterNamedLine(output, name);
+    const extra_trim = std.mem.trim(u8, extra, " \t\n");
+    if (extra_trim.len != 0) {
+        std.debug.print(
+            "unexpected ACL dump for '{s}' which has no ACL:\n{s}\n",
+            .{ name, extra },
+        );
+        return error.UnexpectedAclDump;
+    }
+}
+
+test "ls #147: -le dumps BSD ACL text after the long line" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try testSetfacl("acl.txt");
+
+    const exit_code = try fx.run(&.{ "-le", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testExpectAclDump(fx.stdout(), "acl.txt");
+}
+
+test "ls #147: -e is not a silent no-op; an ACL file produces extra output vs -l" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try testSetfacl("acl.txt");
+
+    const l_code = try fx.run(&.{ "-l", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), l_code);
+    const l_out = try testing.allocator.dupe(u8, fx.stdout());
+    defer testing.allocator.free(l_out);
+
+    const le_code = try fx.run(&.{ "-le", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), le_code);
+    const le_out = fx.stdout();
+
+    if (le_out.len <= l_out.len) {
+        std.debug.print(
+            "ACL dump is missing: ls -le is a silent no-op vs ls -l\n-l:\n{s}\n-le:\n{s}\n",
+            .{ l_out, le_out },
+        );
+        return error.AclDumpMissing;
+    }
+    try testExpectAclDump(le_out, "acl.txt");
+}
+
+test "ls #147: -le on a file without an ACL prints no dump" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("plain.txt", 0o644);
+
+    const l_code = try fx.run(&.{ "-l", "plain.txt" });
+    try testing.expectEqual(@as(u8, 0), l_code);
+    const l_out = try testing.allocator.dupe(u8, fx.stdout());
+    defer testing.allocator.free(l_out);
+
+    const le_code = try fx.run(&.{ "-le", "plain.txt" });
+    try testing.expectEqual(@as(u8, 0), le_code);
+
+    try testing.expectEqualStrings(l_out, fx.stdout());
+    try testExpectNoAclDump(fx.stdout(), "plain.txt");
+}
+
+test "ls #147: -e FILE implies long format and dumps the ACL" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try testSetfacl("acl.txt");
+
+    const exit_code = try fx.run(&.{ "-e", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Darwin's man page documents -e as a long-format dump. `-g`/`-n`/`-o`
+    // already imply -l here; -e does the same so a bare `-e FILE` is not
+    // a name-only listing (the current silent no-op).
+    const line = try testLineWith(fx.stdout(), "acl.txt");
+    if (line.len < 10 or line[0] != '-') {
+        std.debug.print(
+            "ACL dump is missing: -e did not imply long format\n{s}\n",
+            .{fx.stdout()},
+        );
+        return error.AclDumpMissing;
+    }
+    try testExpectAclDump(fx.stdout(), "acl.txt");
+}
+
+// Issue #166: `ls -l` sizes the file-operand section after
+// partitioning directories out. GNU measures every operand first
+// (gobble_file), then extract_dirs_from_files removes directories
+// from the listing -- so a directory's nlink/owner/group/size (and
+// ACL marker) still size the surviving file lines.
+//
+// A 0-byte file plus a directory is enough for the size column
+// (typical st_size 4096, four digits). Eight subdirectories push
+// the directory's nlink to 10 so the nlink column widens too; a
+// fix that only pads size would still fail here. Owner and group
+// are the same id on both operands under -n, so they do not widen,
+// but they sit in the asserted prefix and a column that drifted
+// would still fail.
+//
+// No ACL is attached: #166 is not ACL-specific, and the marker
+// column is covered as the ten-column mode field with no eleventh.
+// ============================================================
+
+/// Decimal digit count of `n`. Zero is one digit, matching how GNU
+/// renders a 0-byte size.
+fn testDecimalDigits(n: u64) u32 {
+    var digits: u32 = 1;
+    var x = n;
+    while (x >= 10) {
+        x = @divFloor(x, 10);
+        digits += 1;
+        std.debug.assert(digits <= 20);
+    }
+    return digits;
+}
+
+/// Right-align the decimal form of `value` into `buf` to `width`
+/// columns, the way GNU right-aligns nlink/uid/gid/size.
+fn testRightAlignU64(buf: []u8, value: u64, width: u32) ![]const u8 {
+    std.debug.assert(width >= 1);
+    std.debug.assert(buf.len >= width);
+    var txt_buf: [20]u8 = undefined;
+    const txt = try std.fmt.bufPrint(&txt_buf, "{d}", .{value});
+    std.debug.assert(txt.len > 0);
+    std.debug.assert(txt.len <= width);
+    const pad = width - @as(u32, @intCast(txt.len));
+    var i: u32 = 0;
+    while (i < pad) : (i += 1) {
+        buf[i] = ' ';
+    }
+    @memcpy(buf[pad..][0..txt.len], txt);
+    return buf[0..width];
+}
+
+test "ls #166: -ln sizes the file-operand section from every operand, including directories" {
+    const saved_env = testStageDisplayEnvOverrides();
+    defer common.env.test_overrides = saved_env;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const file = try tmp_dir.dir.createFile(io, "f_plain", .{});
+        file.close(io);
+        const rc = std.c.fchmodat(tmp_dir.dir.handle, "f_plain", 0o644, 0);
+        std.debug.assert(rc == 0);
+    }
+    try tmp_dir.dir.createDir(io, "d_wide", .default_dir);
+    {
+        const rc = std.c.fchmodat(tmp_dir.dir.handle, "d_wide", 0o755, 0);
+        std.debug.assert(rc == 0);
+    }
+    // Eight children → nlink 10 (2 + 8). An empty directory's nlink is
+    // 2, still one digit, and would not catch a nlink-width miss.
+    const subdirs = [_][]const u8{
+        "d_wide/s0", "d_wide/s1", "d_wide/s2", "d_wide/s3",
+        "d_wide/s4", "d_wide/s5", "d_wide/s6", "d_wide/s7",
+    };
+    for (subdirs) |path| {
+        try tmp_dir.dir.createDirPath(io, path);
+    }
+
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    const file_info = try common.file.FileInfo.lstat("f_plain");
+    const dir_info = try common.file.FileInfo.lstat("d_wide");
+    std.debug.assert(file_info.kind == .file);
+    std.debug.assert(dir_info.kind == .directory);
+
+    const nlink_width = @max(
+        testDecimalDigits(file_info.nlink),
+        testDecimalDigits(dir_info.nlink),
+    );
+    const owner_width = @max(
+        testDecimalDigits(file_info.uid),
+        testDecimalDigits(dir_info.uid),
+    );
+    const group_width = @max(
+        testDecimalDigits(file_info.gid),
+        testDecimalDigits(dir_info.gid),
+    );
+    const size_width = @max(
+        testDecimalDigits(file_info.size),
+        testDecimalDigits(dir_info.size),
+    );
+    // The fixture must actually widen nlink and size versus a file-only
+    // measurement, or the prefix below would match today's (wrong) output.
+    try testing.expect(nlink_width > testDecimalDigits(file_info.nlink));
+    try testing.expect(size_width > testDecimalDigits(file_info.size));
+
+    var nlink_buf: [20]u8 = undefined;
+    var owner_buf: [20]u8 = undefined;
+    var group_buf: [20]u8 = undefined;
+    var size_buf: [20]u8 = undefined;
+    const nlink_field = try testRightAlignU64(&nlink_buf, file_info.nlink, nlink_width);
+    const owner_field = try testRightAlignU64(&owner_buf, file_info.uid, owner_width);
+    const group_field = try testRightAlignU64(&group_buf, file_info.gid, group_width);
+    const size_field = try testRightAlignU64(&size_buf, file_info.size, size_width);
+
+    var prefix_buf: [128]u8 = undefined;
+    const expected_prefix = try std.fmt.bufPrint(
+        &prefix_buf,
+        "-rw-r--r-- {s} {s} {s} {s} ",
+        .{ nlink_field, owner_field, group_field, size_field },
+    );
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-ln", "--color=never", "f_plain", "d_wide" };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
+
+    const output = stdout_aw.writer.buffered();
+    const line = try testLineWith(output, "f_plain");
+    // Mode (no eleventh marker column), nlink, owner, group, and size
+    // together -- not one column in isolation. A fix that moves only
+    // one of those widths still fails this prefix.
+    try expectLinePrefix(output, "f_plain", expected_prefix);
+    try testing.expect(std.mem.endsWith(u8, line, "f_plain"));
 }

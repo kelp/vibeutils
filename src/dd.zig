@@ -7,6 +7,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
@@ -2368,15 +2369,15 @@ test "runDd - version flag" {
 
 test "runDd - basic file copy" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "Hello, dd!\n");
+    try tmp_dir.createFile("input.txt", "Hello, dd!\n", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2401,23 +2402,23 @@ test "runDd - basic file copy" {
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify output file contents
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Hello, dd!\n", content);
 }
 
 test "runDd - copy with count" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with multiple 512-byte blocks worth of data
     const data = "ABCDEFGHIJ" ** 52; // 520 bytes > 1 block
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+    try tmp_dir.createFile("input.txt", data, null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2439,7 +2440,7 @@ test "runDd - copy with count" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 10), content.len);
     try testing.expectEqualStrings("ABCDEFGHIJ", content);
@@ -2447,14 +2448,14 @@ test "runDd - copy with count" {
 
 test "runDd - copy with conv=ucase" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello world");
+    try tmp_dir.createFile("input.txt", "hello world", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2475,21 +2476,21 @@ test "runDd - copy with conv=ucase" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("HELLO WORLD", content);
 }
 
 test "runDd - copy with conv=lcase" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "HELLO WORLD");
+    try tmp_dir.createFile("input.txt", "HELLO WORLD", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2510,21 +2511,21 @@ test "runDd - copy with conv=lcase" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("hello world", content);
 }
 
 test "runDd - skip blocks" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "AAAABBBB");
+    try tmp_dir.createFile("input.txt", "AAAABBBB", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2546,7 +2547,7 @@ test "runDd - skip blocks" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BBBB", content);
 }
@@ -2859,14 +2860,14 @@ test "runDd conv=noerror completion does not panic after a recovered read error"
 
 test "runDd - statistics output" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data");
+    try tmp_dir.createFile("input.txt", "test data", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2897,14 +2898,14 @@ test "runDd - statistics output" {
 
 test "runDd - status=none suppresses output" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data");
+    try tmp_dir.createFile("input.txt", "test data", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2932,14 +2933,14 @@ test "runDd - status=none suppresses output" {
 
 test "runDd - status=noxfer omits transfer line" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data");
+    try tmp_dir.createFile("input.txt", "test data", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3039,14 +3040,14 @@ test "runDd - zero block size" {
 
 test "runDd - different ibs and obs" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ABCDEFGHIJKLMNOP");
+    try tmp_dir.createFile("input.txt", "ABCDEFGHIJKLMNOP", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3068,21 +3069,21 @@ test "runDd - different ibs and obs" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("ABCDEFGHIJKLMNOP", content);
 }
 
 test "runDd - count=0 copies nothing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "some data");
+    try tmp_dir.createFile("input.txt", "some data", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3103,7 +3104,7 @@ test "runDd - count=0 copies nothing" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 0), content.len);
 }
@@ -3121,16 +3122,16 @@ test "runDd - count=0 copies nothing" {
 
 test "runDd - count byte suffixes bound the copy in exact bytes independent of bs (issue #65)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // 1200 bytes: "0123456789" repeated 120 times.
     const data = "0123456789" ** 120;
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+    try tmp_dir.createFile("input.txt", data, null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
     defer testing.allocator.free(if_arg);
@@ -3156,7 +3157,7 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
         );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(
+        const content = try tmp_dir.dir().readFileAlloc(
             io,
             "out_kb.txt",
             testing.allocator,
@@ -3188,7 +3189,7 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
         );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(
+        const content = try tmp_dir.dir().readFileAlloc(
             io,
             "out_b.txt",
             testing.allocator,
@@ -3219,7 +3220,7 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
         );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(
+        const content = try tmp_dir.dir().readFileAlloc(
             io,
             "out_kib.txt",
             testing.allocator,
@@ -3241,15 +3242,15 @@ test "runDd - count byte suffixes bound the copy in exact bytes independent of b
 // to be red against the current code.
 test "runDd - count=2b with no trailing B stays a block-count multiplier (issue #65 regression)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const data = "ABCDEFGHIJ" ** 400; // exactly 4000 bytes
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+    try tmp_dir.createFile("input.txt", data, null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3269,7 +3270,7 @@ test "runDd - count=2b with no trailing B stays a block-count multiplier (issue 
     );
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 4000), content.len);
     try testing.expectEqualStrings(data, content);
@@ -3281,8 +3282,8 @@ test "runDd - count=2b with no trailing B stays a block-count multiplier (issue 
 // 1000-byte skip below, ruling out a block-rounded implementation).
 test "runDd - skip and seek with byte suffix kB position by exact byte offset (issue #65)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // 1010 bytes: "ABCDEFGHIJ" + 990 zero bytes + "KLMNOPQRST" at
     // offset 1000. Mirrors the exact GNU-pinned fixture.
@@ -3290,15 +3291,11 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
     @memcpy(skip_input[0..10], "ABCDEFGHIJ");
     @memset(skip_input[10..1000], 0);
     @memcpy(skip_input[1000..1010], "KLMNOPQRST");
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "skip_input.bin", &skip_input);
+    try tmp_dir.createFile("skip_input.bin", &skip_input, null);
 
-    const skip_input_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "skip_input.bin",
-        testing.allocator,
-    );
+    const skip_input_path = try tmp_dir.getPath("skip_input.bin");
     defer testing.allocator.free(skip_input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
 
     {
@@ -3324,7 +3321,7 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
         );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(
+        const content = try tmp_dir.dir().readFileAlloc(
             io,
             "skip_output.bin",
             testing.allocator,
@@ -3339,12 +3336,8 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
     // the source content landing at the tail.
     {
         const seek_data = "X" ** 100;
-        try common.test_utils.createTestFile(io, tmp_dir.dir, "seek_input.bin", seek_data);
-        const seek_input_path = try tmp_dir.dir.realPathFileAlloc(
-            io,
-            "seek_input.bin",
-            testing.allocator,
-        );
+        try tmp_dir.createFile("seek_input.bin", seek_data, null);
+        const seek_input_path = try tmp_dir.getPath("seek_input.bin");
         defer testing.allocator.free(seek_input_path);
 
         const output_path = try std.fmt.allocPrint(
@@ -3375,7 +3368,7 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
         );
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        const content = try tmp_dir.dir.readFileAlloc(
+        const content = try tmp_dir.dir().readFileAlloc(
             io,
             "seek_output.bin",
             testing.allocator,
@@ -3393,15 +3386,15 @@ test "runDd - skip and seek with byte suffix kB position by exact byte offset (i
 // the count=/skip=/seek=-only byte-exact semantics above).
 test "runDd - bs with byte suffix kB produces 1000-byte records (issue #65)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const data = "ABCDEFGHIJ" ** 400; // exactly 4000 bytes
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
+    try tmp_dir.createFile("input.txt", data, null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3427,7 +3420,7 @@ test "runDd - bs with byte suffix kB produces 1000-byte records (issue #65)" {
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "4+0 records in") != null);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "4+0 records out") != null);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings(data, content);
 }
@@ -3438,19 +3431,14 @@ test "runDd - bs with byte suffix kB produces 1000-byte records (issue #65)" {
 // that '0x' is a zero multiplier and copies nothing.
 test "runDd - count=0x10 emits GNU zero-multiplier warning and copies nothing (issue #65)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(
-        io,
-        tmp_dir.dir,
-        "input.txt",
-        "test data for zero multiplier",
-    );
+    try tmp_dir.createFile("input.txt", "test data for zero multiplier", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3481,7 +3469,7 @@ test "runDd - count=0x10 emits GNU zero-multiplier warning and copies nothing (i
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "0+0 records in") != null);
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "0+0 records out") != null);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 0), content.len);
 }
@@ -3664,14 +3652,14 @@ test "applyConversions - ibm conversion" {
 
 test "runDd - conv=swab swaps byte pairs" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", "ABCD");
+    try tmp_dir.createFile("input.bin", "ABCD", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.bin");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3692,21 +3680,21 @@ test "runDd - conv=swab swaps byte pairs" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.bin");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BADC", content);
 }
 
 test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "A");
+    try tmp_dir.createFile("input.txt", "A", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3727,22 +3715,22 @@ test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.bin");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(u8, 0xC1), content[0]);
 }
 
 test "runDd - conv=ascii converts EBCDIC to ASCII" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Write raw EBCDIC byte 0xC1 which should convert to ASCII 'A'
-    try tmp_dir.dir.writeFile(io, .{ .sub_path = "input.bin", .data = &[_]u8{0xC1} });
+    try tmp_dir.dir().writeFile(io, .{ .sub_path = "input.bin", .data = &[_]u8{0xC1} });
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.bin");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3763,22 +3751,22 @@ test "runDd - conv=ascii converts EBCDIC to ASCII" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("A", content);
 }
 
 test "runDd - conv=osync pads final block" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Write 3 bytes with obs=8, final block should be padded to 8
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ABC");
+    try tmp_dir.createFile("input.txt", "ABC", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3799,7 +3787,7 @@ test "runDd - conv=osync pads final block" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.bin");
     defer testing.allocator.free(content);
     // Should be padded to 8 bytes
     try testing.expectEqual(@as(usize, 8), content.len);
@@ -3811,15 +3799,15 @@ test "runDd - conv=osync pads final block" {
 
 test "runDd - conv=block pads records to cbs size" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Input: two newline-terminated records
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ab\ncd\n");
+    try tmp_dir.createFile("input.txt", "ab\ncd\n", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3841,7 +3829,7 @@ test "runDd - conv=block pads records to cbs size" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.bin");
     defer testing.allocator.free(content);
     // "ab" padded to 5 = "ab   ", "cd" padded to 5 = "cd   "
     try testing.expectEqual(@as(usize, 10), content.len);
@@ -3850,15 +3838,15 @@ test "runDd - conv=block pads records to cbs size" {
 
 test "runDd - conv=unblock replaces trailing spaces with newline" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Input: two 5-byte fixed records with trailing spaces
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ab   cd   ");
+    try tmp_dir.createFile("input.txt", "ab   cd   ", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -3880,7 +3868,7 @@ test "runDd - conv=unblock replaces trailing spaces with newline" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("ab\ncd\n", content);
 }
@@ -4053,14 +4041,14 @@ test "parseConversions - oldibm maps to ibm" {
 
 test "runDd - conv=block with fillchar" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ab\n");
+    try tmp_dir.createFile("input.txt", "ab\n", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -4089,7 +4077,7 @@ test "runDd - conv=block with fillchar" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.bin");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 5), content.len);
     try testing.expectEqualStrings("abXXX", content);
@@ -4097,14 +4085,14 @@ test "runDd - conv=block with fillchar" {
 
 test "runDd - iseek skips input blocks" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "AAAABBBB");
+    try tmp_dir.createFile("input.txt", "AAAABBBB", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -4126,22 +4114,22 @@ test "runDd - iseek skips input blocks" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BBBB", content);
 }
 
 test "runDd - multi-block copy with bs and count" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // 5 blocks of 4 bytes each = 20 bytes; copy only first 3 blocks
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "AAAABBBBCCCCddddeeee");
+    try tmp_dir.createFile("input.txt", "AAAABBBBCCCCddddeeee", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -4162,7 +4150,7 @@ test "runDd - multi-block copy with bs and count" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.txt");
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 12), content.len);
     try testing.expectEqualStrings("AAAABBBBCCCC", content);
@@ -4210,14 +4198,14 @@ test "audit: conv=sync pads with spaces when conv=block is active" {
     // to cbs=6 with fillchar (space). The remaining 4 space-padded bytes
     // form a record of all spaces -> padded to cbs=6.
     // If sync pads with NUL, those NUL bytes leak into the block output.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "X\n");
+    try tmp_dir.createFile("input.txt", "X\n", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -4251,7 +4239,7 @@ test "audit: conv=sync pads with spaces when conv=block is active" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
+    const content = try tmp_dir.readFileAlloc("output.bin");
     defer testing.allocator.free(content);
 
     // The output should contain NO NUL bytes - all padding should be spaces
@@ -4296,14 +4284,14 @@ test "audit: conv=ibm produces different output than conv=ebcdic for caret" {
 /// and assert a usage-error exit (1) with `expected_needle` in stderr.
 fn expectDdRejectsOperand(operand: []const u8, expected_needle: []const u8) !void {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello");
+    try tmp_dir.createFile("input.txt", "hello", null);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const base_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -4380,12 +4368,12 @@ test "successful seeks are exempt from the small stall bound" {
     // (counter stayed 0), which is part of the round-3 red evidence.
     const io = testing.io;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // An empty regular file is seekable: lseek(SEEK_CUR, +ibs) past EOF
     // succeeds, so every advance reports forward progress.
-    var seekable_file = try tmp_dir.dir.createFile(io, "seekable.bin", .{});
+    var seekable_file = try tmp_dir.dir().createFile(io, "seekable.bin", .{});
     defer seekable_file.close(io);
 
     var stats: DdStats = .{};
@@ -4491,13 +4479,13 @@ test "skip bound aborts a seekable input that never reads" {
     // distinguishable from the seek-fails "without progress" stall message.
     const io = testing.io;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // An empty regular file is seekable: lseek(SEEK_CUR, +ibs) past EOF
     // succeeds on every advance, so no seek ever fails and only the large
     // skip bound can terminate the run.
-    var seekable_file = try tmp_dir.dir.createFile(io, "endless_skip.bin", .{});
+    var seekable_file = try tmp_dir.dir().createFile(io, "endless_skip.bin", .{});
     defer seekable_file.close(io);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4555,9 +4543,9 @@ test "conv=noerror,sync counts an error-synthesized block as partial in" {
 
     // A real output file absorbs the NUL-padded simple-copy write without
     // polluting the test runner's stdout.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    var out_file = try tmp_dir.dir.createFile(io, "synced_out.bin", .{});
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    var out_file = try tmp_dir.dir().createFile(io, "synced_out.bin", .{});
     defer out_file.close(io);
 
     var stats: DdStats = .{};

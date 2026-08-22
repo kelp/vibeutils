@@ -16,6 +16,9 @@ The
 utility removes the directory entry specified by each
 .Ar directory
 argument, provided it is empty.
+When standard error is a terminal, a not-empty diagnostic
+may append a suggestion to use
+.Nm rm Fl r .
 .Pp
 Arguments are processed in the order given.
 To remove both a parent directory and a subdirectory

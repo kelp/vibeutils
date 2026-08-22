@@ -46,10 +46,10 @@
 # history and cwd-relative pathspecs. So each case builds its own repo under
 # mktemp -d, cd's into its root, and commits with `-c commit.gpgsign=false`.
 # These are scratch repos in a temp dir, never this project's history, so the
-# repo's signing policy is untouched. Two known defects of the script are
-# worked around here rather than tested: --staged scans the working tree
-# rather than the index (so staged fixtures leave the worktree matching the
-# index), and the script must run from the repo root.
+# repo's signing policy is untouched. --staged must scan the index, not the
+# worktree: test_staged_violation_is_seen_when_worktree_is_clean pins that
+# split (issue #149). One remaining known defect is worked around rather than
+# tested: the script must run from the repo root.
 
 # Reporting helpers, colours, and PROJECT_ROOT.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
@@ -331,7 +331,8 @@ test_body_growth_past_limit_is_new() {
 }
 
 # R2 -- the same growth seen through the pre-commit hook's own mode. The
-# worktree is left matching the index because --staged scans the worktree.
+# worktree is left matching the index; the index-vs-worktree split is
+# test_staged_violation_is_seen_when_worktree_is_clean.
 test_body_growth_past_limit_is_new_when_staged() {
     echo -e "${CYAN}RED R2: the same growth, staged...${NC}"
     local repo
@@ -348,6 +349,31 @@ test_body_growth_past_limit_is_new_when_staged() {
         "$(row long-fn src/grow.zig:1 NEW 'body_lines=71 fn=grow')"
     assert_summary_exact "R2 staged body growth" "total=1 new=1"
     assert_status "R2 staged body growth" 1
+}
+
+# Issue #149 -- --staged must report what is in the index, even when the
+# worktree has been restored to HEAD. Stage the same body growth as R2, then
+# restore the worktree without unstaging so only the index still carries the
+# violation. Scanning the worktree here would report a clean tree.
+test_staged_violation_is_seen_when_worktree_is_clean() {
+    echo -e "${CYAN}RED #149: staged violation with a clean worktree...${NC}"
+    local repo
+    repo=$(new_repo grow_staged_clean_wt) || return 1
+    write_fn_file "$repo/src/grow.zig" grow 68
+    repo_commit "$repo" "clean 69-line body"
+
+    insert_line_after "$repo/src/grow.zig" 35 '    const grown_a: u8 = 1;'
+    insert_line_after "$repo/src/grow.zig" 36 '    const grown_b: u8 = 2;'
+    repo_stage "$repo"
+
+    # Restore worktree from HEAD; leave the index holding the growth.
+    (cd "$repo" && git restore --source=HEAD --worktree -- src/grow.zig)
+
+    run_tiger "$repo" --staged
+    assert_rows_exact "staged vs clean worktree" \
+        "$(row long-fn src/grow.zig:1 NEW 'body_lines=71 fn=grow')"
+    assert_summary_exact "staged vs clean worktree" "total=1 new=1"
+    assert_status "staged vs clean worktree" 1
 }
 
 # R3 -- discharges "the same reasoning applies to any other check anchored on
@@ -611,6 +637,7 @@ main() {
 
     test_body_growth_past_limit_is_new
     test_body_growth_past_limit_is_new_when_staged
+    test_staged_violation_is_seen_when_worktree_is_clean
     test_recursion_added_to_body_is_new
     test_edit_inside_violating_body_is_new
     test_added_parameter_continuation_line_is_new
@@ -627,7 +654,7 @@ main() {
     # A suite that built no fixtures and asserted nothing reports "all tests
     # passed", which is the same vacuous green this file exists to prevent in
     # the scanner. Refuse it here too.
-    if [[ "$TESTS_RUN" -lt 41 ]]; then
+    if [[ "$TESTS_RUN" -lt 44 ]]; then
         echo -e "${RED}fatal:${NC} only $TESTS_RUN assertions ran;" \
             "the suite did not complete." >&2
         print_test_summary "tiger-check"

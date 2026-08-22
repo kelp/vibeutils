@@ -212,6 +212,62 @@ test_ls() {
         print_test_result "ls -lh shows human-readable size" "FAIL" "No human-readable size in output"
     fi
 
+    echo -e "${CYAN}Testing long-format human-readable defaults...${NC}"
+
+    check_ls_long_size() {
+        local name="$1"
+        local expected="$2"
+        shift 2
+        local size_output size_field
+        size_output=$(NO_COLOR=1 LC_ALL=C "$binary" "$@" "$hr_file" 2>/dev/null | strip_ansi)
+        size_field=$(printf '%s\n' "$size_output" | awk 'NR == 1 {print $5}')
+        if [[ "$expected" == "human" && \
+              "$size_field" =~ ^[0-9]+(\.[0-9]+)?[KMGTPE]$ ]]; then
+            print_test_result "$name" "PASS"
+        elif [[ "$expected" != "human" && "$size_field" == "$expected" ]]; then
+            print_test_result "$name" "PASS"
+        else
+            print_test_result "$name" "FAIL" \
+                "Expected size field '$expected', got '$size_field' in '$size_output'"
+        fi
+    }
+
+    check_ls_long_size "ls -l defaults to binary human-readable size" human -l
+    check_ls_long_size "ls -lk overrides the human default" 2 -lk
+    check_ls_long_size "ls -l -k overrides the human default" 2 -l -k
+    check_ls_long_size "ls -lhk keeps explicit human-readable size" human -lhk
+    check_ls_long_size "ls -lkh keeps explicit human-readable size" human -lkh
+    unset -f check_ls_long_size
+
+    local l_default_output
+    l_default_output=$(NO_COLOR=1 LC_ALL=C "$binary" -l "$hr_file" 2>/dev/null | strip_ansi)
+    if [[ "$l_default_output" =~ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[[:space:]]+[0-9]+[[:space:]]+[0-9]{2}:[0-9]{2} ]] \
+        && [[ "$l_default_output" != *"ago"* && "$l_default_output" != *"just now"* ]]; then
+        print_test_result "ls -l human default keeps clock-style date" "PASS"
+    else
+        print_test_result "ls -l human default keeps clock-style date" "FAIL" \
+            "Expected clock-style date without relative text, got '$l_default_output'"
+    fi
+
+    local lh_relative_output
+    lh_relative_output=$(NO_COLOR=1 LC_ALL=C "$binary" -lh "$hr_file" 2>/dev/null | strip_ansi)
+    if [[ "$lh_relative_output" == *"ago"* || "$lh_relative_output" == *"just now"* ]]; then
+        print_test_result "ls -lh keeps relative date style" "PASS"
+    else
+        print_test_result "ls -lh keeps relative date style" "FAIL" \
+            "Expected relative date text, got '$lh_relative_output'"
+    fi
+
+    local s_numeric_output s_numeric_field
+    s_numeric_output=$(NO_COLOR=1 LC_ALL=C "$binary" -s "$hr_file" 2>/dev/null | strip_ansi)
+    s_numeric_field=${s_numeric_output%% *}
+    if [[ -n "$s_numeric_field" && "$s_numeric_field" != *[!0-9]* ]]; then
+        print_test_result "ls -s without -l keeps numeric block count" "PASS"
+    else
+        print_test_result "ls -s without -l keeps numeric block count" "FAIL" \
+            "Expected numeric block field, got '$s_numeric_field' in '$s_numeric_output'"
+    fi
+
     echo -e "${CYAN}Testing -S sort by size...${NC}"
 
     local sort_dir=$(create_temp_dir)
@@ -433,6 +489,65 @@ test_ls() {
         print_test_result "ls truecolor icons emit RGB sequences" "PASS"
     else
         print_test_result "ls truecolor icons emit RGB sequences" "FAIL" "No 38;2; truecolor sequence found in output"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS directory override...${NC}"
+
+    local ls_colors_dir=$(create_temp_dir)
+    mkdir -p "$ls_colors_dir/blue_dir"
+    local ls_colors_output
+    ls_colors_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=01;34' "$binary" --color=always -1 "$ls_colors_dir" 2>/dev/null)
+    if [[ "$ls_colors_output" == *"01;34"* ]]; then
+        print_test_result "ls honors LS_COLORS directory SGR" "PASS"
+    else
+        print_test_result "ls honors LS_COLORS directory SGR" "FAIL" \
+            "Expected 01;34 in output: '$ls_colors_output'"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS di=0 omits end sequence...${NC}"
+
+    # GNU prints ec/CSI-reset only after a color start. di=0 writes no
+    # start, so a custom ec must not appear after the directory name.
+    local uncolored_dir
+    uncolored_dir=$(create_temp_dir)
+    mkdir -p "$uncolored_dir/plain_dir"
+    local uncolored_output
+    uncolored_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=0:ec=WRONGRESET' "$binary" --color=always -1 "$uncolored_dir" 2>/dev/null)
+    if [[ "$uncolored_output" == *"WRONGRESET"* ]]; then
+        print_test_result "ls omits end sequence for uncolored di=0 names" "FAIL" \
+            "Unexpected end sequence in: '$uncolored_output'"
+    elif [[ "$uncolored_output" != *"plain_dir"* ]]; then
+        print_test_result "ls omits end sequence for uncolored di=0 names" "FAIL" \
+            "Expected plain_dir in output: '$uncolored_output'"
+    else
+        print_test_result "ls omits end sequence for uncolored di=0 names" "PASS"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS uncolored symlink target omits end sequence...${NC}"
+
+    local uncolored_link_dir
+    uncolored_link_dir=$(create_temp_dir)
+    create_temp_file "target" "$uncolored_link_dir/target.txt"
+    ln -s target.txt "$uncolored_link_dir/link.txt"
+    local uncolored_link_output
+    # Run from inside the fixture so lstat(target.txt) resolves; listing
+    # the directory from elsewhere treats the relative target as dangling
+    # and would apply the compiled missing-target color instead of fi=0.
+    uncolored_link_output=$(
+        cd "$uncolored_link_dir" &&
+        env -u NO_COLOR TERM=xterm-256color \
+            LS_COLORS='ln=0:fi=0:ec=WRONGRESET' "$binary" --color=always -l . 2>/dev/null
+    )
+    if [[ "$uncolored_link_output" == *"WRONGRESET"* ]]; then
+        print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
+            "Unexpected end sequence in: '$uncolored_link_output'"
+    elif [[ "$uncolored_link_output" != *"link.txt"* ]] || [[ "$uncolored_link_output" != *"target.txt"* ]]; then
+        print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
+            "Expected link.txt and target.txt in output: '$uncolored_link_output'"
+    else
+        print_test_result "ls omits end sequence for uncolored symlink names" "PASS"
     fi
 
     echo -e "${CYAN}Testing NO_COLOR suppresses escape sequences...${NC}"
@@ -2229,8 +2344,9 @@ test_ls() {
     if [[ -n "$w124_range" ]] && (( w124_omax > 8 )) && (( w124_omax != w124_omin )) \
         && (( w124_umax != w124_umin )); then
         local w124_ours w124_gnu w124_gnu_mode_w w124_ours_mode_w
-        w124_ours=$(NO_COLOR=1 "$binary" -ld /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
-        w124_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld /run/systemd/netif /etc/hostname /usr 2>/dev/null)
+        w124_ours=$(NO_COLOR=1 "$binary" -ldk /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
+        w124_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld --block-size=1K \
+            /run/systemd/netif /etc/hostname /usr 2>/dev/null)
         w124_gnu_mode_w=$(mode_field_width "$w124_gnu")
         w124_ours_mode_w=$(mode_field_width "$w124_ours")
 
@@ -2269,8 +2385,9 @@ test_ls() {
         # only names are tested. Again compared against a live GNU
         # reference rather than a hardcoded uid/gid snapshot.
         local w124n_ours w124n_gnu w124n_gnu_mode_w w124n_ours_mode_w
-        w124n_ours=$(NO_COLOR=1 "$binary" -ldn /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
-        w124n_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldn /run/systemd/netif /etc/hostname /usr 2>/dev/null)
+        w124n_ours=$(NO_COLOR=1 "$binary" -ldnk /run/systemd/netif /etc/hostname /usr 2>/dev/null | strip_ansi)
+        w124n_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ldn --block-size=1K \
+            /run/systemd/netif /etc/hostname /usr 2>/dev/null)
         w124n_gnu_mode_w=$(mode_field_width "$w124n_gnu")
         w124n_ours_mode_w=$(mode_field_width "$w124n_ours")
 
@@ -2353,8 +2470,9 @@ test_ls() {
 
     if [[ -n "$w124ind_path" ]]; then
         local w124ind_ours w124ind_gnu w124ind_gnu_mode_w w124ind_ours_mode_w
-        w124ind_ours=$(NO_COLOR=1 "$binary" -ld "$w124ind_path" /etc/hostname 2>/dev/null | strip_ansi)
-        w124ind_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld "$w124ind_path" /etc/hostname 2>/dev/null)
+        w124ind_ours=$(NO_COLOR=1 "$binary" -ldk "$w124ind_path" /etc/hostname 2>/dev/null | strip_ansi)
+        w124ind_gnu=$(LC_ALL=C TZ=UTC "$gnu_ls" -ld --block-size=1K \
+            "$w124ind_path" /etc/hostname 2>/dev/null)
         w124ind_gnu_mode_w=$(mode_field_width "$w124ind_gnu")
         w124ind_ours_mode_w=$(mode_field_width "$w124ind_ours")
 
@@ -2432,22 +2550,22 @@ test_ls() {
     }
 
     local sect_nlink
-    sect_nlink=$(LC_ALL=C "$binary" -lgo "$sect_wide_dir/big" 2>/dev/null | strip_ansi | awk '{print $2}')
+    sect_nlink=$(LC_ALL=C "$binary" -lkgo "$sect_wide_dir/big" 2>/dev/null | strip_ansi | awk '{print $2}')
     if [[ "$sect_nlink" != "11" ]]; then
         print_test_result "ls #124: a second -l section sizes its columns to its own content" "SKIP" \
             "Fixture needs 11 hard links on this filesystem; got nlink=$(printf '%q' "$sect_nlink")"
         print_test_result "ls #124: -R sizes each directory section to its own content" "SKIP" \
             "Fixture needs 11 hard links on this filesystem; got nlink=$(printf '%q' "$sect_nlink")"
     else
-        # Section one is nlink 11 (2 columns) and size 102400 (6 columns);
-        # section two must fall back to 1 and 1, not inherit 2 and 6.
+        # Section one is nlink 11 (2 columns) and size 100 (3 columns);
+        # section two must fall back to 1 and 1, not inherit 2 and 3.
         local sect_expected sect_output
         sect_expected="$sect_wide_dir:
--rw-r--r-- 11 102400
+-rw-r--r-- 11 100
 
 $sect_narrow_dir:
 -rw-r--r-- 1 0"
-        sect_output=$(NO_COLOR=1 LC_ALL=C "$binary" -lgo "$sect_wide_dir" "$sect_narrow_dir" 2>/dev/null |
+        sect_output=$(NO_COLOR=1 LC_ALL=C "$binary" -lkgo "$sect_wide_dir" "$sect_narrow_dir" 2>/dev/null |
             strip_ansi | strip_section_noise)
         if [[ "$sect_output" == "$sect_expected" ]]; then
             print_test_result "ls #124: a second -l section sizes its columns to its own content" "PASS"
@@ -2470,14 +2588,14 @@ $sect_narrow_dir:
         # on APFS, and pinning it would make this test a filesystem test.
         # It still participates in the parent section's widths, where it
         # cannot change the outcome -- a directory size is narrower than
-        # 102400 and its link count is a single digit.
+        # 100 and its link count is a single digit.
         local sect_r_expected sect_r_output
         sect_r_expected="$sect_r_dir:
--rw-r--r-- 1 102400
+-rw-r--r-- 1 100
 
 $sect_r_dir/sub:
 -rw-r--r-- 1 0"
-        sect_r_output=$(NO_COLOR=1 LC_ALL=C "$binary" -lRgo "$sect_r_dir" 2>/dev/null |
+        sect_r_output=$(NO_COLOR=1 LC_ALL=C "$binary" -lkRgo "$sect_r_dir" 2>/dev/null |
             strip_ansi | strip_section_noise | sed '/^d/d')
         if [[ "$sect_r_output" == "$sect_r_expected" ]]; then
             print_test_result "ls #124: -R sizes each directory section to its own content" "PASS"
@@ -2488,6 +2606,76 @@ $sect_r_dir/sub:
     fi
 
     unset -f strip_section_noise
+
+    # ------------------------------------------------------------------
+    # Issue #166: `ls -l` sizes the file-operand section using only the
+    # operands that remain after directories are partitioned out. GNU
+    # measures every operand first, so a directory's nlink/owner/group/
+    # size (and ACL marker) still pad the surviving file line.
+    #
+    # A 0-byte file plus a directory with eight subdirs (nlink 10, size
+    # typically 4096) widens nlink and size together. Compared live
+    # against GNU on the same fixture so host uid/gid and directory
+    # st_size do not get hardcoded. The oracle is pinned to an absolute
+    # GNU coreutils binary -- a bare `ls` here would resolve to ours
+    # because integration tests prepend zig-out/bin to PATH.
+    # ------------------------------------------------------------------
+    echo -e "${CYAN}Testing #166 mixed-operand -l column widths...${NC}"
+
+    local w166_dir
+    w166_dir=$(create_temp_dir)
+    mkdir -p "$w166_dir/d_wide"
+    local w166_i
+    for w166_i in 0 1 2 3 4 5 6 7; do
+        mkdir "$w166_dir/d_wide/s$w166_i"
+    done
+    : >"$w166_dir/f_plain"
+    chmod 644 "$w166_dir/f_plain"
+    chmod 755 "$w166_dir/d_wide"
+
+    if [[ -n "$gnu_ls" ]]; then
+        local w166_ours w166_gnu w166_gnu_fileonly
+        w166_ours=$(cd "$w166_dir" && LC_ALL=C TZ=UTC NO_COLOR=1 \
+            "$binary" -ln --color=never f_plain d_wide 2>/dev/null | strip_ansi)
+        w166_gnu=$(cd "$w166_dir" && LC_ALL=C TZ=UTC \
+            "$gnu_ls" -ln --color=never f_plain d_wide 2>/dev/null)
+        w166_gnu_fileonly=$(cd "$w166_dir" && LC_ALL=C TZ=UTC \
+            "$gnu_ls" -ln --color=never f_plain 2>/dev/null)
+
+        local w166_ours_line w166_gnu_line
+        w166_ours_line=$(printf '%s\n' "$w166_ours" | sed -n '1p')
+        w166_gnu_line=$(printf '%s\n' "$w166_gnu" | sed -n '1p')
+
+        # The mixed-operand GNU line must differ from the file-only GNU
+        # line: that is the padding this issue is about. Equal lines mean
+        # the fixture failed to widen any column and a byte-compare would
+        # pass on today's (wrong) output.
+        if [[ -z "$w166_gnu_line" || "$w166_gnu_line" != *f_plain ]]; then
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "FAIL" \
+                "GNU ls capture was empty or missing f_plain -- fixture or reference binary broke: $(printf '%q' "$w166_gnu_line")"
+        elif [[ "$w166_gnu_line" == "$w166_gnu_fileonly" ]]; then
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "FAIL" \
+                "GNU mixed-operand line equals the file-only line, so the fixture did not widen nlink/size: $(printf '%q' "$w166_gnu_line")"
+        elif [[ "$w166_ours_line" == "$w166_gnu_line" ]]; then
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "PASS"
+        else
+            print_test_result \
+                "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+                "FAIL" \
+                "GNU: $(printf '%q' "$w166_gnu_line"); ours: $(printf '%q' "$w166_ours_line")"
+        fi
+    else
+        print_test_result \
+            "ls #166: -ln file-operand line matches GNU when a directory operand is also given" \
+            "SKIP" \
+            "No GNU ls on this host to compare against"
+    fi
 
     # ------------------------------------------------------------------
     # Issue #147: `ls -l` must mark an entry carrying an extended ACL with
@@ -2666,9 +2854,10 @@ $sect_r_dir/sub:
         # a separate, known divergence with nothing to do with #147.
         if [[ -n "$gnu_ls" ]]; then
             local acl_ours_full acl_gnu_full
-            acl_ours_full=$(NO_COLOR=1 LC_ALL=C TZ=UTC "$binary" -l "$acl_root/mixed" 2>/dev/null |
+            acl_ours_full=$(NO_COLOR=1 LC_ALL=C TZ=UTC "$binary" -lk "$acl_root/mixed" 2>/dev/null |
                 strip_ansi | sed '/^total /d')
-            acl_gnu_full=$(LC_ALL=C TZ=UTC "$gnu_ls" -l "$acl_root/mixed" 2>/dev/null | sed '/^total /d')
+            acl_gnu_full=$(LC_ALL=C TZ=UTC "$gnu_ls" -l --block-size=1K \
+                "$acl_root/mixed" 2>/dev/null | sed '/^total /d')
             if [[ -z "$acl_gnu_full" ]]; then
                 print_test_result "${acl_names[7]}" "FAIL" \
                     "GNU ls produced no output for the ACL fixture -- the fixture or the reference binary broke"

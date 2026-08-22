@@ -7,7 +7,7 @@ Summarize disk usage of the set of FILEs, recursively for directories.
   -c, --total           produce a grand total
   -d, --max-depth=N     print the total for a directory only if it is N
                           or fewer levels below the command line argument
-  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
+  -h, --human-readable  print sizes in human readable format (default)
   -k                    like --block-size=1K
   -L, --dereference     dereference all symbolic links
   -s, --summarize       display only a total for each argument
@@ -22,7 +22,7 @@ Summarize disk usage of the set of FILEs, recursively for directories.
 
 Display values are in units of the first available SIZE from --block-size,
 and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
-Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
+By default sizes are human-readable (powers of 1024). Use -k for 1024-byte blocks.
 
 SIZE is an integer and optional unit (example: 10K is 10*1024).
 Units are K, M, G, T, P, E (powers of 1024) or KB, MB, ... (powers of 1000).

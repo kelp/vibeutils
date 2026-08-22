@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
@@ -1003,14 +1004,14 @@ test "uniq -D=none does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "-D=none", input_path };
@@ -1027,14 +1028,14 @@ test "uniq -D=prepend does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\nb\nb\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "-D=prepend", input_path };
@@ -1051,14 +1052,14 @@ test "uniq -D=separate does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\nb\nc\nc\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "-D=separate", input_path };
@@ -1075,14 +1076,14 @@ test "uniq --all-repeated=none does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "--all-repeated=none", input_path };
@@ -1099,14 +1100,14 @@ test "uniq --all-repeated=prepend does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "--all-repeated=prepend", input_path };
@@ -1123,14 +1124,14 @@ test "uniq --all-repeated=separate does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "--all-repeated=separate", input_path };
@@ -1147,14 +1148,14 @@ test "uniq --all-repeated=separate with multiple groups" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\nc\nc\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     const args = [_][]const u8{ "--all-repeated=separate", input_path };
@@ -1171,14 +1172,14 @@ test "uniq --all-repeated bare form (no =METHOD) does not crash" {
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "input.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "input.txt", .{});
     try file.writeStreamingAll(io, "a\na\nb\n");
     file.close(io);
 
-    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    const input_path = try tmp_dir.getPath("input.txt");
     defer testing.allocator.free(input_path);
 
     // Bare --all-repeated without =METHOD should behave like =none

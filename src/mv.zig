@@ -60,52 +60,7 @@ const MoveOptions = struct {
     backup: bool = false,
 };
 
-// Test helpers — thin wrapper around common.test_dir.TestDir
-
-const TestDir = struct {
-    inner: common.test_dir.TestDir,
-
-    pub fn init(allocator: std.mem.Allocator) TestDir {
-        return .{ .inner = common.test_dir.TestDir.init(allocator) };
-    }
-
-    pub fn deinit(self: *TestDir) void {
-        self.inner.deinit();
-    }
-
-    pub fn createFile(self: *TestDir, name: []const u8, content: []const u8) !void {
-        try self.inner.createFile(name, content, null);
-    }
-
-    pub fn createUniqueFile(self: *TestDir, base_name: []const u8, content: []const u8) ![]u8 {
-        return try test_utils.createUniqueTestFile(
-            testing.io,
-            self.inner.tmp_dir.dir,
-            self.inner.allocator,
-            base_name,
-            content,
-        );
-    }
-
-    pub fn fileExists(self: *TestDir, name: []const u8) bool {
-        return self.inner.fileExists(name);
-    }
-
-    pub fn readFile(self: *TestDir, name: []const u8) ![]u8 {
-        return try self.inner.readFileAlloc(name);
-    }
-
-    pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
-        if (std.mem.eql(u8, name, ".")) {
-            return try self.inner.getBasePath();
-        }
-        return try self.inner.getPath(name);
-    }
-
-    pub fn dir(self: *TestDir) std.Io.Dir {
-        return self.inner.tmp_dir.dir;
-    }
-};
+const TestDir = common.test_dir.TestDir;
 
 test "mv: basic test" {
     // Simple test to verify the module compiles and basic types work
@@ -157,7 +112,7 @@ test "mv: file rename in same directory" {
 
     // Verify new file exists with same content
     try testing.expect(test_dir.fileExists(new_name));
-    const content = try test_dir.readFile(new_name);
+    const content = try test_dir.readFileAlloc(new_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Hello, World!", content);
 }
@@ -172,7 +127,7 @@ test "mv: move to different directory" {
 
     const subdir_name = try test_utils.uniqueTestName(testing.allocator, "subdir");
     defer testing.allocator.free(subdir_name);
-    try test_dir.inner.createDir(subdir_name);
+    try test_dir.createDir(subdir_name);
 
     // Get paths
     const source_path = try test_dir.getPath(source_name);
@@ -207,11 +162,11 @@ test "mv: move to different directory" {
     const moved_path =
         try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ subdir_name, source_name });
     defer testing.allocator.free(moved_path);
-    const moved_file = try test_dir.inner.tmp_dir.dir.openFile(testing.io, moved_path, .{});
+    const moved_file = try test_dir.dir().openFile(testing.io, moved_path, .{});
     moved_file.close(testing.io);
 
     // Verify content is preserved
-    const content = try test_dir.inner.tmp_dir.dir.readFileAlloc(
+    const content = try test_dir.dir().readFileAlloc(
         testing.io,
         moved_path,
         testing.allocator,
@@ -226,8 +181,8 @@ test "mv: directory move" {
     defer test_dir.deinit();
 
     // Create source directory with a file inside
-    try test_dir.inner.createDir("source_dir");
-    try test_dir.inner.createFile("source_dir/file.txt", "Inside directory", null);
+    try test_dir.createDir("source_dir");
+    try test_dir.createFile("source_dir/file.txt", "Inside directory", null);
 
     // Get paths
     const source_path = try test_dir.getPath("source_dir");
@@ -255,17 +210,17 @@ test "mv: directory move" {
     );
 
     // Verify original directory is gone
-    test_dir.inner.tmp_dir.dir.access(testing.io, "source_dir", .{}) catch |err| {
+    test_dir.dir().access(testing.io, "source_dir", .{}) catch |err| {
         try testing.expect(err == error.FileNotFound);
     };
 
     // Verify new directory exists with file intact
     const moved_file =
-        try test_dir.inner.tmp_dir.dir.openFile(testing.io, "dest_dir/file.txt", .{});
+        try test_dir.dir().openFile(testing.io, "dest_dir/file.txt", .{});
     defer moved_file.close(testing.io);
 
     // Verify content is preserved
-    const content = try test_dir.inner.tmp_dir.dir.readFileAlloc(
+    const content = try test_dir.dir().readFileAlloc(
         testing.io,
         "dest_dir/file.txt",
         testing.allocator,
@@ -310,7 +265,7 @@ test "mv: force mode overwrites existing file" {
 
     // Verify source is gone and dest has new content
     try testing.expect(!test_dir.fileExists(source_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("New content", content);
 }
@@ -354,7 +309,7 @@ test "mv: no-clobber mode preserves existing file" {
 
     // Verify source still exists and dest is unchanged
     try testing.expect(test_dir.fileExists(source_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Existing content", content);
 }
@@ -398,7 +353,7 @@ test "mv: files with spaces in names" {
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
     try testing.expect(test_dir.fileExists(dest_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Space content", content);
 }
@@ -442,7 +397,7 @@ test "mv: files with unicode characters" {
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
     try testing.expect(test_dir.fileExists(dest_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Unicode content", content);
 }
@@ -486,7 +441,7 @@ test "mv: files with special characters" {
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
     try testing.expect(test_dir.fileExists(dest_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Special content", content);
 }
@@ -530,7 +485,7 @@ test "mv: empty file" {
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
     try testing.expect(test_dir.fileExists(dest_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("", content);
 }
@@ -1817,7 +1772,7 @@ test "mv: force overwrite existing file on same filesystem" {
 
     // Source should be gone, dest should have new content
     try testing.expect(!test_dir.fileExists(source_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("New content", content);
 }
@@ -1839,7 +1794,7 @@ test "mv: large file copy preserves content integrity" {
     const source_name = try test_utils.uniqueTestName(testing.allocator, "large_src");
     defer testing.allocator.free(source_name);
     {
-        const file = try test_dir.inner.tmp_dir.dir.createFile(testing.io, source_name, .{});
+        const file = try test_dir.dir().createFile(testing.io, source_name, .{});
         defer file.close(testing.io);
         try file.writeStreamingAll(testing.io, content);
     }
@@ -1876,7 +1831,7 @@ test "mv: large file copy preserves content integrity" {
     try testing.expect(!test_dir.fileExists(source_name));
 
     // Verify content integrity of destination
-    const moved_content = try test_dir.inner.tmp_dir.dir.readFileAlloc(
+    const moved_content = try test_dir.dir().readFileAlloc(
         testing.io,
         dest_name,
         testing.allocator,
@@ -2067,14 +2022,14 @@ test "mv: -b flag creates backup of destination" {
     );
 
     // Destination should have new content
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("New content", content);
 
     // Backup file (dest~) should exist with old content
     const backup_name = try std.fmt.allocPrint(testing.allocator, "{s}~", .{dest_name});
     defer testing.allocator.free(backup_name);
-    const backup_content = try test_dir.readFile(backup_name);
+    const backup_content = try test_dir.readFileAlloc(backup_name);
     defer testing.allocator.free(backup_content);
     try testing.expectEqualStrings("Old content", backup_content);
 }
@@ -2116,7 +2071,7 @@ test "mv: -b flag does nothing when dest does not exist" {
 
     // Dest should have the content
     try testing.expect(test_dir.fileExists(dest_name));
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Content", content);
 
@@ -2131,8 +2086,8 @@ test "mv: -h flag prevents following symlink to directory" {
     defer test_dir.deinit();
 
     // Create a real directory and a symlink pointing to it
-    try test_dir.inner.createDir("real_dir");
-    try test_dir.inner.tmp_dir.dir.symLink(
+    try test_dir.createDir("real_dir");
+    try test_dir.dir().symLink(
         testing.io,
         "real_dir",
         "symlink_to_dir",
@@ -2140,7 +2095,7 @@ test "mv: -h flag prevents following symlink to directory" {
     );
 
     // Create a source file
-    try test_dir.createFile("source.txt", "test content");
+    try test_dir.createFile("source.txt", "test content", null);
 
     // Get base path and construct symlink path manually (getBasePath doesn't follow symlinks)
     const base_path = try test_dir.getPath(".");
@@ -2163,7 +2118,7 @@ test "mv: -h flag still follows real directories" {
     defer test_dir.deinit();
 
     // Create a real directory
-    try test_dir.inner.createDir("real_dir");
+    try test_dir.createDir("real_dir");
 
     const dir_path = try test_dir.getPath("real_dir");
     defer testing.allocator.free(dir_path);
@@ -2290,7 +2245,7 @@ test "mv: moving directory into its own subdirectory returns error not panic" {
     defer test_dir.deinit();
 
     // Create parent/child directory structure
-    try test_dir.inner.tmp_dir.dir.createDirPath(testing.io, "parent/child");
+    try test_dir.dir().createDirPath(testing.io, "parent/child");
 
     const parent_path = try test_dir.getPath("parent");
     defer testing.allocator.free(parent_path);
@@ -2357,7 +2312,7 @@ test "mv: -n -f flag combination should let force win (last flag)" {
 
     // With last-flag-wins, force should override no-clobber:
     // destination should have the new content
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("New content from source", content);
 
@@ -2400,7 +2355,7 @@ test "mv: -f -n flag combination should let no-clobber win (last flag)" {
 
     // With last-flag-wins, no-clobber should override force:
     // destination should still have original content
-    const content = try test_dir.readFile(dest_name);
+    const content = try test_dir.readFileAlloc(dest_name);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Original content preserved", content);
 
@@ -2551,15 +2506,15 @@ test "privileged: crossFilesystemMove copies a multi-level tree then deletes sou
     // A correct copy must reproduce every file at every depth and create the
     // empty directory; a wrong walk (e.g. dropping leaves or empty dirs) breaks
     // at least one of the assertions below.
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/top.txt", "depth1", null);
-    try test_dir.inner.createDir("src/sub");
-    try test_dir.inner.createFile("src/sub/mid.txt", "depth2", null);
-    try test_dir.inner.createDir("src/sub/deep");
-    try test_dir.inner.createFile("src/sub/deep/leaf.txt", "depth3", null);
-    try test_dir.inner.createDir("src/empty");
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/top.txt", "depth1", null);
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/mid.txt", "depth2", null);
+    try test_dir.createDir("src/sub/deep");
+    try test_dir.createFile("src/sub/deep/leaf.txt", "depth3", null);
+    try test_dir.createDir("src/empty");
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -2578,9 +2533,9 @@ test "privileged: crossFilesystemMove copies a multi-level tree then deletes sou
 
     // Every file at every depth must be present in the destination with content
     // intact. expectFileContent fails loudly on a missing or corrupted copy.
-    try test_dir.inner.expectFileContent("dst/top.txt", "depth1");
-    try test_dir.inner.expectFileContent("dst/sub/mid.txt", "depth2");
-    try test_dir.inner.expectFileContent("dst/sub/deep/leaf.txt", "depth3");
+    try test_dir.expectFileContent("dst/top.txt", "depth1");
+    try test_dir.expectFileContent("dst/sub/mid.txt", "depth2");
+    try test_dir.expectFileContent("dst/sub/deep/leaf.txt", "depth3");
 
     // The empty subdirectory must be reproduced as a directory.
     const empty_info = try common.file.FileInfo.stat(
@@ -2605,10 +2560,10 @@ test "privileged: fallback preserves regular file mode and mtime" {
 
     // A file with a distinctive non-default mode (0o741) so a copy that drops
     // permissions (e.g. createFile with default 0o644) fails the mode check.
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/file.txt", "preserve me", 0o741);
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/file.txt", "preserve me", 0o741);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -2656,11 +2611,11 @@ test "privileged: fallback recreates inner symlinks verbatim without following" 
     // src/link points at "real_target" (a relative, possibly-dangling target).
     // The fallback must recreate the link with the SAME target string and must
     // NOT dereference it (no target content copied, the dest entry is a link).
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/real_target", "target body", null);
-    try test_dir.inner.tmp_dir.dir.symLink(testing.io, "real_target", "src/link", .{});
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/real_target", "target body", null);
+    try test_dir.dir().symLink(testing.io, "real_target", "src/link", .{});
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -2705,19 +2660,19 @@ test "privileged: fallback preserves writable directory mode" {
     // when the green phase moves mode application to post-order via
     // preserveDirAttributes. 0o750 is writable by the owner, so populating
     // children works regardless of pre- vs post-order timing.
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createDir("src/sub");
-    try test_dir.inner.createFile("src/sub/child.txt", "child", null);
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/child.txt", "child", null);
     // Set the distinctive mode via libc so it reliably persists to the inode.
     const sub_path_z = try std.fmt.allocPrintSentinel(
         allocator,
         "{s}/src/sub",
-        .{try test_dir.inner.getBasePath()},
+        .{try test_dir.getBasePath()},
         0,
     );
     if (std.c.chmod(sub_path_z, 0o750) != 0) return error.SkipZigTest;
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -2739,7 +2694,7 @@ test "privileged: fallback preserves writable directory mode" {
     try testing.expectEqual(@as(std.posix.mode_t, 0o750), dest_info.mode & 0o777);
 
     // The child must still be copied so we know the mode did not block writes.
-    try test_dir.inner.expectFileContent("dst/sub/child.txt", "child");
+    try test_dir.expectFileContent("dst/sub/child.txt", "child");
 }
 
 test "privileged: verbose fallback prints source and dest for each copied item" {
@@ -2752,12 +2707,12 @@ test "privileged: verbose fallback prints source and dest for each copied item" 
     var test_dir = TestDir.init(allocator);
     defer test_dir.deinit();
 
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/alpha.txt", "a", null);
-    try test_dir.inner.createDir("src/sub");
-    try test_dir.inner.createFile("src/sub/beta.txt", "b", null);
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/alpha.txt", "a", null);
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/beta.txt", "b", null);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -2805,9 +2760,9 @@ test "privileged: fallback copies a single regular file and removes the source" 
     // Drive the non-directory branch of crossFilesystemMove directly. The file
     // must arrive at the destination with its content and mode, and the source
     // must be removed (copy-then-delete).
-    try test_dir.inner.createFile("only.txt", "single file body", 0o640);
+    try test_dir.createFile("only.txt", "single file body", 0o640);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/only.txt", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/moved.txt", .{base_path});
 
@@ -2824,7 +2779,7 @@ test "privileged: fallback copies a single regular file and removes the source" 
         &stderr_aw.writer,
     );
 
-    try test_dir.inner.expectFileContent("moved.txt", "single file body");
+    try test_dir.expectFileContent("moved.txt", "single file body");
 
     const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
     try testing.expectEqual(@as(std.posix.mode_t, 0o640), dest_info.mode & 0o777);
@@ -2848,12 +2803,12 @@ test "privileged: failed copy leaves source tree intact and reports an error" {
 
     // One readable file plus an unreadable subdirectory. Opening the locked
     // directory for iteration fails, forcing the copy to error out somewhere.
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/readable.txt", "i am readable", null);
-    try test_dir.inner.createDir("src/locked");
-    try test_dir.inner.createFile("src/locked/secret.txt", "blocked", null);
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/readable.txt", "i am readable", null);
+    try test_dir.createDir("src/locked");
+    try test_dir.createFile("src/locked/secret.txt", "blocked", null);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -2895,8 +2850,8 @@ test "privileged: failed copy leaves source tree intact and reports an error" {
     // directory's permissions first so this test can read back its contents;
     // the bytes-on-disk are what we verify, not the chmod we imposed.
     _ = std.c.chmod(locked_path_z, 0o755);
-    try test_dir.inner.expectFileContent("src/readable.txt", "i am readable");
-    try test_dir.inner.expectFileContent("src/locked/secret.txt", "blocked");
+    try test_dir.expectFileContent("src/readable.txt", "i am readable");
+    try test_dir.expectFileContent("src/locked/secret.txt", "blocked");
 }
 
 // ===========================================================================
@@ -2924,13 +2879,13 @@ test "crossFilesystemMove bypasses the process umask for a single file" {
     const saved_umask = std.c.umask(0);
     defer _ = std.c.umask(saved_umask);
 
-    try test_dir.inner.createFile("src.txt", "content", 0o644);
-    const src_stat = try test_dir.inner.getFileStat("src.txt");
+    try test_dir.createFile("src.txt", "content", 0o644);
+    const src_stat = try test_dir.getFileStat("src.txt");
     try testing.expectEqual(@as(std.posix.mode_t, 0o644), src_stat.permissions.toMode() & 0o777);
 
     _ = std.c.umask(0o077);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/src.txt", .{base_path});
     defer testing.allocator.free(source_path);
@@ -2963,13 +2918,13 @@ test "crossFilesystemMove bypasses the process umask through a directory tree" {
     const saved_umask = std.c.umask(0);
     defer _ = std.c.umask(saved_umask);
 
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createFile("src/a.txt", "a", 0o640);
-    try test_dir.inner.createFile("src/b.txt", "b", 0o666);
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/a.txt", "a", 0o640);
+    try test_dir.createFile("src/b.txt", "b", 0o666);
 
     _ = std.c.umask(0o077);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/src", .{base_path});
     defer testing.allocator.free(source_path);
@@ -3009,8 +2964,8 @@ test "crossFilesystemMove preserves setuid on a single file" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.inner.createFile("src.txt", "content", 0o755);
-    const source_path = try test_dir.inner.getPath("src.txt");
+    try test_dir.createFile("src.txt", "content", 0o755);
+    const source_path = try test_dir.getPath("src.txt");
     defer testing.allocator.free(source_path);
     const source_path_z =
         try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{source_path}, 0);
@@ -3022,7 +2977,7 @@ test "crossFilesystemMove preserves setuid on a single file" {
     const source_info = try common.file.FileInfo.stat(testing.io, source_path);
     if (source_info.mode & 0o7777 != 0o4755) return error.SkipZigTest;
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer testing.allocator.free(base_path);
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
     defer testing.allocator.free(dest_path);
@@ -3055,12 +3010,12 @@ test "crossFilesystemMove over an existing destination takes the source mode" {
     const saved_umask = std.c.umask(0);
     defer _ = std.c.umask(saved_umask);
 
-    try test_dir.inner.createFile("src.txt", "new content", 0o644);
-    try test_dir.inner.createFile("dst.txt", "old content", 0o600);
+    try test_dir.createFile("src.txt", "new content", 0o644);
+    try test_dir.createFile("dst.txt", "old content", 0o600);
 
-    const source_path = try test_dir.inner.getPath("src.txt");
+    const source_path = try test_dir.getPath("src.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.inner.getPath("dst.txt");
+    const dest_path = try test_dir.getPath("dst.txt");
     defer testing.allocator.free(dest_path);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -3081,7 +3036,7 @@ test "crossFilesystemMove over an existing destination takes the source mode" {
     // instead of being updated to the source's exact 0o644.
     const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
     try testing.expectEqual(@as(std.posix.mode_t, 0o644), dest_info.mode & 0o777);
-    try test_dir.inner.expectFileContent("dst.txt", "new content");
+    try test_dir.expectFileContent("dst.txt", "new content");
 }
 
 // ===========================================================================
@@ -3120,11 +3075,11 @@ test "walker-migration: cross-device fallback completes copy of read-only source
     // read-only source dir needs write perm). Current code instead applies
     // 0o555 to dest/sub PRE-order, so createFile inside it fails AccessDenied
     // and the errdefer wipes the partial dest.
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createDir("src/sub");
-    try test_dir.inner.createFile("src/sub/f.txt", "read only body", null);
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/f.txt", "read only body", null);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -3178,7 +3133,7 @@ test "walker-migration: cross-device fallback completes copy of read-only source
     try testing.expectEqual(std.Io.File.Kind.directory, dest_sub_info.kind);
     try testing.expectEqual(@as(std.posix.mode_t, 0o555), dest_sub_info.mode & 0o777);
 
-    try test_dir.inner.expectFileContent("dst/sub/f.txt", "read only body");
+    try test_dir.expectFileContent("dst/sub/f.txt", "read only body");
 
     const dest_sub_mtime_s = @divFloor(dest_sub_info.mtime, std.time.ns_per_s);
     try testing.expectEqual(backdated_mtime_s, dest_sub_mtime_s);
@@ -3200,11 +3155,11 @@ test "walker-migration: cross-device fallback preserves directory mtime" {
     // A fully writable tree so the copy succeeds end to end. src/sub carries a
     // backdated mtime; GNU mv's dest/sub carries it forward, current code stamps
     // now-time (mv prints "directory timestamp preservation not implemented").
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createDir("src/sub");
-    try test_dir.inner.createFile("src/sub/f.txt", "writable body", null);
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/f.txt", "writable body", null);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer allocator.free(base_path);
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     defer allocator.free(source_path);
@@ -3266,15 +3221,15 @@ test "walker-migration: cross-device copies a real dir aliased by a sibling syml
     var test_dir = TestDir.init(allocator);
     defer test_dir.deinit();
 
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createDir("src/real");
-    try test_dir.inner.createFile("src/real/inner.txt", "aliased body", null);
-    test_dir.inner.createSymlink("real", "src/link") catch |err| {
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/real");
+    try test_dir.createFile("src/real/inner.txt", "aliased body", null);
+    test_dir.createSymlink("real", "src/link") catch |err| {
         if (err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     defer allocator.free(base_path);
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     defer allocator.free(source_path);
@@ -3297,9 +3252,9 @@ test "walker-migration: cross-device copies a real dir aliased by a sibling syml
 
     // KEY RED ASSERTIONS: today dst/real is entirely missing (the walker
     // skipped it), so both of these fail.
-    try test_dir.inner.expectFileContent("dst/real/inner.txt", "aliased body");
-    try testing.expect(try test_dir.inner.isSymlink("dst/link"));
-    const link_target = try test_dir.inner.getSymlinkTarget("dst/link");
+    try test_dir.expectFileContent("dst/real/inner.txt", "aliased body");
+    try testing.expect(try test_dir.isSymlink("dst/link"));
+    const link_target = try test_dir.getSymlinkTarget("dst/link");
     defer allocator.free(link_target);
     try testing.expectEqualStrings("real", link_target);
 
@@ -3324,12 +3279,12 @@ test "walker-migration: cross-device fallback continues past unreadable subdir (
     // dest/locked as an empty dir and dest/open/f.txt, exits 1, source retained.
     // Current code aborts at the first error and the errdefer wipes dest
     // entirely (dest absent afterward).
-    try test_dir.inner.createDir("src");
-    try test_dir.inner.createDir("src/locked");
-    try test_dir.inner.createDir("src/open");
-    try test_dir.inner.createFile("src/open/f.txt", "open body", null);
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/locked");
+    try test_dir.createDir("src/open");
+    try test_dir.createFile("src/open/f.txt", "open body", null);
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 
@@ -3362,7 +3317,7 @@ test "walker-migration: cross-device fallback continues past unreadable subdir (
     // both fail. Post-fix the walker continues past the unreadable subdir:
     // dest/open/f.txt is materialized with content and dest/locked exists as a
     // directory (mode unspecified, so not pinned).
-    try test_dir.inner.expectFileContent("dst/open/f.txt", "open body");
+    try test_dir.expectFileContent("dst/open/f.txt", "open body");
 
     const dest_locked_path = try std.fmt.allocPrint(allocator, "{s}/dst/locked", .{base_path});
     const dest_locked_info = try common.file.FileInfo.stat(testing.io, dest_locked_path);
@@ -3374,7 +3329,7 @@ test "walker-migration: cross-device fallback continues past unreadable subdir (
     try testing.expect(std.mem.find(u8, stderr_aw.written(), "locked") != null);
     _ = std.c.chmod(locked_path_z, 0o755);
     try testing.expect(test_dir.fileExists("src/locked"));
-    try test_dir.inner.expectFileContent("src/open/f.txt", "open body");
+    try test_dir.expectFileContent("src/open/f.txt", "open body");
 }
 
 test "copyDirectoryTree halts on EntryLimitExceeded instead of looping (issue #45)" {
@@ -3400,12 +3355,12 @@ test "copyDirectoryTree halts on EntryLimitExceeded instead of looping (issue #4
 
     // A source tree with well over three entries so the .both walk blows past a
     // max_entries=3 cap while entries remain, making the permanent cap re-fire.
-    try test_dir.inner.createDir("src");
+    try test_dir.createDir("src");
     inline for (.{ "f01", "f02", "f03", "f04", "f05", "f06" }) |name| {
-        try test_dir.createFile("src/" ++ name ++ ".txt", "body\n");
+        try test_dir.createFile("src/" ++ name ++ ".txt", "body\n", null);
     }
 
-    const base_path = try test_dir.inner.getBasePath();
+    const base_path = try test_dir.getBasePath();
     const source = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
     const dest = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
 

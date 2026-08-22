@@ -284,16 +284,22 @@ fn handleError(
         return;
     }
 
+    const suffix = switch (err) {
+        error.DirNotEmpty => common.maybeHint(err, path, .write) orelse "",
+        else => "",
+    };
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
         "rmdir",
-        "failed to remove '{s}': {s}",
-        .{ path, common.posixErrorString(err) },
+        "failed to remove '{s}': {s}{s}",
+        .{ path, common.posixErrorString(err), suffix },
     );
 }
 
 // ===== TESTS =====
+
+const TestDir = common.test_dir.TestDir;
 
 test "rmdir: remove empty directory" {
     const io = testing.io;
@@ -303,11 +309,13 @@ test "rmdir: remove empty directory" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const test_dir = "test_rmdir_empty";
-    try std.Io.Dir.cwd().createDir(io, test_dir, .default_dir);
-    defer std.Io.Dir.cwd().deleteDir(io, test_dir) catch {};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDir("empty");
+    const dest = try td.getPath("empty");
+    defer allocator.free(dest);
 
-    const dirs = [_][]const u8{test_dir};
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{};
 
     const exit_code = try removeDirectories(
@@ -320,7 +328,7 @@ test "rmdir: remove empty directory" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    const stat = std.Io.Dir.cwd().statFile(io, test_dir, .{});
+    const stat = std.Io.Dir.cwd().statFile(io, dest, .{});
     try testing.expectError(error.FileNotFound, stat);
 }
 
@@ -332,17 +340,14 @@ test "rmdir: fail on non-empty directory" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const test_dir = "test_rmdir_nonempty";
-    try std.Io.Dir.cwd().createDir(io, test_dir, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(io, test_dir) catch {};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDir("nonempty");
+    try td.createFile("nonempty/file.txt", "x", null);
+    const dest = try td.getPath("nonempty");
+    defer allocator.free(dest);
 
-    const test_file = try std.fs.path.join(allocator, &.{ test_dir, "file.txt" });
-    defer allocator.free(test_file);
-
-    const file = try std.Io.Dir.cwd().createFile(io, test_file, .{});
-    file.close(io);
-
-    const dirs = [_][]const u8{test_dir};
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{};
 
     const exit_code = try removeDirectories(
@@ -355,7 +360,7 @@ test "rmdir: fail on non-empty directory" {
     );
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
-    const stat = try std.Io.Dir.cwd().statFile(io, test_dir, .{});
+    const stat = try std.Io.Dir.cwd().statFile(io, dest, .{});
     try testing.expect(stat.kind == .directory);
 }
 
@@ -367,17 +372,14 @@ test "rmdir: ignore fail on non-empty with flag" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const test_dir = "test_rmdir_ignore_nonempty";
-    try std.Io.Dir.cwd().createDir(io, test_dir, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(io, test_dir) catch {};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDir("ignore_nonempty");
+    try td.createFile("ignore_nonempty/file.txt", "x", null);
+    const dest = try td.getPath("ignore_nonempty");
+    defer allocator.free(dest);
 
-    const test_file = try std.fs.path.join(allocator, &.{ test_dir, "file.txt" });
-    defer allocator.free(test_file);
-
-    const file = try std.Io.Dir.cwd().createFile(io, test_file, .{});
-    file.close(io);
-
-    const dirs = [_][]const u8{test_dir};
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{
         .ignore_fail_on_non_empty = true,
     };
@@ -392,7 +394,7 @@ test "rmdir: ignore fail on non-empty with flag" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    const stat = try std.Io.Dir.cwd().statFile(io, test_dir, .{});
+    const stat = try std.Io.Dir.cwd().statFile(io, dest, .{});
     try testing.expect(stat.kind == .directory);
 }
 
@@ -404,11 +406,13 @@ test "rmdir: verbose output" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const test_dir = "test_rmdir_verbose";
-    try std.Io.Dir.cwd().createDir(io, test_dir, .default_dir);
-    defer std.Io.Dir.cwd().deleteDir(io, test_dir) catch {};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDir("verbose");
+    const dest = try td.getPath("verbose");
+    defer allocator.free(dest);
 
-    const dirs = [_][]const u8{test_dir};
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{
         .verbose = true,
     };
@@ -423,7 +427,7 @@ test "rmdir: verbose output" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_verbose") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), dest) != null);
 }
 
 test "rmdir: remove with parents" {
@@ -434,13 +438,14 @@ test "rmdir: remove with parents" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const base_dir = "test_rmdir_parents";
-    const deep_dir = "test_rmdir_parents/sub/deep";
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDirPath("parents/sub/deep");
 
-    try std.Io.Dir.cwd().createDirPath(io, deep_dir);
-    defer std.Io.Dir.cwd().deleteTree(io, base_dir) catch {};
+    var saved = try td.chdirToBase();
+    defer TestDir.restoreCwd(&saved);
 
-    const dirs = [_][]const u8{deep_dir};
+    const dirs = [_][]const u8{"parents/sub/deep"};
     const options = RmdirOptions{
         .parents = true,
         .verbose = true,
@@ -456,16 +461,12 @@ test "rmdir: remove with parents" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    const stat = std.Io.Dir.cwd().statFile(io, base_dir, .{});
+    const stat = std.Io.Dir.cwd().statFile(io, "parents", .{});
     try testing.expectError(error.FileNotFound, stat);
 
-    try testing.expect(
-        std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents/sub/deep") != null,
-    );
-    try testing.expect(
-        std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents/sub") != null,
-    );
-    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_rmdir_parents") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "parents/sub/deep") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "parents/sub") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "parents") != null);
 }
 
 test "rmdir: multiple directories" {
@@ -476,18 +477,19 @@ test "rmdir: multiple directories" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const dir1 = "test_rmdir_multi1";
-    const dir2 = "test_rmdir_multi2";
-    const dir3 = "test_rmdir_multi3";
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDir("multi1");
+    try td.createDir("multi2");
+    try td.createDir("multi3");
+    const d1 = try td.getPath("multi1");
+    defer allocator.free(d1);
+    const d2 = try td.getPath("multi2");
+    defer allocator.free(d2);
+    const d3 = try td.getPath("multi3");
+    defer allocator.free(d3);
 
-    try std.Io.Dir.cwd().createDir(io, dir1, .default_dir);
-    defer std.Io.Dir.cwd().deleteDir(io, dir1) catch {};
-    try std.Io.Dir.cwd().createDir(io, dir2, .default_dir);
-    defer std.Io.Dir.cwd().deleteDir(io, dir2) catch {};
-    try std.Io.Dir.cwd().createDir(io, dir3, .default_dir);
-    defer std.Io.Dir.cwd().deleteDir(io, dir3) catch {};
-
-    const dirs = [_][]const u8{ dir1, dir2, dir3 };
+    const dirs = [_][]const u8{ d1, d2, d3 };
     const options = RmdirOptions{
         .verbose = true,
     };
@@ -502,9 +504,9 @@ test "rmdir: multiple directories" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, dir1, .{}));
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, dir2, .{}));
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, dir3, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, d1, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, d2, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, d3, .{}));
 }
 
 test "rmdir: error on non-existent directory" {
@@ -515,7 +517,12 @@ test "rmdir: error on non-existent directory" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const dirs = [_][]const u8{"nonexistent_directory"};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    const dest = try td.join("nonexistent_directory");
+    defer allocator.free(dest);
+
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{};
 
     const exit_code = try removeDirectories(
@@ -537,12 +544,13 @@ test "rmdir: error on file instead of directory" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const test_file = "test_rmdir_file.txt";
-    const file = try std.Io.Dir.cwd().createFile(io, test_file, .{});
-    file.close(io);
-    defer std.Io.Dir.cwd().deleteFile(io, test_file) catch {};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createFile("file.txt", "x", null);
+    const dest = try td.getPath("file.txt");
+    defer allocator.free(dest);
 
-    const dirs = [_][]const u8{test_file};
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{};
 
     const exit_code = try removeDirectories(
@@ -555,7 +563,7 @@ test "rmdir: error on file instead of directory" {
     );
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
-    const stat = try std.Io.Dir.cwd().statFile(io, test_file, .{});
+    const stat = try std.Io.Dir.cwd().statFile(io, dest, .{});
     try testing.expect(stat.kind == .file);
 }
 
@@ -567,20 +575,18 @@ test "rmdir: parents stops on error" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const base_dir = "test_rmdir_parents_stop";
-    const sub_dir = "test_rmdir_parents_stop/sub";
-    const deep_dir = "test_rmdir_parents_stop/sub/deep";
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDirPath("stop/sub/deep");
+    try td.createFile("stop/sub/blocker.txt", "x", null);
+    const deep = try td.getPath("stop/sub/deep");
+    defer allocator.free(deep);
+    const sub = try td.getPath("stop/sub");
+    defer allocator.free(sub);
+    const base = try td.getPath("stop");
+    defer allocator.free(base);
 
-    try std.Io.Dir.cwd().createDirPath(io, deep_dir);
-    defer std.Io.Dir.cwd().deleteTree(io, base_dir) catch {};
-
-    const blocking_file = try std.fs.path.join(allocator, &.{ sub_dir, "blocker.txt" });
-    defer allocator.free(blocking_file);
-
-    const file = try std.Io.Dir.cwd().createFile(io, blocking_file, .{});
-    file.close(io);
-
-    const dirs = [_][]const u8{deep_dir};
+    const dirs = [_][]const u8{deep};
     const options = RmdirOptions{
         .parents = true,
         .verbose = true,
@@ -595,10 +601,10 @@ test "rmdir: parents stops on error" {
         options,
     );
 
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, deep_dir, .{}));
-    const sub_stat = try std.Io.Dir.cwd().statFile(io, sub_dir, .{});
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, deep, .{}));
+    const sub_stat = try std.Io.Dir.cwd().statFile(io, sub, .{});
     try testing.expect(sub_stat.kind == .directory);
-    const base_stat = try std.Io.Dir.cwd().statFile(io, base_dir, .{});
+    const base_stat = try std.Io.Dir.cwd().statFile(io, base, .{});
     try testing.expect(base_stat.kind == .directory);
 }
 
@@ -610,11 +616,13 @@ test "rmdir: unicode path handling" {
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     defer stderr_aw.deinit();
 
-    const test_dir = "test_rmdir_unicode_\xf0\x9f\x8e\xaf";
-    try std.Io.Dir.cwd().createDir(io, test_dir, .default_dir);
-    defer std.Io.Dir.cwd().deleteDir(io, test_dir) catch {};
+    var td = TestDir.init(allocator);
+    defer td.deinit();
+    try td.createDir("unicode_\xf0\x9f\x8e\xaf");
+    const dest = try td.getPath("unicode_\xf0\x9f\x8e\xaf");
+    defer allocator.free(dest);
 
-    const dirs = [_][]const u8{test_dir};
+    const dirs = [_][]const u8{dest};
     const options = RmdirOptions{
         .verbose = true,
     };
@@ -629,7 +637,7 @@ test "rmdir: unicode path handling" {
     );
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    const stat = std.Io.Dir.cwd().statFile(io, test_dir, .{});
+    const stat = std.Io.Dir.cwd().statFile(io, dest, .{});
     try testing.expectError(error.FileNotFound, stat);
 }
 
@@ -710,4 +718,85 @@ test "rmdir: -p dot should fail with refusing message" {
 
     // Should print an error about refusing to remove '.' or '..'
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove") != null);
+}
+
+test "rmdir: non-empty directory omits hint by default" {
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = null;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(testing.io, "nonempty", .default_dir);
+    const file = try tmp.dir.createFile(testing.io, "nonempty/file.txt", .{});
+    file.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "nonempty",
+        testing.allocator,
+    );
+    defer testing.allocator.free(dir_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{dir_path};
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "rmdir: failed to remove '{s}': Directory not empty\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+}
+
+test "rmdir: non-empty directory appends recursive-removal hint" {
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(testing.io, "nonempty", .default_dir);
+    const file = try tmp.dir.createFile(testing.io, "nonempty/file.txt", .{});
+    file.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "nonempty",
+        testing.allocator,
+    );
+    defer testing.allocator.free(dir_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{dir_path};
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "rmdir: failed to remove '{s}': Directory not empty" ++
+            " (use rm -r to remove recursively)\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
 }

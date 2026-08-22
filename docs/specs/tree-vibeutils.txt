@@ -1,0 +1,15 @@
+Usage: tree [OPTION]... [PATH]...
+List contents of directories in a tree-like format.
+
+  -a, --all                 include hidden entries
+  -d, --directories-only    list directories only
+  -L, --level=N             descend only N levels
+  -I, --ignore=PATTERN      exclude names matching PATTERN
+      --color=WHEN          colorize output (always, auto, never)
+      --icons=WHEN          show file-type icons (always, auto, never)
+  -h, --help                display this help and exit
+  -V, --version             output version information and exit
+
+WHEN defaults to 'auto'. Repeated -I patterns accumulate; '|'
+separates alternatives. Directory symlinks are not followed.
+A file operand is listed as a single-node tree.
