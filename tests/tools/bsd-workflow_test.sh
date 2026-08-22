@@ -177,20 +177,34 @@ fi
 # absorbs this via `just test-privileged` (3 attempts, 2s delay). The
 # guest recipe must retry the same way and bound each attempt so a hang
 # cannot consume the 60-minute job timeout.
+#
+# Needles are command-shaped, not comment/echo-shaped: a trailing
+# newline after `zig build test` so `test-privileged` cannot match;
+# `&` on the fakeroot spawn so the echo line cannot match; `-lt 600`
+# so a "600s" comment cannot match.
 require_job_text freebsd \
-    "freebsd job guest run does not run zig build test" \
-    "zig build test"
+    "freebsd job guest run does not run zig build test as its own command" \
+    $'zig build test\n'
 require_job_text freebsd \
     "freebsd job guest run does not retry privileged tests with for attempt in 1 2 3" \
     "for attempt in 1 2 3"
 require_job_text freebsd \
-    "freebsd job guest run does not invoke fakeroot zig build test-privileged" \
-    "fakeroot zig build test-privileged"
-# 600 is the privileged-attempt bound in seconds (watchdog or timeout 600).
-# Do not require the word timeout — FreeBSD has no GNU timeout(1).
+    "freebsd job guest run does not background fakeroot zig build test-privileged" \
+    "fakeroot zig build test-privileged &"
+# Privileged-attempt bound: the wait loop must compare against 600
+# seconds. Bare 600 is not enough — comments say 600s.
 require_job_text freebsd \
-    "freebsd job guest run does not bound each privileged attempt at 600 seconds" \
-    "600"
+    "freebsd job guest run does not bound each privileged attempt with -lt 600" \
+    "-lt 600"
+# Process-group start + SIGKILL escalation so a FileBusy hang can be
+# reaped: perl setpgrp before exec, then TERM then KILL. wait(1) on a
+# child that ignores TERM otherwise holds the 60-minute job.
+require_job_text freebsd \
+    "freebsd job guest run does not start privileged tests with setpgrp" \
+    "setpgrp"
+require_job_text freebsd \
+    "freebsd job guest run does not escalate hung privileged tests with kill -KILL" \
+    "kill -KILL"
 
 if [[ "$FAILED" -ne 0 ]]; then
     exit "$FAILED"
