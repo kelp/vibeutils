@@ -90,7 +90,15 @@ helper; assert line break.
 
 | Item | Decision |
 |---|---|
-| dd diag ordering tooth | Extract `ddNote(ctx, fmt, args)` that `finish`es the tracker then `printErrorWithProgram`. `runDd_writeError` and the `conv=noerror` / `runDd_handleReadError` path both call it. Test `ddNote` (or each caller) with `delay_ns = 0`, one `update` so `shown == true`, then the diagnostic: captured stderr is `{progress-line}\n` then the error (the error is **not** glued to the `\r` transfer line; `\n` precedes `write error:` / `read error:`). Parse-time errors still skip the helper. |
+| dd diag ordering tooth | Extract `ddNote(ctx, fmt, args)` that `finish`es the tracker then `printErrorWithProgram`. `runDd_writeError` and the `conv=noerror` / `runDd_handleReadError` path both call it. Tests drive **each caller** (not the helper alone) with `delay_ns = 0`, one `update` so `shown == true`, then the diagnostic. Assert `\ndd: write error:` / `\ndd: read error:` (`printErrorWithProgram` prefixes `dd:`; a literal `\n` before `write error:` would stay red on a correct implementation). Print-then-`finish` fails that even when the error text is still present. Parse-time errors still skip `ddNote`. |
+
+## Plan revision (r5)
+
+r4: Fable **APPROVE**. Grok and Sol **REQUEST
+CHANGES** on the assertion string (`dd:` prefix)
+and on testing each caller, not `ddNote` alone.
+
+(Table row above is the r5 wording.)
 
 ## Classification
 
@@ -390,10 +398,15 @@ is a stdin filter: tests must use `if=` or
    Without the overlay, a sub-second copy with
    `status=progress` has **no** `\r` (GNU 1s delay)
    and still has final `printStats`.
-   `runDd_writeError` with a shown `.gnu_xfer`
-   tracker: captured stderr contains the
-   `write error:` diagnostic and that text is not
-   replaced by spaces.
+   `ddNote` used by **both** `runDd_writeError` and
+   `conv=noerror` / `runDd_handleReadError` (tests
+   drive each caller, not the helper alone):
+   `delay_ns = 0`, one `update` so `shown == true`,
+   then the diagnostic. Assert `\ndd: write error:`
+   and `\ndd: read error:` (`printErrorWithProgram`
+   prefixes `dd:`). A wrong `printError` then
+   `finish` order fails this even though the error
+   text is still present.
 
 6. `tests/utilities/dd_test.sh`: `status=progress`
    still prints records in/out (final stats).
