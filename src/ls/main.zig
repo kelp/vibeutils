@@ -1330,6 +1330,35 @@ fn testStageDisplayEnvOverrides() []const common.env.Override {
     return saved;
 }
 
+fn testChdirToTmp(io: std.Io, tmp_dir: *std.testing.TmpDir) !std.Io.Dir {
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    errdefer saved_cwd_dir.close(io);
+
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+    std.debug.assert(tmp_abs.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(tmp_abs));
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    return saved_cwd_dir;
+}
+
+/// Restore the process cwd saved by `testChdirToTmp` and close the handle.
+/// Uses fchdir (via setCurrentDir on an open handle) rather than getcwd, so
+/// it keeps working in sandboxes where getcwd is unavailable.
+fn testRestoreCwd(io: std.Io, saved_cwd_dir: *std.Io.Dir) void {
+    std.debug.assert(saved_cwd_dir.handle >= 0);
+    std.debug.assert(saved_cwd_dir.handle != std.posix.AT.FDCWD);
+    // A silent failure here leaves every later test in this binary running
+    // with cwd inside a temp dir that TmpDir.cleanup then deletes out from
+    // under it, producing cascading failures misattributed to unrelated
+    // tests. setCurrentDir on a still-open fd should not fail in practice,
+    // so make a failure loud instead of absorbing it.
+    std.process.setCurrentDir(io, saved_cwd_dir.*) catch
+        @panic("failed to restore test cwd");
+    saved_cwd_dir.close(io);
+}
+
 fn testLsColorsEnv(ls_colors: ?[]const u8) [7]common.env.Override {
     std.debug.assert(test_env_overrides.len == 6);
     std.debug.assert(test_env_overrides[5].value == null);

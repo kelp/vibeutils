@@ -99,8 +99,11 @@ pub fn runWithStreamingFiles(
     var stdout_writer = stdout_file.writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
+    // Zero-length buffer keeps stderr immediately visible (POSIX I/O
+    // suite) while still writing through the caller-supplied file so
+    // runWithStreamingFiles tests can capture diagnostics.
     var stderr_buffer: [0]u8 = .{};
-    var stderr_writer = lib.unbufferedStderr(io, &stderr_buffer);
+    var stderr_writer = stderr_file.writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     std.debug.assert(stdout_buffer.len == 8192);
