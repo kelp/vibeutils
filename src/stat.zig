@@ -16,42 +16,169 @@ const Allocator = std.mem.Allocator;
 
 const c = std.c;
 const time = common.time;
-extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
 
-// Platform-specific statfs structure
-const StatFs = if (builtin.os.tag == .linux) extern struct {
-    f_type: c_long,
-    f_bsize: c_long,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_fsid: extern struct { val: [2]i32 },
-    f_namelen: c_long,
-    f_frsize: c_long,
-    f_flags: c_long,
-    f_spare: [4]c_long,
-} else extern struct {
-    // macOS statfs structure
-    f_bsize: u32,
-    f_iosize: i32,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_fsid: extern struct { val: [2]i32 },
-    f_owner: u32,
-    f_type: u32,
-    f_flags: u32,
-    f_fssubtype: u32,
-    f_fstypename: [16]u8,
-    f_mntonname: [1024]u8,
-    f_mntfromname: [1024]u8,
-    f_flags_ext: u32,
-    f_reserved: [7]u32,
+// Layouts match `df.zig`. Darwin `statfs` on FreeBSD/OpenBSD/NetBSD
+// is a wrong-size read: `printFileSystemInfo` then `sliceTo`s an
+// unterminated `f_mntfromname` and traps (guest `stat -f` ABRT).
+const StatFs = switch (builtin.os.tag) {
+    .linux => extern struct {
+        f_type: c_long,
+        f_bsize: c_long,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_fsid: extern struct { val: [2]i32 },
+        f_namelen: c_long,
+        f_frsize: c_long,
+        f_flags: c_long,
+        f_spare: [4]c_long,
+    },
+    .macos => extern struct {
+        f_bsize: u32,
+        f_iosize: i32,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_fsid: extern struct { val: [2]i32 },
+        f_owner: u32,
+        f_type: u32,
+        f_flags: u32,
+        f_fssubtype: u32,
+        f_fstypename: [16]u8,
+        f_mntonname: [1024]u8,
+        f_mntfromname: [1024]u8,
+        f_flags_ext: u32,
+        f_reserved: [7]u32,
+    },
+    .freebsd => extern struct {
+        f_version: u32,
+        f_type: u32,
+        f_flags: u64,
+        f_bsize: u64,
+        f_iosize: u64,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: i64,
+        f_files: u64,
+        f_ffree: i64,
+        f_syncwrites: u64,
+        f_asyncwrites: u64,
+        f_syncreads: u64,
+        f_asyncreads: u64,
+        f_spare: [10]u64,
+        f_namemax: u32,
+        f_owner: u32,
+        f_fsid: extern struct { val: [2]i32 },
+        f_charspare: [80]u8,
+        f_fstypename: [16]u8,
+        f_mntfromname: [1024]u8,
+        f_mntonname: [1024]u8,
+    },
+    .openbsd => extern struct {
+        f_flags: u32,
+        f_bsize: u32,
+        f_iosize: u32,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: i64,
+        f_files: u64,
+        f_ffree: u64,
+        f_favail: i64,
+        f_syncwrites: u64,
+        f_syncreads: u64,
+        f_asyncwrites: u64,
+        f_asyncreads: u64,
+        f_fsid: extern struct { val: [2]i32 },
+        f_namemax: u32,
+        f_owner: u32,
+        f_ctime: u64,
+        f_fstypename: [16]u8,
+        f_mntonname: [90]u8,
+        f_mntfromname: [90]u8,
+        f_mntfromspec: [90]u8,
+        mount_info: [160]u8,
+    },
+    .netbsd => extern struct {
+        f_flag: c_ulong,
+        f_bsize: c_ulong,
+        f_frsize: c_ulong,
+        f_iosize: c_ulong,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_bresvd: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_favail: u64,
+        f_fresvd: u64,
+        f_syncreads: u64,
+        f_syncwrites: u64,
+        f_asyncreads: u64,
+        f_asyncwrites: u64,
+        f_fsidx: extern struct { val: [2]i32 },
+        f_fsid: c_ulong,
+        f_namemax: c_ulong,
+        f_owner: u32,
+        f_spare: [4]u64,
+        f_fstypename: [32]u8,
+        f_mntonname: [1024]u8,
+        f_mntfromname: [1024]u8,
+        f_mntfromlabel: [1024]u8,
+    },
+    else => @compileError("statfs layout is not defined for this OS"),
 };
+
+const statfs_fn = if (builtin.os.tag == .netbsd)
+    struct {
+        extern "c" fn __statvfs90(path: [*:0]const u8, buf: *StatFs) c_int;
+    }.__statvfs90
+else
+    struct {
+        extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+    }.statfs;
+
+fn fsidHalves(fs: *const StatFs) [2]u32 {
+    if (comptime @hasField(StatFs, "f_fsidx")) {
+        std.debug.assert(fs.f_fsidx.val.len == 2);
+        return .{
+            @bitCast(fs.f_fsidx.val[0]),
+            @bitCast(fs.f_fsidx.val[1]),
+        };
+    }
+    std.debug.assert(@hasField(StatFs, "f_fsid"));
+    return .{
+        @bitCast(fs.f_fsid.val[0]),
+        @bitCast(fs.f_fsid.val[1]),
+    };
+}
+
+fn fsNamelen(fs: *const StatFs) u32 {
+    const n: u32 = if (comptime @hasField(StatFs, "f_namelen"))
+        @intCast(fs.f_namelen)
+    else if (comptime @hasField(StatFs, "f_namemax"))
+        @intCast(fs.f_namemax)
+    else
+        255;
+    std.debug.assert(n > 0);
+    std.debug.assert(n <= 1024);
+    return n;
+}
+
+fn fsFrsize(fs: *const StatFs) u64 {
+    const n: u64 = if (comptime @hasField(StatFs, "f_frsize"))
+        @intCast(fs.f_frsize)
+    else if (comptime @hasField(StatFs, "f_iosize"))
+        @intCast(fs.f_iosize)
+    else
+        @intCast(fs.f_bsize);
+    std.debug.assert(n > 0);
+    std.debug.assert(n <= 1 << 30);
+    return n;
+}
 
 const prog_name = "stat";
 
@@ -778,7 +905,7 @@ fn expandFormatDirective_mountPoint(path: []const u8, writer: anytype) !void {
         const c_path2 = path_buf2[0..path.len :0];
 
         var fs_buf2: StatFs = undefined;
-        if (statfs(c_path2, &fs_buf2) == 0) {
+        if (statfs_fn(c_path2, &fs_buf2) == 0) {
             const mntonname = std.mem.sliceTo(&fs_buf2.f_mntonname, 0);
             try writer.writeAll(mntonname);
         } else {
@@ -1428,7 +1555,7 @@ fn printFileSystemInfo(
     const c_path = path_buf[0..path.len :0];
 
     var fs_buf: StatFs = undefined;
-    if (statfs(c_path, &fs_buf) != 0) {
+    if (statfs_fn(c_path, &fs_buf) != 0) {
         return error.StatFsFailed;
     }
 
@@ -1437,9 +1564,10 @@ fn printFileSystemInfo(
     if (builtin.os.tag == .linux) {
         const namelen: u64 = @intCast(fs_buf.f_namelen);
         const fstype = fsTypeName(fs_buf.f_type);
+        const id = fsidHalves(&fs_buf);
         try writer.print("    ID: {x}{x} Namelen: {d}     Type: {s}\n", .{
-            @as(u32, @bitCast(fs_buf.f_fsid.val[0])),
-            @as(u32, @bitCast(fs_buf.f_fsid.val[1])),
+            id[0],
+            id[1],
             namelen,
             fstype,
         });
@@ -1451,15 +1579,16 @@ fn printFileSystemInfo(
         });
     } else {
         const fstype = std.mem.sliceTo(&fs_buf.f_fstypename, 0);
+        const id = fsidHalves(&fs_buf);
         try writer.print("    ID: {x}{x} Namelen: {d}     Type: {s}\n", .{
-            @as(u32, @bitCast(fs_buf.f_fsid.val[0])),
-            @as(u32, @bitCast(fs_buf.f_fsid.val[1])),
-            @as(u32, 255), // macOS doesn't expose namelen in statfs
+            id[0],
+            id[1],
+            fsNamelen(&fs_buf),
             fstype,
         });
         try writer.print("Block size: {d}       Fundamental block size: {d}\n", .{
             fs_buf.f_bsize,
-            fs_buf.f_bsize,
+            fsFrsize(&fs_buf),
         });
     }
 

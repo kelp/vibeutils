@@ -224,6 +224,9 @@
   `getGroupName` only called `getpwuid` / `getgrgid` on Linux and
   macOS, so `ls -l`, `stat %G`, and `find -group` printed raw ids
   on FreeBSD, OpenBSD, and NetBSD.
+- **`stat -f` uses each BSD's `statfs`/`statvfs` layout.** The
+  Darwin `statfs` struct was used on every non-Linux host, so
+  FreeBSD `stat -f` trapped while printing `f_mntfromname`.
 - **`df` enumerates mounts on FreeBSD, OpenBSD, and NetBSD.** Those
   targets used to fail at compile time with `df: unsupported
   platform`. They now call `getfsstat` (NetBSD: `getvfsstat`) and
