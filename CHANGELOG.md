@@ -148,6 +148,13 @@
 
 ### Fixed
 
+- **Concurrent integration runs no longer race `useradd`.** Two
+  `scripts/run-integration.sh` processes creating the same
+  `VIBEUTILS_TEST_USER` could leave the home owned by a uid that
+  passwd no longer had, and `setpriv` then died with `uid N not
+  found`. Provisioning now takes a per-user lock (`flock` on Linux,
+  `mkdir` elsewhere) around the existence check, `useradd`, and
+  home `chown`, so overlapping creates serialize (#150).
 - **`ls -e` dumps the ACL after each long-format line.** The flag
   was parsed into `show_acls` and then ignored, and `--help` called
   it a no-op. `-e` now implies `-l` (BSD) and prints a getfacl-style

@@ -305,6 +305,15 @@ test-host-path:
 test-run-integration: build
     @bash tests/tools/run-integration_test.sh
 
+# Concurrent useradd of the same VIBEUTILS_TEST_USER cannot leave a
+# stale home uid or die with `setpriv: uid … not found` (issue #150).
+# Linux root/sudo + useradd + setpriv; fails honestly if those are
+# missing. Needs no Zig build: the runners are passed --help so they
+# stop after setpriv. Lives in tests/tools/, so it needs an explicit
+# invocation here.
+test-run-integration-useradd:
+    @bash tests/tools/run-integration_useradd_test.sh
+
 # Coverage oracle for the fd-mode fixture table (TODO ### 1). Needs
 # tests/lib/fd_modes.sh (implementer) and, once that exists, zig-out/bin
 # for the echo/true four-mode contracts — the oracle runs `just build`

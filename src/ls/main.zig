@@ -2298,7 +2298,6 @@ test "ls #147: an ACL entry the section does not list cannot widen it" {
 // skips rather than asserting against a file that never had one.
 // =====================================================}
 
-
 /// Grant a named-user ACE on `rel_path` via setfacl(1). Skips when the
 /// tool is absent, the call fails, or the kernel kept no xattr.
 fn testSetfacl(rel_path: [:0]const u8) !void {
