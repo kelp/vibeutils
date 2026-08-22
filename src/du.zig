@@ -811,6 +811,85 @@ const WalkState = struct {
     direct_file_sizes: [accumulation_stack_len]u64,
 };
 
+/// One printed `du` row, buffered until the listing max is known.
+const PrintedRow = struct {
+    size_bytes: u64,
+    path: []u8,
+    is_dir: bool,
+    is_link: bool,
+};
+
+/// Color-on listings record every row that survives `-t`, then emit after
+/// the operand loop so each size can be scored against the printed max.
+const PrintedListing = struct {
+    allocator: Allocator,
+    rows: std.ArrayListUnmanaged(PrintedRow) = .empty,
+    max_bytes: u64 = 0,
+    buffering: bool,
+    /// Set when a path copy or row append fails. The listing is not emitted.
+    oom: bool = false,
+
+    fn init(allocator: Allocator, buffering: bool) PrintedListing {
+        const listing = PrintedListing{
+            .allocator = allocator,
+            .buffering = buffering,
+        };
+        assert(listing.rows.items.len == 0);
+        assert(listing.max_bytes == 0);
+        assert(!listing.oom);
+        return listing;
+    }
+
+    fn deinit(self: *PrintedListing) void {
+        const n = self.rows.items.len;
+        assert(n == 0 or self.rows.items[0].path.len > 0);
+        assert(n == 0 or self.max_bytes >= self.rows.items[0].size_bytes);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            self.allocator.free(self.rows.items[i].path);
+        }
+        self.rows.deinit(self.allocator);
+    }
+
+    fn record(
+        self: *PrintedListing,
+        size_bytes: u64,
+        path: []const u8,
+        is_dir: bool,
+        is_link: bool,
+    ) void {
+        assert(self.buffering);
+        assert(path.len > 0);
+        if (self.oom) {
+            assert(self.oom);
+            return;
+        }
+        const copy = self.allocator.dupe(u8, path) catch {
+            self.oom = true;
+            assert(self.oom);
+            return;
+        };
+        self.rows.append(self.allocator, .{
+            .size_bytes = size_bytes,
+            .path = copy,
+            .is_dir = is_dir,
+            .is_link = is_link,
+        }) catch {
+            self.allocator.free(copy);
+            self.oom = true;
+            assert(self.oom);
+            return;
+        };
+        if (size_bytes > self.max_bytes) self.max_bytes = size_bytes;
+    }
+};
+
+const PrintOut = struct {
+    writer: *std.Io.Writer,
+    style: common.style.Style(*std.Io.Writer),
+    listing: *PrintedListing,
+};
+
 /// Compute disk usage for a single operand, printing as it goes and returning
 /// the operand's total subtree size for grand-total accumulation. Non-directory
 /// operands (plain files, or symlinks not followed under the active policy) are
@@ -822,11 +901,11 @@ fn processOperand(
     path: []const u8,
     config: DuConfig,
     seen_inodes: *std.AutoHashMap(u128, void),
-    stdout: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) u64 {
+    assert(path.len > 0);
     // Resolve the operand itself with the operand-level follow policy so a -P
     // symlink stays a leaf and an -H/-L symlink resolves to its target.
     const follow_operand = shouldFollowAtDepth(config.dereference_mode, 0);
@@ -848,7 +927,7 @@ fn processOperand(
         // is never deduped because it is the explicit argument.
         const leaf_size = getFileSize(stat_buf, config.apparent_size, false);
         if (shouldPrintAtDepth(0, config)) {
-            printEntry(stdout, style, leaf_size, config, path, false, stat_buf.is_symlink);
+            printEntry(out, leaf_size, config, path, false, stat_buf.is_symlink);
         }
         return leaf_size;
     }
@@ -859,8 +938,7 @@ fn processOperand(
         path,
         config,
         seen_inodes,
-        stdout,
-        style,
+        out,
         stderr,
         has_error,
     );
@@ -876,8 +954,7 @@ fn walkDirectoryOperand(
     path: []const u8,
     config: DuConfig,
     seen_inodes: *std.AutoHashMap(u128, void),
-    stdout: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) u64 {
@@ -931,8 +1008,7 @@ fn walkDirectoryOperand(
         &dir_walker,
         &state,
         seen_inodes,
-        stdout,
-        style,
+        out,
         stderr,
         has_error,
     );
@@ -998,8 +1074,7 @@ fn walkDirectoryOperand_drainLoop(
     dir_walker: *common.walker.Walker,
     state: *WalkState,
     seen_inodes: *std.AutoHashMap(u128, void),
-    stdout: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) u64 {
@@ -1039,7 +1114,7 @@ fn walkDirectoryOperand_drainLoop(
             printDirError(allocator, stderr, path, error.AccessDenied);
             has_error.* = true;
             if (shouldPrintAtDepth(0, config)) {
-                printEntry(stdout, style, 0, config, path, true, false);
+                printEntry(out, 0, config, path, true, false);
             }
             continue;
         }
@@ -1049,8 +1124,7 @@ fn walkDirectoryOperand_drainLoop(
             config,
             state,
             seen_inodes,
-            stdout,
-            style,
+            out,
             stderr,
             has_error,
         );
@@ -1072,8 +1146,7 @@ fn processWalkEntry(
     config: DuConfig,
     state: *WalkState,
     seen_inodes: *std.AutoHashMap(u128, void),
-    stdout: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) void {
@@ -1083,11 +1156,11 @@ fn processWalkEntry(
         if (entry.visit == .pre) {
             handleDirPre(entry, config, state, has_error);
         } else {
-            handleDirPost(entry, config, state, stdout, style);
+            handleDirPost(entry, config, state, out);
         }
         return;
     }
-    handleLeafEntry(allocator, entry, config, state, seen_inodes, stdout, style, stderr, has_error);
+    handleLeafEntry(allocator, entry, config, state, seen_inodes, out, stderr, has_error);
 }
 
 /// Pre-order directory visit: reset this depth's accumulators and seed the
@@ -1127,8 +1200,7 @@ fn handleDirPost(
     entry: common.walker.Entry,
     config: DuConfig,
     state: *WalkState,
-    stdout: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
 ) void {
     const depth = entry.depth;
     assert(entry.kind == .directory);
@@ -1139,7 +1211,7 @@ fn handleDirPost(
     else
         full_subtree;
     if (shouldPrintAtDepth(depth, config)) {
-        printEntry(stdout, style, printed_size, config, entry.path, true, false);
+        printEntry(out, printed_size, config, entry.path, true, false);
     }
     if (depth > 0) {
         // Propagate the full subtree (never the -S-adjusted value) upward.
@@ -1158,8 +1230,7 @@ fn handleLeafEntry(
     config: DuConfig,
     state: *WalkState,
     seen_inodes: *std.AutoHashMap(u128, void),
-    stdout: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) void {
@@ -1197,7 +1268,7 @@ fn handleLeafEntry(
 
     const is_link = entry.kind == .sym_link;
     if (config.all and shouldPrintAtDepth(depth, config)) {
-        printEntry(stdout, style, file_size, config, entry.path, false, is_link);
+        printEntry(out, file_size, config, entry.path, false, is_link);
     }
 }
 
@@ -1231,66 +1302,124 @@ fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
     return true;
 }
 
+fn entryPassesThreshold(size_bytes: u64, config: DuConfig) bool {
+    const thresh = config.threshold orelse {
+        assert(config.threshold == null);
+        return true;
+    };
+    assert(config.threshold != null);
+    const signed_size: i64 = @intCast(size_bytes);
+    if (thresh >= 0) {
+        return signed_size >= thresh;
+    }
+    return signed_size <= -thresh;
+}
+
 fn printEntry(
-    writer: *std.Io.Writer,
-    style: anytype,
+    out: *PrintOut,
     size_bytes: u64,
     config: DuConfig,
     path: []const u8,
     is_dir: bool,
     is_link: bool,
 ) void {
-    // Every call site passes a non-empty path (an operand, a walker entry path,
-    // or the literal "total"); basename/eql below rely on it.
     assert(path.len > 0);
-    // Apply threshold filter
-    if (config.threshold) |thresh| {
-        const signed_size: i64 = @intCast(size_bytes);
-        if (thresh >= 0) {
-            // Positive threshold: show only entries >= threshold
-            if (signed_size < thresh) return;
-        } else {
-            // Negative threshold: show only entries <= |threshold|
-            if (signed_size > -thresh) return;
-        }
+    assert(out.style.writer == out.writer);
+    if (!entryPassesThreshold(size_bytes, config)) return;
+    if (out.listing.buffering) {
+        out.listing.record(size_bytes, path, is_dir, is_link);
+        return;
     }
+    writePrintedEntry(out, size_bytes, 0, config, path, is_dir, is_link);
+}
+
+fn emitPrintedListing(out: *PrintOut, config: DuConfig) void {
+    const listing = out.listing;
+    if (!listing.buffering) {
+        assert(!listing.buffering);
+        assert(listing.rows.items.len == 0);
+        return;
+    }
+    const n = listing.rows.items.len;
+    assert(listing.buffering);
+    assert(n == 0 or listing.max_bytes >= listing.rows.items[0].size_bytes);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const row = listing.rows.items[i];
+        writePrintedEntry(
+            out,
+            row.size_bytes,
+            listing.max_bytes,
+            config,
+            row.path,
+            row.is_dir,
+            row.is_link,
+        );
+    }
+}
+
+fn writePrintedEntry(
+    out: *PrintOut,
+    size_bytes: u64,
+    max_bytes: u64,
+    config: DuConfig,
+    path: []const u8,
+    is_dir: bool,
+    is_link: bool,
+) void {
+    assert(path.len > 0);
+    assert(out.style.writer == out.writer);
+    const style = out.style;
+    const writer = out.writer;
 
     if (config.human_readable) {
         var hr_buf: [32]u8 = undefined;
         const formatted = formatHumanReadable(&hr_buf, size_bytes, config.si);
-        common.colors.applySizeColor(style, size_bytes) catch {};
+        common.colors.applyRelativeSizeColor(style, size_bytes, max_bytes) catch {};
         writer.print("{s}", .{formatted}) catch {};
         style.reset() catch {};
     } else {
-        // Scale by block_size
         const blocks = if (config.block_size <= 1)
             size_bytes
         else
             (size_bytes + config.block_size - 1) / config.block_size;
-        common.colors.applySizeColor(style, size_bytes) catch {};
+        common.colors.applyRelativeSizeColor(style, size_bytes, max_bytes) catch {};
         writer.print("{d}", .{blocks}) catch {};
         style.reset() catch {};
     }
 
     if (config.show_icons and !std.mem.eql(u8, path, "total")) {
-        const basename = std.fs.path.basename(path);
-        const theme = common.icons.IconTheme{};
-        const icon = common.icons.getIcon(&theme, basename, is_dir, is_link, false);
-        const icon_color = common.icons.getIconColorInfo(icon);
-        if (icon_color) |ic| {
-            switch (style.color_mode) {
-                .truecolor => style.setRgb(ic.r, ic.g, ic.b) catch {},
-                .extended => style.set256(ic.c256) catch {},
-                .basic => style.setColor(ic.basic) catch {},
-                .none => {},
-            }
-        }
-        writer.print("\t{s} ", .{icon}) catch {};
-        if (icon_color != null and style.color_mode != .none) style.reset() catch {};
-        writer.print("{s}\n", .{path}) catch {};
+        writePrintedEntryIcon(out, path, is_dir, is_link);
     } else {
         writer.print("\t{s}\n", .{path}) catch {};
     }
+}
+
+fn writePrintedEntryIcon(
+    out: *PrintOut,
+    path: []const u8,
+    is_dir: bool,
+    is_link: bool,
+) void {
+    assert(path.len > 0);
+    assert(!std.mem.eql(u8, path, "total"));
+    const style = out.style;
+    const writer = out.writer;
+    const basename = std.fs.path.basename(path);
+    const theme = common.icons.IconTheme{};
+    const icon = common.icons.getIcon(&theme, basename, is_dir, is_link, false);
+    const icon_color = common.icons.getIconColorInfo(icon);
+    if (icon_color) |ic| {
+        switch (style.color_mode) {
+            .truecolor => style.setRgb(ic.r, ic.g, ic.b) catch {},
+            .extended => style.set256(ic.c256) catch {},
+            .basic => style.setColor(ic.basic) catch {},
+            .none => {},
+        }
+    }
+    writer.print("\t{s} ", .{icon}) catch {};
+    if (icon_color != null and style.color_mode != .none) style.reset() catch {};
+    writer.print("{s}\n", .{path}) catch {};
 }
 
 // ============================================================================
@@ -1430,6 +1559,28 @@ pub fn runDu(
     // the non-empty positionals; the operand loop always runs at least once.
     assert(paths.len >= 1);
 
+    return runDu_processPaths(allocator, io, stdout, stderr, style, config, paths);
+}
+
+fn runDu_processPaths(
+    allocator: Allocator,
+    io: std.Io,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    style: common.style.Style(*std.Io.Writer),
+    config: DuConfig,
+    paths: []const []const u8,
+) u8 {
+    assert(paths.len >= 1);
+    var listing = PrintedListing.init(allocator, style.color_mode != .none);
+    defer listing.deinit();
+    assert(listing.buffering == (style.color_mode != .none));
+    var out = PrintOut{
+        .writer = stdout,
+        .style = style,
+        .listing = &listing,
+    };
+
     var has_error = false;
     var grand_total: u64 = 0;
 
@@ -1443,8 +1594,7 @@ pub fn runDu(
             path,
             config,
             &seen_inodes,
-            stdout,
-            style,
+            &out,
             stderr,
             &has_error,
         );
@@ -1452,8 +1602,20 @@ pub fn runDu(
     }
 
     if (config.total) {
-        printEntry(stdout, style, grand_total, config, "total", false, false);
+        printEntry(&out, grand_total, config, "total", false, false);
     }
+    if (listing.oom) {
+        assert(listing.oom);
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "cannot record listing: out of memory",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    emitPrintedListing(&out, config);
 
     return if (has_error) @as(u8, 1) else 0;
 }
@@ -2445,6 +2607,13 @@ test "printEntry without icons shows clean output" {
 
     const TestStyle = common.style.Style(*std.Io.Writer);
     const style = TestStyle{ .color_mode = .none, .writer = &buffer_aw.writer };
+    var listing = PrintedListing.init(testing.allocator, false);
+    defer listing.deinit();
+    var out = PrintOut{
+        .writer = &buffer_aw.writer,
+        .style = style,
+        .listing = &listing,
+    };
 
     const config = DuConfig{
         .all = false,
@@ -2469,7 +2638,7 @@ test "printEntry without icons shows clean output" {
         },
     };
 
-    printEntry(&buffer_aw.writer, style, 1024, config, "/tmp/test.txt", false, false);
+    printEntry(&out, 1024, config, "/tmp/test.txt", false, false);
 
     // Should be "1024\t/tmp/test.txt\n" with no icon
     try testing.expectEqualStrings("1024\t/tmp/test.txt\n", buffer_aw.writer.buffered());
@@ -2481,6 +2650,13 @@ test "printEntry with icons shows icon glyph" {
 
     const TestStyle = common.style.Style(*std.Io.Writer);
     const style = TestStyle{ .color_mode = .none, .writer = &buffer_aw.writer };
+    var listing = PrintedListing.init(testing.allocator, false);
+    defer listing.deinit();
+    var out = PrintOut{
+        .writer = &buffer_aw.writer,
+        .style = style,
+        .listing = &listing,
+    };
 
     const config = DuConfig{
         .all = false,
@@ -2505,7 +2681,7 @@ test "printEntry with icons shows icon glyph" {
         },
     };
 
-    printEntry(&buffer_aw.writer, style, 1024, config, "/tmp/test.txt", false, false);
+    printEntry(&out, 1024, config, "/tmp/test.txt", false, false);
 
     // Should contain the text file icon followed by a space and the path
     const theme = common.icons.IconTheme{};
@@ -2520,6 +2696,13 @@ test "printEntry with directory icon" {
 
     const TestStyle = common.style.Style(*std.Io.Writer);
     const style = TestStyle{ .color_mode = .none, .writer = &buffer_aw.writer };
+    var listing = PrintedListing.init(testing.allocator, false);
+    defer listing.deinit();
+    var out = PrintOut{
+        .writer = &buffer_aw.writer,
+        .style = style,
+        .listing = &listing,
+    };
 
     const config = DuConfig{
         .all = false,
@@ -2544,7 +2727,7 @@ test "printEntry with directory icon" {
         },
     };
 
-    printEntry(&buffer_aw.writer, style, 4096, config, "/tmp/mydir", true, false);
+    printEntry(&out, 4096, config, "/tmp/mydir", true, false);
 
     // Should contain the directory icon
     const theme = common.icons.IconTheme{};
@@ -4549,4 +4732,282 @@ test "du -x stays on one filesystem and fully traverses the single-device tree" 
     try testing.expectEqual(@as(?u64, 14), extractSizeForExactPath(buf, sub_path));
     // root = 4 + 14 = 18 (whole single-device tree accounted for).
     try testing.expectEqual(@as(?u64, 18), extractSizeForExactPath(buf, root_path));
+}
+
+// Relative size color vs the largest printed entry. These go through runDu
+// so they fail until printEntry buffers color-on output and scores against
+// max. Cloud NO_COLOR/TERM=dumb is staged off via the test overlay; libc
+// unsetenv would compact environ and deadlock the runner (issue #95).
+const du_csi_rel_green = "\x1b[38;2;115;195;120m";
+const du_csi_rel_yellow = "\x1b[38;2;210;185;90m";
+const du_csi_rel_red = "\x1b[38;2;210;95;90m";
+const du_csi_abs_10m = "\x1b[38;2;210;115;100m";
+const du_rel_mib: u64 = 1024 * 1024;
+
+const RelColorEnv = struct {
+    saved: []const common.env.Override,
+    staged: [5]common.env.Override,
+
+    fn apply(self: *RelColorEnv) void {
+        std.debug.assert(self.staged.len == 5);
+        self.saved = common.env.test_overrides;
+        self.staged = .{
+            .{ .key = "NO_COLOR", .value = null },
+            .{ .key = "TERM", .value = "xterm" },
+            .{ .key = "COLORTERM", .value = "truecolor" },
+            .{ .key = "VIBEUTILS_STYLE", .value = null },
+            // du show_icons follows DisplayConfig (VIBEUTILS_ICONS), not LS_ICONS.
+            .{ .key = "VIBEUTILS_ICONS", .value = null },
+        };
+        common.env.test_overrides = &self.staged;
+        std.debug.assert(self.staged[4].value == null);
+    }
+
+    fn restore(self: *const RelColorEnv) void {
+        std.debug.assert(self.staged.len == 5);
+        common.env.test_overrides = self.saved;
+    }
+};
+
+fn testCreateDuSparseFile(
+    io: std.Io,
+    tmp_dir: *testing.TmpDir,
+    name: []const u8,
+    size: u64,
+) ![]u8 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(size > 0);
+    const file = try tmp_dir.dir.createFile(io, name, .{});
+    try file.setLength(io, size);
+    file.close(io);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, name, &path_buf);
+    std.debug.assert(path_len > 0);
+    return testing.allocator.dupe(u8, path_buf[0..path_len]);
+}
+
+fn testLineForExactPath(output: []const u8, path: []const u8) ?[]const u8 {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(output.len < 1 << 20);
+    var it = std.mem.splitScalar(u8, output, '\n');
+    var n: u32 = 0;
+    const n_max: u32 = 4096;
+    while (n < n_max) : (n += 1) {
+        const line = it.next() orelse return null;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        if (std.mem.eql(u8, line[tab + 1 ..], path)) return line;
+    }
+    return null;
+}
+
+fn testRunDuStdout(io: std.Io, args: []const []const u8) ![]u8 {
+    std.debug.assert(args.len > 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 0);
+    return testing.allocator.dupe(u8, out);
+}
+
+test "du relative color: 10MiB is green and 20MiB is red not absolute >=10M" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", ten, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    const ten_line = testLineForExactPath(out, ten) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_rel_green) != null);
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_abs_10m) == null);
+}
+
+test "du relative color: 15MiB is yellow and 20MiB is red" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const mid = try testCreateDuSparseFile(io, &tmp_dir, "mid", 15 * du_rel_mib);
+    defer testing.allocator.free(mid);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", mid, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    const mid_line = testLineForExactPath(out, mid) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, mid_line, du_csi_rel_yellow) != null);
+    try testing.expect(std.mem.find(u8, mid_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_yellow) == null);
+}
+
+test "du --color=never prints plain size and path with no ANSI" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=never", "--apparent-size", "-b", "-a", ten, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    try testing.expect(std.mem.find(u8, out, "\x1b") == null);
+    try testing.expect(std.mem.find(u8, out, ten) != null);
+    try testing.expect(std.mem.find(u8, out, twenty) != null);
+    try testing.expect(std.mem.find(u8, out, "10485760") != null);
+    try testing.expect(std.mem.find(u8, out, "20971520") != null);
+}
+
+test "du relative color: equal sizes without -c are both 100% red" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const left = try testCreateDuSparseFile(io, &tmp_dir, "left", 10 * du_rel_mib);
+    defer testing.allocator.free(left);
+    const right = try testCreateDuSparseFile(io, &tmp_dir, "right", 10 * du_rel_mib);
+    defer testing.allocator.free(right);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", left, right,
+    });
+    defer testing.allocator.free(out);
+
+    const left_line = testLineForExactPath(out, left) orelse
+        return error.TestUnexpectedResult;
+    const right_line = testLineForExactPath(out, right) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, left_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, left_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, right_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, right_line, du_csi_abs_10m) == null);
+}
+
+test "du relative color: -c total participates in max and is red" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", "-c", ten, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    const total_line = testLineForExactPath(out, "total") orelse
+        return error.TestUnexpectedResult;
+    const ten_line = testLineForExactPath(out, ten) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    // Sum 30 MiB is 100% red; 10 MiB and 20 MiB are 33%/66% of the sum, green.
+    try testing.expect(std.mem.find(u8, total_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, total_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_rel_green) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_green) != null);
+}
+
+test "du relative color: -t omitted larger entry does not set max" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+    const huge = try testCreateDuSparseFile(io, &tmp_dir, "huge", 100 * du_rel_mib);
+    defer testing.allocator.free(huge);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a",
+        "-t",             "-20971520",       ten,  twenty,
+        huge,
+    });
+    defer testing.allocator.free(out);
+
+    try testing.expect(testLineForExactPath(out, huge) == null);
+    const ten_line = testLineForExactPath(out, ten) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    // Printed max is 20 MiB, so 10 MiB is 50% green and 20 MiB is 100% red.
+    // If 100 MiB leaked into max, 20 MiB would be 20% green, not red.
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_rel_green) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_red) != null);
+}
+
+test "du relative color: buffered paths remain distinct copies" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    // Two children under one directory operand so print goes through
+    // handleLeafEntry and the walker's reused entry.path buffer, not argv.
+    const alpha = try testCreateDuSparseFile(io, &tmp_dir, "alpha", 10 * du_rel_mib);
+    defer testing.allocator.free(alpha);
+    const beta = try testCreateDuSparseFile(io, &tmp_dir, "beta", 20 * du_rel_mib);
+    defer testing.allocator.free(beta);
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &dir_buf))];
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", dir_path,
+    });
+    defer testing.allocator.free(out);
+
+    try testing.expect(testLineForExactPath(out, alpha) != null);
+    try testing.expect(testLineForExactPath(out, beta) != null);
 }
