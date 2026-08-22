@@ -8,6 +8,7 @@ set -euo pipefail
 LIB_DIR="$(dirname "${BASH_SOURCE[0]}")"
 source "$LIB_DIR/common.sh"
 source "$LIB_DIR/flag_parser.sh"
+source "$LIB_DIR/fd_modes.sh"
 
 # Run tests for a specific utility
 run_utility_tests() {
@@ -19,6 +20,7 @@ run_utility_tests() {
     
     # Initialize test session
     init_test_session
+    test_fd_modes "$util"
     
     # Check if utility-specific test file exists
     if [[ -f "$test_file" ]]; then
@@ -124,6 +126,12 @@ list_available_utilities() {
 run_all_utility_tests() {
     echo -e "${BLUE}Running tests for all utilities${NC}"
     echo "==============================="
+
+    echo -e "\n${CYAN}File-descriptor mode coverage oracle...${NC}"
+    if ! bash "$TESTS_DIR/tools/fd_modes_test.sh"; then
+        echo -e "${RED}fd-mode oracle failed${NC}"
+        return 1
+    fi
     
     local total_utilities=0
     local passed_utilities=0

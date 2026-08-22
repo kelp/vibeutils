@@ -1337,12 +1337,12 @@ strategy. These items address the categories of testing
 that would have caught it — and similar bugs — earlier.
 
 ### 1. File Descriptor Mode Tests
-- [ ] Generic test harness that runs each binary under
+- [x] Generic test harness that runs each binary under
       different fd configurations
-- [ ] Test `>> file` append mode for every utility
-- [ ] Test pipe mode (`| cat`) for every utility
-- [ ] Test truncate mode (`> file`) for every utility
-- [ ] Test dup'd descriptors (`2>&1 >> file`)
+- [x] Test `>> file` append mode for every utility
+- [x] Test pipe mode (`| cat`) for every utility
+- [x] Test truncate mode (`> file`) for every utility
+- [x] Test dup'd descriptors (`2>&1 >> file`)
 
 ### 2. POSIX Behavioral Conformance Suite
 - [ ] `>>` must append, not overwrite

@@ -443,6 +443,27 @@ test "utility test" {
 }
 ```
 
+## File Descriptor Mode Tests
+
+Issue #5 was `File.writer()` seeking to offset 0 and
+ignoring `O_APPEND`. A source grep in `src/common/lib.zig`
+and one `echo` case are not enough for the next utility
+that grows its own `main()`.
+
+`tests/lib/fd_modes.sh` runs every `build/utils.zig` binary
+under `>> file`, `| cat`, `> file`, `2>&1 >> file`, and
+`>> file 2>&1`. A missing fixture is FAIL. Default argv is
+`--help` with stdin `/dev/null`; locked rows (echo, true,
+false, test, `[`, yes, sleep) are in that file.
+
+`tests/tools/fd_modes_test.sh` is the coverage oracle
+(`just test-fd-modes`, and `just it` via
+`run_all_utility_tests`). Do not add
+`tests/utilities/fd_modes_test.sh`.
+
+When adding a utility, add a `fd_modes_has_fixture` row
+in the same change.
+
 ## Coverage Guidelines
 
 ### Target Coverage
