@@ -121,6 +121,17 @@ test_dd() {
         print_test_result "dd status=none" "FAIL" "Expected no stderr, got '$stderr_output'"
     fi
 
+    # status=progress retains the final records-in/out summary even when the
+    # input finishes too quickly to produce a live progress refresh.
+    local progress_output="$TEMP_DIR/dd_progress.txt"
+    stderr_output=$("$binary" if="$status_input" of="$progress_output" status=progress 2>&1)
+    if [[ "$stderr_output" == *"records in"* && "$stderr_output" == *"records out"* ]]; then
+        print_test_result "dd status=progress final records" "PASS"
+    else
+        print_test_result "dd status=progress final records" "FAIL" \
+            "Expected records in/out in stderr"
+    fi
+
     # Test default status shows statistics
     local stat_output="$TEMP_DIR/dd_stat.txt"
     stderr_output=$("$binary" if="$status_input" of="$stat_output" 2>&1)

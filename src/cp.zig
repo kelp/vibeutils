@@ -2144,6 +2144,153 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
 
 // Tests
 
+test "cp progress covers a plain file copy" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'p');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress covers preserve mode" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'r');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress covers overwrite in place" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'i');
+    try test_dir.createFile("source.bin", content, null);
+    try test_dir.createFile("dest.bin", "old", null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.bin");
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress stays silent when disabled" {
+    common.progress.test_enabled = false;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 's');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") == null);
+    try test_dir.expectFileContent("dest.bin", content);
+}
+
 test "cp: single file copy" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();

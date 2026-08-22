@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const lib = @import("lib.zig");
 const env = @import("env.zig");
+const progress = @import("progress.zig");
 const assert = std.debug.assert;
 
 /// Set file permissions using the most reliable method available
@@ -271,6 +272,20 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
         if (bytes_read == 0) break;
         try dest_file.writeStreamingAll(io, buffer[0..bytes_read]);
     }
+}
+
+/// Copy file contents through the progress-aware API.
+///
+/// The implementation agent will make the copy loop honor `tracker`; this
+/// compile-only stub deliberately preserves today's copy behavior.
+pub fn copyFileContentsWithProgress(
+    io: std.Io,
+    source_file: std.Io.File,
+    dest_file: std.Io.File,
+    tracker: ?*progress.Tracker,
+) !void {
+    _ = tracker;
+    return copyFileContents(io, source_file, dest_file);
 }
 
 /// Copy one regular file preserving mode, timestamps, and ownership.
@@ -577,6 +592,74 @@ test "isSameFile" {
 
     // Non-existent file should return false
     try std.testing.expect(!isSameFile(io, path1, "/nonexistent_file_abc123"));
+}
+
+test "copyFileContentsWithProgress updates and emits for every copied block" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const size: usize = 3 * COPY_BUFFER_SIZE;
+    const content = try std.testing.allocator.alloc(u8, size);
+    defer std.testing.allocator.free(content);
+    @memset(content, 'x');
+
+    const source_create = try tmp_dir.dir.createFile(io, "source.bin", .{});
+    try source_create.writeStreamingAll(io, content);
+    source_create.close(io);
+    const source = try tmp_dir.dir.openFile(io, "source.bin", .{});
+    defer source.close(io);
+    const dest = try tmp_dir.dir.createFile(io, "dest.bin", .{});
+    defer dest.close(io);
+
+    var progress_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer progress_output.deinit();
+    var tracker = progress.Tracker{
+        .writer = &progress_output.writer,
+        .program = "cp",
+        .label = "source.bin",
+        .total = @intCast(size),
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .copy_line,
+    };
+
+    try copyFileContentsWithProgress(io, source, dest, &tracker);
+
+    try std.testing.expectEqual(@as(u64, @intCast(size)), tracker.bytes_done);
+    try std.testing.expect(std.mem.find(u8, progress_output.writer.buffered(), "\r") != null);
+}
+
+test "copyFileContents without a tracker still copies bytes" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source_create = try tmp_dir.dir.createFile(io, "source.txt", .{});
+    try source_create.writeStreamingAll(io, "plain copy");
+    source_create.close(io);
+    const source = try tmp_dir.dir.openFile(io, "source.txt", .{});
+    defer source.close(io);
+    const dest = try tmp_dir.dir.createFile(io, "dest.txt", .{});
+    defer dest.close(io);
+
+    try copyFileContents(io, source, dest);
+
+    const copied = try tmp_dir.dir.readFileAlloc(
+        io,
+        "dest.txt",
+        std.testing.allocator,
+        .unlimited,
+    );
+    defer std.testing.allocator.free(copied);
+    try std.testing.expectEqualStrings("plain copy", copied);
+    try std.testing.expectEqual(@as(usize, 10), copied.len);
 }
 
 test "setPermissions with file" {

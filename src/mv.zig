@@ -2370,6 +2370,119 @@ test "mv: -f -n flag combination should let no-clobber win (last flag)" {
     try testing.expect(test_dir.fileExists(source_name));
 }
 
+test "mv progress covers a cross-filesystem single file copy" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const size = common.file_ops.COPY_BUFFER_SIZE + 1;
+    const content = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(content);
+    @memset(content, 'm');
+    try test_dir.inner.createFile("source.bin", content, null);
+    const source_path = try test_dir.inner.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.inner.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        testing.allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+    try testing.expect(test_dir.fileExists("dest.bin"));
+}
+
+test "mv progress covers a file copied through a cross-filesystem tree" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const size = common.file_ops.COPY_BUFFER_SIZE + 1;
+    const content = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(content);
+    @memset(content, 't');
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/a.txt", content, null);
+    const source_path = try test_dir.inner.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.inner.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        testing.allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+    try testing.expect(test_dir.fileExists("dst/a.txt"));
+}
+
+test "mv same-filesystem rename does not emit progress" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.inner.createFile("source.txt", "rename only", null);
+    const source_path = try test_dir.inner.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.inner.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ source_path, dest_path };
+
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") == null);
+    try testing.expect(test_dir.fileExists("dest.txt"));
+}
+
 // ===========================================================================
 // Characterization tests for the cross-filesystem copy fallback.
 //

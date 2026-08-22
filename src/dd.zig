@@ -753,6 +753,7 @@ const DdWriteCtx = struct {
     output_file: std.Io.File,
     status: StatusLevel,
     stats: *DdStats,
+    tracker: ?*common.progress.Tracker = null,
 };
 
 /// The input and output working buffers dd always needs. The caller
@@ -1987,6 +1988,34 @@ pub fn main(init: std.process.Init) !void {
 //                              UNIT TESTS
 // ============================================================================
 
+fn runDdStatusFixture(
+    stderr: *std.Io.Writer,
+    status_operand: ?[]const u8,
+) !u8 {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", "0123456789");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    if (status_operand) |status| {
+        const args = [_][]const u8{ if_arg, of_arg, "bs=2", status };
+        return runDd(testing.allocator, io, &args, common.null_writer, stderr);
+    }
+    const args = [_][]const u8{ if_arg, of_arg, "bs=2" };
+    return runDd(testing.allocator, io, &args, common.null_writer, stderr);
+}
+
 test "parseByteSize - plain numbers" {
     try testing.expectEqual(@as(usize, 512), try parseByteSize("512"));
     try testing.expectEqual(@as(usize, 1), try parseByteSize("1"));
@@ -2478,6 +2507,168 @@ test "runDd - skip blocks" {
     const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BBBB", content);
+}
+
+test "runDd status=progress emits a live carriage-return line" {
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runDdStatusFixture(&stderr_aw.writer, "status=progress");
+    const output = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, output, "\r") != null);
+    try testing.expect(std.mem.find(u8, output, "records in") != null);
+}
+
+test "runDd status=none never emits progress or final stats" {
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runDdStatusFixture(&stderr_aw.writer, "status=none");
+    const output = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), output.len);
+    try testing.expect(std.mem.find(u8, output, "\r") == null);
+    try testing.expect(std.mem.find(u8, output, "bytes") == null);
+}
+
+test "runDd status=noxfer prints records without live progress" {
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runDdStatusFixture(&stderr_aw.writer, "status=noxfer");
+    const output = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, output, "records in") != null);
+    try testing.expect(std.mem.find(u8, output, "records out") != null);
+    try testing.expect(std.mem.find(u8, output, "\r") == null);
+    try testing.expect(std.mem.find(u8, output, "bytes") == null);
+}
+
+test "runDd default status prints final newline stats without live progress" {
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runDdStatusFixture(&stderr_aw.writer, null);
+    const output = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, output, "records in") != null);
+    try testing.expect(std.mem.endsWith(u8, output, "\n"));
+    try testing.expect(std.mem.find(u8, output, "\r") == null);
+}
+
+test "runDd fast status=progress only prints final stats without overlay" {
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runDdStatusFixture(&stderr_aw.writer, "status=progress");
+    const output = stderr_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, output, "\r") == null);
+    try testing.expect(std.mem.find(u8, output, "records in") != null);
+    try testing.expect(std.mem.find(u8, output, "copied") != null);
+}
+
+test "runDd write errors begin after a shown progress line" {
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    var tracker = common.progress.Tracker{
+        .writer = &stderr_aw.writer,
+        .program = "dd",
+        .label = "",
+        .total = null,
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .gnu_xfer,
+    };
+    tracker.update(1, 100);
+    var stats: DdStats = .{ .start_ns = 0 };
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = testing.io,
+        .stderr = &stderr_aw.writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+        .tracker = &tracker,
+    };
+
+    const exit_code = runDd_writeError(&ctx, error.NoSpaceLeft);
+
+    try testing.expectEqual(@intFromEnum(common.ExitCode.general_error), exit_code);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "\ndd: write error:",
+    ) != null);
+}
+
+test "runDd noerror read diagnostics begin after a shown progress line" {
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    var tracker = common.progress.Tracker{
+        .writer = &stderr_aw.writer,
+        .program = "dd",
+        .label = "",
+        .total = null,
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .gnu_xfer,
+    };
+    tracker.update(1, 100);
+    var stats: DdStats = .{ .start_ns = 0 };
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = testing.io,
+        .stderr = &stderr_aw.writer,
+        .output_file = std.Io.File.stdout(),
+        .status = .none,
+        .stats = &stats,
+        .tracker = &tracker,
+    };
+    const config = DdConfig{ .conv_noerror = true };
+    var in_buf: [8]u8 = undefined;
+    var blocks_read: usize = 0;
+
+    const outcome = runDd_handleReadError(
+        &ctx,
+        &config,
+        &in_buf,
+        in_buf.len,
+        false,
+        &blocks_read,
+        error.IsDir,
+    );
+
+    try testing.expectEqual(ReadErrorOutcome.continue_loop, outcome);
+    try testing.expect(std.mem.find(
+        u8,
+        stderr_aw.writer.buffered(),
+        "\ndd: read error:",
+    ) != null);
 }
 
 test "runDd - statistics output" {
