@@ -215,8 +215,12 @@
   for Darwin, Linux, and FreeBSD). Those utilities now fall back to
   libc `realpath(3)` of the path string.
 - **`free` reports memory on FreeBSD, OpenBSD, and NetBSD.** Those
-  hosts have no `/proc/meminfo`; they now read `hw.physmem` and
-  related sysctl keys instead of exiting 1.
+  hosts have no `/proc/meminfo`. Total RAM comes from
+  `std.process.totalSystemMemory` (OpenBSD uses `CTL_HW` +
+  `HW_PHYSMEM64`; the others use `sysctlbyname`). Page counts and
+  swap are FreeBSD/NetBSD-only — OpenBSD libc has no
+  `sysctlbyname`, so unknown breakdowns stay zero instead of
+  reporting used=0.
 - **User and group names resolve on BSD.** `getUserName` /
   `getGroupName` only called `getpwuid` / `getgrgid` on Linux and
   macOS, so `ls -l`, `stat %G`, and `find -group` printed raw ids
