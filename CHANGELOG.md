@@ -17,6 +17,21 @@
   green.
 
 ### Added
+- **`cp` and `mv` show an auto-progress line for slow copies.** When
+  stderr is a TTY and a single regular-file copy runs longer than 2
+  seconds, a `cp: copying NAME  DONE/TOTAL  PCT%` status line appears
+  on stderr, refreshes in place every half second, and is cleared when
+  the copy finishes or before any diagnostic is printed. Pipes and
+  redirected stderr stay silent, so scripts see no new output. `mv`
+  shows the same line on its cross-filesystem copy fallback, per file;
+  same-filesystem renames stay silent.
+- **`dd status=progress` now prints a live transfer line.** After 1
+  second of copying (GNU's cadence), the standard transfer line —
+  `N bytes (SI, IEC) copied, T s, RATE` — is rewritten in place on
+  stderr about once per second, and the final statistics still follow,
+  matching GNU dd. Unlike the cp/mv line it is not TTY-gated, because
+  GNU writes it into pipes and logs. Copies that finish in under a
+  second print only the final statistics, exactly as before.
 - **`tree` lists directories as a UTF-8 box-drawing tree.** `-L`
   caps depth, `-d` lists directories only, `-I` excludes names
   (repeatable, with `|` alternatives), and `-a` includes hidden

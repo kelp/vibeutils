@@ -130,7 +130,20 @@ Suppress all informational messages.
 .It Cm noxfer
 Suppress the transfer statistics line.
 .It Cm progress
-Print transfer statistics (default behavior).
+Additionally print a live transfer-statistics line, rewritten in
+place on standard error about once per second after the first
+second of copying, matching GNU
+.Nm
+(its ~1s SIGALRM cadence; not the 0.5s refresh used by the
+.Xr cp 1
+and
+.Xr mv 1
+status lines).
+The line is printed even when standard error is not a terminal,
+as GNU does when writing into pipes and logs.
+Copies that finish in under a second print only the final
+statistics.
+The final statistics are always printed after the live line.
 .El
 .El
 .Pp

@@ -908,6 +908,43 @@ fn copyRegularFile(
         options,
     ) orelse return false;
 
+    // One tracker per file, TTY-gated inside makeCopyTracker per file
+    // (macOS isatty class); all three byte-copy paths below share it.
+    var tracker_storage = makeCopyTracker(io, stderr_writer, source_path, source_info.size);
+
+    return copyRegularFile_dispatch(
+        allocator,
+        io,
+        stderr_writer,
+        source_path,
+        dest_path,
+        options,
+        source_info,
+        dest_unlinked,
+        if (tracker_storage) |*t| t else null,
+    );
+}
+
+/// Route one regular-file copy to the matching byte-copy path: preserve
+/// (-p), overwrite-in-place, or simple create-and-copy. Extracted from
+/// copyRegularFile so the parent stays within the 70-line limit after
+/// gaining the progress tracker.
+fn copyRegularFile_dispatch(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+    source_info: common.file.FileInfo,
+    dest_unlinked: bool,
+    tracker: ?*common.progress.Tracker,
+) bool {
+    // Forwarded from copyRegularFile, which stats the source successfully
+    // before dispatching; both operands still name the diagnostics below.
+    assert(source_path.len > 0);
+    assert(source_info.mode & std.c.S.IFMT != 0);
+
     if (options.preserve) {
         common.file_ops.copyFileWithAttributes(
             allocator,
@@ -917,6 +954,7 @@ fn copyRegularFile(
             source_path,
             dest_path,
             source_info,
+            tracker,
         ) catch {
             return false;
         };
@@ -925,7 +963,7 @@ fn copyRegularFile(
     if (!dest_unlinked and fileExists(io, dest_path)) {
         // Destination exists and was not unlinked: overwrite in place to
         // preserve the inode (and thus hard links).
-        copyInPlace(allocator, io, stderr_writer, source_path, dest_path) catch {
+        copyInPlace(allocator, io, stderr_writer, source_path, dest_path, tracker) catch {
             return false;
         };
         return true;
@@ -937,7 +975,32 @@ fn copyRegularFile(
         source_path,
         dest_path,
         source_info.mode,
+        tracker,
     );
+}
+
+/// Build the auto-progress tracker for one regular-file copy, or null when
+/// stderr is not a TTY (or the test overlay disables it). Extracted so
+/// copyRegularFile stays within the 70-line limit.
+fn makeCopyTracker(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    total: u64,
+) ?common.progress.Tracker {
+    // The path labels the status line and cp asserts non-empty operands
+    // upstream; an empty label would render "cp: copying " with no name.
+    assert(source_path.len > 0);
+    const tracker = common.progress.forCopy(
+        stderr_writer,
+        "cp",
+        source_path,
+        total,
+        common.progress.nowNs(io),
+    );
+    // forCopy either declines (no TTY) or hands back an enabled tracker.
+    assert(tracker == null or tracker.?.enabled);
+    return tracker;
 }
 
 /// Apply the GNU force-overwrite rule before copying a regular file: "if an
@@ -983,6 +1046,7 @@ fn copyRegularFile_simpleCopy(
     source_path: []const u8,
     dest_path: []const u8,
     source_mode: std.posix.mode_t,
+    tracker: ?*common.progress.Tracker,
 ) bool {
     // Sole caller copyRegularFile forwards its own asserted non-empty source.
     assert(source_path.len > 0);
@@ -1021,7 +1085,7 @@ fn copyRegularFile_simpleCopy(
     };
     defer dest_file.close(io);
 
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -1042,6 +1106,7 @@ fn copyInPlace(
     stderr_writer: *std.Io.Writer,
     source_path: []const u8,
     dest_path: []const u8,
+    tracker: ?*common.progress.Tracker,
 ) !void {
     // Sole caller copyRegularFile forwards its own non-empty operands here.
     assert(source_path.len > 0);
@@ -1091,7 +1156,7 @@ fn copyInPlace(
         return error.DestinationNotWritable;
     };
 
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContentsWithProgress(io, source_file, dest_file, tracker) catch |err| {
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -2155,6 +2220,153 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
 }
 
 // Tests
+
+test "cp progress covers a plain file copy" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'p');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress covers preserve mode" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'r');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress covers overwrite in place" {
+    common.progress.test_enabled = true;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 'i');
+    try test_dir.createFile("source.bin", content, null);
+    try test_dir.createFile("dest.bin", "old", null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.bin");
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "copying") != null);
+}
+
+test "cp progress stays silent when disabled" {
+    common.progress.test_enabled = false;
+    common.progress.test_delay_ns = 0;
+    defer {
+        common.progress.test_enabled = null;
+        common.progress.test_delay_ns = null;
+    }
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    const content = try testing.allocator.alloc(u8, COPY_BUFFER_SIZE + 1);
+    defer testing.allocator.free(content);
+    @memset(content, 's');
+    try test_dir.createFile("source.bin", content, null);
+    const source_path = try test_dir.getPath("source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "\r") == null);
+    try test_dir.expectFileContent("dest.bin", content);
+}
 
 test "cp: single file copy" {
     var test_dir = TestDir.init(testing.allocator);

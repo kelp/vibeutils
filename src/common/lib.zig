@@ -111,6 +111,9 @@ pub fn unbufferedStderr(io: std.Io, buffer: *[0]u8) std.Io.File.Writer {
 /// Human-readable size formatting and block size parsing
 pub const format = @import("format.zig");
 
+/// Shared progress feedback for file transfers
+pub const progress = @import("progress.zig");
+
 /// Interactive yes/no prompts for user confirmation
 pub const prompt = @import("prompt.zig");
 
@@ -855,6 +858,7 @@ test {
     _ = @import("parallel.zig");
     _ = @import("path.zig");
     _ = @import("privilege_test.zig");
+    _ = @import("progress.zig");
     _ = @import("prompt.zig");
     _ = @import("relative_date.zig");
     _ = @import("style.zig");
