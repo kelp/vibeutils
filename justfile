@@ -289,6 +289,17 @@ test-tiger-check:
 test-bsd-workflow:
     @bash tests/tools/bsd-workflow_test.sh
 
+# Pin checks that JS actions we load declare Node 24. Lives in
+# tests/tools/, which test_runner.sh does not glob, so it must be
+# invoked here and from CI explicitly.
+test-gha-node24:
+    @bash tests/tools/gha-node24_test.sh
+
+# Contract tests for scripts/ci-rewrite-action-node24.sh. Lives in
+# tests/tools/, so it must be invoked here and from CI explicitly.
+test-ci-rewrite-action-node24:
+    @bash tests/tools/ci-rewrite-action-node24_test.sh
+
 # Contract tests for the default build's man-page install paths and contents.
 # Lives in tests/tools/, so it must be invoked here and from CI explicitly.
 test-man-install:
