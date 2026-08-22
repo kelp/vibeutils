@@ -46,10 +46,9 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
         .kind = kind,
         .inode = stat_buf.ino,
         .blocks = @intCast(stat_buf.blocks),
-        // `st_dev` is a signed i32 on macOS; devfs and friends report ids
-        // with the high bit set. Reinterpret the bits rather than range
-        // checking, since a negative i32 would not fit in the u64 field.
-        .dev = @as(u32, @bitCast(stat_buf.dev)),
+        // `st_dev` is a signed i32 on macOS; FreeBSD/NetBSD use u64.
+        // widenDev reinterprets the bits and zero-extends.
+        .dev = widenDev(stat_buf.dev),
         .uid = @intCast(stat_buf.uid),
         .gid = @intCast(stat_buf.gid),
         .nlink = @intCast(stat_buf.nlink),
@@ -709,18 +708,12 @@ pub fn getGroupName(gid: u32, buf: []u8) ![]const u8 {
 /// and NetBSD use a u64 `dev_t`; `@bitCast` into a u32 is a compile
 /// error. Reinterpret the bits and zero-extend.
 fn widenDev(dev: anytype) u64 {
-    const bits = @bitSizeOf(@TypeOf(dev));
+    const T = @TypeOf(dev);
+    const bits = @bitSizeOf(T);
     std.debug.assert(bits == 32 or bits == 64);
-    std.debug.assert(@typeInfo(@TypeOf(dev)) == .int);
-    // Stub: production must return the zero-extended bit pattern and use
-    // this from statToFileInfo. Returning 0 keeps the tests red.
-    return 0;
-}
-
-comptime {
-    // Keep the helper referenced so non-test builds stay clean until
-    // statToFileInfo calls it.
-    _ = &widenDev;
+    std.debug.assert(@typeInfo(T) == .int);
+    const unsigned: @Int(.unsigned, bits) = @bitCast(dev);
+    return @as(u64, unsigned);
 }
 
 // Tests
