@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
@@ -1427,15 +1428,15 @@ test "cutFields output delimiter" {
 
 test "cut with file input bytes" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "abcde\nfghij\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1450,15 +1451,15 @@ test "cut with file input bytes" {
 
 test "cut with file input fields" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "one:two:three\nfour:five:six\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1492,15 +1493,15 @@ test "cut nonexistent file returns error" {
 test "cut: -n flag is accepted with -b" {
     // The -n flag should be accepted without error when used with -b.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "hello\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1520,16 +1521,16 @@ test "cut: -n -b preserves multi-byte characters" {
     // With -n -b1-4, the partial multi-byte character at byte 4 should be
     // excluded, producing "caf" (3 bytes).
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     // "cafe" with e-acute: c(0x63) a(0x61) f(0x66) e-acute(0xC3 0xA9)
     try test_file.writeStreamingAll(io, "caf\xc3\xa9\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1552,15 +1553,15 @@ test "cut: -n -b preserves multi-byte characters" {
 
 test "cut: -w splits on whitespace" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "one two three\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1575,15 +1576,15 @@ test "cut: -w splits on whitespace" {
 
 test "cut: -w handles multiple consecutive spaces" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "one   two\t\tthree\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1598,15 +1599,15 @@ test "cut: -w handles multiple consecutive spaces" {
 
 test "cut: -w skips leading whitespace" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "  leading space\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1621,15 +1622,15 @@ test "cut: -w skips leading whitespace" {
 
 test "cut: -w with no whitespace prints whole line" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "nowhitespace\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1725,15 +1726,15 @@ test "cut: -n without -b has no effect on field mode" {
     // -n only affects -b mode. When used with -f, it should have no
     // effect and the command should work normally.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const test_file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try test_file.writeStreamingAll(io, "a,b,c\n");
     test_file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
     const test_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1767,10 +1768,10 @@ test "cut: processFile reports read errors to stderr" {
     // Create a valid file, then close its handle so reads will fail.
     // processFile should write a diagnostic message to stderr.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const tmp_file = try tmp_dir.dir.createFile(io, "readable.txt", .{});
+    const tmp_file = try tmp_dir.dir().createFile(io, "readable.txt", .{});
     try tmp_file.writeStreamingAll(io, "hello\n");
     // Close the handle to make subsequent reads fail
     tmp_file.close(io);

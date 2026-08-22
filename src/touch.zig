@@ -1,6 +1,7 @@
 /// touch - update file access and modification times
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 const c = std.c;
 
@@ -872,12 +873,12 @@ fn expectTimestampsEqual(expected: i128, actual: i128) !void {
 
 test "touch creates new file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/new_file.txt", .{tmp_path});
@@ -887,22 +888,22 @@ test "touch creates new file" {
     try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify file exists
-    const file = try tmp_dir.dir.openFile(io, "new_file.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "new_file.txt", .{});
     file.close(io);
 }
 
 test "touch updates existing file timestamp" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file
-    const file = try tmp_dir.dir.createFile(io, "existing.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "existing.txt", .{});
     file.close(io);
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/existing.txt", .{tmp_path});
@@ -924,12 +925,12 @@ test "touch updates existing file timestamp" {
 
 test "touch -c does not create file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/no_create.txt", .{tmp_path});
@@ -939,22 +940,22 @@ test "touch -c does not create file" {
     try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify file does not exist
-    const result = tmp_dir.dir.openFile(io, "no_create.txt", .{});
+    const result = tmp_dir.dir().openFile(io, "no_create.txt", .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "touch -a updates only access time" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file
-    const file = try tmp_dir.dir.createFile(io, "access_only.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "access_only.txt", .{});
     file.close(io);
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/access_only.txt", .{tmp_path});
@@ -978,16 +979,16 @@ test "touch -a updates only access time" {
 
 test "touch -m updates only modification time" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file
-    const file = try tmp_dir.dir.createFile(io, "modify_only.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "modify_only.txt", .{});
     file.close(io);
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/modify_only.txt", .{tmp_path});
@@ -1011,20 +1012,20 @@ test "touch -m updates only modification time" {
 
 test "touch -r uses reference file times" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create reference file
-    const ref_file = try tmp_dir.dir.createFile(io, "reference.txt", .{});
+    const ref_file = try tmp_dir.dir().createFile(io, "reference.txt", .{});
     ref_file.close(io);
 
     // Create target file
-    const target_file = try tmp_dir.dir.createFile(io, "target.txt", .{});
+    const target_file = try tmp_dir.dir().createFile(io, "target.txt", .{});
     target_file.close(io);
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const ref_path = try std.fmt.allocPrint(testing.allocator, "{s}/reference.txt", .{tmp_path});
@@ -1079,15 +1080,15 @@ test "parseTimestamp with invalid format" {
 
 test "touch --time=access updates only access time" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "time_access.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "time_access.txt", .{});
     file.close(io);
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/time_access.txt", .{tmp_path});
@@ -1106,15 +1107,15 @@ test "touch --time=access updates only access time" {
 
 test "touch --time=modify updates only modification time" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "time_modify.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "time_modify.txt", .{});
     file.close(io);
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/time_modify.txt", .{tmp_path});
@@ -1133,12 +1134,12 @@ test "touch --time=modify updates only modification time" {
 
 test "touch multiple files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const file1 = try std.fmt.allocPrint(testing.allocator, "{s}/file1.txt", .{tmp_path});
@@ -1151,20 +1152,20 @@ test "touch multiple files" {
     try touchFile(file2, options, testing.allocator, testing.io);
 
     // Verify both files exist
-    const f1 = try tmp_dir.dir.openFile(io, "file1.txt", .{});
+    const f1 = try tmp_dir.dir().openFile(io, "file1.txt", .{});
     f1.close(io);
-    const f2 = try tmp_dir.dir.openFile(io, "file2.txt", .{});
+    const f2 = try tmp_dir.dir().openFile(io, "file2.txt", .{});
     f2.close(io);
 }
 
 test "touch with -t timestamp" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/timestamp.txt", .{tmp_path});
@@ -1175,7 +1176,7 @@ test "touch with -t timestamp" {
     try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify file was created
-    const file = try tmp_dir.dir.openFile(io, "timestamp.txt", .{});
+    const file = try tmp_dir.dir().openFile(io, "timestamp.txt", .{});
     file.close(io);
 
     // We can't easily verify the exact timestamp without a proper date library,
@@ -1188,11 +1189,11 @@ test "touch with -t timestamp" {
 
 test "touch: -A flag is accepted as silent no-op" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_test.txt", .{tmp_path});
@@ -1217,11 +1218,11 @@ test "touch: -A flag is accepted as silent no-op" {
 
 test "touch: -d flag is parsed by argparser" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/parse_test.txt", .{tmp_path});
@@ -1244,11 +1245,11 @@ test "touch: -d flag is parsed by argparser" {
 
 test "touch: -d with ISO date sets timestamp" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/dated.txt", .{tmp_path});
@@ -1276,11 +1277,11 @@ test "touch: -d with ISO date sets timestamp" {
 
 test "touch: -d with date and time sets timestamp" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/datetime.txt", .{tmp_path});
@@ -1308,11 +1309,11 @@ test "touch: -d with date and time sets timestamp" {
 
 test "touch: -d with invalid date gives error" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(
@@ -1339,11 +1340,11 @@ test "touch: -d with invalid date gives error" {
 
 test "touch: -d with space-separated datetime" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(
@@ -1378,11 +1379,11 @@ test "touch: -d with space-separated datetime" {
 
 test "touch: -A flag with non-zero value exits zero" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(
@@ -1410,11 +1411,11 @@ test "touch: -A flag with non-zero value exits zero" {
 
 test "touch: -A flag produces no stderr output" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_msg.txt", .{tmp_path});
@@ -1470,11 +1471,11 @@ test "touch: parseIso8601 half-hour timezone offset +05:30" {
 
 test "touch: -d with Z suffix sets correct UTC timestamp on file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/utc_z.txt", .{tmp_path});
@@ -1501,11 +1502,11 @@ test "touch: -d with Z suffix sets correct UTC timestamp on file" {
 
 test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/tz_plus5.txt", .{tmp_path});
@@ -1532,15 +1533,15 @@ test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
 
 test "touch: -A flag still touches file timestamps (adjustment ignored)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file first so it has known timestamps
-    const file = try tmp_dir.dir.createFile(io, "adjust_nomod.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "adjust_nomod.txt", .{});
     file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const n = try tmp_dir.dir().realPath(io, &path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(

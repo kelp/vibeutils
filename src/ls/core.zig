@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const types = @import("types.zig");
 const entry_collector = @import("entry_collector.zig");
 const sorter = @import("sorter.zig");
@@ -42,7 +43,7 @@ pub fn listDirectoryImplWithVisited(
 
     // The ACL probe takes a path rather than a dirfd, and this frame is the
     // innermost one that still knows the directory's path.
-    applyAclMarkers(entries.items, path, options);
+    applyAclMarkers(allocator, entries.items, path, options);
 
     // Sort entries based on options
     sortEntriesFromOptions(entries.items, options);
@@ -102,7 +103,12 @@ pub fn collectAndPrepareEntries(
 /// Skipped outside -l: GNU issues no xattr syscall at all in any other
 /// format, and a bare `ls` over a large tree would otherwise pay one probe
 /// per entry for a column it never prints.
-fn applyAclMarkers(entries: []Entry, dir_path: []const u8, options: LsOptions) void {
+fn applyAclMarkers(
+    allocator: std.mem.Allocator,
+    entries: []Entry,
+    dir_path: []const u8,
+    options: LsOptions,
+) void {
     std.debug.assert(dir_path.len > 0);
     std.debug.assert(entries.len <= std.math.maxInt(u32));
     if (!options.long_format) return;
@@ -137,7 +143,31 @@ fn applyAclMarkers(entries: []Entry, dir_path: []const u8, options: LsOptions) v
             stat.kind,
             options.follow_all_symlinks,
         );
+        entryAttachAclDump(
+            allocator,
+            entry,
+            full,
+            options.follow_all_symlinks,
+            options,
+        );
     }
+}
+
+/// Attach a textual access-ACL dump captured against `path`.
+/// `path` is the inode path passed to getxattr — the operand or the
+/// parent/name join — never a listing basename that could collide with cwd.
+pub fn entryAttachAclDump(
+    allocator: std.mem.Allocator,
+    entry: *Entry,
+    path: []const u8,
+    follow: bool,
+    options: LsOptions,
+) void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(entry.acl_dump == null);
+    if (!options.show_acls) return;
+    if (!entry.has_acl) return;
+    entry.acl_dump = common.file.allocAclDump(allocator, path, follow);
 }
 
 /// Sort entries according to the provided options
@@ -235,13 +265,13 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
 
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDir(io, "defaultacl", .default_dir);
-    try tmp.dir.createDir(io, "plain", .default_dir);
+    var tmp = TestDir.init(std.testing.allocator);
+    defer tmp.deinit();
+    try tmp.dir().createDir(io, "defaultacl", .default_dir);
+    try tmp.dir().createDir(io, "plain", .default_dir);
 
     var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPath(io, &dir_buf);
+    const dir_len = try tmp.dir().realPath(io, &dir_buf);
     const dir_path = dir_buf[0..dir_len];
 
     var acl_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -268,16 +298,16 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
         .{
             .name = "defaultacl",
             .kind = .unknown,
-            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir, "defaultacl"),
+            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir(), "defaultacl"),
         },
         .{
             .name = "plain",
             .kind = .unknown,
-            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir, "plain"),
+            .stat = try common.file.FileInfo.lstatDir(alloc, tmp.dir(), "plain"),
         },
     };
 
-    applyAclMarkers(&entries, dir_path, .{ .long_format = true });
+    applyAclMarkers(alloc, &entries, dir_path, .{ .long_format = true });
 
     try std.testing.expect(entries[0].has_acl);
     // Negative space: the marker has to come from the probe answering yes,

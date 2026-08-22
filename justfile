@@ -197,10 +197,11 @@ coverage:
 clean:
     zig build clean
 
-# Install utilities to zig-out/bin/
+# Install utilities to zig-out/bin/ and man pages to zig-out/share/man/man1/
 install:
     zig build -Doptimize=ReleaseSafe
     @echo "Binaries installed to: zig-out/bin/"
+    @echo "Man pages installed to: zig-out/share/man/man1/"
 
 # --- Utility Execution ---
 
@@ -282,6 +283,11 @@ tiger-check:
 test-tiger-check:
     @bash tests/tools/tiger-check_test.sh
 
+# Contract tests for the default build's man-page install paths and contents.
+# Lives in tests/tools/, so it must be invoked here and from CI explicitly.
+test-man-install:
+    @bash tests/tools/man-install_test.sh
+
 # Contract tests for scripts/audit-check.sh. Needs no Zig build: every
 # case points --root at a fixture tree under tests/fixtures/audit. Lives in
 # tests/tools/, which test_runner.sh does not glob, so it must be invoked
@@ -304,6 +310,25 @@ test-host-path:
 # Contract tests for scripts/run-integration.sh (issue #125)
 test-run-integration: build
     @bash tests/tools/run-integration_test.sh
+
+# Concurrent useradd of the same VIBEUTILS_TEST_USER cannot leave a
+# stale home uid or die with `setpriv: uid … not found` (issue #150).
+# Linux root/sudo + useradd + setpriv; fails honestly if those are
+# missing. Needs no Zig build: the runners are passed --help so they
+# stop after setpriv. Lives in tests/tools/, so it needs an explicit
+# invocation here.
+test-run-integration-useradd:
+    @bash tests/tools/run-integration_useradd_test.sh
+
+# Coverage oracle for the fd-mode fixture table (TODO ### 1). Needs
+# tests/lib/fd_modes.sh (implementer) and, once that exists, zig-out/bin
+# for the echo/true four-mode contracts — the oracle runs `just build`
+# if those binaries are missing. Lives in tests/tools/, which
+# test_runner.sh does not glob. Not hooked into `just it`; that hook
+# is the implementer's.
+# Coverage oracle for fd-mode fixtures (not hooked into just it)
+test-fd-modes:
+    @bash tests/tools/fd_modes_test.sh
 
 # Stage-1 audit pre-pass over every unit in build/utils.zig. A finding
 # already recorded in scripts/audit-baseline.tsv is BASELINED; anything

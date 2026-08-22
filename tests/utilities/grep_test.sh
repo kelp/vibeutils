@@ -218,6 +218,123 @@ test_grep() {
     # No pattern
     test_command_exit_code "grep no pattern exit 2" 2 "$binary" 2>/dev/null
 
+    # Issue #162: GNU 3.x prints a Usage line, not "grep: no pattern specified".
+    # Host GNU is /usr/bin/grep or /bin/grep (never PATH). LC_ALL=C. Keep the
+    # exit-code test above; these only add wording and a full-stderr compare.
+    echo -e "${CYAN}Testing issue #162: no-pattern Usage stderr...${NC}"
+    local usage_line="Usage: grep [OPTION]... PATTERNS [FILE]..."
+    local try_line="Try 'grep --help' for more information."
+    local gnu_grep=""
+    local gnu_ver=""
+    if [[ -x /usr/bin/grep ]]; then
+        gnu_ver=$(LC_ALL=C /usr/bin/grep --version 2>/dev/null | head -n1 || true)
+        if [[ "$gnu_ver" == *"GNU grep"* ]]; then
+            gnu_grep=/usr/bin/grep
+        fi
+    fi
+    if [[ -z "$gnu_grep" && -x /bin/grep ]]; then
+        gnu_ver=$(LC_ALL=C /bin/grep --version 2>/dev/null | head -n1 || true)
+        if [[ "$gnu_ver" == *"GNU grep"* ]]; then
+            gnu_grep=/bin/grep
+        fi
+    fi
+
+    local nopattern_out="" nopattern_err="" nopattern_exit="" nopattern_cmd=""
+    local nopattern_first="" nopattern_hint=""
+    run_command nopattern_cmd nopattern_out nopattern_err nopattern_exit \
+        bash -c "LC_ALL=C '$binary' </dev/null"
+    nopattern_first=$(printf '%s\n' "$nopattern_err" | sed -n '1p')
+    nopattern_hint=$(printf '%s\n' "$nopattern_err" | sed -n '2p')
+    if [[ "$nopattern_first" == "$usage_line" ]]; then
+        print_test_result "grep no pattern stderr Usage line (#162)" "PASS"
+    else
+        print_test_result "grep no pattern stderr Usage line (#162)" "FAIL" \
+            "expected '$usage_line', got '$nopattern_first'"
+    fi
+    if [[ "$nopattern_hint" == "$try_line" ]]; then
+        print_test_result "grep no pattern stderr Try-help line (#162)" "PASS"
+    else
+        print_test_result "grep no pattern stderr Try-help line (#162)" "FAIL" \
+            "expected '$try_line', got '$nopattern_hint'"
+    fi
+    if [[ "$nopattern_err" != *"no pattern specified"* ]]; then
+        print_test_result "grep no pattern omits 'no pattern specified' (#162)" "PASS"
+    else
+        print_test_result "grep no pattern omits 'no pattern specified' (#162)" "FAIL" \
+            "stderr: '$nopattern_err'"
+    fi
+    if [[ -z "$nopattern_out" ]]; then
+        print_test_result "grep no pattern stdout empty (#162)" "PASS"
+    else
+        print_test_result "grep no pattern stdout empty (#162)" "FAIL" \
+            "got '$nopattern_out'"
+    fi
+
+    local ddash_out="" ddash_err="" ddash_exit="" ddash_cmd=""
+    local ddash_first="" ddash_hint=""
+    run_command ddash_cmd ddash_out ddash_err ddash_exit \
+        bash -c "LC_ALL=C '$binary' -- </dev/null"
+    ddash_first=$(printf '%s\n' "$ddash_err" | sed -n '1p')
+    ddash_hint=$(printf '%s\n' "$ddash_err" | sed -n '2p')
+    if [[ "$ddash_first" == "$usage_line" ]]; then
+        print_test_result "grep -- stderr Usage line (#162)" "PASS"
+    else
+        print_test_result "grep -- stderr Usage line (#162)" "FAIL" \
+            "expected '$usage_line', got '$ddash_first'"
+    fi
+    if [[ "$ddash_hint" == "$try_line" ]]; then
+        print_test_result "grep -- stderr Try-help line (#162)" "PASS"
+    else
+        print_test_result "grep -- stderr Try-help line (#162)" "FAIL" \
+            "expected '$try_line', got '$ddash_hint'"
+    fi
+    if [[ "$ddash_err" != *"no pattern specified"* ]]; then
+        print_test_result "grep -- omits 'no pattern specified' (#162)" "PASS"
+    else
+        print_test_result "grep -- omits 'no pattern specified' (#162)" "FAIL" \
+            "stderr: '$ddash_err'"
+    fi
+    if [[ -z "$ddash_out" ]]; then
+        print_test_result "grep -- stdout empty (#162)" "PASS"
+    else
+        print_test_result "grep -- stdout empty (#162)" "FAIL" \
+            "got '$ddash_out'"
+    fi
+
+    if [[ -n "$gnu_grep" ]]; then
+        local gnu_err_file="$TEMP_DIR/gnu_nopattern.err"
+        local ours_err_file="$TEMP_DIR/ours_nopattern.err"
+        local gnu_exit=0
+        local ours_exit=0
+        set +e
+        LC_ALL=C "$gnu_grep" </dev/null >/dev/null 2>"$gnu_err_file"
+        gnu_exit=$?
+        LC_ALL=C "$binary" </dev/null >/dev/null 2>"$ours_err_file"
+        ours_exit=$?
+        set -e
+        if cmp -s "$gnu_err_file" "$ours_err_file" && [[ "$gnu_exit" -eq 2 && "$ours_exit" -eq 2 ]]; then
+            print_test_result "grep no pattern stderr matches host GNU (#162)" "PASS"
+        else
+            print_test_result "grep no pattern stderr matches host GNU (#162)" "FAIL" \
+                "gnu_exit=$gnu_exit ours_exit=$ours_exit gnu='$(cat "$gnu_err_file")' ours='$(cat "$ours_err_file")'"
+        fi
+        set +e
+        LC_ALL=C "$gnu_grep" -- </dev/null >/dev/null 2>"$gnu_err_file"
+        gnu_exit=$?
+        LC_ALL=C "$binary" -- </dev/null >/dev/null 2>"$ours_err_file"
+        ours_exit=$?
+        set -e
+        if cmp -s "$gnu_err_file" "$ours_err_file" && [[ "$gnu_exit" -eq 2 && "$ours_exit" -eq 2 ]]; then
+            print_test_result "grep -- stderr matches host GNU (#162)" "PASS"
+        else
+            print_test_result "grep -- stderr matches host GNU (#162)" "FAIL" \
+                "gnu_exit=$gnu_exit ours_exit=$ours_exit gnu='$(cat "$gnu_err_file")' ours='$(cat "$ours_err_file")'"
+        fi
+    else
+        print_test_result "grep no pattern stderr matches host GNU (#162)" "SKIP" \
+            "needs GNU /usr/bin/grep or /bin/grep (not present on $(uname))"
+    fi
+
     # Invalid option
     test_command_exit_code "grep invalid option exit 2" 2 "$binary" -Q pattern 2>/dev/null
 
