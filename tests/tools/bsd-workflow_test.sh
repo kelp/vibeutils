@@ -172,6 +172,26 @@ if ! awk '
     fail "fakeroot must appear only in the FreeBSD job"
 fi
 
+# FreeBSD guest run: after `zig build test`, privileged tests can flake
+# with ETXTBSY/FileBusy (Zig spawn of tail_privileged_test). Linux CI
+# absorbs this via `just test-privileged` (3 attempts, 2s delay). The
+# guest recipe must retry the same way and bound each attempt so a hang
+# cannot consume the 60-minute job timeout.
+require_job_text freebsd \
+    "freebsd job guest run does not run zig build test" \
+    "zig build test"
+require_job_text freebsd \
+    "freebsd job guest run does not retry privileged tests with for attempt in 1 2 3" \
+    "for attempt in 1 2 3"
+require_job_text freebsd \
+    "freebsd job guest run does not invoke fakeroot zig build test-privileged" \
+    "fakeroot zig build test-privileged"
+# 600 is the privileged-attempt bound in seconds (watchdog or timeout 600).
+# Do not require the word timeout — FreeBSD has no GNU timeout(1).
+require_job_text freebsd \
+    "freebsd job guest run does not bound each privileged attempt at 600 seconds" \
+    "600"
+
 if [[ "$FAILED" -ne 0 ]]; then
     exit "$FAILED"
 fi
