@@ -628,9 +628,9 @@ fn printLongFormatEntryAligned(
     // Name with color and optional indicator
     try display.printEntryName(entry, writer, style, options);
 
-    // Show symlink target if available, colored by target's file type
+    // Show symlink target if available, colored by the target's file type
     if (entry.symlink_target) |target| {
-        try printLongFormatEntryAligned_symlinkTarget(style, writer, target);
+        try printLongFormatEntryAligned_symlinkTarget(style, writer, target, options);
     }
     try writer.writeByte('\n');
     try printLongFormatAclDump(entry, writer, options);
@@ -653,31 +653,81 @@ fn printLongFormatAclDump(
     try writer.writeAll(dump);
 }
 
+fn targetBaseName(path: []const u8) []const u8 {
+    std.debug.assert(path.len > 0);
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+        if (idx + 1 < path.len) return path[idx + 1 ..];
+    }
+    std.debug.assert(path.len > 0);
+    return path;
+}
+
+fn overlayTargetHit(
+    table: *const common.ls_colors.Table,
+    target: []const u8,
+) common.ls_colors.ColorHit {
+    std.debug.assert(@intFromPtr(table) != 0);
+    std.debug.assert(target.len > 0);
+    const name = targetBaseName(target);
+    const stat = common.file.FileInfo.lstat(target) catch {
+        return common.ls_colors.sgrFor(table, .unknown, null, 1, name, true);
+    };
+    const mode: u32 = @intCast(stat.mode);
+    return common.ls_colors.sgrFor(table, stat.kind, mode, stat.nlink, name, false);
+}
+
+fn writeSymlinkTargetColor(
+    style: anytype,
+    writer: anytype,
+    target: []const u8,
+    options: LsOptions,
+) !bool {
+    std.debug.assert(target.len > 0);
+    std.debug.assert(style.color_mode != .none);
+    if (options.ls_colors) |table| {
+        switch (overlayTargetHit(table, target)) {
+            .sgr => |sgr| {
+                try common.ls_colors.writeWrapped(writer, table, sgr);
+                return true;
+            },
+            .uncolored => return false,
+            .missing => {},
+        }
+    }
+    const target_kind = blk: {
+        const stat = common.file.FileInfo.lstat(target) catch break :blk null;
+        break :blk stat.kind;
+    };
+    if (target_kind) |kind| {
+        try style.setColor(display.getColorForKind(kind));
+    } else {
+        try style.setColor(.red);
+    }
+    return true;
+}
+
 /// Write " -> target" for a symlink, colored by the target's file type.
 fn printLongFormatEntryAligned_symlinkTarget(
     style: anytype,
     writer: anytype,
     target: []const u8,
+    options: LsOptions,
 ) !void {
     std.debug.assert(target.len > 0);
     try writer.writeAll(" -> ");
-    if (style.color_mode != .none) {
-        // Stat the target (lstat — no io needed) to get its kind for coloring
-        const target_kind = blk: {
-            const stat = common.file.FileInfo.lstat(target) catch break :blk null;
-            break :blk stat.kind;
-        };
-        if (target_kind) |kind| {
-            try style.setColor(display.getColorForKind(kind));
-        } else {
-            // Dangling symlink — show in red
-            try style.setColor(.red);
-        }
+    if (style.color_mode == .none) {
         try writer.print("{s}", .{target});
-        try style.reset();
-    } else {
-        try writer.print("{s}", .{target});
+        return;
     }
+    const color_started = try writeSymlinkTargetColor(style, writer, target, options);
+    try writer.print("{s}", .{target});
+    // GNU prints ec/CSI-reset only after a start sequence was applied.
+    if (!color_started) return;
+    if (options.ls_colors) |table| {
+        try common.ls_colors.writeEnd(writer, table);
+        return;
+    }
+    try style.reset();
 }
 
 /// Write the user/group columns of a long-format entry, each padded to its

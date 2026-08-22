@@ -17,6 +17,9 @@
   green.
 
 ### Added
+- **`ls` honors GNU `LS_COLORS` when color is on.** Type and suffix
+  keys overlay the compiled palette; an invalid value prints a
+  diagnostic and disables color for that invocation.
 - **`zig build` now installs man pages under `share/man/man1`.**
   The default install step copies `man/man1/<name>.1` for every
   utility (including `[.1`) next to the binaries, so
@@ -164,6 +167,10 @@
 
 ### Fixed
 
+- **`ls` omits the `LS_COLORS` end sequence when a name is uncolored.**
+  Keys like `di=0` (and `ln=0`/`fi=0` on a long-format symlink
+  target) write no color start. GNU then skips `ec`/CSI-reset, so a
+  custom `ec` cannot leave the terminal in the wrong state.
 - **`tail -f` prints `cannot open` when a follow reopen fails after a
   successful dump.** The slot is still omitted from the follow set, but
   vanishing between dump and reopen no longer exits 1 with empty

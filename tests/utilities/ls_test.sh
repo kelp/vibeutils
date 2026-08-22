@@ -435,6 +435,65 @@ test_ls() {
         print_test_result "ls truecolor icons emit RGB sequences" "FAIL" "No 38;2; truecolor sequence found in output"
     fi
 
+    echo -e "${CYAN}Testing LS_COLORS directory override...${NC}"
+
+    local ls_colors_dir=$(create_temp_dir)
+    mkdir -p "$ls_colors_dir/blue_dir"
+    local ls_colors_output
+    ls_colors_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=01;34' "$binary" --color=always -1 "$ls_colors_dir" 2>/dev/null)
+    if [[ "$ls_colors_output" == *"01;34"* ]]; then
+        print_test_result "ls honors LS_COLORS directory SGR" "PASS"
+    else
+        print_test_result "ls honors LS_COLORS directory SGR" "FAIL" \
+            "Expected 01;34 in output: '$ls_colors_output'"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS di=0 omits end sequence...${NC}"
+
+    # GNU prints ec/CSI-reset only after a color start. di=0 writes no
+    # start, so a custom ec must not appear after the directory name.
+    local uncolored_dir
+    uncolored_dir=$(create_temp_dir)
+    mkdir -p "$uncolored_dir/plain_dir"
+    local uncolored_output
+    uncolored_output=$(env -u NO_COLOR TERM=xterm-256color \
+        LS_COLORS='di=0:ec=WRONGRESET' "$binary" --color=always -1 "$uncolored_dir" 2>/dev/null)
+    if [[ "$uncolored_output" == *"WRONGRESET"* ]]; then
+        print_test_result "ls omits end sequence for uncolored di=0 names" "FAIL" \
+            "Unexpected end sequence in: '$uncolored_output'"
+    elif [[ "$uncolored_output" != *"plain_dir"* ]]; then
+        print_test_result "ls omits end sequence for uncolored di=0 names" "FAIL" \
+            "Expected plain_dir in output: '$uncolored_output'"
+    else
+        print_test_result "ls omits end sequence for uncolored di=0 names" "PASS"
+    fi
+
+    echo -e "${CYAN}Testing LS_COLORS uncolored symlink target omits end sequence...${NC}"
+
+    local uncolored_link_dir
+    uncolored_link_dir=$(create_temp_dir)
+    create_temp_file "target" "$uncolored_link_dir/target.txt"
+    ln -s target.txt "$uncolored_link_dir/link.txt"
+    local uncolored_link_output
+    # Run from inside the fixture so lstat(target.txt) resolves; listing
+    # the directory from elsewhere treats the relative target as dangling
+    # and would apply the compiled missing-target color instead of fi=0.
+    uncolored_link_output=$(
+        cd "$uncolored_link_dir" &&
+        env -u NO_COLOR TERM=xterm-256color \
+            LS_COLORS='ln=0:fi=0:ec=WRONGRESET' "$binary" --color=always -l . 2>/dev/null
+    )
+    if [[ "$uncolored_link_output" == *"WRONGRESET"* ]]; then
+        print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
+            "Unexpected end sequence in: '$uncolored_link_output'"
+    elif [[ "$uncolored_link_output" != *"link.txt"* ]] || [[ "$uncolored_link_output" != *"target.txt"* ]]; then
+        print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
+            "Expected link.txt and target.txt in output: '$uncolored_link_output'"
+    else
+        print_test_result "ls omits end sequence for uncolored symlink names" "PASS"
+    fi
+
     echo -e "${CYAN}Testing NO_COLOR suppresses escape sequences...${NC}"
 
     # With NO_COLOR=1, no escape sequences should appear at all.
