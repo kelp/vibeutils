@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.13.0 — 2026-08-22
+
 ### Documentation
 - **Rewrite `docs/INTEGRATION_TESTING.md` to match the tree.** The
   old page described `tests/integration/{lib,utils}/`, `init_framework`,
