@@ -89,44 +89,69 @@ consensus unless the user asked you to wait.
 
 Do not implement until this step ends in consensus.
 
-Launch three independent reviewers in parallel. Give
-each reviewer the plan, the slice heading from
-`TODO.md`, `AGENTS.md`, `CLAUDE.md`, the relevant flag
-matrix or plan file, and the source files the plan
-names. Tell each reviewer to find blocking issues.
-Tell each reviewer not to write code.
-
-In Cursor, use the Task tool with these models and no
-substitute:
+Use these models and no substitute:
 
 - Grok 4.6: `cursor-grok-4.6-high-fast`
 - GPT-5.6-Sol: `gpt-5.6-sol-high`
-- Fable 5: `claude-fable-5-thinking-high`
+- Opus 5: `claude-opus-5-thinking-high`
+
+Stay at three reviewers. Do not add a fourth
+model. If a slug is missing from the Task
+allowlist, report it and continue with the two
+that remain. Do not invent a substitute.
 
 If a requested model is not in the available list, do
 not pick a replacement. Report the missing model.
 Continue only when at least two reviews return.
 
-Each reviewer must answer:
+Tell every reviewer: find blocking issues; do not write
+code; reply with blocking issues (or “none”), at most
+three non-blocking notes, and APPROVE or REQUEST
+CHANGES. No file-by-file essay.
 
-- Is this exactly one `TODO.md` PR slice?
-- Does the plan violate `AGENTS.md` or `CLAUDE.md`?
-- Does the plan conflict with
-  `docs/specs/<util>-flags.md`, or invent a flag that
-  is WONT or missing from the matrix?
-- Are `src/common/` boundaries and Tiger Style caps
-  respected?
-- Are the tests enough for the behavior change? (See
-  the `tdd` skill.)
-- Blocking issues, non-blocking notes, and a vote:
-  approve or request changes
+### Brief, then split axes
 
-Resolve every blocking issue in a revised plan. If
-reviewers disagree, decide with the repo rules, then
-record the decision in the plan. Re-run the three
-reviewers on the delta when the revision adds
+Do not send Sol or Opus `AGENTS.md`, `CLAUDE.md`, or
+named source files in full.
+
+1. Grok reads the plan and the files it names, then
+   writes a one-page brief: slice heading, in/out of
+   scope, the test contract, and the 3–5 files that
+   would change. Grok also answers: one slice? process?
+   `src/common/` and Tiger caps?
+2. Sol gets the brief, the plan, and only the
+   `CLAUDE.md` / `tdd` lines that apply (skip-first,
+   silently-degrade, TDD split). Sol answers: does the
+   plan violate those rules?
+3. Opus gets the brief, the plan Tests section, and
+   the test file or the `git diff` of the tests. Opus
+   answers: are the tests enough, and is RED real?
+4. Spec impact: attach `docs/specs/<util>-flags.md`
+   only when the plan edits flags. Otherwise write
+   “no flag-matrix change” in the brief.
+
+Reviewers must still see the **real plan** (and, for
+Opus, the real test text). Do not paraphrase the
+change in place of those artifacts.
+
+### Later rounds
+
+Resume the same agent. Send only the delta and the
+prior objection. Do not re-attach `AGENTS.md` or
+`CLAUDE.md` unless the delta changes which rule
+applies.
+
+Re-run **only the objector** unless the revision adds
 behavior, files, or a spec change. Nit-only dissent
-does not need a second round.
+does not need a second round. Do not start a fourth
+full-context round to break a tie: decide from the
+repo rules and record the decision in the plan.
+
+The parent watches CI. Reviewers do not `gh run view`
+or wait on checks.
+
+Ignore Bugbot / Codex **usage-limit** comments. Those
+are not review.
 
 Consensus means: no remaining blocking objection from
 a completed review.
@@ -194,6 +219,25 @@ asked for a ready PR.
 Do not merge. Do not enable auto-merge. Do not mark
 the PR ready unless the user asks.
 
+## 4b. Review the patch
+
+After the local gates are green, review the **diff**,
+not the tree. Same three models, same reply cap, same
+axis split as §3.
+
+Prompt is `git show <sha>` (or the merge-base diff),
+the 10–20 plan lines that constrain it, and the TDD
+split (test-only SHA vs impl-only SHA). Do not say
+“read `src/<utility>.zig`.”
+
+Grok: does the diff match the plan and stay in
+`src/common/` / Tiger caps?
+Sol: CLAUDE / TDD / skip-first on the diff.
+Opus: does the guarding test still have teeth?
+
+The parent subscribes to CI. Reviewers do not poll
+runs. Ignore usage-limit bot comments.
+
 ## 5. Drain review comments to all-clear
 
 Treat inline review threads as work. Loop until the
@@ -204,8 +248,10 @@ On each loop:
 1. List unresolved review threads and new review
    comments on the PR. Include bot reviews (Bugbot,
    Security Reviewer, and similar).
-2. Ignore Codex **usage-limit** issue comments.
-   Those are not code review.
+2. Ignore Codex and Bugbot **usage-limit** issue
+   comments. Those are not code review. A Cursor
+   Approval Agent “not approving because Bugbot
+   skipped” note is also not a review finding.
 3. For each remaining comment, either fix it or
    record a brief reason that the repo rules reject
    it.
@@ -250,6 +296,15 @@ the user explicitly asks to merge.
   before the user approves that document.
 - Do not substitute a different plan-review model
   when a named model is unavailable.
+- Do not send Sol or Opus the full tree, full
+  `AGENTS.md` / `CLAUDE.md`, or “read this 9k-line
+  file.” Brief + real plan/diff + the rule excerpt
+  that applies.
+- Do not add a fourth review model. Three axes is
+  the gate.
+- Do not re-run all three models on a wording nit.
+  Resume the objector with the delta.
+- Do not ask reviewers to watch CI.
 - Do not skip the comment drain after the first
   green CI run.
 - Do not merge, enable auto-merge, or mark the PR
