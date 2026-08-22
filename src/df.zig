@@ -3118,6 +3118,21 @@ fn printVersion(writer: *std.Io.Writer) !void {
 // TESTS
 // ============================================================================
 
+test "dfMountOsSupported - unix platforms enumerate mounts" {
+    const Tag = std.Target.Os.Tag;
+    try testing.expect(dfMountOsSupported(Tag.linux));
+    try testing.expect(dfMountOsSupported(Tag.macos));
+    try testing.expect(dfMountOsSupported(Tag.freebsd));
+    try testing.expect(dfMountOsSupported(Tag.openbsd));
+    try testing.expect(dfMountOsSupported(Tag.netbsd));
+}
+
+test "dfMountOsSupported - windows and wasi do not enumerate mounts" {
+    const Tag = std.Target.Os.Tag;
+    try testing.expect(!dfMountOsSupported(Tag.windows));
+    try testing.expect(!dfMountOsSupported(Tag.wasi));
+}
+
 test "parseBlockSize - plain numbers" {
     try testing.expectEqual(@as(?u64, 512), parseBlockSize("512"));
     try testing.expectEqual(@as(?u64, 1024), parseBlockSize("1024"));
