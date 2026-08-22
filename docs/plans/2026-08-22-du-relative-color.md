@@ -45,20 +45,36 @@ records and emits after the walk.
 ## In scope
 
 1. Add `applyRelativeSizeColor(style, size_bytes,
-   max_bytes)` in `src/common/colors.zig`. Integer
-   percent is `size * 100 / max` (`@divFloor`) when
-   `max > 0`; `max == 0` is 0%. Tiers match `df`'s
-   usage colors so the palette is one language:
-   green `< 70%` of max, yellow `< 90%`, red
-   `>= 90%`. Truecolor / 256 / basic / none, same
-   split as `applySizeColor`. `ls` keeps absolute
-   `applySizeColor`.
+   max_bytes)` in `src/common/colors.zig`. Compute
+   percent with `u128` (`@divFloor(size * 100, max)`)
+   so `size * 100` does not wrap above ~164 PiB
+   (`df` #144 / PR #175). `max == 0` is 0%. Tiers
+   match `df`'s `applyUsageColor` so the palette is
+   one language: green `< 70%` of max, yellow
+   `< 90%`, red `>= 90%`. Truecolor / 256 / **basic
+   three-color** / none copy `applyUsageColor`'s
+   RGB, 256, and green/yellow/red basic mapping —
+   **not** `applySizeColor`'s basic-always-green.
+   `ls` keeps absolute `applySizeColor`.
+   Feature 4's "medium in yellow" is the yellow
+   band, not equal thirds: a typical recursive `du`
+   listing is mostly green; only near-max lines
+   go yellow/red. That is deliberate (`df`
+   language).
 2. `du`: when `style.color_mode != .none`, record
-   each `printEntry` (after the existing `-t`
-   threshold filter) and emit after the operand loop
-   (including `-c` total). Max is the max **printed**
-   size, including `total`. When color is off, keep
-   today's streaming `printEntry`.
+   each `printEntry` **after** the existing `-t`
+   threshold filter (a filtered-out large entry
+   must not set max) and emit after the operand
+   loop (including `-c` total). Max is the max
+   **printed** size. The `-c` `total` line is
+   printed output, so it **does** participate: with
+   `-c` the sum is usually 100% red and real
+   entries are scored against the sum. That is
+   deliberate ("largest entry in output"). When
+   color is off, keep today's streaming
+   `printEntry`. Color-on buffering means walk
+   errors on stderr can appear before any stdout
+   entries; accept that.
 3. Check the leftover `TODO.md` box. CHANGELOG
    Unreleased: `du` colors sizes relative to the
    largest printed entry.
@@ -88,29 +104,42 @@ tests.
 
 Tooth (absolute vs relative diverge): two printed
 sizes both `>= 10 MiB` (absolute `applySizeColor`
-puts both in the top red-orange tier) but 50% vs
-100% of the listing max (relative: yellow vs red).
-Example: 10 MiB and 20 MiB.
+puts both in the top red-orange tier). Relative
+70/90-of-max:
+
+- 10 MiB vs 20 MiB = 50% vs 100% → **green vs red**
+  (not yellow: 50% is `< 70%`).
+- 15 MiB vs 20 MiB = 75% vs 100% → **yellow vs red**
+  (`[70, 90)`).
+
+Use `--apparent-size` and sparse `truncate` in the
+shell test so the fixture is not a 30 MiB write.
+Copy recorded paths off the walker buffer onto the
+arena (macOS static-buffer class).
 
 1. `src/common/colors.zig`: `applyRelativeSizeColor`
    none / truecolor / extended / basic for 0%, 50%,
-   69%, 70%, 89%, 90%, 100%, and `max == 0`. At
-   least two asserts per test (positive and
-   negative).
-2. `src/du.zig`: color-on `printEntry` / listing
-   with 10 MiB + 20 MiB emits different sequences;
-   the 20 MiB line matches the 100% red of
-   `applyRelativeSizeColor`; the 10 MiB line matches
-   50% (not the absolute `>= 10M` swatch). Color-off
-   still streams identical plain text. Equal sizes
-   are all 100% (all red). `-c` total participates
-   in max.
-3. `tests/utilities/du_test.sh`: `--color=always`
-   with those two files; `--color=never` has no
-   ANSI. Cloud image exports `NO_COLOR=1`; run with
-   `env -u NO_COLOR`. `--color=always` still honors
-   `NO_COLOR` (do not assert color under ambient
-   `NO_COLOR`).
+   69%, 70%, 89%, 90%, 100%, `max == 0`, and a
+   near-`u64`-max size so `u128` percent cannot
+   wrap. At least two asserts per test (positive
+   and negative). Basic 50% is green, 75% yellow,
+   100% red (df mapping, not always-green).
+2. `src/du.zig`: color-on listing with 10 MiB +
+   20 MiB: 20 MiB matches 100% red, 10 MiB matches
+   50% green (not the absolute `>= 10M` swatch).
+   Second listing 15 MiB + 20 MiB: 15 MiB matches
+   75% yellow. Color-off still streams identical
+   plain text. Equal sizes are all 100% (all red)
+   without `-c`. `-c` total participates in max.
+   `-t` excludes a larger omitted entry from max
+   (the printed max is among surviving rows).
+   Buffered walker paths remain distinct copies.
+3. `tests/utilities/du_test.sh`: `--color=always
+   --apparent-size` with sparse 10 MiB / 20 MiB
+   files; `--color=never` has no ANSI. Cloud image
+   exports `NO_COLOR=1`; run with `env -u NO_COLOR`.
+   `--color=always` still honors `NO_COLOR` (do not
+   assert color under ambient `NO_COLOR`).
 
 RED: current `applySizeColor` on 10 MiB and 20 MiB
 uses the same `>= 10M` swatch. Prove that before
@@ -128,7 +157,8 @@ the implementer switches to relative.
 ## Risks
 
 - Buffering every printed line when color is on
-  delays TTY output until the walk finishes. Accept
+  delays TTY output until the walk finishes, and
+  stderr walk errors can precede stdout. Accept
   for v1; color-off stays streaming.
 - Path strings must be copied out of the walker
   buffer (macOS/static-buffer class). Arena.
