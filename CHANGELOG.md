@@ -209,6 +209,11 @@
 
 ### Fixed
 
+- **`df` enumerates mounts on FreeBSD, OpenBSD, and NetBSD.** Those
+  targets used to fail at compile time with `df: unsupported
+  platform`. They now call `getfsstat` (NetBSD: `getvfsstat`) and
+  `statfs`/`statvfs` with each OS's own `statfs` layout, matching
+  the Darwin control flow.
 - **`ls` omits the `LS_COLORS` end sequence when a name is uncolored.**
   Keys like `di=0` (and `ln=0`/`fi=0` on a long-format symlink
   target) write no color start. GNU then skips `ec`/CSI-reset, so a

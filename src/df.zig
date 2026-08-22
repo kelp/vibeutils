@@ -5,7 +5,7 @@
 //! space is shown for all currently mounted file systems.
 //!
 //! This implementation follows GNU coreutils df behavior and supports
-//! macOS (darwin) and Linux platforms.
+//! macOS (darwin), Linux, FreeBSD, OpenBSD, and NetBSD.
 
 const std = @import("std");
 const common = @import("common");
@@ -25,6 +25,19 @@ const MNT_LOCAL: u32 = 0x00001000;
 
 const is_darwin = builtin.os.tag == .macos or builtin.os.tag.isDarwin();
 const is_linux = builtin.os.tag == .linux;
+
+/// Platforms that can enumerate mounts via getfsstat/getvfsstat or /proc/mounts.
+/// Darwin-family tags beyond macos (ios, tvos, …) share the getfsstat path.
+fn dfMountOsSupported(tag: std.Target.Os.Tag) bool {
+    const supported = switch (tag) {
+        .linux, .macos, .freebsd, .openbsd, .netbsd => true,
+        .windows, .wasi => false,
+        else => tag.isDarwin(),
+    };
+    if (tag == .linux) std.debug.assert(supported);
+    if (tag == .windows) std.debug.assert(!supported);
+    return supported;
+}
 
 // macOS statfs structure (matches sys/mount.h)
 const StatFs = extern struct {
@@ -71,6 +84,101 @@ const linux_c = if (is_linux) struct {
         __f_spare: [6]c_int = .{ 0, 0, 0, 0, 0, 0 },
     };
     extern "c" fn statvfs(path: [*:0]const u8, buf: *Statvfs) c_int;
+} else struct {};
+
+// FreeBSD 14 sys/mount.h. Do not reuse the macOS StatFs layout.
+const freebsd_c = if (builtin.os.tag == .freebsd) struct {
+    const StatFs = extern struct {
+        f_version: u32,
+        f_type: u32,
+        f_flags: u64,
+        f_bsize: u64,
+        f_iosize: u64,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: i64,
+        f_files: u64,
+        f_ffree: i64,
+        f_syncwrites: u64,
+        f_asyncwrites: u64,
+        f_syncreads: u64,
+        f_asyncreads: u64,
+        f_spare: [10]u64,
+        f_namemax: u32,
+        f_owner: u32,
+        f_fsid: extern struct { val: [2]i32 },
+        f_charspare: [80]u8,
+        f_fstypename: [16]u8,
+        f_mntfromname: [1024]u8,
+        f_mntonname: [1024]u8,
+    };
+    extern "c" fn getfsstat(buf: ?[*]StatFs, bufsize: c_long, mode: c_int) c_int;
+    extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+} else struct {};
+
+// OpenBSD 7.x sys/mount.h. mount_info is a 160-byte union (__align[160]).
+const openbsd_c = if (builtin.os.tag == .openbsd) struct {
+    const StatFs = extern struct {
+        f_flags: u32,
+        f_bsize: u32,
+        f_iosize: u32,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: i64,
+        f_files: u64,
+        f_ffree: u64,
+        f_favail: i64,
+        f_syncwrites: u64,
+        f_syncreads: u64,
+        f_asyncwrites: u64,
+        f_asyncreads: u64,
+        f_fsid: extern struct { val: [2]i32 },
+        f_namemax: u32,
+        f_owner: u32,
+        f_ctime: u64,
+        f_fstypename: [16]u8,
+        f_mntonname: [90]u8,
+        f_mntfromname: [90]u8,
+        f_mntfromspec: [90]u8,
+        mount_info: [160]u8,
+    };
+    extern "c" fn getfsstat(buf: ?[*]StatFs, bufsize: usize, mode: c_int) c_int;
+    extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+} else struct {};
+
+// NetBSD 10 sys/statvfs.h. libc renames these to the *90 symbols.
+const netbsd_c = if (builtin.os.tag == .netbsd) struct {
+    const StatVfs = extern struct {
+        f_flag: c_ulong,
+        f_bsize: c_ulong,
+        f_frsize: c_ulong,
+        f_iosize: c_ulong,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_bresvd: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_favail: u64,
+        f_fresvd: u64,
+        f_syncreads: u64,
+        f_syncwrites: u64,
+        f_asyncreads: u64,
+        f_asyncwrites: u64,
+        f_fsidx: extern struct { val: [2]i32 },
+        f_fsid: c_ulong,
+        f_namemax: c_ulong,
+        f_owner: u32,
+        f_spare: [4]u64,
+        f_fstypename: [32]u8,
+        f_mntonname: [1024]u8,
+        f_mntfromname: [1024]u8,
+        f_mntfromlabel: [1024]u8,
+    };
+    extern "c" fn __getvfsstat90(buf: ?[*]StatVfs, bufsize: usize, mode: c_int) c_int;
+    extern "c" fn __statvfs90(path: [*:0]const u8, buf: *StatVfs) c_int;
+    const getvfsstat = __getvfsstat90;
+    const statvfs = __statvfs90;
 } else struct {};
 
 // ============================================================================
@@ -575,6 +683,12 @@ fn getMountedFilesystems(io: std.Io, allocator: Allocator) ![]FsInfo {
         return getMountedFilesystemsDarwin(allocator);
     } else if (comptime is_linux) {
         return getMountedFilesystemsLinux(io, allocator);
+    } else if (comptime builtin.os.tag == .freebsd) {
+        return getMountedFilesystemsGetfsstat(allocator, freebsd_c.StatFs, freebsd_c.getfsstat);
+    } else if (comptime builtin.os.tag == .openbsd) {
+        return getMountedFilesystemsGetfsstat(allocator, openbsd_c.StatFs, openbsd_c.getfsstat);
+    } else if (comptime builtin.os.tag == .netbsd) {
+        return getMountedFilesystemsGetfsstat(allocator, netbsd_c.StatVfs, netbsd_c.getvfsstat);
     } else {
         @compileError("df: unsupported platform");
     }
@@ -629,6 +743,12 @@ fn getFilesystemForPath(io: std.Io, allocator: Allocator, path: []const u8) !FsI
         return getFilesystemForPathDarwin(allocator, path);
     } else if (comptime is_linux) {
         return getFilesystemForPathLinux(io, allocator, path);
+    } else if (comptime builtin.os.tag == .freebsd) {
+        return getFilesystemForPathGetfsstat(allocator, path, freebsd_c.StatFs, freebsd_c.statfs);
+    } else if (comptime builtin.os.tag == .openbsd) {
+        return getFilesystemForPathGetfsstat(allocator, path, openbsd_c.StatFs, openbsd_c.statfs);
+    } else if (comptime builtin.os.tag == .netbsd) {
+        return getFilesystemForPathGetfsstat(allocator, path, netbsd_c.StatVfs, netbsd_c.statvfs);
     } else {
         @compileError("df: unsupported platform");
     }
@@ -677,6 +797,115 @@ fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
         .avail_inodes = sfs.f_ffree,
         .flags = sfs.f_flags,
     };
+}
+
+// Clamp a signed or unsigned filesystem counter into FsInfo's u64 fields.
+// Negative reserved-block counts become 0 so used/avail math never underflows.
+fn unsignedCount(value: anytype) u64 {
+    const info = @typeInfo(@TypeOf(value)).int;
+    std.debug.assert(info.bits <= 64);
+    const floored = if (info.signedness == .signed) @max(0, value) else value;
+    std.debug.assert(floored >= 0);
+    return @intCast(floored);
+}
+
+fn flagsToU32(value: anytype) u32 {
+    const bits = @typeInfo(@TypeOf(value)).int.bits;
+    std.debug.assert(bits >= 8);
+    std.debug.assert(bits <= 64);
+    if (comptime bits <= 32) return @intCast(value);
+    return @truncate(value);
+}
+
+fn fsInfoFromBsdStat(allocator: Allocator, fs: anytype) !FsInfo {
+    const source = try allocator.dupe(u8, extractCString(&fs.f_mntfromname));
+    errdefer allocator.free(source);
+    const fstype = try allocator.dupe(u8, extractCString(&fs.f_fstypename));
+    errdefer allocator.free(fstype);
+    const mount_point = try allocator.dupe(u8, extractCString(&fs.f_mntonname));
+    errdefer allocator.free(mount_point);
+
+    const avail_blocks = unsignedCount(fs.f_bavail);
+    const avail_inodes = unsignedCount(fs.f_ffree);
+    const total_blocks: u64 = @intCast(fs.f_blocks);
+    const free_blocks: u64 = @intCast(fs.f_bfree);
+    const total_inodes: u64 = @intCast(fs.f_files);
+    const raw_flags = if (@hasField(@TypeOf(fs.*), "f_flags")) fs.f_flags else fs.f_flag;
+    const raw_bsize = if (@hasField(@TypeOf(fs.*), "f_frsize")) fs.f_frsize else fs.f_bsize;
+
+    std.debug.assert(source.len <= fs.f_mntfromname.len);
+    std.debug.assert(mount_point.len <= fs.f_mntonname.len);
+
+    return FsInfo{
+        .source = source,
+        .fstype = fstype,
+        .mount_point = mount_point,
+        .total_blocks = total_blocks,
+        .used_blocks = total_blocks -| free_blocks,
+        .avail_blocks = avail_blocks,
+        .block_size = @intCast(raw_bsize),
+        .total_inodes = total_inodes,
+        .used_inodes = total_inodes -| avail_inodes,
+        .avail_inodes = avail_inodes,
+        .flags = flagsToU32(raw_flags),
+    };
+}
+
+fn getMountedFilesystemsGetfsstat(
+    allocator: Allocator,
+    comptime Stat: type,
+    comptime getfn: anytype,
+) ![]FsInfo {
+    const count = getfn(null, 0, MNT_NOWAIT);
+    if (count < 0) return error.SystemResources;
+    if (count == 0) return allocator.alloc(FsInfo, 0);
+
+    const ucount: usize = @intCast(count);
+    const buf = try allocator.alloc(Stat, ucount);
+    defer allocator.free(buf);
+
+    const bufsize = ucount * @sizeOf(Stat);
+    const actual = getfn(buf.ptr, @intCast(bufsize), MNT_NOWAIT);
+    if (actual < 0) return error.SystemResources;
+
+    const actual_count: usize = @intCast(actual);
+    // The kernel cannot report more entries than the buffer we passed.
+    std.debug.assert(actual_count <= ucount);
+    std.debug.assert(ucount > 0);
+    var result: std.ArrayListUnmanaged(FsInfo) = .empty;
+
+    for (buf[0..actual_count]) |*fs| {
+        try result.append(allocator, try fsInfoFromBsdStat(allocator, fs));
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn getFilesystemForPathGetfsstat(
+    allocator: Allocator,
+    path: []const u8,
+    comptime Stat: type,
+    comptime statfn: anytype,
+) !FsInfo {
+    var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const c_path = path_buf[0..path.len :0];
+
+    var sfs: Stat = undefined;
+    const ret = statfn(c_path, &sfs);
+    if (ret != 0) {
+        return switch (std.c.errno(ret)) {
+            .ACCES => error.AccessDenied,
+            .NOENT => error.FileNotFound,
+            .NOTDIR => error.NotDir,
+            else => error.SystemResources,
+        };
+    }
+    std.debug.assert(ret == 0);
+    return fsInfoFromBsdStat(allocator, &sfs);
 }
 
 fn freeFsInfo(allocator: Allocator, fs: FsInfo) void {
