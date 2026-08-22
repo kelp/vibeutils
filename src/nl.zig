@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 const builtin = @import("builtin");
 
@@ -1088,19 +1089,15 @@ test "nl isSectionDelimiter" {
 
 test "nl default numbers non-empty lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1116,19 +1113,15 @@ test "nl default numbers non-empty lines" {
 
 test "nl default skips blank lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\n\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\n\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1147,19 +1140,15 @@ test "nl default skips blank lines" {
 
 test "nl -b a numbers all lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\n\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\n\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1178,19 +1167,15 @@ test "nl -b a numbers all lines" {
 
 test "nl -b n numbers no lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1206,19 +1191,15 @@ test "nl -b n numbers no lines" {
 
 test "nl -n ln left justified" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1234,19 +1215,15 @@ test "nl -n ln left justified" {
 
 test "nl -n rz zero filled" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1262,19 +1239,15 @@ test "nl -n rz zero filled" {
 
 test "nl -w 3 narrow width" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1290,19 +1263,15 @@ test "nl -w 3 narrow width" {
 
 test "nl -s custom separator" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1318,19 +1287,15 @@ test "nl -s custom separator" {
 
 test "nl -v 10 start at 10" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1346,19 +1311,15 @@ test "nl -v 10 start at 10" {
 
 test "nl -i 5 increment by 5" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "line1\nline2\nline3\n");
+    try tmp_dir.createFile("test.txt", "line1\nline2\nline3\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1377,19 +1338,15 @@ test "nl -i 5 increment by 5" {
 
 test "nl combined -v 100 -i 10 -n rz" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1405,19 +1362,15 @@ test "nl combined -v 100 -i 10 -n rz" {
 
 test "nl empty file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "");
+    try tmp_dir.createFile("test.txt", "", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1433,25 +1386,16 @@ test "nl empty file" {
 
 test "nl section delimiters" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // header delimiter, header content, body delimiter, body content
-    try common.test_utils.createTestFile(
-        io,
-        tmp_dir.dir,
-        "test.txt",
-        "\\:\\:\\:\nHEADER\n\\:\\:\nbody1\nbody2\n",
-    );
+    try tmp_dir.createFile("test.txt", "\\:\\:\\:\nHEADER\n\\:\\:\nbody1\nbody2\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1469,20 +1413,16 @@ test "nl section delimiters" {
 
 test "nl no final newline" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Write file without final newline
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello");
+    try tmp_dir.createFile("test.txt", "hello", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1535,26 +1475,17 @@ test "formatNumber right-zero" {
 // Our code only resets on header.
 test "nl section delimiter resets counter on body transition" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // body (default section) -> body delimiter -> new body section
     // line1 and line2 start at 10; body delimiter should reset to 10
-    try common.test_utils.createTestFile(
-        io,
-        tmp_dir.dir,
-        "test.txt",
-        "line1\nline2\n\\:\\:\nbody1\nbody2\n",
-    );
+    try tmp_dir.createFile("test.txt", "line1\nline2\n\\:\\:\nbody1\nbody2\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1574,25 +1505,16 @@ test "nl section delimiter resets counter on body transition" {
 
 test "nl section delimiter resets counter on footer transition" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // body lines then footer delimiter then footer lines
-    try common.test_utils.createTestFile(
-        io,
-        tmp_dir.dir,
-        "test.txt",
-        "line1\nline2\n\\:\nfoot1\nfoot2\n",
-    );
+    try tmp_dir.createFile("test.txt", "line1\nline2\n\\:\nfoot1\nfoot2\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     const exit_code = try runNl(
@@ -1614,19 +1536,15 @@ test "nl section delimiter resets counter on footer transition" {
 // GNU nl outputs width+len(sep) spaces for unnumbered lines, no separator character.
 test "nl unnumbered line outputs spaces not separator" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -b n means no numbering; default width=6, default separator=tab (1 char)
@@ -1644,19 +1562,15 @@ test "nl unnumbered line outputs spaces not separator" {
 
 test "nl unnumbered line with custom separator outputs spaces" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -b n, -s ": " (2-char separator), width=6
@@ -1676,19 +1590,15 @@ test "nl unnumbered line with custom separator outputs spaces" {
 // GNU nl outputs width+len(sep) spaces then newline for blank lines.
 test "nl skipped blank lines have indent in default mode" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\n\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\n\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // Default mode (-b t): blank lines are not numbered but should be indented
@@ -1709,21 +1619,17 @@ test "nl skipped blank lines have indent in default mode" {
 
 test "nl skipped blank lines have indent in all mode with join" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // With -b a -l 2, blank lines that don't meet the join threshold
     // should still be indented
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\n\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\n\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -b a -l 2: number all lines, but need 2 consecutive blanks to number
@@ -1747,19 +1653,15 @@ test "nl skipped blank lines have indent in all mode with join" {
 // GNU nl supports -b pREGEX to number only lines matching the regex.
 test "nl -b pfoo numbers only matching lines" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "foo\nbar\nfoo2\nbaz\n");
+    try tmp_dir.createFile("test.txt", "foo\nbar\nfoo2\nbaz\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -b pfoo: number only lines matching regex "foo"
@@ -1782,20 +1684,16 @@ test "nl -b pfoo numbers only matching lines" {
 // GNU nl accepts empty delimiter to disable section matching.
 test "nl -d empty string disables section matching" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // With empty delimiter, \\:\\:\\: should be treated as normal text, not section delimiter
-    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "hello\n\\:\\:\\:\nworld\n");
+    try tmp_dir.createFile("test.txt", "hello\n\\:\\:\\:\nworld\n", null);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realPathFileAlloc(
-        io,
-        "test.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(file_path);
 
     // -d '' should disable section matching; all lines numbered normally

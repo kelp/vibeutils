@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
 /// Command-line arguments for pwd utility
@@ -233,12 +234,12 @@ test "getWorkingDirectory logical mode without PWD" {
 test "getWorkingDirectory logical mode with valid PWD" {
     const io = testing.io;
     // Create a temp directory to avoid accessing protected locations
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Get the temp directory path
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const temp_len = try tmp_dir.dir.realPathFile(io, ".", &path_buf);
+    const temp_len = try tmp_dir.dir().realPathFile(io, ".", &path_buf);
     const temp_path = path_buf[0..temp_len];
 
     // Test the validation function directly
