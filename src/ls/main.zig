@@ -1511,6 +1511,79 @@ test "ls directory type LS_COLORS beats a matching suffix" {
     try testing.expect(std.mem.indexOf(u8, output, "foo.zip") != null);
 }
 
+test "ls omits LS_COLORS end sequence when di=0 leaves the name uncolored" {
+    // GNU emits ec/CSI-reset only after a color start. di=0 is a hit
+    // with no start sequence; a custom ec must not still fire after the
+    // name, or it can leave the terminal in the wrong state.
+    const staged = testLsColorsEnv("di=0:ec=WRONGRESET");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "plain_dir");
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-1", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "plain_dir") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "WRONGRESET") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+}
+
+test "ls long symlink omits end sequence when ln=0 and fi=0 leave names uncolored" {
+    // Same rule on the long-format symlink-target path: an uncolored
+    // fi=0 target must not still print ec after the target text.
+    const staged = testLsColorsEnv("ln=0:fi=0:ec=WRONGRESET");
+    const saved_env = common.env.test_overrides;
+    defer common.env.test_overrides = saved_env;
+    common.env.test_overrides = &staged;
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const file = try tmp_dir.dir.createFile(io, "target.txt", .{});
+        file.close(io);
+    }
+    try tmp_dir.dir.symLink(io, "target.txt", "link.txt", .{});
+    var saved_cwd = try testChdirToTmp(io, &tmp_dir);
+    defer testRestoreCwd(io, &saved_cwd);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--color=always", "-l", "." };
+    const exit_code = try runLs(
+        testing.allocator,
+        io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, output, "link.txt ->") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "target.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "WRONGRESET") == null);
+}
+
 test "ls prints a subdirectory operand exactly as given, not its basename (short format)" {
     const saved_env = testStageDisplayEnvOverrides();
     defer common.env.test_overrides = saved_env;
