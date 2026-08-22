@@ -548,6 +548,40 @@ test "gnu transfer waits one second and finishes with newline" {
     try std.testing.expect(std.mem.endsWith(u8, output.writer.buffered(), "\n"));
 }
 
+test "gnu transfer finish a second time is a no-op" {
+    // Overlay + delay_ns=0 so the first update actually paints: after a
+    // successful finish, shown is false but last_width stays > 0, and a
+    // second finish must not panic or emit another GNU transfer line.
+    test_enabled = true;
+    defer test_enabled = null;
+    test_delay_ns = 0;
+    defer test_delay_ns = null;
+    test_now_ns = 2_000;
+    defer test_now_ns = null;
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var tracker = testTracker(&output.writer, .gnu_xfer, "", null);
+    tracker.delay_ns = 0;
+    tracker.interval_ns = 0;
+
+    tracker.update(2_000, 100);
+    try std.testing.expect(tracker.shown);
+    try std.testing.expect(tracker.last_width > 0);
+
+    tracker.finish(2_000);
+    const after_first = output.writer.buffered();
+    const first_len = after_first.len;
+    const first_newlines = std.mem.count(u8, after_first, "\n");
+    try std.testing.expect(std.mem.endsWith(u8, after_first, "\n"));
+    try std.testing.expectEqual(@as(usize, 1), first_newlines);
+
+    tracker.finish(2_000);
+    const after_second = output.writer.buffered();
+    try std.testing.expectEqual(first_len, after_second.len);
+    try std.testing.expectEqual(first_newlines, std.mem.count(u8, after_second, "\n"));
+}
+
 test "copy line refresh pads a shorter update to the prior width" {
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();

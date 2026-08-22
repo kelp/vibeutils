@@ -2760,6 +2760,103 @@ test "runDd noerror read diagnostics begin after a shown progress line" {
     ) != null);
 }
 
+test "runDd conv=noerror completion does not panic after a recovered read error" {
+    // status=progress paints a GNU line, conv=noerror recovers through
+    // ddNote (which finishes), then runDd_finish finishes again. The
+    // second call must be a no-op: no panic, diagnostic and stats stay.
+    common.progress.test_enabled = true;
+    defer common.progress.test_enabled = null;
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+    common.progress.test_now_ns = 1_000;
+    defer common.progress.test_now_ns = null;
+
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", "abcdefgh");
+    var out_file = try tmp_dir.dir.createFile(io, "output.bin", .{});
+    defer out_file.close(io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    var tracker = common.progress.Tracker{
+        .writer = &stderr_aw.writer,
+        .program = "dd",
+        .label = "",
+        .total = null,
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .gnu_xfer,
+    };
+    tracker.update(1_000, 8);
+    try testing.expect(tracker.shown);
+    try testing.expect(tracker.last_width > 0);
+
+    var stats: DdStats = .{
+        .start_ns = 0,
+        .bytes_copied = 8,
+        .full_blocks_in = 1,
+        .full_blocks_out = 1,
+    };
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = &stderr_aw.writer,
+        .output_file = out_file,
+        .status = .progress,
+        .stats = &stats,
+        .tracker = &tracker,
+    };
+    const config = DdConfig{ .conv_noerror = true, .status = .progress };
+    var in_buf: [8]u8 = undefined;
+    var out_buf: [8]u8 = undefined;
+    var blocks_read: usize = 0;
+
+    const outcome = runDd_handleReadError(
+        &ctx,
+        &config,
+        &in_buf,
+        in_buf.len,
+        true,
+        &blocks_read,
+        error.IsDir,
+    );
+    try testing.expectEqual(ReadErrorOutcome.continue_loop, outcome);
+
+    // Hold the overlay clock inside the delay so update does not re-paint
+    // and hide the second finish (the assert under test).
+    tracker.delay_ns = 1;
+    common.progress.test_now_ns = tracker.start_ns;
+
+    var input_file = try tmp_dir.dir.openFile(io, "input.bin", .{});
+    defer input_file.close(io);
+    const plan = DdPlan{
+        .input_file = input_file,
+        .in_buf = &in_buf,
+        .out_buf = &out_buf,
+        .cbs_buf = null,
+        .ibs = 8,
+        .obs = 8,
+        .cbs = 0,
+        .simple_copy = true,
+    };
+    const positions = DdPositions{};
+    const exit_code = runDd_finish(&ctx, &config, &plan, &positions);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const output = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, "\ndd: read error:") != null);
+    try testing.expect(std.mem.find(u8, output, "records in") != null);
+    try testing.expect(std.mem.find(u8, output, "records out") != null);
+}
+
 test "runDd - statistics output" {
     const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
