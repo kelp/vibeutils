@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const builtin = @import("builtin");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -1220,19 +1221,19 @@ test "isPathSafeToRemove: comprehensive validation" {
 
 test "rm: verbose recursive removal" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a directory tree
-    try tmp.dir.createDir(io, "testdir", std.Io.File.Permissions.fromMode(0o755));
-    var subdir = try tmp.dir.openDir(io, "testdir", .{});
+    try tmp.dir().createDir(io, "testdir", std.Io.File.Permissions.fromMode(0o755));
+    var subdir = try tmp.dir().openDir(io, "testdir", .{});
     const file1 = try subdir.createFile(io, "file1.txt", .{});
     file1.close(io);
     const file2 = try subdir.createFile(io, "file2.txt", .{});
     file2.close(io);
     subdir.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "testdir", testing.allocator);
+    const dir_path = try tmp.getPath("testdir");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1267,17 +1268,17 @@ test "rm: verbose recursive removal" {
 
 test "rm: recursive removal with nested directories" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create nested directory tree
-    try tmp.dir.createDirPath(io, "deep/nested/dir");
-    var deep_dir = try tmp.dir.openDir(io, "deep/nested/dir", .{});
+    try tmp.dir().createDirPath(io, "deep/nested/dir");
+    var deep_dir = try tmp.dir().openDir(io, "deep/nested/dir", .{});
     const file = try deep_dir.createFile(io, "leaf.txt", .{});
     file.close(io);
     deep_dir.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "deep", testing.allocator);
+    const dir_path = try tmp.getPath("deep");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1434,12 +1435,12 @@ test "rm: -d flag is accepted by argument parser" {
 
 test "rm: -d removes an empty directory" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "emptydir", std.Io.File.Permissions.fromMode(0o755));
+    try tmp.dir().createDir(io, "emptydir", std.Io.File.Permissions.fromMode(0o755));
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "emptydir", testing.allocator);
+    const dir_path = try tmp.getPath("emptydir");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1452,22 +1453,22 @@ test "rm: -d removes an empty directory" {
 
     try testing.expect(exit_code == 0);
 
-    const stat = tmp.dir.statFile(io, "emptydir", .{});
+    const stat = tmp.dir().statFile(io, "emptydir", .{});
     try testing.expect(stat == error.FileNotFound);
 }
 
 test "rm: -d fails on non-empty directory" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "nonemptydir", std.Io.File.Permissions.fromMode(0o755));
-    var subdir = try tmp.dir.openDir(io, "nonemptydir", .{});
+    try tmp.dir().createDir(io, "nonemptydir", std.Io.File.Permissions.fromMode(0o755));
+    var subdir = try tmp.dir().openDir(io, "nonemptydir", .{});
     const file = try subdir.createFile(io, "somefile.txt", .{});
     file.close(io);
     subdir.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "nonemptydir", testing.allocator);
+    const dir_path = try tmp.getPath("nonemptydir");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1484,13 +1485,13 @@ test "rm: -d fails on non-empty directory" {
 
 test "rm: -d still removes regular files" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const file = try tmp.dir.createFile(io, "regularfile.txt", .{});
+    const file = try tmp.dir().createFile(io, "regularfile.txt", .{});
     file.close(io);
 
-    const file_path = try tmp.dir.realPathFileAlloc(io, "regularfile.txt", testing.allocator);
+    const file_path = try tmp.getPath("regularfile.txt");
     defer testing.allocator.free(file_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1503,18 +1504,18 @@ test "rm: -d still removes regular files" {
 
     try testing.expect(exit_code == 0);
 
-    const stat = tmp.dir.statFile(io, "regularfile.txt", .{});
+    const stat = tmp.dir().statFile(io, "regularfile.txt", .{});
     try testing.expect(stat == error.FileNotFound);
 }
 
 test "rm: without -d or -r refuses to remove directory" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "somedir", std.Io.File.Permissions.fromMode(0o755));
+    try tmp.dir().createDir(io, "somedir", std.Io.File.Permissions.fromMode(0o755));
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "somedir", testing.allocator);
+    const dir_path = try tmp.getPath("somedir");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1548,13 +1549,13 @@ test "rm: -P flag is accepted by argument parser" {
 
 test "rm: -P removes a file just like normal rm" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const file = try tmp.dir.createFile(io, "securefile.txt", .{});
+    const file = try tmp.dir().createFile(io, "securefile.txt", .{});
     file.close(io);
 
-    const file_path = try tmp.dir.realPathFileAlloc(io, "securefile.txt", testing.allocator);
+    const file_path = try tmp.getPath("securefile.txt");
     defer testing.allocator.free(file_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1567,7 +1568,7 @@ test "rm: -P removes a file just like normal rm" {
 
     try testing.expect(exit_code == 0);
 
-    const stat = tmp.dir.statFile(io, "securefile.txt", .{});
+    const stat = tmp.dir().statFile(io, "securefile.txt", .{});
     try testing.expect(stat == error.FileNotFound);
 }
 
@@ -1604,17 +1605,17 @@ test "rm: -x flag is accepted by argument parser" {
 
 test "rm: -x recursive removal stays on same device" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a directory tree on the same device
-    try tmp.dir.createDirPath(io, "xdir/subdir");
-    var subdir = try tmp.dir.openDir(io, "xdir/subdir", .{});
+    try tmp.dir().createDirPath(io, "xdir/subdir");
+    var subdir = try tmp.dir().openDir(io, "xdir/subdir", .{});
     const file = try subdir.createFile(io, "file.txt", .{});
     file.close(io);
     subdir.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "xdir", testing.allocator);
+    const dir_path = try tmp.getPath("xdir");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1682,13 +1683,13 @@ test "rm: -W flag is accepted and prints warning" {
 
 test "rm: -W does not delete existing file" {
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const file = try tmp.dir.createFile(io, "undelete_test.txt", .{});
+    const file = try tmp.dir().createFile(io, "undelete_test.txt", .{});
     file.close(io);
 
-    const file_path = try tmp.dir.realPathFileAlloc(io, "undelete_test.txt", testing.allocator);
+    const file_path = try tmp.getPath("undelete_test.txt");
     defer testing.allocator.free(file_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1704,7 +1705,7 @@ test "rm: -W does not delete existing file" {
     // Warning should appear
     try testing.expect(stderr_aw.writer.buffered().len > 0);
     // File must still exist
-    const stat = tmp.dir.statFile(io, "undelete_test.txt", .{});
+    const stat = tmp.dir().statFile(io, "undelete_test.txt", .{});
     try testing.expect(stat != error.FileNotFound);
 }
 
@@ -1714,13 +1715,13 @@ test "rm: -W must not delete existing file" {
     // the file intact. Deleting a file when asked to recover it is
     // dangerous data loss.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    const file = try tmp.dir.createFile(io, "preserve_me.txt", .{});
+    const file = try tmp.dir().createFile(io, "preserve_me.txt", .{});
     file.close(io);
 
-    const file_path = try tmp.dir.realPathFileAlloc(io, "preserve_me.txt", testing.allocator);
+    const file_path = try tmp.getPath("preserve_me.txt");
     defer testing.allocator.free(file_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1732,7 +1733,7 @@ test "rm: -W must not delete existing file" {
     const exit_code = try runRm(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // File MUST still exist -- -W should never delete
-    const stat = tmp.dir.statFile(io, "preserve_me.txt", .{});
+    const stat = tmp.dir().statFile(io, "preserve_me.txt", .{});
     try testing.expect(stat != error.FileNotFound);
 
     // Exit code must be non-zero since undelete is not supported
@@ -1759,12 +1760,12 @@ test "rm: -W on nonexistent file returns error" {
 test "rm: -W on directory returns error without removing it" {
     // -W on a directory should also not remove it.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "keep_this_dir", std.Io.File.Permissions.fromMode(0o755));
+    try tmp.dir().createDir(io, "keep_this_dir", std.Io.File.Permissions.fromMode(0o755));
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "keep_this_dir", testing.allocator);
+    const dir_path = try tmp.getPath("keep_this_dir");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1776,7 +1777,7 @@ test "rm: -W on directory returns error without removing it" {
     const exit_code = try runRm(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Directory MUST still exist
-    const stat = tmp.dir.statFile(io, "keep_this_dir", .{});
+    const stat = tmp.dir().statFile(io, "keep_this_dir", .{});
     try testing.expect(stat != error.FileNotFound);
 
     // Exit code must be non-zero
@@ -1791,14 +1792,14 @@ test "rm: symlink to directory removed without -r" {
     // POSIX requires `rm symlink-to-dir` to unlink the symlink itself,
     // not require -r just because the target is a directory.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Create a real directory
-    try tmp.dir.createDir(io, "target_dir", std.Io.File.Permissions.fromMode(0o755));
+    try tmp.dir().createDir(io, "target_dir", std.Io.File.Permissions.fromMode(0o755));
 
     // Create a symlink pointing to the directory
-    tmp.dir.symLink(io, "target_dir", "link_to_dir", .{}) catch |err| {
+    tmp.dir().symLink(io, "target_dir", "link_to_dir", .{}) catch |err| {
         if (err == error.AccessDenied) return; // skip on platforms that disallow symlinks
         return err;
     };
@@ -1806,7 +1807,7 @@ test "rm: symlink to directory removed without -r" {
     // Build absolute path to the symlink WITHOUT resolving it.
     // realPathFileAlloc would follow the symlink and return the target path.
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_len = try tmp.dir.realPath(io, &path_buf);
+    const base_len = try tmp.dir().realPath(io, &path_buf);
     const base_path = path_buf[0..base_len];
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_dir", .{base_path});
     defer testing.allocator.free(link_path);
@@ -1823,11 +1824,11 @@ test "rm: symlink to directory removed without -r" {
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // The symlink should be gone
-    const link_stat = tmp.dir.statFile(io, "link_to_dir", .{});
+    const link_stat = tmp.dir().statFile(io, "link_to_dir", .{});
     try testing.expect(link_stat == error.FileNotFound);
 
     // The target directory should still exist
-    const target_stat = try tmp.dir.statFile(io, "target_dir", .{});
+    const target_stat = try tmp.dir().statFile(io, "target_dir", .{});
     try testing.expectEqual(std.Io.File.Kind.directory, target_stat.kind);
 }
 
@@ -1855,18 +1856,18 @@ test "rm: post-order deletion removes children before the parent directory" {
     // broken traversal would emit the directory line first (or fail to
     // empty the dir before deleteDir), breaking these ordering asserts.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "po", std.Io.File.Permissions.fromMode(0o755));
-    var dir = try tmp.dir.openDir(io, "po", .{});
+    try tmp.dir().createDir(io, "po", std.Io.File.Permissions.fromMode(0o755));
+    var dir = try tmp.dir().openDir(io, "po", .{});
     const f1 = try dir.createFile(io, "alpha.txt", .{});
     f1.close(io);
     const f2 = try dir.createFile(io, "beta.txt", .{});
     f2.close(io);
     dir.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "po", testing.allocator);
+    const dir_path = try tmp.getPath("po");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1919,31 +1920,31 @@ test "rm: recursive removal clears a multi-level tree leaving nothing behind" {
     // are both gone. A traversal that misses a branch would leave the
     // root non-empty and deleteDir would fail.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Build: root/{a,b}/sub/{leaf files}
-    try tmp.dir.createDirPath(io, "root/a/sub");
-    try tmp.dir.createDirPath(io, "root/b/sub");
+    try tmp.dir().createDirPath(io, "root/a/sub");
+    try tmp.dir().createDirPath(io, "root/b/sub");
 
     {
-        var a_sub = try tmp.dir.openDir(io, "root/a/sub", .{});
+        var a_sub = try tmp.dir().openDir(io, "root/a/sub", .{});
         const fa = try a_sub.createFile(io, "deep_a.txt", .{});
         fa.close(io);
         a_sub.close(io);
 
-        var b_sub = try tmp.dir.openDir(io, "root/b/sub", .{});
+        var b_sub = try tmp.dir().openDir(io, "root/b/sub", .{});
         const fb = try b_sub.createFile(io, "deep_b.txt", .{});
         fb.close(io);
         b_sub.close(io);
 
-        var a_dir = try tmp.dir.openDir(io, "root/a", .{});
+        var a_dir = try tmp.dir().openDir(io, "root/a", .{});
         const fm = try a_dir.createFile(io, "mid_a.txt", .{});
         fm.close(io);
         a_dir.close(io);
     }
 
-    const root_path = try tmp.dir.realPathFileAlloc(io, "root", testing.allocator);
+    const root_path = try tmp.getPath("root");
     defer testing.allocator.free(root_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1976,8 +1977,8 @@ test "rm: recursive removal clears a multi-level tree leaving nothing behind" {
     try testing.expect(root_stat == error.FileNotFound);
 
     // The original tmp-relative paths must also be gone.
-    try testing.expect(tmp.dir.statFile(io, "root", .{}) == error.FileNotFound);
-    try testing.expect(tmp.dir.statFile(io, "root/a/sub/deep_a.txt", .{}) == error.FileNotFound);
+    try testing.expect(tmp.dir().statFile(io, "root", .{}) == error.FileNotFound);
+    try testing.expect(tmp.dir().statFile(io, "root/a/sub/deep_a.txt", .{}) == error.FileNotFound);
 }
 
 test "rm: directory symlink is removed as a link and not descended under no-follow" {
@@ -1986,24 +1987,24 @@ test "rm: directory symlink is removed as a link and not descended under no-foll
     // and its target directory + contents must remain untouched. A
     // traversal that followed the symlink would delete the target's file.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Target directory (outside the tree we remove) with a file in it.
-    try tmp.dir.createDir(io, "real_target", std.Io.File.Permissions.fromMode(0o755));
-    var target = try tmp.dir.openDir(io, "real_target", .{});
+    try tmp.dir().createDir(io, "real_target", std.Io.File.Permissions.fromMode(0o755));
+    var target = try tmp.dir().openDir(io, "real_target", .{});
     const tf = try target.createFile(io, "precious.txt", .{});
     tf.close(io);
     target.close(io);
 
     // The tree we will remove, containing a symlink to the target dir.
-    try tmp.dir.createDir(io, "tree", std.Io.File.Permissions.fromMode(0o755));
-    tmp.dir.symLink(io, "../real_target", "tree/link_to_target", .{}) catch |err| {
+    try tmp.dir().createDir(io, "tree", std.Io.File.Permissions.fromMode(0o755));
+    tmp.dir().symLink(io, "../real_target", "tree/link_to_target", .{}) catch |err| {
         if (err == error.AccessDenied) return; // skip where symlinks disallowed
         return err;
     };
 
-    const tree_path = try tmp.dir.realPathFileAlloc(io, "tree", testing.allocator);
+    const tree_path = try tmp.getPath("tree");
     defer testing.allocator.free(tree_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2031,14 +2032,14 @@ test "rm: directory symlink is removed as a link and not descended under no-foll
     try testing.expect(success);
 
     // The removed tree (and its symlink) must be gone.
-    try testing.expect(tmp.dir.statFile(io, "tree", .{}) == error.FileNotFound);
+    try testing.expect(tmp.dir().statFile(io, "tree", .{}) == error.FileNotFound);
 
     // The symlink TARGET directory must survive untouched...
-    const target_stat = try tmp.dir.statFile(io, "real_target", .{});
+    const target_stat = try tmp.dir().statFile(io, "real_target", .{});
     try testing.expectEqual(std.Io.File.Kind.directory, target_stat.kind);
 
     // ...including its file: proof the symlink was NOT followed/descended.
-    _ = try tmp.dir.statFile(io, "real_target/precious.txt", .{});
+    _ = try tmp.dir().statFile(io, "real_target/precious.txt", .{});
 }
 
 test "rm: recursive removal succeeds when a real dir has a sibling symlink alias (issue #69)" {
@@ -2054,11 +2055,11 @@ test "rm: recursive removal succeeds when a real dir has a sibling symlink alias
     // post-order rmdir on "real" fails with ENOTEMPTY -- removeFiles
     // reports failure instead of fully removing the tree.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "tree", std.Io.File.Permissions.fromMode(0o755));
-    var tree_dir = try tmp.dir.openDir(io, "tree", .{});
+    try tmp.dir().createDir(io, "tree", std.Io.File.Permissions.fromMode(0o755));
+    var tree_dir = try tmp.dir().openDir(io, "tree", .{});
     try tree_dir.createDir(io, "real", std.Io.File.Permissions.fromMode(0o755));
     var real_dir = try tree_dir.openDir(io, "real", .{});
     const rf = try real_dir.createFile(io, "inner.txt", .{});
@@ -2071,7 +2072,7 @@ test "rm: recursive removal succeeds when a real dir has a sibling symlink alias
     };
     tree_dir.close(io);
 
-    const tree_path = try tmp.dir.realPathFileAlloc(io, "tree", testing.allocator);
+    const tree_path = try tmp.getPath("tree");
     defer testing.allocator.free(tree_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2101,7 +2102,7 @@ test "rm: recursive removal succeeds when a real dir has a sibling symlink alias
     try testing.expect(success);
 
     // The whole tree, including the aliased real dir, must be gone.
-    try testing.expect(tmp.dir.statFile(io, "tree", .{}) == error.FileNotFound);
+    try testing.expect(tmp.dir().statFile(io, "tree", .{}) == error.FileNotFound);
 }
 
 test "rm: deep directory chain is fully removed without stack overflow" {
@@ -2112,8 +2113,8 @@ test "rm: deep directory chain is fully removed without stack overflow" {
     // walker must handle it. The assertion that the deepest known path is gone
     // proves the full chain was traversed.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Deep enough that a still-recursive implementation would risk a
     // stack-overflow regression, while staying within PATH_MAX (each
@@ -2128,15 +2129,15 @@ test "rm: deep directory chain is fully removed without stack overflow" {
     for (0..depth) |_| {
         try path_builder.appendSlice(testing.allocator, "/d");
     }
-    try tmp.dir.createDirPath(io, path_builder.items);
+    try tmp.dir().createDirPath(io, path_builder.items);
 
     // Place a file in the deepest directory to force non-empty deletes.
-    var deepest = try tmp.dir.openDir(io, path_builder.items, .{});
+    var deepest = try tmp.dir().openDir(io, path_builder.items, .{});
     const leaf = try deepest.createFile(io, "bottom.txt", .{});
     leaf.close(io);
     deepest.close(io);
 
-    const top_path = try tmp.dir.realPathFileAlloc(io, "chain", testing.allocator);
+    const top_path = try tmp.getPath("chain");
     defer testing.allocator.free(top_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2166,7 +2167,7 @@ test "rm: deep directory chain is fully removed without stack overflow" {
 
     // Top of chain gone, and the deepest path gone too.
     try testing.expect(std.Io.Dir.cwd().statFile(io, top_path, .{}) == error.FileNotFound);
-    try testing.expect(tmp.dir.statFile(io, path_builder.items, .{}) == error.FileNotFound);
+    try testing.expect(tmp.dir().statFile(io, path_builder.items, .{}) == error.FileNotFound);
 }
 
 test "rm: -x recursive removal removes a same-device tree completely" {
@@ -2177,16 +2178,16 @@ test "rm: -x recursive removal removes a same-device tree completely" {
     // pruning cannot be created portably in a unit test; this guards the
     // common same-device case the -x guard must not break.)
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDirPath(io, "xtree/inner");
-    var inner = try tmp.dir.openDir(io, "xtree/inner", .{});
+    try tmp.dir().createDirPath(io, "xtree/inner");
+    var inner = try tmp.dir().openDir(io, "xtree/inner", .{});
     const f = try inner.createFile(io, "leaf.txt", .{});
     f.close(io);
     inner.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "xtree", testing.allocator);
+    const dir_path = try tmp.getPath("xtree");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2216,7 +2217,7 @@ test "rm: -x recursive removal removes a same-device tree completely" {
     try testing.expect(success);
 
     try testing.expect(std.Io.Dir.cwd().statFile(io, dir_path, .{}) == error.FileNotFound);
-    try testing.expect(tmp.dir.statFile(io, "xtree", .{}) == error.FileNotFound);
+    try testing.expect(tmp.dir().statFile(io, "xtree", .{}) == error.FileNotFound);
 }
 
 // ============================================================
@@ -2268,16 +2269,16 @@ test "rm: interactive decline of a directory keeps that directory" {
     // that is invariant across the recursion and the walker so it stays
     // green on the current code while still guarding the decline.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDirPath(io, "keep_me/sub");
-    var sub = try tmp.dir.openDir(io, "keep_me/sub", .{});
+    try tmp.dir().createDirPath(io, "keep_me/sub");
+    var sub = try tmp.dir().openDir(io, "keep_me/sub", .{});
     const deep = try sub.createFile(io, "deep.txt", .{});
     deep.close(io);
     sub.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "keep_me", testing.allocator);
+    const dir_path = try tmp.getPath("keep_me");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2331,18 +2332,18 @@ test "rm: interactive declined child keeps the parent directory" {
     // (parent kept) and that the accepted removal really happened (go.txt
     // gone) — neither is a default value.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDir(io, "parent", std.Io.File.Permissions.fromMode(0o755));
-    var dir = try tmp.dir.openDir(io, "parent", .{});
+    try tmp.dir().createDir(io, "parent", std.Io.File.Permissions.fromMode(0o755));
+    var dir = try tmp.dir().openDir(io, "parent", .{});
     const f_keep = try dir.createFile(io, "keep.txt", .{});
     f_keep.close(io);
     const f_go = try dir.createFile(io, "go.txt", .{});
     f_go.close(io);
     dir.close(io);
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "parent", testing.allocator);
+    const dir_path = try tmp.getPath("parent");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2379,7 +2380,7 @@ test "rm: interactive declined child keeps the parent directory" {
     );
 
     // Assert on the SAME (absolute, realpath-resolved) path space that rm
-    // operated on, not on tmp.dir-relative paths — on systems where the
+    // operated on, not on tmp.dir()-relative paths — on systems where the
     // temp root is itself a symlink the two can resolve differently.
     const keep_path = try std.fmt.allocPrint(testing.allocator, "{s}/keep.txt", .{dir_path});
     defer testing.allocator.free(keep_path);
@@ -2404,23 +2405,23 @@ test "rm: interactive accept removes the entire tree through the recursive path"
     // tree/{a.txt, inner/{b.txt}}, accept all prompts, assert nothing
     // remains. A broken acceptance path would leave files or the dir behind.
     const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
-    try tmp.dir.createDirPath(io, "tree_yes/inner");
+    try tmp.dir().createDirPath(io, "tree_yes/inner");
     {
-        var inner = try tmp.dir.openDir(io, "tree_yes/inner", .{});
+        var inner = try tmp.dir().openDir(io, "tree_yes/inner", .{});
         const b = try inner.createFile(io, "b.txt", .{});
         b.close(io);
         inner.close(io);
 
-        var top = try tmp.dir.openDir(io, "tree_yes", .{});
+        var top = try tmp.dir().openDir(io, "tree_yes", .{});
         const a = try top.createFile(io, "a.txt", .{});
         a.close(io);
         top.close(io);
     }
 
-    const dir_path = try tmp.dir.realPathFileAlloc(io, "tree_yes", testing.allocator);
+    const dir_path = try tmp.getPath("tree_yes");
     defer testing.allocator.free(dir_path);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

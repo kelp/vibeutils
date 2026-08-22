@@ -223,9 +223,11 @@ the demoting path, the caller's cwd everywhere else — and a leftover
 lines instead of three. Exactly once: the failing run then deleted the
 contaminant and healed itself, which is why issue #125 never reproduced.
 
-`VIBEUTILS_TEST_USER` still gives a run its own `$HOME` and temp root,
-and is still worth setting when you want two runs fully separated. It is
-no longer required to run two suites at once.
+`VIBEUTILS_TEST_USER` names the account `scripts/run-integration.sh`
+demotes to (default `vibedev`). Concurrent runs do not need distinct
+users for working-directory isolation — that is the private cwd from
+#125. Sharing one user across two root invocations can still race
+`useradd` (issue #150); do not treat this variable as a lock.
 
 To hunt for a regression here, use the stress harness rather than a
 single run — a serial loop does not reproduce this class of bug at all,
