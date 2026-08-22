@@ -1930,6 +1930,11 @@ fn runDd_finish(
         if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
+    // The copy loop updates the live line only after each read; a short
+    // last block (or conv=block/unblock tail) is written here. Feed the
+    // tracker the flushed count so finish() prints the real total.
+    runDd_updateProgress(ctx);
+
     // Sync the output file if conv=fsync or conv=fdatasync was requested.
     const sync_code = runDd_finish_sync(ctx, config);
     if (sync_code != @intFromEnum(common.ExitCode.success)) return sync_code;
@@ -2615,6 +2620,53 @@ test "runDd fast status=progress only prints final stats without overlay" {
     try testing.expect(std.mem.find(u8, output, "\r") == null);
     try testing.expect(std.mem.find(u8, output, "records in") != null);
     try testing.expect(std.mem.find(u8, output, "copied") != null);
+}
+
+test "runDd status=progress finished line includes the flushed short block" {
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // ibs=obs=512 without bs= so simple_copy is false; 1000 is not a
+    // multiple of 512, so the last 488 bytes sit in out_buf until finish.
+    const payload: [1000]u8 = @splat('A');
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", &payload);
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ if_arg, of_arg, "ibs=512", "obs=512", "status=progress" };
+    const exit_code = try runDd(
+        testing.allocator,
+        io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const output = stderr_aw.writer.buffered();
+    const records = std.mem.find(u8, output, "records in") orelse
+        return error.TestUnexpectedResult;
+    const prefix = output[0..records];
+    const last_cr = std.mem.lastIndexOfScalar(u8, prefix, '\r') orelse
+        return error.TestUnexpectedResult;
+    const finished = prefix[last_cr..];
+    try testing.expect(std.mem.find(u8, finished, "1000 bytes") != null);
+    try testing.expect(std.mem.find(u8, finished, "512 bytes") == null);
 }
 
 test "runDd write errors begin after a shown progress line" {
