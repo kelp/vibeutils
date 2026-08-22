@@ -5,9 +5,9 @@ on:
     - cron: "0 6 * * 1" # Weekly on Monday at 6am UTC
   workflow_dispatch:
 
-# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
-# JS-based actions (install-nix-action, etc.) to run on Node 24
-# regardless of their action.yml-declared runtime.
+# Keep JS actions on Node 24 if an action.yml still names an older
+# runtime. This does not silence deprecation warnings; those go away
+# only when the loaded action.yml declares node24.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 

@@ -7,9 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
-# JS-based actions to run on Node 24 regardless of their action.yml-declared
-# runtime.
+# Keep JS actions on Node 24 if an action.yml still names an older
+# runtime. This does not silence deprecation warnings; those go away
+# only when the loaded action.yml declares node24.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -41,6 +41,12 @@ jobs:
 
       - name: Self-test BSD workflow pins
         run: bash tests/tools/bsd-workflow_test.sh
+
+      - name: Self-test GitHub Actions Node 24 pins
+        run: bash tests/tools/gha-node24_test.sh
+
+      - name: Self-test action.yml Node 24 rewrite helper
+        run: bash tests/tools/ci-rewrite-action-node24_test.sh
 
       - name: Stage-1 audit pre-pass (gates on NEW findings only)
         run: sh scripts/audit-check.sh
