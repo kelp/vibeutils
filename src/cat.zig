@@ -199,6 +199,27 @@ fn runCat_processStdin(
 /// Opens and streams a regular file through processInput, reporting any error to
 /// stderr. Returns true on error (the caller ORs this into has_error). Single-caller
 /// helper for runCat.
+fn reportCatPathError(
+    allocator: std.mem.Allocator,
+    stderr: *std.Io.Writer,
+    file_path: []const u8,
+    err: anyerror,
+) void {
+    std.debug.assert(file_path.len > 0);
+    std.debug.assert(!std.mem.eql(u8, file_path, "-"));
+    common.printErrorWithProgram(
+        allocator,
+        stderr,
+        "cat",
+        "{s}: {s}{s}",
+        .{
+            file_path,
+            common.posixErrorString(err),
+            common.maybeHint(err, file_path, .read) orelse "",
+        },
+    );
+}
+
 fn runCat_processFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -213,13 +234,7 @@ fn runCat_processFile(
     // GNU cat prints this operand unquoted ("cat: x: No such file or
     // directory"); keep parity.
     const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(err) },
-        );
+        reportCatPathError(allocator, stderr, file_path, err);
         return true;
     };
     defer file.close(io);
@@ -228,25 +243,13 @@ fn runCat_processFile(
     // opened handle turns out to be a directory, so stat it up front and
     // report error.IsDir through the normal path instead of the raw name.
     const stat = file.stat(io) catch |err| {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(err) },
-        );
+        reportCatPathError(allocator, stderr, file_path, err);
         return true;
     };
     if (stat.kind == .directory) {
         // GNU cat prints this operand unquoted ("cat: x: Is a directory");
         // keep parity.
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            "cat",
-            "{s}: {s}",
-            .{ file_path, common.posixErrorString(error.IsDir) },
-        );
+        reportCatPathError(allocator, stderr, file_path, error.IsDir);
         return true;
     }
     // Negative space: directories were rejected above, so a regular read
@@ -1097,4 +1100,73 @@ test "cat -E with multiple CRLF lines" {
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_aw.writer.buffered());
+}
+
+test "cat permission hint follows stderr hint overlay" {
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Create readable so realpath works on macOS (EACCES on mode 000), then chmod.
+    const file = try tmp.dir.createFile(testing.io, "secret.txt", .{
+        .permissions = std.Io.File.Permissions.fromMode(0o644),
+    });
+    try file.writeStreamingAll(testing.io, "secret");
+    file.close(testing.io);
+    const file_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "secret.txt",
+        testing.allocator,
+    );
+    defer testing.allocator.free(file_path);
+    const file_path_z = try testing.allocator.dupeZ(u8, file_path);
+    defer testing.allocator.free(file_path_z);
+    if (std.c.chmod(file_path_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(file_path_z, 0o644);
+    const args = [_][]const u8{file_path};
+
+    common.env.test_stderr_hints = false;
+    var stderr_plain: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_plain.deinit();
+    const plain_exit = try runCat(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_plain.writer,
+    );
+    const expected_plain = try std.fmt.allocPrint(
+        testing.allocator,
+        "cat: {s}: Permission denied\n",
+        .{file_path},
+    );
+    defer testing.allocator.free(expected_plain);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), plain_exit);
+    try testing.expectEqualStrings(expected_plain, stderr_plain.writer.buffered());
+
+    common.env.test_stderr_hints = true;
+    var stderr_hints: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_hints.deinit();
+    const hints_exit = try runCat(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_hints.writer,
+    );
+    const expected_hints = try std.fmt.allocPrint(
+        testing.allocator,
+        "cat: {s}: Permission denied (file is not readable)\n",
+        .{file_path},
+    );
+    defer testing.allocator.free(expected_hints);
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), hints_exit);
+    try testing.expectEqualStrings(expected_hints, stderr_hints.writer.buffered());
 }

@@ -266,6 +266,43 @@ pub fn printErrorWithProgram(
     }
 }
 
+/// Whether a diagnostic suffix is for a read or a write.
+pub const HintOp = enum { read, write };
+
+/// Suffix for a TTY diagnostic, or null.
+pub fn actionableHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
+    return switch (err) {
+        error.DirNotEmpty => " (use rm -r to remove recursively)",
+        error.AccessDenied => ownedModeHint(operand, op),
+        else => null,
+    };
+}
+
+fn ownedModeHint(operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    if (std.c.geteuid() == 0) return null;
+    const info = file.FileInfo.lstat(operand) catch return null;
+    if (info.uid != @as(u32, @intCast(std.c.geteuid()))) return null;
+    std.debug.assert(info.uid == @as(u32, @intCast(std.c.geteuid())));
+    const owner_read = info.mode & 0o400 != 0;
+    const owner_write = info.mode & 0o200 != 0;
+    return switch (op) {
+        .read => if (!owner_read) " (file is not readable)" else null,
+        .write => if (!owner_write) " (file is not writable)" else null,
+    };
+}
+
+/// Combine the TTY seam with `actionableHint`. Call sites append
+/// `maybeHint(...) orelse ""`.
+pub fn maybeHint(err: anyerror, operand: []const u8, op: HintOp) ?[]const u8 {
+    std.debug.assert(@intFromEnum(op) <= @intFromEnum(HintOp.write));
+    std.debug.assert(@intFromEnum(op) >= @intFromEnum(HintOp.read));
+    if (!env.stderrHintsEnabled()) return null;
+    return actionableHint(err, operand, op);
+}
+
 /// Print hint message with custom program name to a specific writer
 ///
 /// Hints are informational suggestions for the user, displayed in cyan.
@@ -472,6 +509,19 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     // green — which is how this lint could have gone quietly blind (issue #95).
     // src/ holds 48 utilities plus src/common and src/ls.
     try testing.expect(scanned >= 48);
+}
+
+test "maybeHint DirNotEmpty suffix follows overlay" {
+    const testing = std.testing;
+    const saved = env.test_stderr_hints;
+    defer env.test_stderr_hints = saved;
+    env.test_stderr_hints = false;
+    try testing.expect(maybeHint(error.DirNotEmpty, "src", .write) == null);
+    env.test_stderr_hints = true;
+    try testing.expectEqualStrings(
+        " (use rm -r to remove recursively)",
+        maybeHint(error.DirNotEmpty, "src", .write).?,
+    );
 }
 
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {

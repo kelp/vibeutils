@@ -68,6 +68,9 @@
   BSD defines none (#93).
 
 ### Changed
+- **TTY stderr may append a parenthetical hint** on
+  `Permission denied` (`cat`, `cp`) and `Directory not
+  empty` (`rmdir`, `rm -d`). Piped stderr stays GNU-shaped.
 - **Terminal size detection no longer reports a zero width or height.**
   `COLUMNS=0`, an empty or non-numeric `COLUMNS`/`LINES` value, and an
   ioctl window size of 0 all fall back to the 80×24 defaults now, so
