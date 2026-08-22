@@ -1,6 +1,7 @@
 //! chown - change file owner and group
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 const fs = std.fs;
 const c = std.c;
@@ -939,16 +940,16 @@ test "privileged: chown basic functionality" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // Create a test file
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             // Get real path for the temporary directory
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -984,14 +985,14 @@ test "privileged: chown basic functionality" {
 }
 
 test "chown with invalid owner specification" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
     file.close(testing.io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
     const tmp_path = path_buf[0..tmp_path_len];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
@@ -1026,14 +1027,14 @@ test "privileged: chown user only specification" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1072,14 +1073,14 @@ test "privileged: chown group only specification" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1118,18 +1119,18 @@ test "privileged: chown with reference file" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // Create reference and target files
-            const ref_file = try tmp_dir.dir.createFile(testing.io, "reference.txt", .{});
+            const ref_file = try tmp_dir.dir().createFile(testing.io, "reference.txt", .{});
             ref_file.close(testing.io);
 
-            const target_file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+            const target_file = try tmp_dir.dir().createFile(testing.io, "target.txt", .{});
             target_file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const ref_path = try std.fmt.allocPrint(
@@ -1202,14 +1203,14 @@ test "OwnershipSpec parsing" {
 }
 
 test "getOwnershipFromReference" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(testing.io, "ref.txt", .{});
+    const file = try tmp_dir.dir().createFile(testing.io, "ref.txt", .{});
     file.close(testing.io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
     const tmp_path = path_buf[0..tmp_path_len];
 
     const ref_path = try std.fmt.allocPrint(testing.allocator, "{s}/ref.txt", .{tmp_path});
@@ -1231,14 +1232,14 @@ test "privileged: changeOwnership with same values" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1267,14 +1268,14 @@ test "privileged: chownSingle basic operation" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1320,18 +1321,18 @@ test "privileged: chown recursive option" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // Create a directory structure
-            try tmp_dir.dir.createDir(testing.io, "testdir", .default_dir);
-            var subdir = try tmp_dir.dir.openDir(testing.io, "testdir", .{});
+            try tmp_dir.dir().createDir(testing.io, "testdir", .default_dir);
+            var subdir = try tmp_dir.dir().openDir(testing.io, "testdir", .{});
             defer subdir.close(testing.io);
             const file = try subdir.createFile(testing.io, "file.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_dir = try std.fmt.allocPrint(inner_allocator, "{s}/testdir", .{tmp_path});
@@ -1375,14 +1376,14 @@ test "privileged: chown with verbose option" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1421,14 +1422,14 @@ test "privileged: chown with changes option" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1467,20 +1468,20 @@ test "privileged: chown with no-dereference option" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // Create a file and a symlink to it
-            const file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "target.txt", .{});
             file.close(testing.io);
 
             // Create symlink (this might fail on some systems)
-            tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{}) catch {
+            tmp_dir.dir().symLink(testing.io, "target.txt", "link.txt", .{}) catch {
                 return;
             };
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_link = try std.fmt.allocPrint(inner_allocator, "{s}/link.txt", .{tmp_path});
@@ -1543,14 +1544,14 @@ test "privileged: chown traverse options" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+            const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
             file.close(testing.io);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
@@ -1859,14 +1860,14 @@ test "chown -x flag is accepted" {
 test "runChown production path with valid file and owner spec" {
     // Safety net: exercises the full production path (runChown -> chownSingle)
     // using the file's current uid:gid so no actual ownership change occurs.
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(testing.io, "test.txt", .{});
     file.close(testing.io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
     const tmp_path = path_buf[0..tmp_path_len];
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
@@ -1908,21 +1909,21 @@ test "privileged: chown -RP should not follow cmdline symlink to directory" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // Create target directory with a file inside
-            try tmp_dir.dir.createDir(testing.io, "target", .default_dir);
-            var subdir = try tmp_dir.dir.openDir(testing.io, "target", .{});
+            try tmp_dir.dir().createDir(testing.io, "target", .default_dir);
+            var subdir = try tmp_dir.dir().openDir(testing.io, "target", .{});
             defer subdir.close(testing.io);
             const file = try subdir.createFile(testing.io, "file.txt", .{});
             file.close(testing.io);
 
             // Create a symlink to the target directory
-            try tmp_dir.dir.symLink(testing.io, "target", "link", .{});
+            try tmp_dir.dir().symLink(testing.io, "target", "link", .{});
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const tmp_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &path_buf);
+            const tmp_path_len = try tmp_dir.dir().realPathFile(testing.io, ".", &path_buf);
             const tmp_path = path_buf[0..tmp_path_len];
 
             const link_path = try std.fmt.allocPrint(inner_allocator, "{s}/link", .{tmp_path});
@@ -1998,10 +1999,10 @@ const characterization_gid: common.user_group.gid_t = 4243;
 /// return a slice owned by inner_allocator (stable for the test's lifetime).
 fn characterizationTmpRealpath(
     inner_allocator: std.mem.Allocator,
-    tmp_dir: *testing.TmpDir,
+    tmp_dir: *TestDir,
     path_buf: *[std.Io.Dir.max_path_bytes]u8,
 ) ![]const u8 {
-    const len = try tmp_dir.dir.realPathFile(testing.io, ".", path_buf);
+    const len = try tmp_dir.dir().realPathFile(testing.io, ".", path_buf);
     return inner_allocator.dupe(u8, path_buf[0..len]);
 }
 
@@ -2037,12 +2038,12 @@ test "privileged: recursive walk reports a change for every entry in a multi-lev
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // root/{child.txt, subdir/{grandchild.txt}}
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir().openDir(testing.io, "root", .{});
             defer root.close(testing.io);
             (try root.createFile(testing.io, "child.txt", .{})).close(testing.io);
             try root.createDir(testing.io, "subdir", .default_dir);
@@ -2104,11 +2105,11 @@ test "privileged: recursive walk processes children before their parent director
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir().openDir(testing.io, "root", .{});
             defer root.close(testing.io);
             (try root.createFile(testing.io, "child.txt", .{})).close(testing.io);
             try root.createDir(testing.io, "subdir", .default_dir);
@@ -2185,17 +2186,17 @@ test "privileged: -P reports the symlink itself and does not descend into its ta
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // outside/secret.txt is the symlink target; must stay untouched.
-            try tmp_dir.dir.createDir(testing.io, "outside", .default_dir);
-            var outside = try tmp_dir.dir.openDir(testing.io, "outside", .{});
+            try tmp_dir.dir().createDir(testing.io, "outside", .default_dir);
+            var outside = try tmp_dir.dir().openDir(testing.io, "outside", .{});
             defer outside.close(testing.io);
             (try outside.createFile(testing.io, "secret.txt", .{})).close(testing.io);
 
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir().openDir(testing.io, "root", .{});
             defer root.close(testing.io);
             root.symLink(testing.io, "../outside", "link", .{}) catch return error.SkipZigTest;
 
@@ -2266,16 +2267,16 @@ test "privileged: -L follows a symlink-to-directory and reports the target subtr
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "outside", .default_dir);
-            var outside = try tmp_dir.dir.openDir(testing.io, "outside", .{});
+            try tmp_dir.dir().createDir(testing.io, "outside", .default_dir);
+            var outside = try tmp_dir.dir().openDir(testing.io, "outside", .{});
             defer outside.close(testing.io);
             (try outside.createFile(testing.io, "reached.txt", .{})).close(testing.io);
 
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir().openDir(testing.io, "root", .{});
             defer root.close(testing.io);
             root.symLink(testing.io, "../outside", "link", .{}) catch return error.SkipZigTest;
 
@@ -2330,26 +2331,26 @@ test "privileged: -L follows a symlink-to-directory and reports the target subtr
 /// error.SkipZigTest exactly as the inline version did.
 fn setupCmdlineSymlinkFixture(
     inner_allocator: std.mem.Allocator,
-    tmp_dir: *testing.TmpDir,
+    tmp_dir: *TestDir,
 ) ![]const u8 {
     // operand_target/ holds entries reachable only by FOLLOWING the
     // command-line symlink. nested_target/ holds an entry reachable
     // only by following a symlink found DURING recursion.
-    try tmp_dir.dir.createDir(testing.io, "operand_target", .default_dir);
-    var operand_target = try tmp_dir.dir.openDir(testing.io, "operand_target", .{});
+    try tmp_dir.dir().createDir(testing.io, "operand_target", .default_dir);
+    var operand_target = try tmp_dir.dir().openDir(testing.io, "operand_target", .{});
     defer operand_target.close(testing.io);
     (try operand_target.createFile(testing.io, "via_operand.txt", .{})).close(testing.io);
 
     // A nested symlink inside operand_target pointing at nested_target.
-    try tmp_dir.dir.createDir(testing.io, "nested_target", .default_dir);
-    var nested_target = try tmp_dir.dir.openDir(testing.io, "nested_target", .{});
+    try tmp_dir.dir().createDir(testing.io, "nested_target", .default_dir);
+    var nested_target = try tmp_dir.dir().openDir(testing.io, "nested_target", .{});
     defer nested_target.close(testing.io);
     (try nested_target.createFile(testing.io, "via_nested.txt", .{})).close(testing.io);
     operand_target.symLink(testing.io, "../nested_target", "nested_link", .{}) catch
         return error.SkipZigTest;
 
     // The command-line operand is itself a symlink to operand_target.
-    tmp_dir.dir.symLink(testing.io, "operand_target", "operand_link", .{}) catch
+    tmp_dir.dir().symLink(testing.io, "operand_target", "operand_link", .{}) catch
         return error.SkipZigTest;
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -2375,8 +2376,8 @@ test "privileged: -H follows a command-line symlink but not symlinks found durin
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
             // Pass the SYMLINK as the operand so depth-0 following is exercised.
             const operand_path = try setupCmdlineSymlinkFixture(inner_allocator, &tmp_dir);
@@ -2446,11 +2447,11 @@ test "privileged: -x stays on the same filesystem and still reports same-device 
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir().openDir(testing.io, "root", .{});
             defer root.close(testing.io);
             try root.createDir(testing.io, "sub", .default_dir);
             var sub = try root.openDir(testing.io, "sub", .{});
@@ -2512,10 +2513,10 @@ test "privileged: deep directory tree completes without stack overflow" {
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
 
             var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
@@ -2584,11 +2585,11 @@ test "privileged: -L with a symlink cycle terminates cleanly instead of looping 
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
-            var tmp_dir = testing.tmpDir(.{});
-            defer tmp_dir.cleanup();
+            var tmp_dir = TestDir.init(inner_allocator);
+            defer tmp_dir.deinit();
 
-            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
-            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            try tmp_dir.dir().createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir().openDir(testing.io, "root", .{});
             defer root.close(testing.io);
             (try root.createFile(testing.io, "f.txt", .{})).close(testing.io);
             // root/loop -> . (symlink to its own directory) creates a cycle

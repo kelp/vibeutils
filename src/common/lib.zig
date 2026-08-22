@@ -12,6 +12,7 @@ const build_options = @import("build_options");
 // Not `pub`: this is repo tooling, not part of the common API surface. Its own
 // tests still run because the force-import block at the bottom lists it.
 const force_import_lint = @import("force_import_lint.zig");
+const testdir_lint = @import("testdir_lint.zig");
 
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
@@ -747,6 +748,7 @@ test {
     _ = @import("style.zig");
     _ = @import("terminal.zig");
     _ = @import("test_dir.zig");
+    _ = @import("testdir_lint.zig");
     _ = @import("test_utils.zig");
     _ = @import("test_utils_privilege.zig");
     _ = @import("time.zig");
@@ -769,6 +771,24 @@ test "every src/common module with tests is force-imported (issue #95)" {
     defer report.deinit();
 
     force_import_lint.verify(
+        std.testing.allocator,
+        std.testing.io,
+        build_options.common_source_dir,
+        &report.writer,
+    ) catch |err| {
+        std.debug.print("{s}", .{report.writer.buffered()});
+        return err;
+    };
+}
+
+// Lives in lib.zig for the same hole-close as the #95 test: if testdir_lint.zig
+// is dropped from the force-import block, this caller still runs and still
+// fails. Do not tidy it into testdir_lint.zig.
+test "listed utility tests do not call testing.tmpDir (TODO ### 3)" {
+    var report: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer report.deinit();
+
+    testdir_lint.verify(
         std.testing.allocator,
         std.testing.io,
         build_options.common_source_dir,
