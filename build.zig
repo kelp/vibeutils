@@ -319,7 +319,7 @@ fn buildTests(
     privileged_test_step.dependOn(&run_common_tests_priv.step);
 
     // Integration tests
-    buildIntegrationTests(b, target, optimize, common, build_options_module) catch |err| {
+    buildIntegrationTests(b, target, optimize, common, test_options_module) catch |err| {
         std.log.err("Failed to configure integration tests: {}", .{err});
         return; // Abort build configuration
     };
@@ -331,19 +331,22 @@ fn buildIntegrationTests(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     common: *std.Build.Module,
-    build_options_module: *std.Build.Module,
+    test_options_module: *std.Build.Module,
 ) !void {
     const integration_test_step = b.step("test-integration", "Run privilege framework integration tests");
 
-    // Core infrastructure integration tests
+    // Core infrastructure integration tests. This root `@import`s lib.zig
+    // (lint tests need src_dir) and test_dir.zig (libc realpath), so it
+    // must match the common unit-test root: test_options + link_libc.
     const core_integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/common/privilege_test_integration.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
-    core_integration_tests.root_module.addImport("build_options", build_options_module);
+    core_integration_tests.root_module.addImport("build_options", test_options_module);
 
     const run_core_integration = b.addRunArtifact(core_integration_tests);
     integration_test_step.dependOn(&run_core_integration.step);
@@ -354,6 +357,7 @@ fn buildIntegrationTests(
             .root_source_file = b.path("tests/privilege_integration/workflow_test.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     workflow_tests.root_module.addImport("common", common);
@@ -367,6 +371,7 @@ fn buildIntegrationTests(
             .root_source_file = b.path("tests/privilege_integration/file_ops_test.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     file_ops_tests.root_module.addImport("common", common);
