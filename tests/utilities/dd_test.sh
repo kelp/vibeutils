@@ -711,6 +711,204 @@ test_dd() {
             "rc=$b65_garbage_rc stderr='$(cat "$b65_garbage_err")'"
     fi
 
+    # ==================================================================
+    # MUST-tier conv= coverage (TODO ### 6)
+    # ==================================================================
+
+    echo -e "${CYAN}Testing MUST-tier conv= coverage...${NC}"
+
+    # conv=sync NUL-pads a short input block to ibs. GNU: 'AB' + bs=4
+    # count=1 → 0x41 0x42 0x00 0x00. Never compare with $(cat) — NULs drop.
+    local sync_short_in="$TEMP_DIR/dd_sync_short_in.bin"
+    local sync_short_out="$TEMP_DIR/dd_sync_short_out.bin"
+    printf 'AB' > "$sync_short_in"
+    "$binary" if="$sync_short_in" of="$sync_short_out" \
+        bs=4 conv=sync count=1 status=none 2>/dev/null
+    local sync_short_hex
+    sync_short_hex=$(od -A n -t x1 < "$sync_short_out" | tr -d ' \n')
+    if [[ "$sync_short_hex" == "41420000" ]]; then
+        print_test_result "dd conv=sync pads short block with NUL" "PASS"
+    else
+        print_test_result "dd conv=sync pads short block with NUL" "FAIL" \
+            "expected 41420000, got '$sync_short_hex'"
+    fi
+
+    # A full ibs block is copied unchanged: size 4 and hex 41424344.
+    # Size is required so a trailing NUL would still fail.
+    local sync_full_in="$TEMP_DIR/dd_sync_full_in.bin"
+    local sync_full_out="$TEMP_DIR/dd_sync_full_out.bin"
+    printf 'ABCD' > "$sync_full_in"
+    "$binary" if="$sync_full_in" of="$sync_full_out" \
+        bs=4 conv=sync count=1 status=none 2>/dev/null
+    local sync_full_size
+    sync_full_size=$(get_file_size "$sync_full_out")
+    local sync_full_hex
+    sync_full_hex=$(od -A n -t x1 < "$sync_full_out" | tr -d ' \n')
+    if [[ "$sync_full_size" -eq 4 ]] && [[ "$sync_full_hex" == "41424344" ]]; then
+        print_test_result "dd conv=sync full block unchanged" "PASS"
+    else
+        print_test_result "dd conv=sync full block unchanged" "FAIL" \
+            "expected size 4 hex 41424344, got size $sync_full_size hex '$sync_full_hex'"
+    fi
+
+    # Default of= truncates. Contrast with conv=notrunc above: 20 X bytes
+    # overwritten with 'HI' must shrink to 2 bytes.
+    local trunc_file="$TEMP_DIR/dd_default_trunc.bin"
+    printf 'XXXXXXXXXXXXXXXXXXXX' > "$trunc_file"
+    local trunc_input="$TEMP_DIR/dd_default_trunc_in.txt"
+    printf 'HI' > "$trunc_input"
+    "$binary" if="$trunc_input" of="$trunc_file" status=none 2>/dev/null
+    local trunc_size
+    trunc_size=$(get_file_size "$trunc_file")
+    if [[ "$trunc_size" -eq 2 ]]; then
+        print_test_result "dd default truncates output file" "PASS"
+    else
+        print_test_result "dd default truncates output file" "FAIL" \
+            "Expected size 2, got $trunc_size"
+    fi
+
+    # conv=fsync on a pipe: fsync(2) returns EINVAL. Must report the
+    # syscall (rc=1, 'fsync failed') and never panic (>=128).
+    local fsync_pipe_err="$TEMP_DIR/dd_fsync_pipe.err"
+    "$binary" if=/dev/zero count=1 conv=fsync status=none \
+        2>"$fsync_pipe_err" | cat >/dev/null
+    local fsync_pipe_rc=${PIPESTATUS[0]}
+    local fsync_pipe_err_text
+    fsync_pipe_err_text=$(cat "$fsync_pipe_err")
+    if [[ "$fsync_pipe_rc" -eq 1 ]] \
+        && ! grep -qi 'panic' "$fsync_pipe_err" \
+        && grep -qi 'fsync failed' "$fsync_pipe_err"; then
+        print_test_result "dd conv=fsync on pipe reports fsync failure" "PASS"
+    else
+        print_test_result "dd conv=fsync on pipe reports fsync failure" "FAIL" \
+            "rc=$fsync_pipe_rc (expected 1, never >=128) stderr='$fsync_pipe_err_text'"
+    fi
+
+    # conv=osync pads the final output block to obs. 'AB' + ibs=2 obs=4
+    # → 0x41 0x42 0x00 0x00 (OpenBSD-shaped padding already shipped).
+    local osync_in="$TEMP_DIR/dd_osync_in.bin"
+    local osync_out="$TEMP_DIR/dd_osync_out.bin"
+    printf 'AB' > "$osync_in"
+    "$binary" if="$osync_in" of="$osync_out" \
+        ibs=2 obs=4 conv=osync status=none 2>/dev/null
+    local osync_size
+    osync_size=$(get_file_size "$osync_out")
+    local osync_hex
+    osync_hex=$(od -A n -t x1 < "$osync_out" | tr -d ' \n')
+    if [[ "$osync_size" -eq 4 ]] && [[ "$osync_hex" == "41420000" ]]; then
+        print_test_result "dd conv=osync pads final output block" "PASS"
+    else
+        print_test_result "dd conv=osync pads final output block" "FAIL" \
+            "expected size 4 hex 41420000, got size $osync_size hex '$osync_hex'"
+    fi
+
+    # conv=ascii: EBCDIC 'A' (0xC1) → ASCII 0x41.
+    local ascii_in="$TEMP_DIR/dd_ascii_in.bin"
+    local ascii_out="$TEMP_DIR/dd_ascii_out.bin"
+    printf '\xC1' > "$ascii_in"
+    "$binary" if="$ascii_in" of="$ascii_out" conv=ascii status=none 2>/dev/null
+    local ascii_hex
+    ascii_hex=$(od -A n -t x1 < "$ascii_out" | tr -d ' \n')
+    if [[ "$ascii_hex" == "41" ]]; then
+        print_test_result "dd conv=ascii converts EBCDIC to ASCII" "PASS"
+    else
+        print_test_result "dd conv=ascii converts EBCDIC to ASCII" "FAIL" \
+            "expected 41, got '$ascii_hex'"
+    fi
+
+    # conv=ebcdic: ASCII 'A' → EBCDIC 0xC1.
+    local ebcdic_in="$TEMP_DIR/dd_ebcdic_in.bin"
+    local ebcdic_out="$TEMP_DIR/dd_ebcdic_out.bin"
+    printf 'A' > "$ebcdic_in"
+    "$binary" if="$ebcdic_in" of="$ebcdic_out" conv=ebcdic status=none 2>/dev/null
+    local ebcdic_hex
+    ebcdic_hex=$(od -A n -t x1 < "$ebcdic_out" | tr -d ' \n')
+    if [[ "$ebcdic_hex" == "c1" ]]; then
+        print_test_result "dd conv=ebcdic converts ASCII to EBCDIC" "PASS"
+    else
+        print_test_result "dd conv=ebcdic converts ASCII to EBCDIC" "FAIL" \
+            "expected c1, got '$ebcdic_hex'"
+    fi
+
+    # conv=ibm: ASCII '!' maps to 0x5A under both IBM and GNU EBCDIC
+    # tables; pins a byte the existing '^' contrast does not cover.
+    local ibm_bang_in="$TEMP_DIR/dd_ibm_bang_in.bin"
+    local ibm_bang_out="$TEMP_DIR/dd_ibm_bang_out.bin"
+    printf '!' > "$ibm_bang_in"
+    "$binary" if="$ibm_bang_in" of="$ibm_bang_out" conv=ibm status=none 2>/dev/null
+    local ibm_bang_hex
+    ibm_bang_hex=$(od -A n -t x1 < "$ibm_bang_out" | tr -d ' \n')
+    if [[ "$ibm_bang_hex" == "5a" ]]; then
+        print_test_result "dd conv=ibm converts ASCII to IBM EBCDIC" "PASS"
+    else
+        print_test_result "dd conv=ibm converts ASCII to IBM EBCDIC" "FAIL" \
+            "expected 5a, got '$ibm_bang_hex'"
+    fi
+
+    # Box 3: compiled-binary rejections matching cc57c2a unit tests.
+    # Pin exit 1 and the operand-name needle only.
+    local reject_err reject_rc
+
+    reject_err="$TEMP_DIR/dd_reject_sparse.err"
+    "$binary" if=/dev/null of=/dev/null conv=sparse status=none 2>"$reject_err"
+    reject_rc=$?
+    if [[ "$reject_rc" -eq 1 ]] && grep -qF "unsupported operand 'sparse'" "$reject_err"; then
+        print_test_result "dd rejects conv=sparse" "PASS"
+    else
+        print_test_result "dd rejects conv=sparse" "FAIL" \
+            "rc=$reject_rc stderr='$(cat "$reject_err")'"
+    fi
+
+    reject_err="$TEMP_DIR/dd_reject_pareven.err"
+    "$binary" if=/dev/null of=/dev/null conv=pareven status=none 2>"$reject_err"
+    reject_rc=$?
+    if [[ "$reject_rc" -eq 1 ]] && grep -qF "unsupported operand 'pareven'" "$reject_err"; then
+        print_test_result "dd rejects conv=pareven" "PASS"
+    else
+        print_test_result "dd rejects conv=pareven" "FAIL" \
+            "rc=$reject_rc stderr='$(cat "$reject_err")'"
+    fi
+
+    reject_err="$TEMP_DIR/dd_reject_parnone.err"
+    "$binary" if=/dev/null of=/dev/null conv=parnone status=none 2>"$reject_err"
+    reject_rc=$?
+    if [[ "$reject_rc" -eq 1 ]] && grep -qF "unsupported operand 'parnone'" "$reject_err"; then
+        print_test_result "dd rejects conv=parnone" "PASS"
+    else
+        print_test_result "dd rejects conv=parnone" "FAIL" \
+            "rc=$reject_rc stderr='$(cat "$reject_err")'"
+    fi
+
+    reject_err="$TEMP_DIR/dd_reject_parodd.err"
+    "$binary" if=/dev/null of=/dev/null conv=parodd status=none 2>"$reject_err"
+    reject_rc=$?
+    if [[ "$reject_rc" -eq 1 ]] && grep -qF "unsupported operand 'parodd'" "$reject_err"; then
+        print_test_result "dd rejects conv=parodd" "PASS"
+    else
+        print_test_result "dd rejects conv=parodd" "FAIL" \
+            "rc=$reject_rc stderr='$(cat "$reject_err")'"
+    fi
+
+    reject_err="$TEMP_DIR/dd_reject_parset.err"
+    "$binary" if=/dev/null of=/dev/null conv=parset status=none 2>"$reject_err"
+    reject_rc=$?
+    if [[ "$reject_rc" -eq 1 ]] && grep -qF "unsupported operand 'parset'" "$reject_err"; then
+        print_test_result "dd rejects conv=parset" "PASS"
+    else
+        print_test_result "dd rejects conv=parset" "FAIL" \
+            "rc=$reject_rc stderr='$(cat "$reject_err")'"
+    fi
+
+    reject_err="$TEMP_DIR/dd_reject_files.err"
+    "$binary" if=/dev/null of=/dev/null files=3 status=none 2>"$reject_err"
+    reject_rc=$?
+    if [[ "$reject_rc" -eq 1 ]] && grep -qF "unsupported operand 'files'" "$reject_err"; then
+        print_test_result "dd rejects files=" "PASS"
+    else
+        print_test_result "dd rejects files=" "FAIL" \
+            "rc=$reject_rc stderr='$(cat "$reject_err")'"
+    fi
+
     echo -e "${CYAN}Testing issue #159: -- end-of-options...${NC}"
 
     # Pinned against GNU coreutils 9.4 (`/usr/bin/dd`, LC_ALL=C).

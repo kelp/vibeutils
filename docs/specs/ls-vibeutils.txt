@@ -10,7 +10,7 @@ Sort entries alphabetically by default.
   -F, --file-type-indicators append indicator (one of */=>@|) to entries
       --git=WHEN             when to show git status (valid: always, auto, never)
       --group-directories-first  group directories before files
-  -h, --human-readable       with -l, print sizes in human readable format
+  -h, --human-readable       with -l, print sizes in human readable format (default)
       --icons=WHEN           when to show icons (valid: always, auto, never)
   -k, --kilobytes            with -l, print sizes in kilobytes
   -l, --long-format          use a long listing format

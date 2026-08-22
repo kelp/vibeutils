@@ -1280,11 +1280,9 @@ full design.
 - [x] Integrated in ls, grep, du, and help output
 - [x] `--color=auto` checks isatty(stdout) in ls
 - [x] `df`: human-readable by default (`df.zig:88`)
-- [ ] `du`: human-readable by default (currently `du.zig:33`
-      defaults `human_readable = false`)
-- [ ] `ls -l`: human-readable by default (currently
-      `ls/main.zig:27` defaults `human_readable = false`)
-- [ ] Explicit flags always override
+- [x] `du`: human-readable by default
+- [x] `ls -l`: human-readable by default
+- [x] Explicit flags always override
 
 ### 3a. Command Linter Warnings ✓
 - [x] chown: warn when argument looks like octal mode
@@ -1382,9 +1380,9 @@ green, including `cp.zig:1181-1276` and `mv.zig:1033+`
 overwrite-hint tests.
 
 ### 5. main() Function Coverage
-- [ ] Test the writer setup code path in main(), not just
+- [x] Test the writer setup code path in main(), not just
       runUtil() with test-provided writers
-- [ ] Integration tests that exercise the compiled binary's
+- [x] Integration tests that exercise the compiled binary's
       actual I/O initialization
 
 ### 6. dd MUST-tier conv= Integration Coverage
@@ -1394,13 +1392,13 @@ values; some existing tests also compare against macOS
 `/usr/bin/dd`, which produces empty output and silently
 passes.
 
-- [ ] Replace macOS `/usr/bin/dd` comparisons with
+- [x] Replace macOS `/usr/bin/dd` comparisons with
       hardcoded GNU-equivalent expected values
-- [ ] Add behavioral tests for `conv=sync` (NUL padding +
+- [x] Add behavioral tests for `conv=sync` (NUL padding +
       full block), `conv=notrunc` vs. truncate contrast,
       `conv=fsync`, `conv=osync`, `conv=ascii`,
       `conv=ebcdic`, `conv=ibm`, `conv=noerror`
-- [ ] Cross-check against the existing rejection tests
+- [x] Cross-check against the existing rejection tests
       added in commit cc57c2a (`conv=sparse`/`par*`/`files=`)
 
 ## Bugs

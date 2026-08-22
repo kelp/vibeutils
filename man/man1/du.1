@@ -24,7 +24,16 @@ If no
 .Ar file
 is given, the current directory is used.
 .Pp
-Sizes are reported in 1024-byte blocks by default.
+By default, sizes are displayed in human-readable format
+(powers of 1024).
+Use
+.Fl k ,
+.Fl m ,
+.Fl g ,
+.Fl b ,
+or
+.Fl Fl block-size
+to print numeric counts instead.
 .Pp
 The following options are available:
 .Bl -tag -width Ds
