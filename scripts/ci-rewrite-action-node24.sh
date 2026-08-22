@@ -36,10 +36,18 @@ if grep -E -q "using:[[:space:]]*['\"]?node24['\"]?" "$action_yml" &&
 fi
 
 tmp="${action_yml}.node24.$$"
-# Keep the original quoting. using: 'node20' and using: "node20" stay
-# quoted; using: node20 stays bare. Only the using: line is rewritten
-# so a leftover node20 token (comment, other key) still fails below.
-sed -E "s/(using:[[:space:]]*)(['\"]?)node20\\2/\\1\\2node24\\2/" \
+# Three explicit substitutions, not one capture with a pattern
+# backreference. macOS ships BSD sed, whose -E engine does not
+# treat \2 in the pattern as "same quote as group 2"; GNU sed
+# does, which is why Linux CI passed and macos-26 did not.
+# Quoted forms first so the bare node20 rule cannot see inside
+# quotes. Indent before `using:` is left untouched.
+# Only the using: line is rewritten so a leftover node20 token
+# (comment, other key) still fails below.
+sed -E \
+    -e "s/using:[[:space:]]*'node20'/using: 'node24'/" \
+    -e 's/using:[[:space:]]*"node20"/using: "node24"/' \
+    -e "s/using:[[:space:]]*node20/using: node24/" \
     "$action_yml" >"$tmp"
 mv "$tmp" "$action_yml"
 
