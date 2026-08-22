@@ -61,14 +61,17 @@ already exists:
    that kcov jitter would flake CI, and a
    threshold is a follow-up, not this heading.
 
-3. **Clean static analysis.** Required PR gates
-   already exist: Tiger Style
+3. **Clean static analysis.** PR workflows
+   already run Tiger Style
    (`.github/workflows/tiger-style.yml`,
    tree-wide `just tiger-check`) and Audit
    Pre-Pass (`.github/workflows/audit.yml`,
-   `scripts/audit-check.sh` on NEW findings).
-   Changelog lint is a third required docs gate.
-   This slice does not add scanners.
+   `scripts/audit-check.sh` on NEW findings;
+   the audit baseline is not empty). Changelog
+   lint is a third workflow. This slice does
+   not add scanners. Do not call these
+   branch-protection "required" — the token
+   cannot confirm that setting.
 
 This slice is a **verify-and-rewrite** of the
 unchecked `TODO.md` boxes so they name the
