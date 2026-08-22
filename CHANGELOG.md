@@ -211,6 +211,15 @@
 
 ### Fixed
 
+- **`pwd` honors `$PWD` by default (POSIX `-L` default).** With neither
+  `-L` nor `-P`, pwd now prints `$PWD` when it is an absolute pathname
+  of the current directory, falling back to physical resolution when it
+  is invalid, relative, or names a different directory. Previously the
+  physical path was always printed, so on macOS symlinked paths (`/tmp`,
+  `/var`, `/etc`) pwd printed `/private/var/...` where `/bin/pwd` and
+  shell builtins print `/var/...`. POSIX Issue 7 requires the logical
+  default; GNU coreutils is itself non-conforming here (it defaults to
+  `-P`). When both flags are given, `-P` still takes precedence.
 - **`realpath`, `readlink`, and `ln -r` work on OpenBSD and NetBSD.**
   Zig 0.16 `Dir.realPath` / `realPathFile` is
   `error.OperationUnsupported` there (fd-to-path is only implemented

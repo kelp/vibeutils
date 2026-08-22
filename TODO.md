@@ -404,12 +404,17 @@ For each utility:
 - [x] Implement: Proper error handling with common library
 - [x] Implement: GNU/POSIX compliant flag handling
 - [x] Man page: Write concise man page with examples
-- [ ] Fix: Default to logical mode (-L), honoring `$PWD` when it
+- [x] Fix: Default to logical mode (-L), honoring `$PWD` when it
       names the current directory; fall back to physical resolution
-      only when `$PWD` is invalid. We always resolve physically, so
-      on macOS symlinked paths (`/tmp`, `/var`, `/etc`) we print
-      `/private/var/...` where GNU/BSD `pwd` prints `/var/...`.
-      Found in the v0.13.0 pre-release smoke test.
+      only when `$PWD` is invalid. Fixed for v0.13.0: POSIX Issue 7
+      says "if neither -L nor -P is specified, the pwd utility shall
+      behave as if -L had been specified". Correction to the original
+      note: GNU coreutils 9.11 defaults to -P (non-conforming); BSD
+      pwd and shell builtins conform.
+- [ ] Fix: honor POSIX "the last one shall apply" when both -L and
+      -P are given (`pwd -P -L` should print logically). `-P`
+      currently wins regardless of order; the shared argparse gives
+      no per-flag ordering.
 
 #### 11. chmod ✓
 - [x] Test: Basic permission changes (numeric: 755, 644)

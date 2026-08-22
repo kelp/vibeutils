@@ -24,9 +24,9 @@ const PwdArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .logical = .{
             .short = 'L',
-            .desc = "Use PWD from environment, even if it contains symlinks",
+            .desc = "Use PWD from environment, even if it contains symlinks (default)",
         },
-        .physical = .{ .short = 'P', .desc = "Resolve all symbolic links (default)" },
+        .physical = .{ .short = 'P', .desc = "Resolve all symbolic links" },
     };
 };
 
@@ -112,7 +112,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
         \\Print the full filename of the current working directory.
         \\
         \\  -L, --logical   use PWD from environment, even if it contains symlinks
-        \\  -P, --physical  resolve all symbolic links (default)
+        \\  -P, --physical  resolve all symbolic links
         \\  -h, --help      display this help and exit
         \\  -V, --version   output version information and exit
         \\
@@ -121,8 +121,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
         \\for details about the options it supports.
         \\
         \\Examples:
-        \\  pwd             Print current directory (resolving symlinks)
-        \\  pwd -L          Use PWD environment variable if valid
+        \\  pwd             Print current directory (honoring $PWD when valid)
         \\  pwd -P          Explicitly resolve all symlinks
         \\
     );
@@ -138,14 +137,13 @@ fn getCwdAlloc(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
 }
 
 /// Get current working directory according to command line arguments
-/// When both -L and -P are given, -P takes priority (physical is the default)
+/// Logical is the default per POSIX (pwd behaves as if -L were given when
+/// neither option is specified). -P forces physical resolution and wins
+/// when both flags are present.
 pub fn getWorkingDirectory(allocator: std.mem.Allocator, io: std.Io, args: PwdArgs) ![]const u8 {
-    // -P takes priority when both are set (physical is the safer default)
-    const use_logical = args.logical and !args.physical;
+    const use_logical = !args.physical;
 
     if (use_logical) {
-        std.debug.assert(args.logical);
-        std.debug.assert(!args.physical);
         // Try to use PWD environment variable in logical mode
         const pwd_env = common.env.getEnv("PWD") orelse {
             // PWD not set, fall back to physical mode
