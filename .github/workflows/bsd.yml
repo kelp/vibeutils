@@ -92,7 +92,7 @@ jobs:
             curl -fsSL -o /tmp/zig.tar.xz \
               https://ziglang.org/download/0.16.0/zig-x86_64-openbsd-0.16.0.tar.xz
             mkdir -p /usr/local/bin
-            tar -xf /tmp/zig.tar.xz -C /usr/local
+            xz -dc /tmp/zig.tar.xz | tar -xf - -C /usr/local
             ln -sf /usr/local/zig-x86_64-openbsd-0.16.0/zig /usr/local/bin/zig
           run: |
             set -eu
@@ -120,7 +120,7 @@ jobs:
             curl -fsSL -o /tmp/zig.tar.xz \
               https://ziglang.org/download/0.16.0/zig-x86_64-netbsd-0.16.0.tar.xz
             mkdir -p /usr/local/bin
-            tar -xf /tmp/zig.tar.xz -C /usr/local
+            xz -dc /tmp/zig.tar.xz | tar -xf - -C /usr/local
             ln -sf /usr/local/zig-x86_64-netbsd-0.16.0/zig /usr/local/bin/zig
           run: |
             set -eu
