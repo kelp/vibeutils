@@ -16,19 +16,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
 const c = std.c;
-
-const regex_h = @cImport({
-    @cInclude("regex.h");
-});
-
-const is_linux = builtin.os.tag == .linux;
-
-// On Linux, regex_t is opaque to Zig (glibc internal types can't be parsed).
-// Use C helper functions for heap allocation instead of Zig's allocator.
-const regex_c = if (is_linux) struct {
-    extern "c" fn regex_heap_alloc() ?*regex_h.regex_t;
-    extern "c" fn regex_heap_free(re: *regex_h.regex_t) void;
-} else struct {};
+const posix_regex = @import("posix_regex.zig");
 
 // libc's passwd and group records are declared exactly once in the tree, in
 // common.user_group; these aliases keep the lookups below reading like the C
@@ -206,7 +194,7 @@ const ExprData = union {
     uid_val: c.uid_t,
     gid_val: c.gid_t,
     newerxy_data: NewerXYData,
-    regex_ptr: *regex_h.regex_t,
+    regex_ptr: *posix_regex.Regex,
     none: void,
 };
 
@@ -615,39 +603,21 @@ fn compileRegex(
     pattern: []const u8,
     ignore_case: bool,
     extended: bool,
-) ?*regex_h.regex_t {
+) ?*posix_regex.Regex {
     const pattern_z = allocator.dupeZ(u8, pattern) catch return null;
     defer allocator.free(pattern_z);
 
-    var cflags: c_int = regex_h.REG_NOSUB;
-    if (ignore_case) cflags |= regex_h.REG_ICASE;
-    if (extended) cflags |= regex_h.REG_EXTENDED;
-
-    const regex = if (comptime is_linux)
-        (regex_c.regex_heap_alloc() orelse return null)
-    else
-        (allocator.create(regex_h.regex_t) catch return null);
-
-    const result = regex_h.regcomp(regex, pattern_z.ptr, cflags);
-    if (result != 0) {
-        if (comptime is_linux) {
-            regex_c.regex_heap_free(regex);
-        } else {
-            allocator.destroy(regex);
-        }
-        return null;
-    }
-    return regex;
+    const rf = posix_regex.flags();
+    var cflags: c_int = rf.nosub;
+    if (ignore_case) cflags |= rf.icase;
+    if (extended) cflags |= rf.extended;
+    return posix_regex.compile(pattern_z, cflags);
 }
 
 /// Free a compiled regex.
-fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
-    regex_h.regfree(regex);
-    if (comptime is_linux) {
-        regex_c.regex_heap_free(regex);
-    } else {
-        allocator.destroy(regex);
-    }
+fn freeRegex(allocator: Allocator, regex: *posix_regex.Regex) void {
+    _ = allocator;
+    posix_regex.deinit(regex);
 }
 
 /// Scan leading global options and starting paths before the expression.
@@ -2381,12 +2351,12 @@ fn evaluateLeaf_perm(stat_buf: StatInfo, pe: PermExpr) bool {
 
 /// Run a compiled POSIX regex against the full path. Returns false on alloc
 /// failure (preserving the original best-effort behavior).
-fn evaluateLeaf_regex(allocator: Allocator, regex_ptr: *regex_h.regex_t, path: []const u8) bool {
+fn evaluateLeaf_regex(allocator: Allocator, regex_ptr: *posix_regex.Regex, path: []const u8) bool {
     assert(path.len <= std.Io.Dir.max_path_bytes);
     const path_z = allocator.dupeZ(u8, path) catch return false;
     defer allocator.free(path_z);
     assert(path_z.len == path.len);
-    return regex_h.regexec(regex_ptr, path_z.ptr, 0, null, 0) == 0;
+    return posix_regex.exec(regex_ptr, path_z.ptr, 0, null, 0) == 0;
 }
 
 /// Compare a file's birth time age in days against a `-Btime` predicate. Returns
