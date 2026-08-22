@@ -69,7 +69,42 @@ jobs:
             set -eu
             export PATH="/usr/local/zig-x86_64-freebsd-0.16.0:/usr/local/bin:$PATH"
             zig build test
-            fakeroot zig build test-privileged
+            # ETXTBSY/FileBusy under fakeroot can hang the Zig runner
+            # after spawn failure (56m on tail_privileged_test). Retry
+            # like just test-privileged; bound each attempt at 600s so
+            # a hang cannot consume the 60-minute job timeout.
+            for attempt in 1 2 3; do
+              echo "fakeroot zig build test-privileged (attempt ${attempt})"
+              set +e
+              fakeroot zig build test-privileged &
+              priv_pid=$!
+              waited=0
+              rc=0
+              while [ "$waited" -lt 600 ]; do
+                if ! kill -0 "$priv_pid" 2>/dev/null; then
+                  wait "$priv_pid"
+                  rc=$?
+                  break
+                fi
+                sleep 1
+                waited=$((waited + 1))
+              done
+              if kill -0 "$priv_pid" 2>/dev/null; then
+                kill "$priv_pid" 2>/dev/null || true
+                wait "$priv_pid" 2>/dev/null || true
+                rc=124
+              fi
+              set -e
+              if [ "$rc" -eq 0 ]; then
+                exit 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "attempt ${attempt} failed (rc=${rc}); retrying in 2s"
+                sleep 2
+              fi
+            done
+            echo "all 3 privileged attempts failed"
+            exit 1
 
   openbsd:
     timeout-minutes: 60
