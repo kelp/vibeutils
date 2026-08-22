@@ -254,6 +254,53 @@ fn printEntryName_writeIcon(entry: Entry, writer: anytype, style: anytype) !void
     if (icon_color != null and style.color_mode != .none) try style.reset();
 }
 
+fn sgrForEntry(table: *const common.ls_colors.Table, entry: Entry) common.ls_colors.ColorHit {
+    std.debug.assert(@intFromPtr(table) != 0);
+    std.debug.assert(entry.name.len > 0);
+    const mode: ?u32 = if (entry.stat) |stat| @intCast(stat.mode) else null;
+    const nlink: u32 = if (entry.stat) |stat| stat.nlink else 1;
+    return common.ls_colors.sgrFor(table, entry.kind, mode, nlink, entry.name, false);
+}
+
+fn writeEntryNameColor(
+    entry: Entry,
+    writer: anytype,
+    style: anytype,
+    options: LsOptions,
+) !bool {
+    std.debug.assert(entry.name.len > 0);
+    std.debug.assert(style.color_mode != .none);
+    if (options.ls_colors) |table| {
+        switch (sgrForEntry(table, entry)) {
+            .sgr => |sgr| {
+                try common.ls_colors.writeWrapped(writer, table, sgr);
+                return true;
+            },
+            .uncolored => return false,
+            .missing => {},
+        }
+    }
+    try style.setColor(getFileColor(entry));
+    return true;
+}
+
+fn writeEntryNameReset(
+    writer: anytype,
+    style: anytype,
+    options: LsOptions,
+    color_started: bool,
+) !void {
+    std.debug.assert(style.color_mode != .none);
+    std.debug.assert(@intFromEnum(style.color_mode) > 0);
+    // GNU prints ec/CSI-reset only after a start sequence was applied.
+    if (!color_started) return;
+    if (options.ls_colors) |table| {
+        try common.ls_colors.writeEnd(writer, table);
+        return;
+    }
+    try style.reset();
+}
+
 /// Write the entry name with file-type color and -b/-q transformations.
 fn printEntryName_writeName(
     entry: Entry,
@@ -262,9 +309,9 @@ fn printEntryName_writeName(
     options: LsOptions,
 ) !void {
     std.debug.assert(entry.name.len > 0);
-    const color = getFileColor(entry);
+    var color_started = false;
     if (style.color_mode != .none) {
-        try style.setColor(color);
+        color_started = try writeEntryNameColor(entry, writer, style, options);
     }
 
     // Apply -b: C-style escape sequences for non-printable characters
@@ -282,7 +329,7 @@ fn printEntryName_writeName(
     }
 
     if (style.color_mode != .none) {
-        try style.reset();
+        try writeEntryNameReset(writer, style, options, color_started);
     }
 }
 
