@@ -93,7 +93,12 @@ Use these models and no substitute:
 
 - Grok 4.6: `cursor-grok-4.6-high-fast`
 - GPT-5.6-Sol: `gpt-5.6-sol-high`
-- Fable 5: `claude-fable-5-thinking-high`
+- Opus 5: `claude-opus-5-thinking-high`
+
+Stay at three reviewers. Do not add a fourth
+model. If a slug is missing from the Task
+allowlist, report it and continue with the two
+that remain. Do not invent a substitute.
 
 If a requested model is not in the available list, do
 not pick a replacement. Report the missing model.
@@ -106,7 +111,7 @@ CHANGES. No file-by-file essay.
 
 ### Brief, then split axes
 
-Do not send Sol or Fable `AGENTS.md`, `CLAUDE.md`, or
+Do not send Sol or Opus `AGENTS.md`, `CLAUDE.md`, or
 named source files in full.
 
 1. Grok reads the plan and the files it names, then
@@ -118,15 +123,15 @@ named source files in full.
    `CLAUDE.md` / `tdd` lines that apply (skip-first,
    silently-degrade, TDD split). Sol answers: does the
    plan violate those rules?
-3. Fable gets the brief, the plan Tests section, and
-   the test file or the `git diff` of the tests. Fable
+3. Opus gets the brief, the plan Tests section, and
+   the test file or the `git diff` of the tests. Opus
    answers: are the tests enough, and is RED real?
 4. Spec impact: attach `docs/specs/<util>-flags.md`
    only when the plan edits flags. Otherwise write
    “no flag-matrix change” in the brief.
 
 Reviewers must still see the **real plan** (and, for
-Fable, the real test text). Do not paraphrase the
+Opus, the real test text). Do not paraphrase the
 change in place of those artifacts.
 
 ### Later rounds
@@ -228,7 +233,7 @@ split (test-only SHA vs impl-only SHA). Do not say
 Grok: does the diff match the plan and stay in
 `src/common/` / Tiger caps?
 Sol: CLAUDE / TDD / skip-first on the diff.
-Fable: does the guarding test still have teeth?
+Opus: does the guarding test still have teeth?
 
 The parent subscribes to CI. Reviewers do not poll
 runs. Ignore usage-limit bot comments.
@@ -291,10 +296,12 @@ the user explicitly asks to merge.
   before the user approves that document.
 - Do not substitute a different plan-review model
   when a named model is unavailable.
-- Do not send Sol or Fable the full tree, full
+- Do not send Sol or Opus the full tree, full
   `AGENTS.md` / `CLAUDE.md`, or “read this 9k-line
   file.” Brief + real plan/diff + the rule excerpt
   that applies.
+- Do not add a fourth review model. Three axes is
+  the gate.
 - Do not re-run all three models on a wording nit.
   Resume the objector with the delta.
 - Do not ask reviewers to watch CI.

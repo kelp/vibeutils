@@ -269,10 +269,10 @@ implementation files.
   heading is one pull request. Plan and patch
   review use a one-page brief and split axes
   (Grok: scope/process; Sol: CLAUDE/TDD;
-  Fable: test teeth). Send Sol and Fable the
+  Opus 5: test teeth). Send Sol and Opus the
   real plan or `git show` diff, not the full
   tree. Resume only the objector on nits. The
-  parent watches CI.
+  parent watches CI. Stay at three reviewers.
 - Implementing a new utility → the `new-util` skill
   (classification, TDD phases, template).
 - Writing Zig → the `zig-patterns` skill;
