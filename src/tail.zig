@@ -982,7 +982,9 @@ fn followSlot_printQuoted(
 }
 
 /// Try to add one positional to the follow set. Returns null when plain `-f`
-/// should omit a failed dump path.
+/// should omit a failed dump path or a dump-ok follow reopen that cannot
+/// open. Dump-ok reopen failures print `cannot open`; dump failures do not
+/// print again.
 fn followSet_collectOne(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -998,17 +1000,20 @@ fn followSet_collectOne(
 
     var slot = try followSlot_blank(allocator, path, slot_index);
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+        if (!dump_failed) {
+            followSlot_printCannotOpen(allocator, stderr_writer, path, err);
+        }
         if (options.follow_retry) {
-            if (!dump_failed) {
-                followSlot_printCannotOpen(allocator, stderr_writer, path, err);
-            }
             return slot;
         }
         allocator.free(slot.path_z);
         return null;
     };
-    followSlot_attachFile(io, &slot, file, false) catch {
+    followSlot_attachFile(io, &slot, file, false) catch |err| {
         file.close(io);
+        if (!dump_failed) {
+            followSlot_printCannotOpen(allocator, stderr_writer, path, err);
+        }
         if (options.follow_retry) return slot;
         allocator.free(slot.path_z);
         return null;

@@ -112,6 +112,12 @@
 
 ### Fixed
 
+- **`tail -f` prints `cannot open` when a follow reopen fails after a
+  successful dump.** The slot is still omitted from the follow set, but
+  vanishing between dump and reopen no longer exits 1 with empty
+  stderr. `-F` already printed this diagnostic; dump-failed `-f` paths
+  stay silent because the dump already reported them.
+
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not
