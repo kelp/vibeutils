@@ -169,10 +169,11 @@ fn fsNamelen(fs: *const StatFs) u32 {
 }
 
 fn fsFrsize(fs: *const StatFs) u64 {
+    // Match df.zig / GNU: f_frsize when present (NetBSD/Linux), else
+    // f_bsize. f_iosize is the preferred transfer size, not the
+    // fundamental fragment size (macOS/FreeBSD/OpenBSD).
     const n: u64 = if (comptime @hasField(StatFs, "f_frsize"))
         @intCast(fs.f_frsize)
-    else if (comptime @hasField(StatFs, "f_iosize"))
-        @intCast(fs.f_iosize)
     else
         @intCast(fs.f_bsize);
     std.debug.assert(n > 0);
