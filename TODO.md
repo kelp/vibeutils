@@ -876,12 +876,19 @@ For each utility:
 - [x] Implement: Space calculation
 - [x] Implement: Filesystem filtering
 - [x] Man page: Write concise man page with examples
-- [ ] Investigate: APFS usage accounting on macOS root differs from
+- [x] Investigate: APFS usage accounting on macOS root differs from
       `/bin/df`: we report ~86% used for `/`, system df reports 8%.
-      Likely we count the sealed system snapshot volume while macOS
-      counts the data volume (or includes purgeable space). Verify
-      which numbers GNU df would show and align. Found in the
-      v0.13.0 pre-release smoke test.
+      RESOLVED for v0.13.0: not a bug. `statfs("/")` reports
+      APFS container-wide blocks; GNU df 9.11 passes those through
+      (~86% used) and we match GNU on `/`,
+      `/System/Volumes/Data`, and `/System/Volumes/VM`. Apple's
+      `/bin/df` shows ~9% because it applies its own sealed-system-
+      snapshot accounting that the statfs interface does not expose;
+      matching it would diverge from both the kernel numbers and
+      GNU. Bonus: for firmlinked paths like `/tmp` we attribute the
+      correct volume (Data) where GNU df's string-prefix mount walk
+      attributes the root snapshot. Originally found in the v0.13.0
+      pre-release smoke test.
 
 ### Phase 4: Advanced Utilities
 
