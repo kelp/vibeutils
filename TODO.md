@@ -1185,8 +1185,7 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 #### 2. GitHub Actions Workflow ✓
 - [x] Linux: Test with fakeroot (automated privilege simulation)
 - [x] macOS: Native testing with privilege simulation support
-- [ ] BSD: Set up VM-based testing with vmactions (not implemented;
-      no BSD workflow in `.github/workflows/`)
+- [x] BSD: Set up VM-based testing with vmactions (`.github/workflows/bsd.yml`)
 - [x] Add privileged test matrix to CI pipeline
 - [x] Cross-platform CI/CD with Ubuntu and macOS runners
 - [x] Coverage reporting with Codecov integration

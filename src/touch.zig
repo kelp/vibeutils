@@ -878,7 +878,7 @@ test "touch creates new file" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/new_file.txt", .{tmp_path});
@@ -903,7 +903,7 @@ test "touch updates existing file timestamp" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/existing.txt", .{tmp_path});
@@ -930,7 +930,7 @@ test "touch -c does not create file" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/no_create.txt", .{tmp_path});
@@ -955,7 +955,7 @@ test "touch -a updates only access time" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/access_only.txt", .{tmp_path});
@@ -988,7 +988,7 @@ test "touch -m updates only modification time" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/modify_only.txt", .{tmp_path});
@@ -1025,7 +1025,7 @@ test "touch -r uses reference file times" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const ref_path = try std.fmt.allocPrint(testing.allocator, "{s}/reference.txt", .{tmp_path});
@@ -1088,7 +1088,7 @@ test "touch --time=access updates only access time" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/time_access.txt", .{tmp_path});
@@ -1115,7 +1115,7 @@ test "touch --time=modify updates only modification time" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/time_modify.txt", .{tmp_path});
@@ -1139,7 +1139,7 @@ test "touch multiple files" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const file1 = try std.fmt.allocPrint(testing.allocator, "{s}/file1.txt", .{tmp_path});
@@ -1165,7 +1165,7 @@ test "touch with -t timestamp" {
 
     // Get real path for the temporary directory
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/timestamp.txt", .{tmp_path});
@@ -1188,12 +1188,11 @@ test "touch with -t timestamp" {
 // ==================== -A (adjust time - silent no-op on Linux) tests ====================
 
 test "touch: -A flag is accepted as silent no-op" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_test.txt", .{tmp_path});
@@ -1217,12 +1216,11 @@ test "touch: -A flag is accepted as silent no-op" {
 // ==================== -d (date string) tests ====================
 
 test "touch: -d flag is parsed by argparser" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/parse_test.txt", .{tmp_path});
@@ -1244,12 +1242,11 @@ test "touch: -d flag is parsed by argparser" {
 }
 
 test "touch: -d with ISO date sets timestamp" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/dated.txt", .{tmp_path});
@@ -1276,12 +1273,11 @@ test "touch: -d with ISO date sets timestamp" {
 }
 
 test "touch: -d with date and time sets timestamp" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/datetime.txt", .{tmp_path});
@@ -1308,12 +1304,11 @@ test "touch: -d with date and time sets timestamp" {
 }
 
 test "touch: -d with invalid date gives error" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(
@@ -1339,12 +1334,11 @@ test "touch: -d with invalid date gives error" {
 }
 
 test "touch: -d with space-separated datetime" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(
@@ -1378,12 +1372,11 @@ test "touch: -d with space-separated datetime" {
 // ==================== -A (adjust) is a silent no-op on Linux ====================
 
 test "touch: -A flag with non-zero value exits zero" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(
@@ -1410,12 +1403,11 @@ test "touch: -A flag with non-zero value exits zero" {
 }
 
 test "touch: -A flag produces no stderr output" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_msg.txt", .{tmp_path});
@@ -1470,12 +1462,11 @@ test "touch: parseIso8601 half-hour timezone offset +05:30" {
 }
 
 test "touch: -d with Z suffix sets correct UTC timestamp on file" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/utc_z.txt", .{tmp_path});
@@ -1501,12 +1492,11 @@ test "touch: -d with Z suffix sets correct UTC timestamp on file" {
 }
 
 test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
-    const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/tz_plus5.txt", .{tmp_path});
@@ -1541,7 +1531,7 @@ test "touch: -A flag still touches file timestamps (adjustment ignored)" {
     file.close(io);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir().realPath(io, &path_buf);
+    const n = try tmp_dir.realPath(&path_buf);
     const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(

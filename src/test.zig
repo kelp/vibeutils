@@ -1958,7 +1958,12 @@ test "-G operator: file group matches effective group ID" {
 
     // Create a file owned by current user/group
     const test_file = try tmp.dir().createFile(io, "test_file", .{});
+    // Workspace dirs on some guests are setgid to a host gid; chown back
+    // to egid so GNU `test -G` (file gid == getegid()) can stay live.
+    _ = std.c.fchown(test_file.handle, std.c.geteuid(), std.c.getegid());
     test_file.close(io);
+    const file_gid = try tmp.fileGid("test_file");
+    try common.test_dir.skipUnlessGidIsEgid(file_gid);
 
     const temp_path = try tmp.getPath("test_file");
     defer testing.allocator.free(temp_path);

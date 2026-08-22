@@ -8,27 +8,16 @@ const std = @import("std");
 const common = @import("common");
 const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
-const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
-
-const c = @cImport({
-    @cInclude("regex.h");
-});
-
-const is_linux = builtin.os.tag == .linux;
-
-const regex_c = if (is_linux) struct {
-    extern "c" fn regex_heap_alloc() ?*c.regex_t;
-    extern "c" fn regex_heap_free(re: *c.regex_t) void;
-} else struct {};
+const posix_regex = @import("posix_regex.zig");
 
 /// Numbering style for a section
 const NumberingStyle = union(enum) {
     all, // a: number all lines
     non_empty, // t: number only non-empty lines (default body)
     none, // n: do not number lines
-    regex: *c.regex_t, // p<pattern>: number lines matching regex
+    regex: *posix_regex.Regex, // p<pattern>: number lines matching regex
 };
 
 /// Number output format
@@ -211,19 +200,9 @@ fn parseNumberingStyleFull(s: []const u8, allocator: Allocator) ?NumberingStyle 
         const pattern = s[1..];
         const pattern_z = allocator.dupeZ(u8, pattern) catch return null;
         defer allocator.free(pattern_z);
-        const regex = if (comptime is_linux)
-            (regex_c.regex_heap_alloc() orelse return null)
-        else
-            (allocator.create(c.regex_t) catch return null);
-        const result = c.regcomp(regex, pattern_z.ptr, c.REG_NOSUB | c.REG_EXTENDED);
-        if (result != 0) {
-            if (comptime is_linux) {
-                regex_c.regex_heap_free(regex);
-            } else {
-                allocator.destroy(regex);
-            }
-            return null;
-        }
+        const rf = posix_regex.flags();
+        const cflags: c_int = rf.nosub | rf.extended;
+        const regex = posix_regex.compile(pattern_z, cflags) orelse return null;
         return .{ .regex = regex };
     }
     return null;
@@ -715,7 +694,7 @@ fn processLine_styleRegex(
     writer: *std.Io.Writer,
     line: []const u8,
     is_blank: bool,
-    re: *c.regex_t,
+    re: *posix_regex.Regex,
     opts: NlOptions,
     state: *NlState,
     allocator: Allocator,
@@ -734,7 +713,7 @@ fn processLine_styleRegex(
             return;
         };
         defer allocator.free(line_z);
-        const exec_result = c.regexec(re, line_z.ptr, 0, null, 0);
+        const exec_result = posix_regex.exec(re, line_z.ptr, 0, null, 0);
         if (exec_result == 0) {
             try writeNumberedLine(writer, state.line_number, line, opts);
             state.line_number += opts.increment;
@@ -795,22 +774,16 @@ pub fn main(init: std.process.Init) noreturn {
 }
 
 /// Free any compiled regex patterns held by the resolved options to prevent
-/// leaks. Called from runNl's defer; mirrors the allocation in
-/// parseNumberingStyleFull (heap-allocated on Linux, allocator-backed else).
+/// leaks. Called from runNl's defer; mirrors the heap allocation in
+/// parseNumberingStyleFull.
 fn runNl_freeRegexStyles(opts: NlOptions, allocator: Allocator) void {
+    _ = allocator;
     std.debug.assert(opts.width >= 1);
     std.debug.assert(opts.join_blank_lines >= 1);
 
     inline for (.{ opts.body_style, opts.header_style, opts.footer_style }) |style| {
         switch (style) {
-            .regex => |regex| {
-                c.regfree(regex);
-                if (comptime is_linux) {
-                    regex_c.regex_heap_free(regex);
-                } else {
-                    allocator.destroy(regex);
-                }
-            },
+            .regex => |regex| posix_regex.deinit(regex),
             else => {},
         }
     }

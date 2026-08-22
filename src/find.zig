@@ -16,19 +16,7 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
 const c = std.c;
-
-const regex_h = @cImport({
-    @cInclude("regex.h");
-});
-
-const is_linux = builtin.os.tag == .linux;
-
-// On Linux, regex_t is opaque to Zig (glibc internal types can't be parsed).
-// Use C helper functions for heap allocation instead of Zig's allocator.
-const regex_c = if (is_linux) struct {
-    extern "c" fn regex_heap_alloc() ?*regex_h.regex_t;
-    extern "c" fn regex_heap_free(re: *regex_h.regex_t) void;
-} else struct {};
+const posix_regex = @import("posix_regex.zig");
 
 // libc's passwd and group records are declared exactly once in the tree, in
 // common.user_group; these aliases keep the lookups below reading like the C
@@ -206,7 +194,7 @@ const ExprData = union {
     uid_val: c.uid_t,
     gid_val: c.gid_t,
     newerxy_data: NewerXYData,
-    regex_ptr: *regex_h.regex_t,
+    regex_ptr: *posix_regex.Regex,
     none: void,
 };
 
@@ -362,6 +350,11 @@ fn parseFileType(str: []const u8) !FileType {
 // Stat helper
 // ============================================================================
 
+const Timespec = struct {
+    sec: i64 = 0,
+    nsec: i64 = 0,
+};
+
 /// Cross-platform stat result. On Linux c.Stat is void, so we use our own struct.
 const StatInfo = struct {
     dev: i64 = 0,
@@ -373,11 +366,11 @@ const StatInfo = struct {
     size: i64 = 0,
     blksize: i64 = 0,
     blocks: i64 = 0,
-    atim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
-    mtim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
-    ctim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    atim: Timespec = .{},
+    mtim: Timespec = .{},
+    ctim: Timespec = .{},
     /// macOS-only: birthtime. Zero on Linux.
-    birthtimespec: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    birthtimespec: Timespec = .{},
     /// macOS-only: file flags (chflags). Zero on Linux.
     flags: u32 = 0,
 };
@@ -443,10 +436,51 @@ fn doStat_buildStatInfoLinux(stx: std.os.linux.Statx) StatInfo {
     };
 }
 
+/// Widen a platform `st_dev` to a u64 bit pattern.
+///
+/// Darwin/OpenBSD `dev_t` is a signed i32; FreeBSD/NetBSD use u64.
+/// `@intCast` sign-extends a high-bit i32 and traps a u64 above i64 max.
+/// Reinterpret the bits and zero-extend, matching `file.widenDev`.
+fn widenDev(dev: anytype) u64 {
+    const T = @TypeOf(dev);
+    const bits = @bitSizeOf(T);
+    std.debug.assert(bits == 32 or bits == 64);
+    std.debug.assert(@typeInfo(T) == .int);
+    const unsigned: @Int(.unsigned, bits) = @bitCast(dev);
+    return @as(u64, unsigned);
+}
+
+/// Read a timespec by Darwin name (`atimespec`) or POSIX name (`atim`).
+/// Missing both names (birth time on some BSDs) yields zeros.
+fn timespecField(
+    stat_buf: anytype,
+    comptime darwin_name: []const u8,
+    comptime posix_name: []const u8,
+) Timespec {
+    std.debug.assert(darwin_name.len > 0);
+    std.debug.assert(posix_name.len > 0);
+    std.debug.assert(!std.mem.eql(u8, darwin_name, posix_name));
+    const T = @TypeOf(stat_buf);
+    const has_darwin = @hasField(T, darwin_name);
+    const has_posix = @hasField(T, posix_name);
+    // A platform uses one spelling, never both Darwin and POSIX names.
+    const both_names = has_darwin and has_posix;
+    std.debug.assert(!both_names);
+    if (has_darwin) {
+        const ts = @field(stat_buf, darwin_name);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+    if (has_posix) {
+        const ts = @field(stat_buf, posix_name);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+    return .{ .sec = 0, .nsec = 0 };
+}
+
 /// Build StatInfo from a c.Stat result (macOS/BSD).
 fn doStat_buildStatInfoBsd(stat_buf: c.Stat) StatInfo {
     return StatInfo{
-        .dev = @intCast(stat_buf.dev),
+        .dev = @bitCast(widenDev(stat_buf.dev)),
         .ino = @intCast(stat_buf.ino),
         .mode = @intCast(stat_buf.mode),
         .nlink = @intCast(stat_buf.nlink),
@@ -455,22 +489,10 @@ fn doStat_buildStatInfoBsd(stat_buf: c.Stat) StatInfo {
         .size = @intCast(stat_buf.size),
         .blksize = @intCast(stat_buf.blksize),
         .blocks = @intCast(stat_buf.blocks),
-        .atim = .{
-            .sec = @intCast(stat_buf.atimespec.sec),
-            .nsec = @intCast(stat_buf.atimespec.nsec),
-        },
-        .mtim = .{
-            .sec = @intCast(stat_buf.mtimespec.sec),
-            .nsec = @intCast(stat_buf.mtimespec.nsec),
-        },
-        .ctim = .{
-            .sec = @intCast(stat_buf.ctimespec.sec),
-            .nsec = @intCast(stat_buf.ctimespec.nsec),
-        },
-        .birthtimespec = .{
-            .sec = @intCast(stat_buf.birthtimespec.sec),
-            .nsec = @intCast(stat_buf.birthtimespec.nsec),
-        },
+        .atim = timespecField(stat_buf, "atimespec", "atim"),
+        .mtim = timespecField(stat_buf, "mtimespec", "mtim"),
+        .ctim = timespecField(stat_buf, "ctimespec", "ctim"),
+        .birthtimespec = timespecField(stat_buf, "birthtimespec", "birthtim"),
         .flags = if (@hasField(@TypeOf(stat_buf), "flags")) @intCast(stat_buf.flags) else 0,
     };
 }
@@ -581,39 +603,21 @@ fn compileRegex(
     pattern: []const u8,
     ignore_case: bool,
     extended: bool,
-) ?*regex_h.regex_t {
+) ?*posix_regex.Regex {
     const pattern_z = allocator.dupeZ(u8, pattern) catch return null;
     defer allocator.free(pattern_z);
 
-    var cflags: c_int = regex_h.REG_NOSUB;
-    if (ignore_case) cflags |= regex_h.REG_ICASE;
-    if (extended) cflags |= regex_h.REG_EXTENDED;
-
-    const regex = if (comptime is_linux)
-        (regex_c.regex_heap_alloc() orelse return null)
-    else
-        (allocator.create(regex_h.regex_t) catch return null);
-
-    const result = regex_h.regcomp(regex, pattern_z.ptr, cflags);
-    if (result != 0) {
-        if (comptime is_linux) {
-            regex_c.regex_heap_free(regex);
-        } else {
-            allocator.destroy(regex);
-        }
-        return null;
-    }
-    return regex;
+    const rf = posix_regex.flags();
+    var cflags: c_int = rf.nosub;
+    if (ignore_case) cflags |= rf.icase;
+    if (extended) cflags |= rf.extended;
+    return posix_regex.compile(pattern_z, cflags);
 }
 
 /// Free a compiled regex.
-fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
-    regex_h.regfree(regex);
-    if (comptime is_linux) {
-        regex_c.regex_heap_free(regex);
-    } else {
-        allocator.destroy(regex);
-    }
+fn freeRegex(allocator: Allocator, regex: *posix_regex.Regex) void {
+    _ = allocator;
+    posix_regex.deinit(regex);
 }
 
 /// Scan leading global options and starting paths before the expression.
@@ -2347,12 +2351,12 @@ fn evaluateLeaf_perm(stat_buf: StatInfo, pe: PermExpr) bool {
 
 /// Run a compiled POSIX regex against the full path. Returns false on alloc
 /// failure (preserving the original best-effort behavior).
-fn evaluateLeaf_regex(allocator: Allocator, regex_ptr: *regex_h.regex_t, path: []const u8) bool {
+fn evaluateLeaf_regex(allocator: Allocator, regex_ptr: *posix_regex.Regex, path: []const u8) bool {
     assert(path.len <= std.Io.Dir.max_path_bytes);
     const path_z = allocator.dupeZ(u8, path) catch return false;
     defer allocator.free(path_z);
     assert(path_z.len == path.len);
-    return regex_h.regexec(regex_ptr, path_z.ptr, 0, null, 0) == 0;
+    return posix_regex.exec(regex_ptr, path_z.ptr, 0, null, 0) == 0;
 }
 
 /// Compare a file's birth time age in days against a `-Btime` predicate. Returns
@@ -7179,15 +7183,18 @@ test "find: -group matches files by group name" {
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "grpfile.txt", .{});
+    _ = std.c.fchown(f.handle, std.c.geteuid(), std.c.getegid());
     f.close(testing.io);
 
     const dir_path = try tmp.getBasePath();
 
     // Get the GID of the test file, then look up the group name. Same reason
     // as -user above: the shared module owns the libc binding, not find.
-    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "grpfile.txt" });
-    const stat_buf = try doStat(file_path, false);
-    const group_info = try common.user_group.getGroupById(@intCast(stat_buf.gid), allocator);
+    // A guest workspace can be setgid to a host gid missing from NSS; skip
+    // when getgrgid is still null after the chown attempt.
+    const file_gid = try tmp.fileGid("grpfile.txt");
+    try common.test_dir.skipUnlessGroupNamed(file_gid);
+    const group_info = try common.user_group.getGroupById(@intCast(file_gid), allocator);
     try testing.expect(group_info.name.len > 0);
     const groupname = group_info.name;
 
@@ -7219,9 +7226,15 @@ test "find: -nogroup matches nothing for normal files" {
     defer tmp.deinit();
 
     const f = try tmp.dir().createFile(testing.io, "normalfile.txt", .{});
+    _ = std.c.fchown(f.handle, std.c.geteuid(), std.c.getegid());
     f.close(testing.io);
 
     const dir_path = try tmp.getBasePath();
+    // `-nogroup` matches when getgrgid is null. That is GNU-correct on a
+    // guest whose file gid is missing from NSS, so the "normal files have
+    // a named group" premise is skipped rather than inverted.
+    const file_gid = try tmp.fileGid("normalfile.txt");
+    try common.test_dir.skipUnlessGroupNamed(file_gid);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

@@ -966,7 +966,7 @@ fn treeTestCreateFile(dir: std.Io.Dir, path: []const u8) !void {
 
 const TreeTestFixture = struct {
     tmp_dir: testing.TmpDir,
-    root_path: [:0]u8,
+    root_path: []u8,
 
     fn init() !TreeTestFixture {
         var tmp_dir = testing.tmpDir(.{});
@@ -980,8 +980,8 @@ const TreeTestFixture = struct {
         try treeTestCreateFile(tmp_dir.dir, "root/beta/skipme/buried.txt");
         try treeTestCreateFile(tmp_dir.dir, "root/.dotfile");
         try treeTestCreateFile(tmp_dir.dir, "root/.hidden/visible.txt");
-        const root_path = try tmp_dir.dir.realPathFileAlloc(
-            testing.io,
+        const root_path = try common.test_dir.tmpDirRealPathFileAlloc(
+            tmp_dir,
             "root",
             testing.allocator,
         );
@@ -1045,8 +1045,8 @@ const TreeTestRun = struct {
 fn treeTestChdir(tmp_dir: *testing.TmpDir) !std.Io.Dir {
     var saved_cwd = try std.Io.Dir.cwd().openDir(testing.io, ".", .{});
     errdefer saved_cwd.close(testing.io);
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
+    const tmp_path = try common.test_dir.tmpDirRealPathFileAlloc(
+        tmp_dir.*,
         ".",
         testing.allocator,
     );
@@ -1098,8 +1098,8 @@ test "tree plan 1b: empty root counts as one directory" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try tmp_dir.dir.createDirPath(testing.io, "empty");
-    const path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
+    const path = try common.test_dir.tmpDirRealPathFileAlloc(
+        tmp_dir,
         "empty",
         testing.allocator,
     );
@@ -1334,8 +1334,8 @@ test "tree plan 11b: file operand is a single-node tree" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try treeTestCreateFile(tmp_dir.dir, "single.txt");
-    const path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
+    const path = try common.test_dir.tmpDirRealPathFileAlloc(
+        tmp_dir,
         "single.txt",
         testing.allocator,
     );
@@ -1360,9 +1360,9 @@ test "tree plan 12: multiple roots concatenate before one combined summary" {
     defer tmp_dir.cleanup();
     try tmp_dir.dir.createDirPath(testing.io, "one");
     try tmp_dir.dir.createDirPath(testing.io, "two");
-    const one = try tmp_dir.dir.realPathFileAlloc(testing.io, "one", testing.allocator);
+    const one = try common.test_dir.tmpDirRealPathFileAlloc(tmp_dir, "one", testing.allocator);
     defer testing.allocator.free(one);
-    const two = try tmp_dir.dir.realPathFileAlloc(testing.io, "two", testing.allocator);
+    const two = try common.test_dir.tmpDirRealPathFileAlloc(tmp_dir, "two", testing.allocator);
     defer testing.allocator.free(two);
     var result = try TreeTestRun.init(&.{ one, two });
     defer result.deinit();
@@ -1477,8 +1477,8 @@ test "tree plan 15b: unreadable root reports a clean diagnostic" {
     defer tmp_dir.cleanup();
     try tmp_dir.dir.createDirPath(testing.io, "locked");
     try treeTestCreateFile(tmp_dir.dir, "locked/secret");
-    const path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
+    const path = try common.test_dir.tmpDirRealPathFileAlloc(
+        tmp_dir,
         "locked",
         testing.allocator,
     );
@@ -1520,8 +1520,8 @@ test "tree plan 16: directory symlink is listed but not followed" {
         if (err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    const root = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
+    const root = try common.test_dir.tmpDirRealPathFileAlloc(
+        tmp_dir,
         "container/root",
         testing.allocator,
     );

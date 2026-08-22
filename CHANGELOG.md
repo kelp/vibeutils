@@ -209,6 +209,32 @@
 
 ### Fixed
 
+- **`realpath`, `readlink`, and `ln -r` work on OpenBSD and NetBSD.**
+  Zig 0.16 `Dir.realPath` / `realPathFile` is
+  `error.OperationUnsupported` there (fd-to-path is only implemented
+  for Darwin, Linux, and FreeBSD). Those utilities now fall back to
+  libc `realpath(3)` of the path string.
+- **`free` reports memory on FreeBSD, OpenBSD, and NetBSD.** Those
+  hosts have no `/proc/meminfo`. Total RAM comes from
+  `std.process.totalSystemMemory`. Page counts and swap are read
+  from each OS's own interface: FreeBSD `sysctlbyname`
+  (`vm.stats.vm.*`), OpenBSD numeric `sysctl` `CTL_VM`/`VM_UVMEXP`,
+  NetBSD `CTL_VM`/`VM_UVMEXP2`. OpenBSD libc has no `sysctlbyname`.
+- **User and group names resolve on BSD.** `getUserName` /
+  `getGroupName` only called `getpwuid` / `getgrgid` on Linux and
+  macOS, so `ls -l`, `stat %G`, and `find -group` printed raw ids
+  on FreeBSD, OpenBSD, and NetBSD.
+- **`ln -L` / default hard links work on OpenBSD.** `linkat` was
+  passed Linux's `AT_SYMLINK_FOLLOW` (0x400); OpenBSD's value is
+  0x04, so every follow-symlink hard link failed with `EINVAL`.
+- **`stat -f` uses each BSD's `statfs`/`statvfs` layout.** The
+  Darwin `statfs` struct was used on every non-Linux host, so
+  FreeBSD `stat -f` trapped while printing `f_mntfromname`.
+- **`df` enumerates mounts on FreeBSD, OpenBSD, and NetBSD.** Those
+  targets used to fail at compile time with `df: unsupported
+  platform`. They now call `getfsstat` (NetBSD: `getvfsstat`) and
+  `statfs`/`statvfs` with each OS's own `statfs` layout, matching
+  the Darwin control flow.
 - **`ls` omits the `LS_COLORS` end sequence when a name is uncolored.**
   Keys like `di=0` (and `ln=0`/`fi=0` on a long-format symlink
   target) write no color start. GNU then skips `ec`/CSI-reset, so a

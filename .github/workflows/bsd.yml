@@ -1,0 +1,169 @@
+name: BSD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions to run on Node 24 regardless of their action.yml-declared
+# runtime.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: bsd-${{ github.ref }}
+  cancel-in-progress: true
+
+# Official Zig 0.16.0 tarballs, not mlugg/setup-zig: that action is
+# Linux/macOS only and cannot run inside the BSD guest. Jobs are
+# independent (no matrix) so a red OS is a real workflow failure.
+#
+# Pin vmactions to the last node20 releases (freebsd v1.4.2,
+# openbsd/netbsd v1.3.6). Current v1 / v1.5.3 declare using: node24;
+# FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 still upgrades these node20
+# actions at runtime.
+#
+# Clone each locked SHA into ./_vmactions/<os>-vm and uses: that local
+# path. A same-repo local action is not matched against the SHA-exact
+# selected-actions allowlist (remote third-party uses fail at parse:
+# startup_failure, zero jobs). Do not vendor node_modules.
+
+permissions:
+  contents: read
+
+jobs:
+  # Host-side pin-check so a guest-image failure still leaves a
+  # Linux job in the graph.
+  workflow-ok:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - run: bash tests/tools/bsd-workflow_test.sh
+
+  freebsd:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Clone pinned freebsd-vm
+        run: |
+          git clone https://github.com/vmactions/freebsd-vm ./_vmactions/freebsd-vm
+          cd ./_vmactions/freebsd-vm
+          git checkout c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e
+      - uses: ./_vmactions/freebsd-vm
+        with:
+          usesh: true
+          prepare: |
+            set -eu
+            pkg install -y curl fakeroot perl5
+            curl -fsSL -o /tmp/zig.tar.xz \
+              https://ziglang.org/download/0.16.0/zig-x86_64-freebsd-0.16.0.tar.xz
+            mkdir -p /usr/local/bin
+            tar -xf /tmp/zig.tar.xz -C /usr/local
+            ln -sf /usr/local/zig-x86_64-freebsd-0.16.0/zig /usr/local/bin/zig
+          run: |
+            set -eu
+            export PATH="/usr/local/zig-x86_64-freebsd-0.16.0:/usr/local/bin:$PATH"
+            zig build test
+            # ETXTBSY/FileBusy under fakeroot can hang the Zig runner
+            # after spawn failure (56m on tail_privileged_test). Retry
+            # like just test-privileged; bound each attempt at 600s so
+            # a hang cannot consume the 60-minute job timeout.
+            for attempt in 1 2 3; do
+              echo "fakeroot zig build test-privileged (attempt ${attempt})"
+              set +e
+              # New process group so a hang can be reaped: SIGTERM then
+              # SIGKILL to the group. Bare kill of $! leaves zig/fakeroot
+              # children that ignore TERM and hold the 60-minute job.
+              perl -e 'setpgrp(0,0) or die; exec { $ARGV[0] } @ARGV' \
+                fakeroot zig build test-privileged &
+              priv_pid=$!
+              waited=0
+              rc=0
+              while [ "$waited" -lt 600 ]; do
+                if ! kill -0 "$priv_pid" 2>/dev/null; then
+                  wait "$priv_pid"
+                  rc=$?
+                  break
+                fi
+                sleep 1
+                waited=$((waited + 1))
+              done
+              if kill -0 "$priv_pid" 2>/dev/null; then
+                kill -TERM -"$priv_pid" 2>/dev/null || true
+                sleep 2
+                kill -KILL -"$priv_pid" 2>/dev/null || true
+                wait "$priv_pid" 2>/dev/null || true
+                rc=124
+              fi
+              set -e
+              if [ "$rc" -eq 0 ]; then
+                exit 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "attempt ${attempt} failed (rc=${rc}); retrying in 2s"
+                sleep 2
+              fi
+            done
+            echo "all 3 privileged attempts failed"
+            exit 1
+
+  openbsd:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Clone pinned openbsd-vm
+        run: |
+          git clone https://github.com/vmactions/openbsd-vm ./_vmactions/openbsd-vm
+          cd ./_vmactions/openbsd-vm
+          git checkout 9a8e4351a4a0dc6238e7c69276dcbf6c03bea576
+      - uses: ./_vmactions/openbsd-vm
+        with:
+          usesh: true
+          prepare: |
+            set -eu
+            pkg_add curl
+            pkg_add xz
+            export PATH="/usr/local/bin:$PATH"
+            curl -fsSL -o /tmp/zig.tar.xz \
+              https://ziglang.org/download/0.16.0/zig-x86_64-openbsd-0.16.0.tar.xz
+            mkdir -p /usr/local/bin
+            xz -dc /tmp/zig.tar.xz | tar -xf - -C /usr/local
+            ln -sf /usr/local/zig-x86_64-openbsd-0.16.0/zig /usr/local/bin/zig
+          run: |
+            set -eu
+            export PATH="/usr/local/zig-x86_64-openbsd-0.16.0:/usr/local/bin:$PATH"
+            zig build test
+
+  netbsd:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Clone pinned netbsd-vm
+        run: |
+          git clone https://github.com/vmactions/netbsd-vm ./_vmactions/netbsd-vm
+          cd ./_vmactions/netbsd-vm
+          git checkout e04aec09540429f9cebb0e7941f7cd0c0fc3b44f
+      - uses: ./_vmactions/netbsd-vm
+        with:
+          usesh: true
+          prepare: |
+            set -eu
+            pkg_add curl
+            pkg_add xz
+            export PATH="/usr/pkg/bin:/usr/local/bin:$PATH"
+            curl -fsSL -o /tmp/zig.tar.xz \
+              https://ziglang.org/download/0.16.0/zig-x86_64-netbsd-0.16.0.tar.xz
+            mkdir -p /usr/local/bin
+            xz -dc /tmp/zig.tar.xz | tar -xf - -C /usr/local
+            ln -sf /usr/local/zig-x86_64-netbsd-0.16.0/zig /usr/local/bin/zig
+          run: |
+            set -eu
+            export PATH="/usr/local/zig-x86_64-netbsd-0.16.0:/usr/pkg/bin:/usr/local/bin:$PATH"
+            zig build test

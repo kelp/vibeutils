@@ -2993,7 +2993,7 @@ test "tail: -f and -r are mutually exclusive" {
 
     // Build an absolute path for the test file
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const abs_path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buf);
+    const abs_path_len = try tmp_dir.realPathFile("test.txt", &path_buf);
     const abs_path = path_buf[0..abs_path_len];
 
     const args = [_][]const u8{ "-f", "-r", abs_path };

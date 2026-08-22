@@ -7,9 +7,11 @@ const common = @import("common");
 const TestDir = common.test_dir.TestDir;
 const testing = std.testing;
 
-/// AT_SYMLINK_FOLLOW flag for linkat: follow symlinks when creating hard links.
-/// Value is platform-dependent: 0x0040 on macOS, 0x0400 on Linux.
-const AT_SYMLINK_FOLLOW: c_int = if (@import("builtin").os.tag == .macos) 0x0040 else 0x0400;
+/// linkat(2) AT_SYMLINK_FOLLOW. The numeric value is not portable:
+/// Linux/FreeBSD/NetBSD use 0x400, macOS 0x40, OpenBSD 0x04. A
+/// hardcoded Linux value makes every default/-L hard link fail on
+/// OpenBSD with EINVAL.
+const AT_SYMLINK_FOLLOW: c_int = c.AT.SYMLINK_FOLLOW;
 
 /// Field order is GNU ln's own `longopts[]` order, because that is the order
 /// an ambiguous abbreviation lists its candidates in (`ln --v` -> '--verbose'
@@ -895,7 +897,7 @@ fn createSingleLink_computeRelativeTarget(
         if (std.fs.path.isAbsolute(target)) {
             break :blk target;
         } else {
-            const len = std.Io.Dir.cwd().realPathFile(io, target, &target_abs_buf) catch |err| {
+            const len = common.path.realPathFromCwd(io, target, &target_abs_buf) catch |err| {
                 common.printErrorWithProgram(
                     allocator,
                     stderr_writer,
@@ -915,7 +917,7 @@ fn createSingleLink_computeRelativeTarget(
         if (std.fs.path.isAbsolute(link_dir)) {
             break :blk link_dir;
         } else {
-            const len = std.Io.Dir.cwd().realPathFile(io, link_dir, &link_dir_abs_buf) catch
+            const len = common.path.realPathFromCwd(io, link_dir, &link_dir_abs_buf) catch
                 break :blk ".";
             break :blk link_dir_abs_buf[0..len];
         }
@@ -1017,13 +1019,16 @@ fn createSingleLinkInDir(
     target: []const u8,
     link_name: []const u8,
     options: LinkOptions,
-    test_dir: std.Io.Dir,
+    test_dir: *TestDir,
 ) !void {
     const io = testing.io;
+    const dir = test_dir.dir();
+    std.debug.assert(target.len > 0);
+    std.debug.assert(link_name.len > 0);
     // Create target file for hard link tests if it doesn't exist
     if (!options.symbolic) {
-        test_dir.access(io, target, .{}) catch {
-            const target_file = try test_dir.createFile(io, target, .{});
+        dir.access(io, target, .{}) catch {
+            const target_file = try dir.createFile(io, target, .{});
             defer target_file.close(io);
             try target_file.writeStreamingAll(io, "test content");
         };
@@ -1031,7 +1036,7 @@ fn createSingleLinkInDir(
 
     // Check if link already exists and handle force option
     const link_exists = blk: {
-        test_dir.access(io, link_name, .{}) catch |err| switch (err) {
+        dir.access(io, link_name, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk false,
             else => break :blk true,
         };
@@ -1044,7 +1049,7 @@ fn createSingleLinkInDir(
 
     // Remove existing link if force is enabled
     if (link_exists and options.force) {
-        test_dir.deleteFile(io, link_name) catch |err| switch (err) {
+        dir.deleteFile(io, link_name) catch |err| switch (err) {
             error.FileNotFound => {}, // Already removed
             else => return err,
         };
@@ -1052,11 +1057,11 @@ fn createSingleLinkInDir(
 
     // Create the link directly in the test directory
     if (options.symbolic) {
-        try test_dir.symLink(io, target, link_name, .{});
+        try dir.symLink(io, target, link_name, .{});
     } else {
         // For hard links, we need to use the full path approach since
         // std.posix.link requires paths accessible from current working directory
-        const test_dir_path = try test_dir.realPathFileAlloc(io, ".", allocator);
+        const test_dir_path = try test_dir.getBasePath();
         defer allocator.free(test_dir_path);
 
         const target_abs = try std.fs.path.join(
@@ -1095,7 +1100,7 @@ test "ln creates hard link to existing file" {
         "target.txt",
         "link.txt",
         .{},
-        tmp_dir.dir(),
+        &tmp_dir,
     );
 
     // Verify link was created
@@ -1124,7 +1129,7 @@ test "ln creates symbolic link" {
         "target.txt",
         "symlink.txt",
         .{ .symbolic = true },
-        tmp_dir.dir(),
+        &tmp_dir,
     );
 
     // Verify symbolic link was created
@@ -1182,7 +1187,7 @@ test "ln allows non-existent target for symbolic link" {
         "nonexistent.txt",
         "symlink.txt",
         .{ .symbolic = true },
-        tmp_dir.dir(),
+        &tmp_dir,
     );
 
     // Verify the symlink exists (but points to non-existent file)
@@ -1213,7 +1218,7 @@ test "ln with force removes existing file" {
         "target.txt",
         "link.txt",
         .{ .force = true },
-        tmp_dir.dir(),
+        &tmp_dir,
     );
 
     // Verify link was replaced
@@ -1243,7 +1248,7 @@ test "ln fails without force on existing file" {
         "target.txt",
         "link.txt",
         .{},
-        tmp_dir.dir(),
+        &tmp_dir,
     );
     try testing.expectError(error.FileExists, result);
 }

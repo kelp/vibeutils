@@ -271,7 +271,7 @@ test "ls: a default ACL is marked when the dirent kind is unknown" {
     try tmp.dir().createDir(io, "plain", .default_dir);
 
     var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir().realPath(io, &dir_buf);
+    const dir_len = try tmp.realPath(&dir_buf);
     const dir_path = dir_buf[0..dir_len];
 
     var acl_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

@@ -303,8 +303,11 @@ test "findGitRoot in non-git directory" {
     try tmp_dir.dir.createDirPath(io, "test/nested/deep");
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const nested_dir = try tmp_dir.dir.openDir(io, "test/nested/deep", .{});
-    const tmp_len = try nested_dir.realPath(io, &path_buf);
+    const tmp_len = try @import("test_dir.zig").tmpDirRealPathFile(
+        tmp_dir,
+        "test/nested/deep",
+        &path_buf,
+    );
     const tmp_path = path_buf[0..tmp_len];
 
     // This test may find the actual repo if run inside one, which is OK
@@ -367,8 +370,11 @@ test "GitRepo init in non-git directory" {
     try tmp_dir.dir.createDirPath(io, "test/nested/deep");
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const nested_dir = try tmp_dir.dir.openDir(io, "test/nested/deep", .{});
-    const tmp_len = try nested_dir.realPath(io, &path_buf);
+    const tmp_len = try @import("test_dir.zig").tmpDirRealPathFile(
+        tmp_dir,
+        "test/nested/deep",
+        &path_buf,
+    );
     const tmp_path = path_buf[0..tmp_len];
 
     // This test may find the actual repo if run inside one
@@ -423,9 +429,11 @@ test "findGitRoot locates root from an absolute subdirectory path" {
         m.close(io);
     }
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    var deep_dir = try tmp_dir.dir.openDir(io, "repo/sub/deep", .{});
-    defer deep_dir.close(io);
-    const deep_len = try deep_dir.realPath(io, &path_buf);
+    const deep_len = try @import("test_dir.zig").tmpDirRealPathFile(
+        tmp_dir,
+        "repo/sub/deep",
+        &path_buf,
+    );
     const result = try findGitRoot(allocator, io, path_buf[0..deep_len]);
     try testing.expect(result != null);
     defer allocator.free(result.?);

@@ -945,8 +945,9 @@ fn tmpPath(
     tmp_dir: *testing.TmpDir,
     sub_path: []const u8,
 ) ![]const u8 {
+    _ = io;
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp_dir.dir.realPath(io, &buf);
+    const n = try @import("test_dir.zig").tmpDirRealPath(tmp_dir.*, &buf);
     const base = buf[0..n];
     if (sub_path.len == 0) return allocator.dupe(u8, base);
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, sub_path });

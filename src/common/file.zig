@@ -46,10 +46,9 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
         .kind = kind,
         .inode = stat_buf.ino,
         .blocks = @intCast(stat_buf.blocks),
-        // `st_dev` is a signed i32 on macOS; devfs and friends report ids
-        // with the high bit set. Reinterpret the bits rather than range
-        // checking, since a negative i32 would not fit in the u64 field.
-        .dev = @as(u32, @bitCast(stat_buf.dev)),
+        // `st_dev` is a signed i32 on macOS; FreeBSD/NetBSD use u64.
+        // widenDev reinterprets the bits and zero-extends.
+        .dev = widenDev(stat_buf.dev),
         .uid = @intCast(stat_buf.uid),
         .gid = @intCast(stat_buf.gid),
         .nlink = @intCast(stat_buf.nlink),
@@ -638,17 +637,15 @@ pub const NameLookup = struct {
 pub fn lookupUserName(uid: u32, buf: []u8) !NameLookup {
     // A u32 needs ten digits, and the fallback below must always fit.
     std.debug.assert(buf.len >= 10);
-    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
-        const c_uid = @as(std.c.uid_t, @intCast(uid));
-        const pw_ptr = std.c.getpwuid(c_uid);
-        if (pw_ptr) |pw| {
-            // The name field is optional, check if it exists
-            if (pw.name) |name_ptr| {
-                const name = std.mem.span(name_ptr);
-                if (name.len < buf.len) {
-                    @memcpy(buf[0..name.len], name);
-                    return .{ .name = buf[0..name.len], .resolved = true };
-                }
+    const c_uid = @as(std.c.uid_t, @intCast(uid));
+    const pw_ptr = user_group.getpwuid(c_uid);
+    if (pw_ptr) |pw| {
+        // The name field is optional, check if it exists
+        if (pw.name) |name_ptr| {
+            const name = std.mem.span(name_ptr);
+            if (name.len < buf.len) {
+                @memcpy(buf[0..name.len], name);
+                return .{ .name = buf[0..name.len], .resolved = true };
             }
         }
     }
@@ -662,17 +659,15 @@ pub fn lookupUserName(uid: u32, buf: []u8) !NameLookup {
 /// lookupUserName does for a uid.
 pub fn lookupGroupName(gid: u32, buf: []u8) !NameLookup {
     std.debug.assert(buf.len >= 10);
-    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
-        const c_gid = @as(std.c.gid_t, @intCast(gid));
-        const gr_ptr = getgrgid(c_gid);
-        if (gr_ptr) |gr| {
-            // The name field is optional, check if it exists
-            if (gr.name) |name_ptr| {
-                const name = std.mem.span(name_ptr);
-                if (name.len < buf.len) {
-                    @memcpy(buf[0..name.len], name);
-                    return .{ .name = buf[0..name.len], .resolved = true };
-                }
+    const c_gid = @as(std.c.gid_t, @intCast(gid));
+    const gr_ptr = getgrgid(c_gid);
+    if (gr_ptr) |gr| {
+        // The name field is optional, check if it exists
+        if (gr.name) |name_ptr| {
+            const name = std.mem.span(name_ptr);
+            if (name.len < buf.len) {
+                @memcpy(buf[0..name.len], name);
+                return .{ .name = buf[0..name.len], .resolved = true };
             }
         }
     }
@@ -700,6 +695,21 @@ pub fn getGroupName(gid: u32, buf: []u8) ![]const u8 {
     std.debug.assert(lookup.name.len > 0);
     std.debug.assert(lookup.name.len <= buf.len);
     return lookup.name;
+}
+
+/// Widen a platform `st_dev` into `FileInfo.dev` (`u64`).
+///
+/// macOS `dev_t` is a signed i32; devfs sets the high bit. `@intCast` into
+/// the u64 field traps, and sign-extending yields the wrong id. FreeBSD
+/// and NetBSD use a u64 `dev_t`; `@bitCast` into a u32 is a compile
+/// error. Reinterpret the bits and zero-extend.
+fn widenDev(dev: anytype) u64 {
+    const T = @TypeOf(dev);
+    const bits = @bitSizeOf(T);
+    std.debug.assert(bits == 32 or bits == 64);
+    std.debug.assert(@typeInfo(T) == .int);
+    const unsigned: @Int(.unsigned, bits) = @bitCast(dev);
+    return @as(u64, unsigned);
 }
 
 // Tests
@@ -828,7 +838,7 @@ test "FileInfo.stat basic" {
 
     // Get the path
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const path_len = try @import("test_dir.zig").tmpDirRealPath(tmp_dir, &path_buf);
     const dir_path = path_buf[0..path_len];
     const path = try std.fmt.bufPrint(path_buf[path_len..], "{s}/test.txt", .{dir_path});
 
@@ -857,6 +867,34 @@ test "FileInfo.stat handles device id with high bit set" {
     try testing.expectEqual(std.Io.File.Kind.directory, info.kind);
     // A populated device id, proving the conversion ran without trapping.
     try testing.expect(info.dev != 0);
+}
+
+test "widenDev reinterprets a 32-bit st_dev with the high bit set" {
+    // macOS devfs: signed i32 with the high bit set must keep those 32
+    // bits in the u64 field, not trap and not sign-extend.
+    const macos_high: i32 = @bitCast(@as(u32, 0x8000_0001));
+    try testing.expectEqual(@as(u64, 0x8000_0001), widenDev(macos_high));
+    try testing.expect(widenDev(macos_high) != 0xffff_ffff_8000_0001);
+}
+
+test "widenDev zero-extends a non-negative 32-bit st_dev" {
+    try testing.expectEqual(@as(u64, 42), widenDev(@as(i32, 42)));
+    try testing.expect(widenDev(@as(i32, 42)) != 0);
+}
+
+test "widenDev reinterprets i32 -1 without sign-extending to 64 bits" {
+    // -1 is all bits set in 32-bit two's complement. Reinterpret, do not
+    // sign-extend to 64.
+    try testing.expectEqual(@as(u64, 0xffff_ffff), widenDev(@as(i32, -1)));
+    try testing.expect(widenDev(@as(i32, -1)) != 0xffff_ffff_ffff_ffff);
+}
+
+test "widenDev preserves a 64-bit st_dev" {
+    // FreeBSD/NetBSD: dev_t is already u64. A value above 32 bits must
+    // survive; truncating through a u32 would drop the high half.
+    const bsd_dev: u64 = 0x1_0000_0001;
+    try testing.expectEqual(bsd_dev, widenDev(bsd_dev));
+    try testing.expect(widenDev(bsd_dev) != 0x0000_0001);
 }
 
 test "formatTime recent file" {

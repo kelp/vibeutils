@@ -1807,7 +1807,7 @@ test "rm: symlink to directory removed without -r" {
     // Build absolute path to the symlink WITHOUT resolving it.
     // realPathFileAlloc would follow the symlink and return the target path.
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const base_len = try tmp.dir().realPath(io, &path_buf);
+    const base_len = try tmp.realPath(&path_buf);
     const base_path = path_buf[0..base_len];
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_dir", .{base_path});
     defer testing.allocator.free(link_path);

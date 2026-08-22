@@ -16,20 +16,24 @@ extern "c" fn geteuid() std.c.uid_t;
 
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-
-const c = @cImport({
-    @cInclude("regex.h");
-});
+const posix_regex = @import("posix_regex.zig");
 
 const is_linux = builtin.os.tag == .linux;
 
-// On Linux, regex_t is opaque to Zig (glibc internal types can't be parsed).
-// Use C helper functions for heap allocation instead of Zig's allocator.
-const regex_c = if (is_linux) struct {
-    extern "c" fn regex_heap_alloc() ?*c.regex_t;
-    extern "c" fn regex_heap_free(re: *c.regex_t) void;
-} else struct {};
+// Names match the former @cImport of regex.h so existing tests keep compiling.
+const c = struct {
+    const regex_t = posix_regex.Regex;
+    const regmatch_t = posix_regex.Match;
+    const regcomp = posix_regex.comp;
+    const regexec = posix_regex.exec;
+    const regfree = posix_regex.freePattern;
+    const regerror = posix_regex.errorMessage;
+};
 
+const regex_c = struct {
+    const regex_heap_alloc = posix_regex.alloc;
+    const regex_heap_free = posix_regex.heapFree;
+};
 const prog_name = "grep";
 
 // ============================================================================
@@ -1205,19 +1209,17 @@ fn compilePattern(
         actual_pattern = wrapped.?;
     }
 
+    const rf = posix_regex.flags();
     var cflags: c_int = 0;
-    if (opts.regex_mode == .extended or force_ere) cflags |= c.REG_EXTENDED;
-    if (opts.ignore_case) cflags |= c.REG_ICASE;
+    if (opts.regex_mode == .extended or force_ere) cflags |= rf.extended;
+    if (opts.ignore_case) cflags |= rf.icase;
     // Use REG_NOSUB only if we don't need match positions
-    if (!opts.only_matching and !opts.word_regexp and opts.color == .off) cflags |= c.REG_NOSUB;
+    if (!opts.only_matching and !opts.word_regexp and opts.color == .off) cflags |= rf.nosub;
 
     const pattern_z = allocator.dupeZ(u8, actual_pattern) catch return null;
     defer allocator.free(pattern_z);
 
-    const regex = if (comptime is_linux)
-        (regex_c.regex_heap_alloc() orelse return null)
-    else
-        (allocator.create(c.regex_t) catch return null);
+    const regex = regex_c.regex_heap_alloc() orelse return null;
     const result = c.regcomp(regex, pattern_z.ptr, cflags);
     if (result != 0) {
         var errbuf: [256]u8 = undefined;
@@ -1230,11 +1232,7 @@ fn compilePattern(
             "invalid regular expression: {s}",
             .{err_msg},
         );
-        if (comptime is_linux) {
-            regex_c.regex_heap_free(regex);
-        } else {
-            allocator.destroy(regex);
-        }
+        regex_c.regex_heap_free(regex);
         return null;
     }
 
@@ -1243,14 +1241,11 @@ fn compilePattern(
 
 /// Free a compiled pattern
 fn freePattern(allocator: Allocator, pat: *CompiledPattern) void {
+    _ = allocator;
     switch (pat.*) {
         .regex => |re| {
             c.regfree(re);
-            if (comptime is_linux) {
-                regex_c.regex_heap_free(re);
-            } else {
-                allocator.destroy(re);
-            }
+            regex_c.regex_heap_free(re);
         },
         .fixed => {},
     }
@@ -1388,7 +1383,7 @@ fn matchLine_regexWord(
         defer allocator.free(search_z);
         var pmatch: [1]c.regmatch_t = undefined;
         var eflags: c_int = 0;
-        if (search_start > 0 or (eff_prev_char != null)) eflags |= c.REG_NOTBOL;
+        if (search_start > 0 or (eff_prev_char != null)) eflags |= posix_regex.flags().notbol;
         const exec_result_val = c.regexec(re, search_z.ptr, 1, &pmatch, eflags);
         if (exec_result_val != 0) return .{ .matched = false };
         const rel_start = regOffsetToIndex(pmatch[0].rm_so);
@@ -3045,23 +3040,15 @@ test "fixed string case insensitive" {
 }
 
 fn testAllocRegex() ?*c.regex_t {
-    if (comptime is_linux) {
-        return regex_c.regex_heap_alloc();
-    } else {
-        return testing.allocator.create(c.regex_t) catch return null;
-    }
+    return regex_c.regex_heap_alloc();
 }
 
 fn testFreeRegex(re: *c.regex_t) void {
-    if (comptime is_linux) {
-        regex_c.regex_heap_free(re);
-    } else {
-        testing.allocator.destroy(re);
-    }
+    regex_c.regex_heap_free(re);
 }
 
 test "regex matching basic" {
-    const cflags: c_int = c.REG_EXTENDED;
+    const cflags: c_int = posix_regex.flags().extended;
     const pat_str: [:0]const u8 = "hel+o";
     const regex = testAllocRegex() orelse return error.OutOfMemory;
     defer testFreeRegex(regex);
@@ -3075,7 +3062,8 @@ test "regex matching basic" {
 }
 
 test "regex no match" {
-    const cflags: c_int = c.REG_EXTENDED | c.REG_NOSUB;
+    const rf = posix_regex.flags();
+    const cflags: c_int = rf.extended | rf.nosub;
     const pat_str: [:0]const u8 = "^xyz$";
     const regex = testAllocRegex() orelse return error.OutOfMemory;
     defer testFreeRegex(regex);
@@ -5265,7 +5253,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     const allocator = arena.allocator();
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_len = try tmp.dir().realPath(io, &root_buf);
+    const root_len = try tmp.realPath(&root_buf);
     const root = try allocator.dupe(u8, root_buf[0..root_len]);
 
     const patterns = [_]CompiledPattern{

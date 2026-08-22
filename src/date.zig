@@ -1433,7 +1433,7 @@ test "date -r with reference file" {
 
     // Get the path
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "testfile", &path_buf);
+    const path_len = try common.test_dir.tmpDirRealPathFile(tmp_dir, "testfile", &path_buf);
     const full_path = path_buf[0..path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

@@ -114,8 +114,245 @@ pub fn getMemInfo(io: std.Io) !MemInfo {
     return switch (@import("builtin").os.tag) {
         .macos => getMemInfoMacOS(),
         .linux => getMemInfoLinux(io),
+        .freebsd, .openbsd, .netbsd => getMemInfoBsd(),
         else => error.UnsupportedPlatform,
     };
+}
+
+/// CTL_VM is 2 on OpenBSD and NetBSD (`sys/sysctl.h`).
+const bsd_ctl_vm: c_int = 2;
+/// OpenBSD `VM_UVMEXP` (`uvm/uvmexp.h`).
+const openbsd_vm_uvmexp: c_int = 4;
+/// NetBSD `VM_UVMEXP2` (`uvm/uvm_param.h`).
+const netbsd_vm_uvmexp2: c_int = 5;
+
+/// OpenBSD `struct uvmexp` (86 `int`s). Named through swap; tail is ABI pad.
+const UvmexpOpenbsd = extern struct {
+    pagesize: c_int,
+    pagemask: c_int,
+    pageshift: c_int,
+    npages: c_int,
+    free: c_int,
+    active: c_int,
+    inactive: c_int,
+    paging: c_int,
+    wired: c_int,
+    zeropages: c_int,
+    reserve_pagedaemon: c_int,
+    reserve_kernel: c_int,
+    percpucaches: c_int,
+    vnodepages: c_int,
+    vtextpages: c_int,
+    freemin: c_int,
+    freetarg: c_int,
+    inactarg: c_int,
+    wiredmax: c_int,
+    anonmin: c_int,
+    vtextmin: c_int,
+    vnodemin: c_int,
+    anonminpct: c_int,
+    vtextminpct: c_int,
+    vnodeminpct: c_int,
+    nswapdev: c_int,
+    swpages: c_int,
+    swpginuse: c_int,
+    _tail: [58]c_int,
+};
+
+/// NetBSD `struct uvmexp_sysctl` (89 `int64_t`s). Named through swap.
+const UvmexpSysctlNetbsd = extern struct {
+    pagesize: i64,
+    pagemask: i64,
+    pageshift: i64,
+    npages: i64,
+    free: i64,
+    active: i64,
+    inactive: i64,
+    paging: i64,
+    wired: i64,
+    zeropages: i64,
+    reserve_pagedaemon: i64,
+    reserve_kernel: i64,
+    freemin: i64,
+    freetarg: i64,
+    inactarg: i64,
+    wiredmax: i64,
+    nswapdev: i64,
+    swpages: i64,
+    swpginuse: i64,
+    _tail: [70]i64,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(UvmexpOpenbsd) == 86 * @sizeOf(c_int));
+    std.debug.assert(@sizeOf(UvmexpSysctlNetbsd) == 89 * @sizeOf(i64));
+}
+
+fn nonNegU64(n: anytype) u64 {
+    std.debug.assert(n >= 0);
+    const v: u64 = @intCast(n);
+    std.debug.assert(v == @as(u64, @intCast(n)));
+    return v;
+}
+
+fn memInfoFromPages(
+    total: u64,
+    page: u64,
+    free_pages: u64,
+    inactive_pages: u64,
+    cache_pages: u64,
+    swap_pages: u64,
+    swap_used_pages: u64,
+) MemInfo {
+    std.debug.assert(page > 0);
+    std.debug.assert(total > 0);
+    const free = free_pages * page;
+    const buff_cache = (inactive_pages + cache_pages) * page;
+    const available = free + buff_cache;
+    const used = total -| available;
+    const swap_total = swap_pages * page;
+    const swap_used = swap_used_pages * page;
+    return MemInfo{
+        .total = total,
+        .used = used,
+        .free = free,
+        .shared = 0,
+        .buff_cache = buff_cache,
+        .available = available,
+        .swap_total = swap_total,
+        .swap_used = swap_used,
+        .swap_free = swap_total -| swap_used,
+    };
+}
+
+/// Numeric sysctl(3). OpenBSD has no sysctlbyname; NetBSD page
+/// counts live in `uvmexp_sysctl`, not FreeBSD `vm.stats.vm.*`.
+fn sysctlMib(comptime T: type, mib: []const c_int) !T {
+    if (comptime (@import("builtin").os.tag == .openbsd or
+        @import("builtin").os.tag == .netbsd))
+    {
+        std.debug.assert(mib.len >= 2);
+        std.debug.assert(mib.len <= 4);
+        var value: T = undefined;
+        var len: usize = @sizeOf(T);
+        std.posix.sysctl(mib, &value, &len, null, 0) catch return error.SysctlFailed;
+        std.debug.assert(len > 0);
+        std.debug.assert(len <= @sizeOf(T));
+        return value;
+    }
+    return error.SysctlFailed;
+}
+
+/// sysctlbyname exists in FreeBSD libc. OpenBSD has only numeric
+/// sysctl(3); calling sysctlbyname there fails at link time.
+fn sysctlByName(comptime T: type, name: [:0]const u8) !T {
+    if (comptime (@import("builtin").os.tag == .freebsd)) {
+        var value: T = 0;
+        var len: usize = @sizeOf(T);
+        if (std.c.sysctlbyname(name, &value, &len, null, 0) != 0) {
+            return error.SysctlFailed;
+        }
+        std.debug.assert(len > 0);
+        std.debug.assert(len <= @sizeOf(T));
+        return value;
+    }
+    return error.SysctlFailed;
+}
+
+fn sysctlFirstU64(names: []const [:0]const u8) !u64 {
+    const names_max: u32 = 8;
+    std.debug.assert(names.len > 0);
+    std.debug.assert(names.len <= names_max);
+    var i: u32 = 0;
+    while (i < names.len) : (i += 1) {
+        std.debug.assert(i < names_max);
+        const name = names[i];
+        if (sysctlByName(u64, name)) |v| return v else |_| {}
+        if (sysctlByName(u32, name)) |v| return @as(u64, v) else |_| {}
+    }
+    return error.SysctlFailed;
+}
+
+fn getMemInfoFreebsd(total: u64) !MemInfo {
+    std.debug.assert(total > 0);
+    const page_size = try sysctlFirstU64(&.{ "vm.stats.vm.v_page_size", "hw.pagesize" });
+    std.debug.assert(page_size > 0);
+    const free_pages = try sysctlFirstU64(&.{"vm.stats.vm.v_free_count"});
+    const inactive_pages = sysctlFirstU64(&.{"vm.stats.vm.v_inactive_count"}) catch 0;
+    const cache_pages = sysctlFirstU64(&.{"vm.stats.vm.v_cache_count"}) catch 0;
+    const swap_pages_bytes = sysctlFirstU64(&.{ "vm.swap_total", "vm.swap_size" }) catch 0;
+    const swap_used_bytes = sysctlFirstU64(&.{"vm.swap_reserved"}) catch 0;
+    var info = memInfoFromPages(
+        total,
+        page_size,
+        free_pages,
+        inactive_pages,
+        cache_pages,
+        0,
+        0,
+    );
+    info.swap_total = swap_pages_bytes;
+    info.swap_used = swap_used_bytes;
+    info.swap_free = swap_pages_bytes -| swap_used_bytes;
+    std.debug.assert(info.used <= info.total);
+    return info;
+}
+
+fn getMemInfoOpenbsd(hw_total: u64) !MemInfo {
+    std.debug.assert(hw_total > 0);
+    const uvm = try sysctlMib(UvmexpOpenbsd, &.{ bsd_ctl_vm, openbsd_vm_uvmexp });
+    const page = nonNegU64(uvm.pagesize);
+    std.debug.assert(page > 0);
+    const managed = nonNegU64(uvm.npages) * page;
+    const total = if (managed > 0) managed else hw_total;
+    std.debug.assert(total > 0);
+    return memInfoFromPages(
+        total,
+        page,
+        nonNegU64(uvm.free),
+        nonNegU64(uvm.inactive),
+        0,
+        nonNegU64(uvm.swpages),
+        nonNegU64(uvm.swpginuse),
+    );
+}
+
+fn getMemInfoNetbsd(hw_total: u64) !MemInfo {
+    std.debug.assert(hw_total > 0);
+    const uvm = try sysctlMib(UvmexpSysctlNetbsd, &.{ bsd_ctl_vm, netbsd_vm_uvmexp2 });
+    const page = nonNegU64(uvm.pagesize);
+    std.debug.assert(page > 0);
+    const managed = nonNegU64(uvm.npages) * page;
+    const total = if (managed > 0) managed else hw_total;
+    std.debug.assert(total > 0);
+    return memInfoFromPages(
+        total,
+        page,
+        nonNegU64(uvm.free),
+        nonNegU64(uvm.inactive),
+        0,
+        nonNegU64(uvm.swpages),
+        nonNegU64(uvm.swpginuse),
+    );
+}
+
+/// Physical memory via `totalSystemMemory`, then OS-true page
+/// counts: FreeBSD `sysctlbyname`, OpenBSD `CTL_VM`/`VM_UVMEXP`,
+/// NetBSD `CTL_VM`/`VM_UVMEXP2`. Breakdowns are not fabricated.
+fn getMemInfoBsd() !MemInfo {
+    const builtin = @import("builtin");
+    const total = std.process.totalSystemMemory() catch return error.SysctlFailed;
+    std.debug.assert(total > 0);
+
+    const info = switch (comptime builtin.os.tag) {
+        .freebsd => try getMemInfoFreebsd(total),
+        .openbsd => try getMemInfoOpenbsd(total),
+        .netbsd => try getMemInfoNetbsd(total),
+        else => unreachable,
+    };
+    std.debug.assert(info.total > 0);
+    std.debug.assert(info.used <= info.total);
+    return info;
 }
 
 fn getMemInfoMacOS() !MemInfo {

@@ -915,7 +915,7 @@ test "wc runWc with default options" {
     test_file.close(io);
 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPathFile(io, "test.txt", &path_buffer);
+    const path_len = try tmp_dir.realPathFile("test.txt", &path_buffer);
     const test_path = path_buffer[0..path_len];
 
     const args = &[_][]const u8{test_path};
@@ -941,10 +941,10 @@ test "wc with multiple files shows total" {
     file2.close(io);
 
     var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path1_len = try tmp_dir.dir().realPathFile(io, "a.txt", &path_buf1);
+    const path1_len = try tmp_dir.realPathFile("a.txt", &path_buf1);
     const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path2_len = try tmp_dir.dir().realPathFile(io, "b.txt", &path_buf2);
+    const path2_len = try tmp_dir.realPathFile("b.txt", &path_buf2);
     const path2 = path_buf2[0..path2_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -1000,7 +1000,7 @@ test "wc reports error for directory" {
     try tmp_dir.dir().createDir(io, "subdir", .default_dir);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp_dir.dir().realPathFile(io, "subdir", &path_buf);
+    const dir_path_len = try tmp_dir.realPathFile("subdir", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);

@@ -283,6 +283,12 @@ tiger-check:
 test-tiger-check:
     @bash tests/tools/tiger-check_test.sh
 
+# Pin checks for the BSD vmactions workflow. Lives in tests/tools/, which
+# test_runner.sh does not glob, so it must be invoked here and from CI
+# explicitly.
+test-bsd-workflow:
+    @bash tests/tools/bsd-workflow_test.sh
+
 # Contract tests for the default build's man-page install paths and contents.
 # Lives in tests/tools/, so it must be invoked here and from CI explicitly.
 test-man-install:

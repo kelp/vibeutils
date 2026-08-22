@@ -903,7 +903,7 @@ test "mktemp with -p flag" {
     defer tmp_dir.deinit();
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir().realPath(io, &path_buf);
+    const path_len = try tmp_dir.realPath(&path_buf);
     const dir_path = path_buf[0..path_len];
 
     const args = &[_][]const u8{ "-p", dir_path };
