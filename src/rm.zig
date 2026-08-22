@@ -2509,16 +2509,12 @@ test "rm: -d non-empty directory appends recursive-removal hint" {
     const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
     common.env.test_overrides = &staged;
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDir(testing.io, "nonempty", .default_dir);
-    const file = try tmp.dir.createFile(testing.io, "nonempty/file.txt", .{});
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    try tmp.dir().createDir(testing.io, "nonempty", .default_dir);
+    const file = try tmp.dir().createFile(testing.io, "nonempty/file.txt", .{});
     file.close(testing.io);
-    const dir_path = try tmp.dir.realPathFileAlloc(
-        testing.io,
-        "nonempty",
-        testing.allocator,
-    );
+    const dir_path = try tmp.getPath("nonempty");
     defer testing.allocator.free(dir_path);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -2554,16 +2550,12 @@ test "rm: -r leftover non-empty directory does not suggest -r" {
     const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
     common.env.test_overrides = &staged;
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDir(testing.io, "locked", .default_dir);
-    const file = try tmp.dir.createFile(testing.io, "locked/child.txt", .{});
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
+    try tmp.dir().createDir(testing.io, "locked", .default_dir);
+    const file = try tmp.dir().createFile(testing.io, "locked/child.txt", .{});
     file.close(testing.io);
-    const dir_path = try tmp.dir.realPathFileAlloc(
-        testing.io,
-        "locked",
-        testing.allocator,
-    );
+    const dir_path = try tmp.getPath("locked");
     defer testing.allocator.free(dir_path);
     const dir_path_z = try testing.allocator.dupeZ(u8, dir_path);
     defer testing.allocator.free(dir_path_z);

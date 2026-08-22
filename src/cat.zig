@@ -1112,19 +1112,15 @@ test "cat permission hint follows stderr hint overlay" {
     const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
     common.env.test_overrides = &staged;
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
     // Create readable so realpath works on macOS (EACCES on mode 000), then chmod.
-    const file = try tmp.dir.createFile(testing.io, "secret.txt", .{
+    const file = try tmp.dir().createFile(testing.io, "secret.txt", .{
         .permissions = std.Io.File.Permissions.fromMode(0o644),
     });
     try file.writeStreamingAll(testing.io, "secret");
     file.close(testing.io);
-    const file_path = try tmp.dir.realPathFileAlloc(
-        testing.io,
-        "secret.txt",
-        testing.allocator,
-    );
+    const file_path = try tmp.getPath("secret.txt");
     defer testing.allocator.free(file_path);
     const file_path_z = try testing.allocator.dupeZ(u8, file_path);
     defer testing.allocator.free(file_path_z);
