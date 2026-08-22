@@ -2851,6 +2851,85 @@ test "runDd conv=noerror completion does not panic after a recovered read error"
     try testing.expect(std.mem.find(u8, output, "records out") != null);
 }
 
+test "runDd noerror+sync synthesized write updates progress before finish" {
+    // conv=noerror,sync simple_copy writes a NUL-padded ibs block and
+    // increments bytes_copied, then returns continue_loop. readBlock maps
+    // that to retry and the copy loop continues without updateProgress.
+    // After ddNote finishes the live line, the tracker must already
+    // reflect the synthesized count — not the pre-error bytes_done.
+    common.progress.test_enabled = true;
+    defer common.progress.test_enabled = null;
+    common.progress.test_delay_ns = 0;
+    defer common.progress.test_delay_ns = null;
+    common.progress.test_now_ns = 1_000;
+    defer common.progress.test_now_ns = null;
+
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var out_file = try tmp_dir.dir.createFile(io, "output.bin", .{});
+    defer out_file.close(io);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    var tracker = common.progress.Tracker{
+        .writer = &stderr_aw.writer,
+        .program = "dd",
+        .label = "",
+        .total = null,
+        .delay_ns = 0,
+        .interval_ns = 0,
+        .start_ns = 0,
+        .last_emit_ns = 0,
+        .bytes_done = 0,
+        .shown = false,
+        .last_width = 0,
+        .enabled = true,
+        .kind = .gnu_xfer,
+    };
+    const pre_error_bytes: u64 = 8;
+    tracker.update(1_000, pre_error_bytes);
+    try testing.expect(tracker.shown);
+    try testing.expectEqual(pre_error_bytes, tracker.bytes_done);
+
+    var stats: DdStats = .{
+        .start_ns = 0,
+        .bytes_copied = pre_error_bytes,
+    };
+    const ctx = DdWriteCtx{
+        .allocator = testing.allocator,
+        .io = io,
+        .stderr = &stderr_aw.writer,
+        .output_file = out_file,
+        .status = .progress,
+        .stats = &stats,
+        .tracker = &tracker,
+    };
+    const config = DdConfig{
+        .conv_noerror = true,
+        .conv_sync = true,
+        .status = .progress,
+    };
+    var in_buf: [512]u8 = undefined;
+    var blocks_read: usize = 0;
+
+    const outcome = runDd_handleReadError(
+        &ctx,
+        &config,
+        &in_buf,
+        in_buf.len,
+        true,
+        &blocks_read,
+        error.IsDir,
+    );
+    try testing.expectEqual(ReadErrorOutcome.continue_loop, outcome);
+    try testing.expectEqual(pre_error_bytes + in_buf.len, stats.bytes_copied);
+
+    // Stale today: handleReadError writes the NULs but never calls
+    // Tracker.update, so bytes_done stays at the pre-error count.
+    try testing.expectEqual(stats.bytes_copied, tracker.bytes_done);
+}
+
 test "runDd - statistics output" {
     const io = testing.io;
     var tmp_dir = TestDir.init(testing.allocator);
