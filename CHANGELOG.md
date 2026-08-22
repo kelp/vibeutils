@@ -17,6 +17,11 @@
   green.
 
 ### Added
+- **`zig build` now installs man pages under `share/man/man1`.**
+  The default install step copies `man/man1/<name>.1` for every
+  utility (including `[.1`) next to the binaries, so
+  `zig build --prefix /usr/local` ships documentation without Nix.
+  A missing page fails configuration instead of being skipped.
 - **`tail -f` / `-F` now follow every file operand.** Appends to any
   followed file appear in stdout, with GNU `\n==> file <==\n` headers
   when output switches from one operand to another (suppressed by

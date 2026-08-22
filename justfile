@@ -197,10 +197,11 @@ coverage:
 clean:
     zig build clean
 
-# Install utilities to zig-out/bin/
+# Install utilities to zig-out/bin/ and man pages to zig-out/share/man/man1/
 install:
     zig build -Doptimize=ReleaseSafe
     @echo "Binaries installed to: zig-out/bin/"
+    @echo "Man pages installed to: zig-out/share/man/man1/"
 
 # --- Utility Execution ---
 
@@ -281,6 +282,11 @@ tiger-check:
 # explicitly.
 test-tiger-check:
     @bash tests/tools/tiger-check_test.sh
+
+# Contract tests for the default build's man-page install paths and contents.
+# Lives in tests/tools/, so it must be invoked here and from CI explicitly.
+test-man-install:
+    @bash tests/tools/man-install_test.sh
 
 # Contract tests for scripts/audit-check.sh. Needs no Zig build: every
 # case points --root at a fixture tree under tests/fixtures/audit. Lives in
