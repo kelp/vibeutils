@@ -249,3 +249,32 @@ SHA, green SHA, and a line per finding marked demonstrated,
 rejected, or routed to the unit that owns the fix. Record the
 negative results — a rejected finding recorded with its reason is
 what stops the next sweep from re-raising it.
+
+While a fleet is running, `FIX.md` also carries an **In flight**
+table: the claim, the agent name and the heartbeat for each
+running unit. The `fleet-lead` skill (the `fleet-efficiency`
+plugin) owns that contract, under the same single-writer rule.
+
+## Fleet binding
+
+`fleet-lead` is generic. These are its six values here.
+
+1. **Ledger** — the **In flight** table in `FIX.md`, written by
+   the drive lead only.
+2. **Unit** — one utility from this sweep, or one open
+   cross-cutting finding in `FIX.md`. A cross-cutting unit
+   touches `src/common/` and therefore runs alone.
+3. **Worktree root** — the parent of the main checkout;
+   `<wt_root>/vibeutils-wt-<unit>`, matching
+   `.claude/workflows/bugfix-fleet.js`.
+4. **Caps** — three to four concurrent units (see "Ordering"),
+   three in-flight pull requests.
+5. **Gates** — `just fmt-check`, `just test`, and
+   `just it-util <name>` for a utility behavior change, before
+   every commit. The gate lead waits on Test, Integration Tests,
+   Changelog, Audit Pre-Pass, and Tiger Style.
+6. **Pipelines** — a `TODO.md` slice goes to the
+   `land-todo-slice` skill; one bug fix to the `tdd-bugfix`
+   workflow, red then green with a commit between; two or more
+   to `bugfix-fleet`; a behavior-preserving refactor to
+   `tdd-pipeline`.

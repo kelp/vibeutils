@@ -7,6 +7,21 @@ record.
 Marks: ✅ fixed · ⏸ routed, owned by another unit · ❌ rejected,
 with the reason · 🔄 in flight
 
+## In flight
+
+Units claimed by a running fleet. The drive lead is the only
+writer, so parallel worktrees never conflict here; the contract is
+in the `fleet-lead` skill. A unit leaves this table when it lands,
+and its result goes to **Status** below.
+
+`Agent` is the SendMessage address and stays stable across a
+restart. `Heartbeat` is UTC, minute precision, written by the
+drive lead. Two missed intervals means the unit is presumed dead.
+
+| Unit | Lead | Agent | Worktree | Phase | Heartbeat |
+|---|---|---|---|---|---|
+| _none_ | | | | | |
+
 ## Status
 
 | Unit | Audited | Fixed | Notes |

@@ -273,6 +273,12 @@ implementation files.
   real plan or `git show` diff, not the full
   tree. Resume only the objector on nits. The
   parent watches CI. Stay at three reviewers.
+- Running several units at once → the `fleet-lead`
+  skill from the `fleet-efficiency` plugin (two leads,
+  unit claiming with a file-disjointness check,
+  heartbeat, restart). Its six binding values for this
+  repo are in `docs/AUDIT_SWEEP.md`, "Fleet binding".
+  The leads dispatch; they never write Zig.
 - Implementing a new utility → the `new-util` skill
   (classification, TDD phases, template).
 - Writing Zig → the `zig-patterns` skill;
