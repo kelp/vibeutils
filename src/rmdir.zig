@@ -284,12 +284,16 @@ fn handleError(
         return;
     }
 
+    const suffix = switch (err) {
+        error.DirNotEmpty => common.maybeHint(err, path, .write) orelse "",
+        else => "",
+    };
     common.printErrorWithProgram(
         allocator,
         stderr_writer,
         "rmdir",
-        "failed to remove '{s}': {s}",
-        .{ path, common.posixErrorString(err) },
+        "failed to remove '{s}': {s}{s}",
+        .{ path, common.posixErrorString(err), suffix },
     );
 }
 
@@ -714,4 +718,85 @@ test "rmdir: -p dot should fail with refusing message" {
 
     // Should print an error about refusing to remove '.' or '..'
     try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "refusing to remove") != null);
+}
+
+test "rmdir: non-empty directory omits hint by default" {
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = null;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(testing.io, "nonempty", .default_dir);
+    const file = try tmp.dir.createFile(testing.io, "nonempty/file.txt", .{});
+    file.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "nonempty",
+        testing.allocator,
+    );
+    defer testing.allocator.free(dir_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{dir_path};
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "rmdir: failed to remove '{s}': Directory not empty\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
+}
+
+test "rmdir: non-empty directory appends recursive-removal hint" {
+    const saved_hints = common.env.test_stderr_hints;
+    defer common.env.test_stderr_hints = saved_hints;
+    common.env.test_stderr_hints = true;
+    const saved_overrides = common.env.test_overrides;
+    defer common.env.test_overrides = saved_overrides;
+    const staged = [_]common.env.Override{.{ .key = "NO_COLOR", .value = "1" }};
+    common.env.test_overrides = &staged;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(testing.io, "nonempty", .default_dir);
+    const file = try tmp.dir.createFile(testing.io, "nonempty/file.txt", .{});
+    file.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(
+        testing.io,
+        "nonempty",
+        testing.allocator,
+    );
+    defer testing.allocator.free(dir_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{dir_path};
+    const exit_code = try run(
+        testing.allocator,
+        testing.io,
+        &args,
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+    const expected = try std.fmt.allocPrint(
+        testing.allocator,
+        "rmdir: failed to remove '{s}': Directory not empty" ++
+            " (use rm -r to remove recursively)\n",
+        .{dir_path},
+    );
+    defer testing.allocator.free(expected);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expectEqualStrings(expected, stderr_aw.writer.buffered());
 }

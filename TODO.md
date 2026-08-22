@@ -1309,14 +1309,14 @@ full design.
   visibility
 
 ### 5. `tree` Utility
-- [ ] Recursive directory listing with box-drawing lines
-- [ ] File-type icons via common/icons
-- [ ] Truecolor/256/basic icon coloring (reuse ls pattern)
-- [ ] `-L` depth limit, `-d` directories only
-- [ ] `-I` pattern exclusion
-- [ ] Summary line (N directories, M files)
-- [ ] `--color=auto/always/never`, respect NO_COLOR
-- [ ] Man page
+- [x] Recursive directory listing with box-drawing lines
+- [x] File-type icons via common/icons
+- [x] Truecolor/256/basic icon coloring (reuse ls pattern)
+- [x] `-L` depth limit, `-d` directories only
+- [x] `-I` pattern exclusion
+- [x] Summary line (N directories, M files)
+- [x] `--color=auto/always/never`, respect NO_COLOR
+- [x] Man page
 
 ### 6. Progress Feedback for `cp`/`mv`/`dd`
 - [ ] Progress module in `src/common/`
@@ -1325,8 +1325,8 @@ full design.
 - [ ] Only when stderr is a TTY
 
 ### 7. Smarter Error Messages
-- [ ] Permission denied with actionable hint
-- [ ] Directory not empty with `rm -r` suggestion
+- [x] Permission denied with actionable hint
+- [x] Directory not empty with `rm -r` suggestion
 
 ## Testing Improvements (Post-Issue #5 Analysis)
 
@@ -1380,9 +1380,9 @@ green, including `cp.zig:1181-1276` and `mv.zig:1033+`
 overwrite-hint tests.
 
 ### 5. main() Function Coverage
-- [ ] Test the writer setup code path in main(), not just
+- [x] Test the writer setup code path in main(), not just
       runUtil() with test-provided writers
-- [ ] Integration tests that exercise the compiled binary's
+- [x] Integration tests that exercise the compiled binary's
       actual I/O initialization
 
 ### 6. dd MUST-tier conv= Integration Coverage
@@ -1392,13 +1392,13 @@ values; some existing tests also compare against macOS
 `/usr/bin/dd`, which produces empty output and silently
 passes.
 
-- [ ] Replace macOS `/usr/bin/dd` comparisons with
+- [x] Replace macOS `/usr/bin/dd` comparisons with
       hardcoded GNU-equivalent expected values
-- [ ] Add behavioral tests for `conv=sync` (NUL padding +
+- [x] Add behavioral tests for `conv=sync` (NUL padding +
       full block), `conv=notrunc` vs. truncate contrast,
       `conv=fsync`, `conv=osync`, `conv=ascii`,
       `conv=ebcdic`, `conv=ibm`, `conv=noerror`
-- [ ] Cross-check against the existing rejection tests
+- [x] Cross-check against the existing rejection tests
       added in commit cc57c2a (`conv=sparse`/`par*`/`files=`)
 
 ## Bugs

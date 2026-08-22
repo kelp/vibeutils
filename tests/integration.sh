@@ -196,6 +196,23 @@ main() {
 
         echo ""
         echo -e "${YELLOW}========================================${NC}"
+        echo -e "${YELLOW}Running main() I/O initialization checks${NC}"
+        echo -e "${YELLOW}========================================${NC}"
+
+        init_test_session
+        if [[ ! -f "$SCRIPT_DIR/tools/main_io_test.sh" ]]; then
+            echo -e "${RED}Error: tests/tools/main_io_test.sh is missing${NC}"
+            overall_result=1
+        else
+            source "$SCRIPT_DIR/tools/main_io_test.sh"
+            test_main_io
+            if ! print_test_summary "main() I/O Init"; then
+                overall_result=1
+            fi
+        fi
+
+        echo ""
+        echo -e "${YELLOW}========================================${NC}"
         echo -e "${YELLOW}Running comprehensive per-utility tests${NC}"
         echo -e "${YELLOW}========================================${NC}"
         

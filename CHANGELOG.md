@@ -17,6 +17,14 @@
   green.
 
 ### Added
+- **`tree` lists directories as a UTF-8 box-drawing tree.** `-L`
+  caps depth, `-d` lists directories only, `-I` excludes names
+  (repeatable, with `|` alternatives), and `-a` includes hidden
+  entries. `--color=WHEN` and `--icons=WHEN` follow `ls`. Directory
+  symlinks are listed, not followed. Entries whose dirent kind is
+  unfilled (`.unknown`) are classified with `lstat` on the parent
+  directory so `-d`, summaries, and icons treat real directories as
+  directories.
 - **`ls` honors GNU `LS_COLORS` when color is on.** Type and suffix
   keys overlay the compiled palette; an invalid value prints a
   diagnostic and disables color for that invocation.
@@ -67,6 +75,9 @@
   kilobytes unless `-h` is also given. Explicit `-h` still selects
   relative timestamps on `ls`; the new default does not. Scripts
   that parse raw `du` / `ls -l` numbers should pass `-k`.
+- **TTY stderr may append a parenthetical hint** on
+  `Permission denied` (`cat`, `cp`) and `Directory not
+  empty` (`rmdir`, `rm -d`). Piped stderr stays GNU-shaped.
 - **Terminal size detection no longer reports a zero width or height.**
   `COLUMNS=0`, an empty or non-numeric `COLUMNS`/`LINES` value, and an
   ioctl window size of 0 all fall back to the 80×24 defaults now, so
