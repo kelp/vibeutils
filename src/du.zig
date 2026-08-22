@@ -4562,22 +4562,25 @@ const du_rel_mib: u64 = 1024 * 1024;
 
 const RelColorEnv = struct {
     saved: []const common.env.Override,
-    staged: [4]common.env.Override,
+    staged: [5]common.env.Override,
 
     fn apply(self: *RelColorEnv) void {
-        std.debug.assert(self.staged.len == 4);
+        std.debug.assert(self.staged.len == 5);
         self.saved = common.env.test_overrides;
         self.staged = .{
             .{ .key = "NO_COLOR", .value = null },
             .{ .key = "TERM", .value = "xterm" },
             .{ .key = "COLORTERM", .value = "truecolor" },
             .{ .key = "VIBEUTILS_STYLE", .value = null },
+            // du show_icons follows DisplayConfig (VIBEUTILS_ICONS), not LS_ICONS.
+            .{ .key = "VIBEUTILS_ICONS", .value = null },
         };
         common.env.test_overrides = &self.staged;
+        std.debug.assert(self.staged[4].value == null);
     }
 
     fn restore(self: *const RelColorEnv) void {
-        std.debug.assert(self.staged.len == 4);
+        std.debug.assert(self.staged.len == 5);
         common.env.test_overrides = self.saved;
     }
 };
@@ -4807,19 +4810,20 @@ test "du relative color: buffered paths remain distinct copies" {
 
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+    // Two children under one directory operand so print goes through
+    // handleLeafEntry and the walker's reused entry.path buffer, not argv.
     const alpha = try testCreateDuSparseFile(io, &tmp_dir, "alpha", 10 * du_rel_mib);
     defer testing.allocator.free(alpha);
     const beta = try testCreateDuSparseFile(io, &tmp_dir, "beta", 20 * du_rel_mib);
     defer testing.allocator.free(beta);
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &dir_buf))];
 
     const out = try testRunDuStdout(io, &.{
-        "--color=always", "--apparent-size", "-b", "-a", alpha, beta,
+        "--color=always", "--apparent-size", "-b", "-a", dir_path,
     });
     defer testing.allocator.free(out);
 
-    try testing.expect(std.mem.find(u8, out, alpha) != null);
-    try testing.expect(std.mem.find(u8, out, beta) != null);
-    try testing.expect(!std.mem.eql(u8, alpha, beta));
     try testing.expect(testLineForExactPath(out, alpha) != null);
     try testing.expect(testLineForExactPath(out, beta) != null);
 }
