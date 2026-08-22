@@ -3091,6 +3091,51 @@ test "tail follow rejects more than follow_files_max files" {
     try testing.expect(std.mem.find(u8, stderr, "cannot open") == null);
 }
 
+test "tail follow -f dump-ok reopen-fail prints cannot open" {
+    // Dump succeeded, then the follow reopen cannot open. Plain -f used to
+    // drop the slot with no diagnostic, so every-file reopen failure exited
+    // 1 with empty stderr. The dump-failed path stays silent here because
+    // the dump already printed cannot open.
+    const io = testing.io;
+    const missing = "/tmp/vibeutils_tail_reopen_missing_dir/file";
+    const options = TailOptions{ .follow = true };
+
+    var omit_stderr: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer omit_stderr.deinit();
+    const omitted = try followSet_collectOne(
+        testing.allocator,
+        io,
+        missing,
+        0,
+        true,
+        &options,
+        &omit_stderr.writer,
+    );
+    try testing.expect(omitted == null);
+    try testing.expectEqualStrings("", omit_stderr.writer.buffered());
+
+    const parsed = .{ .positionals = &[_][]const u8{missing} };
+    const dump_ok = [_]bool{false};
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const result = try runTail_enterFollow(
+        testing.allocator,
+        io,
+        parsed,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+        &options,
+        &dump_ok,
+    );
+    try testing.expectEqual(@as(?u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const stderr = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, stderr, "cannot open") != null);
+    try testing.expect(std.mem.find(u8, stderr, missing) != null);
+}
+
 test "tail follow inotify buffer walks every record" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
