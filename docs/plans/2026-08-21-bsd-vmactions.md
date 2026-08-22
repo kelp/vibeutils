@@ -9,13 +9,12 @@
 One heading, one PR. Do not pull `VIBEUTILS_STYLE` leftovers, `du`
 relative color, `tree`, or LS_COLORS.
 
-## Predecessor gate (recorded deviation)
+## Predecessor gate
 
-Issue PRs #171–#181 and TODO PRs #182–#187 are still open. Branch from
-`origin/main` (`a41eccd`). This environment cannot merge. Files:
-`.github/workflows/bsd.yml`, `tests/tools/bsd-workflow_test.sh`,
-`justfile`, maybe `audit.yml`, `TODO.md`. `TODO.md` will conflict;
-rebase after predecessors land.
+Predecessors #171–#187 and later TODO slices through Progress
+Feedback (#200) plus main repairs (#202–#204) are on `main`.
+This branch merged `origin/main` at `098a076` before the
+allowlist-bypass revision.
 
 Linux cloud agents cannot prove BSD. GitHub Actions is the proof.
 
@@ -32,29 +31,39 @@ Add `.github/workflows/bsd.yml`:
   on the host and then synced in.
 - Three **independent** jobs (not a matrix; no `fail-fast` key):
   FreeBSD, OpenBSD, NetBSD. A red job fails the workflow.
-- FreeBSD via `vmactions/freebsd-vm` pinned to
-  `c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e` (`v1.4.2`).
-- OpenBSD via `vmactions/openbsd-vm` pinned to
-  `9a8e4351a4a0dc6238e7c69276dcbf6c03bea576` (`v1.3.6`).
-- NetBSD via `vmactions/netbsd-vm` pinned to
-  `e04aec09540429f9cebb0e7941f7cd0c0fc3b44f` (`v1.3.6`).
-- Pin like other workflows (`checkout@de0fac2e…` plus SHA comments).
-  Do not use floating `@v1` tags.
-- Do **not** pin current `v1` / v1.5.3: those declare
-  `using: node24`. Last node20 tags are freebsd `v1.4.2`,
-  openbsd/netbsd `v1.3.6`. `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`
-  still upgrades them at runtime.
-- **Allowlist (the actual `startup_failure` cause):** repo
+- **Do not write `uses: vmactions/…`.** Repo
   `selected-actions` is SHA-exact (`verified_allowed: false`).
   Runs 32502582357, 32503154809, and 32504080714 failed at parse
-  with zero jobs because `vmactions/*` is not in the pattern
-  list. This environment cannot PUT
+  with zero jobs because those remote actions are not in the
+  pattern list. This environment still gets 403 on GET/PUT
   `repos/kelp/vibeutils/actions/permissions/selected-actions`.
-  The owner must add the three SHA pins above alongside the
-  existing `cachix/*`, `extractions/*`, `mlugg/setup-zig`, and
-  `kelp/*` patterns, then re-run the BSD workflow. Vendoring
-  the actions would pull ~26MB of committed `node_modules`;
-  do not do that.
+  Waiting for an owner PUT is out of scope for this revision:
+  the campaign cannot finish on that gate.
+- **Allowlist bypass (this revision):** each guest job
+  `actions/checkout`s this repo, clones the pinned vmactions
+  SHA into a workspace path, then `uses: ./_vmactions/<os>-vm`.
+  A `uses: ./…` path is a same-repo local action (kelp-owned)
+  and is not matched against the third-party pattern list.
+  Do not vendor `node_modules` (~26MB). Do not add git
+  submodules. Do not invoke `node index.js` by hand — let the
+  runner load the cloned JS action so inputs and the toolkit
+  stay intact.
+- Locked SHAs (last node20 releases; current `v1` / v1.5.3
+  declare `using: node24`):
+  - FreeBSD `vmactions/freebsd-vm`
+    `c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e` (`v1.4.2`)
+  - OpenBSD `vmactions/openbsd-vm`
+    `9a8e4351a4a0dc6238e7c69276dcbf6c03bea576` (`v1.3.6`)
+  - NetBSD `vmactions/netbsd-vm`
+    `e04aec09540429f9cebb0e7941f7cd0c0fc3b44f` (`v1.3.6`)
+- Clone step must `git checkout` that exact SHA (not a
+  floating tag). `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` still
+  upgrades the cloned node20 action at runtime.
+- Pin checkout like other workflows
+  (`actions/checkout@de0fac2e…` plus SHA comments).
+- Keep the host-side `workflow-ok` job (checkout + pin-check
+  only) so a clone/`uses` failure still leaves a Linux job
+  in the graph.
 - `usesh: true` on each VM.
 - Install Zig **0.16.0** from ziglang.org inside `prepare` (official
   `x86_64-freebsd` / `x86_64-openbsd` / `x86_64-netbsd` tarballs). Do
@@ -100,12 +109,20 @@ Required, not optional: `tests/tools/bsd-workflow_test.sh` plus
 asserts:
 
 1. `.github/workflows/bsd.yml` exists.
-2. It contains `uses: vmactions/<os>-vm@<sha>` for the three
-   node20 SHAs above (not comment-only, not floating `@v1`).
-3. It installs Zig 0.16.0.
-4. `runs-on: ubuntu-latest` appears.
-5. No `continue-on-error`.
-6. `fakeroot` appears only in the FreeBSD job.
+2. It does **not** contain `uses: vmactions/` (that string is
+   the parse-time allowlist failure).
+3. Each guest job clones the matching vmactions repo and
+   checks out the locked SHA above (the SHA must appear in
+   the clone/checkout step, not only in a comment).
+4. Each guest job then has `uses: ./_vmactions/<os>-vm`
+   (`freebsd-vm`, `openbsd-vm`, `netbsd-vm`).
+5. It installs Zig 0.16.0.
+6. `runs-on: ubuntu-latest` appears.
+7. No `continue-on-error`.
+8. `fakeroot` appears only in the FreeBSD job.
+
+RED: update the pin-check first; current `bsd.yml` still has
+`uses: vmactions/…@<sha>` and must fail the new assertions.
 
 RED: the script fails until `bsd.yml` and the recipe exist.
 
@@ -124,6 +141,15 @@ pre-emptively skip.
 - vmactions jobs are slow; 60-minute timeout. Do not add `just it`.
 - Fakeroot on OpenBSD is not the Linux binary; do not assume it.
 - Trust the OS: no extra path sandbox in the workflow.
+- GitHub may reject `uses: ./_vmactions/…` if it treats a
+  cloned third-party `action.yml` as still `vmactions/*`.
+  If CI names that, fall back to a committed composite
+  under `.github/actions/<os>-vm` that clones the same SHA
+  and execs `node index.js` with `INPUT_*` and
+  `GITHUB_ACTION_PATH`. Do not implement the fallback
+  unless CI proves the local-`uses` path is blocked.
+- Clone needs network on `ubuntu-latest` (already granted).
+  Pin HTTPS to `github.com/vmactions/<os>-vm`.
 
 ## Plan review history
 
@@ -132,3 +158,9 @@ wire `just` + Linux CI for the pin-check; `runs-on: ubuntu-latest`
 and checkout-before-VM). GPT REQUEST CHANGES (unconditional tool
 test + just recipe + Linux CI; independent jobs not a matrix
 `fail-fast`). Fable APPROVE. This revision locks those.
+
+Round 2 (this revision): owner PUT of `selected-actions` is
+still 403. Change the guest jobs from `uses: vmactions/…@SHA`
+to clone-at-SHA plus `uses: ./_vmactions/<os>-vm` so the
+workflow can start without expanding the allowlist. Do not
+vendor `node_modules`. Do not add a new TODO heading.
