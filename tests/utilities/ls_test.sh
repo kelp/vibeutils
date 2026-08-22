@@ -476,8 +476,14 @@ test_ls() {
     create_temp_file "target" "$uncolored_link_dir/target.txt"
     ln -s target.txt "$uncolored_link_dir/link.txt"
     local uncolored_link_output
-    uncolored_link_output=$(env -u NO_COLOR TERM=xterm-256color \
-        LS_COLORS='ln=0:fi=0:ec=WRONGRESET' "$binary" --color=always -l "$uncolored_link_dir" 2>/dev/null)
+    # Run from inside the fixture so lstat(target.txt) resolves; listing
+    # the directory from elsewhere treats the relative target as dangling
+    # and would apply the compiled missing-target color instead of fi=0.
+    uncolored_link_output=$(
+        cd "$uncolored_link_dir" &&
+        env -u NO_COLOR TERM=xterm-256color \
+            LS_COLORS='ln=0:fi=0:ec=WRONGRESET' "$binary" --color=always -l . 2>/dev/null
+    )
     if [[ "$uncolored_link_output" == *"WRONGRESET"* ]]; then
         print_test_result "ls omits end sequence for uncolored symlink names" "FAIL" \
             "Unexpected end sequence in: '$uncolored_link_output'"
