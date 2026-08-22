@@ -96,6 +96,9 @@ here is theater. Prove the tests have teeth by
   suite pass.** Diagnose the root cause. If it is an
   upstream bug, document it explicitly and write a
   proper workaround — do not comment the test out.
+- **Three-model plan and patch review** lives in the
+  `land-todo-slice` skill. Do not send reviewers the
+  full tree, and do not ask them to poll CI.
 
 Patterns, fixtures, filter-utility handling, and the
 privileged-test architecture:
