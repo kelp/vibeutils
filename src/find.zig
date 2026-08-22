@@ -543,10 +543,25 @@ const ParseError = error{
     StatError,
 };
 
+/// Global flags collected from the leading-globals scan and from
+/// expression-position `-maxdepth`/`-mindepth`.
+const GlobalFlags = struct {
+    maxdepth: ?u32 = null,
+    mindepth: u32 = 0,
+    depth_first: bool = false,
+    follow_symlinks: bool = false,
+    follow_cmdline_symlinks: bool = false,
+    xdev: bool = false,
+    xargs_safe: bool = false,
+    sorted: bool = false,
+    extended_regex: bool = false,
+};
+
 const ParseContext = struct {
     allocator: Allocator,
     error_msg: ?[]const u8 = null,
     extended_regex: bool = false,
+    flags: *GlobalFlags,
 
     fn setError(self: *ParseContext, comptime fmt: []const u8, fmt_args: anytype) void {
         self.error_msg = std.fmt.allocPrint(self.allocator, fmt, fmt_args) catch null;
@@ -600,21 +615,6 @@ fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
     }
 }
 
-/// Global flags collected from the leading-globals scan, before expression
-/// args. Bundled into one struct so `parseArgs` stays small and the scan
-/// helper takes few arguments (Tiger Style inverse-hourglass).
-const GlobalFlags = struct {
-    maxdepth: ?u32 = null,
-    mindepth: u32 = 0,
-    depth_first: bool = false,
-    follow_symlinks: bool = false,
-    follow_cmdline_symlinks: bool = false,
-    xdev: bool = false,
-    xargs_safe: bool = false,
-    sorted: bool = false,
-    extended_regex: bool = false,
-};
-
 /// Scan leading global options and starting paths before the expression.
 /// Mutates `flags` and appends discovered paths to `start_paths`; returns the
 /// index of the first expression arg (`expr_start`). Straight-line iteration
@@ -626,25 +626,33 @@ fn parseArgs_collectLeadingGlobals(
     start_paths: *std.ArrayListUnmanaged([]const u8),
 ) !usize { // tiger:allow:usize-arch returns slice index cursor; Zig indexing requires usize
     var expr_start: usize = 0; // tiger:allow:usize-arch slice index cursor
+    var seen_end_of_options = false;
     while (expr_start < args.len) {
         const arg = args[expr_start];
-        if (std.mem.eql(u8, arg, "-L") or std.mem.eql(u8, arg, "-follow")) {
+        if (!seen_end_of_options and start_paths.items.len == 0 and std.mem.eql(u8, arg, "--")) {
+            // `--` ends only the leading -H/-L/-P options, and only
+            // before any start path. `find . --` is an unknown predicate.
+            seen_end_of_options = true;
+            expr_start += 1;
+        } else if (!seen_end_of_options and
+            (std.mem.eql(u8, arg, "-L") or std.mem.eql(u8, arg, "-follow")))
+        {
             flags.follow_symlinks = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-H")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-H")) {
             flags.follow_cmdline_symlinks = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-P")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-P")) {
             // -P: never follow symlinks (default behavior); accept as no-op
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-E")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-E")) {
             flags.extended_regex = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-s")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-s")) {
             // -s: traverse in alphabetical (sorted) order
             flags.sorted = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-depth")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-depth")) {
             // Check if followed by a number: -depth N is an expression primary
             if (expr_start + 1 < args.len) {
                 if (std.fmt.parseInt(u32, args[expr_start + 1], 10)) |_| {
@@ -654,16 +662,16 @@ fn parseArgs_collectLeadingGlobals(
             }
             flags.depth_first = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-d")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-d")) {
             flags.depth_first = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-x")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-x")) {
             flags.xdev = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-X")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-X")) {
             flags.xargs_safe = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-f")) {
+        } else if (!seen_end_of_options and std.mem.eql(u8, arg, "-f")) {
             expr_start += 1;
             if (expr_start < args.len) {
                 try start_paths.append(allocator, args[expr_start]);
@@ -683,92 +691,6 @@ fn parseArgs_collectLeadingGlobals(
     return expr_start;
 }
 
-/// Pre-scan expression args for depth/xdev globals (-maxdepth/-mindepth/-depth/
-/// -d/-xdev/-mount and the readdir-race no-ops), mutating `flags`. Keeps the
-/// error-emitting branches identical to the original inline loop.
-/// Parse the numeric argument to a depth flag (-maxdepth/-mindepth) at args[i].
-/// The value lives at args[i + 1]; reports a missing/invalid argument error.
-fn parseArgs_parseDepthArg(
-    allocator: Allocator,
-    args: []const []const u8,
-    i: usize, // tiger:allow:usize-arch slice index cursor
-    flag: []const u8,
-    stderr: anytype,
-) !u32 {
-    assert(i < args.len);
-    if (i + 1 >= args.len) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            prog_name,
-            "missing argument to '{s}'",
-            .{flag},
-        );
-        return error.MissingArgument;
-    }
-    return std.fmt.parseInt(u32, args[i + 1], 10) catch {
-        common.printErrorWithProgram(
-            allocator,
-            stderr,
-            prog_name,
-            "invalid argument '{s}' to '{s}'",
-            .{ args[i + 1], flag },
-        );
-        return error.InvalidExpression;
-    };
-}
-
-fn parseArgs_prescanDepthGlobals(
-    allocator: Allocator,
-    args: []const []const u8,
-    expr_start: usize, // tiger:allow:usize-arch slice index cursor; Zig indexing requires usize
-    flags: *GlobalFlags,
-    stderr: anytype,
-) !void {
-    assert(expr_start <= args.len);
-    var i: usize = expr_start; // tiger:allow:usize-arch slice index cursor
-    while (i < args.len) {
-        if (std.mem.eql(u8, args[i], "-maxdepth")) {
-            flags.maxdepth = try parseArgs_parseDepthArg(allocator, args, i, "-maxdepth", stderr);
-            i += 2;
-        } else if (std.mem.eql(u8, args[i], "-mindepth")) {
-            flags.mindepth = try parseArgs_parseDepthArg(allocator, args, i, "-mindepth", stderr);
-            i += 2;
-        } else if (std.mem.eql(u8, args[i], "-depth")) {
-            // Check if next arg is numeric: -depth N (exact depth match, not depth-first)
-            if (i + 1 < args.len) {
-                if (std.fmt.parseInt(u32, args[i + 1], 10)) |_| {
-                    // -depth N: exact depth matching, skip (handled by parsePrimary)
-                    i += 2;
-                } else |_| {
-                    // -depth without numeric arg: depth-first mode
-                    flags.depth_first = true;
-                    i += 1;
-                }
-            } else {
-                flags.depth_first = true;
-                i += 1;
-            }
-        } else if (std.mem.eql(u8, args[i], "-d")) {
-            flags.depth_first = true;
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "-xdev") or std.mem.eql(u8, args[i], "-mount")) {
-            flags.xdev = true;
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "-ignore_readdir_race") or
-            std.mem.eql(u8, args[i], "-noignore_readdir_race") or
-            std.mem.eql(u8, args[i], "-noleaf"))
-        {
-            // Accept as no-ops
-            i += 1;
-        } else {
-            i += 1;
-        }
-    }
-    assert(i == args.len);
-    assert(i >= expr_start);
-}
-
 /// Wrap an expression with an implicit -print action via an AND node, matching
 /// find's default behavior when the expression contains no explicit action.
 fn parseArgs_wrapImplicitPrint(allocator: Allocator, final_expr: *Expression) !*Expression {
@@ -778,6 +700,25 @@ fn parseArgs_wrapImplicitPrint(allocator: Allocator, final_expr: *Expression) !*
         .and_expr,
         .{ .binary = .{ .left = final_expr, .right = print_expr } },
     );
+}
+
+fn parseArgs_or(
+    allocator: Allocator,
+    args: []const []const u8,
+    stderr: anytype,
+    expr_start: usize, // tiger:allow:usize-arch
+    pos: *usize, // tiger:allow:usize-arch
+    has_action: *bool,
+    pctx: *ParseContext,
+) !*Expression {
+    std.debug.assert(pos.* == expr_start);
+    std.debug.assert(!has_action.*);
+    return parseOr(allocator, args, pos, has_action, pctx) catch |err| {
+        if (pctx.error_msg) |msg| {
+            common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
+        }
+        return err;
+    };
 }
 
 fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
@@ -795,19 +736,17 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     }
     assert(start_paths.items.len >= 1);
 
-    // Pre-scan for global options within expression args.
-    try parseArgs_prescanDepthGlobals(allocator, args, expr_start, &flags, stderr);
-
-    // Parse expression tree
+    // Parse expression tree. Walker globals that also appear as
+    // primaries (`-depth`/`-d`/`-xdev`/`-follow`) are captured in
+    // parsePrimary so a token that is a primary argument cannot flip them.
     var pos: usize = expr_start;
     var has_action = false;
-    var pctx = ParseContext{ .allocator = allocator, .extended_regex = flags.extended_regex };
-    const expr = parseOr(allocator, args, &pos, &has_action, &pctx) catch |err| {
-        if (pctx.error_msg) |msg| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
-        }
-        return err;
+    var pctx = ParseContext{
+        .allocator = allocator,
+        .extended_regex = flags.extended_regex,
+        .flags = &flags,
     };
+    const expr = try parseArgs_or(allocator, args, stderr, expr_start, &pos, &has_action, &pctx);
 
     const final_expr = if (pos == expr_start)
         try allocExpr(allocator, .true_expr, .{ .none = {} })
@@ -817,14 +756,6 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     // If -delete is used, enable depth-first
     if (exprContainsDelete(final_expr)) {
         flags.depth_first = true;
-    }
-
-    // -follow in expression position also enables symlink following
-    for (args[expr_start..]) |a| {
-        if (std.mem.eql(u8, a, "-follow")) {
-            flags.follow_symlinks = true;
-            break;
-        }
     }
 
     // If no action, wrap with implicit -print
@@ -893,6 +824,8 @@ const ExprParseError = error{
     UnmatchedParen,
     StatError,
     OutOfMemory,
+    HelpRequested,
+    VersionRequested,
 };
 
 /// Binary operators and the paren sentinel held on the shunting-yard operator
@@ -1213,41 +1146,77 @@ fn parsePrimary_newerXYRefTime(
     };
 }
 
+/// Parse the numeric argument to `-maxdepth`/`-mindepth` at the current
+/// primary. Sets the GNU missing/invalid diagnostic on pctx.
+fn parsePrimary_takeDepth(
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor
+    flag: []const u8,
+    pctx: *ParseContext,
+) ExprParseError!u32 {
+    assert(pos.* < args.len);
+    pos.* += 1;
+    if (pos.* >= args.len) {
+        pctx.setError("missing argument to '{s}'", .{flag});
+        return error.MissingArgument;
+    }
+    const raw = args[pos.*];
+    const val = std.fmt.parseInt(u32, raw, 10) catch {
+        pctx.setError("invalid argument '{s}' to '{s}'", .{ raw, flag });
+        return error.InvalidExpression;
+    };
+    pos.* += 1;
+    std.debug.assert(pos.* <= args.len);
+    return val;
+}
+
 /// Handle global-option and accepted-no-op predicates: -maxdepth/-mindepth,
 /// -depth, -d, -follow, -ignore_readdir_race, -noignore_readdir_race, -noleaf.
-/// Returns null when `arg` is not one of these (fall through to next group).
+/// `-depth`/`-d`/`-follow` set walker flags here so a token that is a
+/// primary argument cannot. Returns null when `arg` is none of these.
 fn parsePrimary_globalsAndNoops(
     allocator: Allocator,
     args: []const []const u8,
     pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
     arg: []const u8,
+    pctx: *ParseContext,
 ) ExprParseError!?*Expression {
     assert(pos.* < args.len);
     const entry_pos = pos.*;
-    // Skip global options already handled
-    if (std.mem.eql(u8, arg, "-maxdepth") or std.mem.eql(u8, arg, "-mindepth")) {
-        pos.* += 2;
+    if (std.mem.eql(u8, arg, "-maxdepth")) {
+        pctx.flags.maxdepth = try parsePrimary_takeDepth(args, pos, "-maxdepth", pctx);
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-mindepth")) {
+        pctx.flags.mindepth = try parsePrimary_takeDepth(args, pos, "-mindepth", pctx);
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
     if (std.mem.eql(u8, arg, "-depth")) {
-        // Check if next arg is numeric: -depth N (exact depth matching)
+        // Numeric next arg: exact-depth primary. Otherwise: post-order walk.
         if (pos.* + 1 < args.len) {
             if (std.fmt.parseInt(u32, args[pos.* + 1], 10)) |n| {
                 pos.* += 2;
                 return allocExpr(allocator, .depth_n, .{ .depth_val = n });
             } else |_| {}
         }
-        // Non-numeric or no argument: depth-first mode (already handled in parseArgs)
         pos.* += 1;
+        pctx.flags.depth_first = true;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
-    if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "-follow") or
-        std.mem.eql(u8, arg, "-ignore_readdir_race") or
+    if (std.mem.eql(u8, arg, "-d")) {
+        pos.* += 1;
+        pctx.flags.depth_first = true;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-follow")) {
+        pos.* += 1;
+        pctx.flags.follow_symlinks = true;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-ignore_readdir_race") or
         std.mem.eql(u8, arg, "-noignore_readdir_race") or
         std.mem.eql(u8, arg, "-noleaf"))
     {
-        // -follow in expression position (deprecated GNU/macOS form); the
-        // others are accepted no-ops.
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
@@ -1630,6 +1599,7 @@ fn parsePrimary_actions(
     }
     if (std.mem.eql(u8, arg, "-xdev") or std.mem.eql(u8, arg, "-mount")) {
         pos.* += 1;
+        pctx.flags.xdev = true;
         return allocExpr(allocator, .xdev, .{ .none = {} });
     }
     return null;
@@ -1935,7 +1905,13 @@ fn parsePrimary(
     const arg = args[pos.*];
     assert(pos.* < args.len);
 
-    if (try parsePrimary_globalsAndNoops(allocator, args, pos, arg)) |e| return e;
+    // GNU treats `--help`/`--version` as options in predicate position,
+    // not as unknown predicates. As a primary argument they are consumed
+    // by that primary (`-name --help`) and never reach this check.
+    if (std.mem.eql(u8, arg, "--help")) return error.HelpRequested;
+    if (std.mem.eql(u8, arg, "--version")) return error.VersionRequested;
+
+    if (try parsePrimary_globalsAndNoops(allocator, args, pos, arg, pctx)) |e| return e;
     if (try parsePrimary_namePathType(allocator, args, pos, arg, pctx)) |e| return e;
     if (try parsePrimary_sizeEmptyPerm(allocator, args, pos, arg, pctx)) |e| return e;
     if (try parsePrimary_timeCompare(allocator, args, pos, arg, pctx)) |e| return e;
@@ -4022,6 +3998,27 @@ fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
 // Entry points
 // ============================================================================
 
+/// Map parseArgs failures: `--help`/`--version` in predicate position
+/// print help/version on stdout (GNU sequential parse). Other errors
+/// already wrote stderr inside parseArgs.
+fn runFind_afterParseErr(
+    allocator: Allocator,
+    stdout: anytype,
+    err: anyerror,
+) u8 {
+    if (err == error.HelpRequested) {
+        printHelp(allocator, stdout);
+        return @intFromEnum(common.ExitCode.success);
+    }
+    if (err == error.VersionRequested) {
+        printVersion(stdout);
+        return @intFromEnum(common.ExitCode.success);
+    }
+    std.debug.assert(err != error.HelpRequested);
+    std.debug.assert(err != error.VersionRequested);
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
 pub fn runFind(
     allocator: Allocator,
     io: std.Io,
@@ -4029,20 +4026,8 @@ pub fn runFind(
     stdout: anytype,
     stderr: anytype,
 ) anyerror!u8 {
-    // Handle --help and --version before expression parsing
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
-            printHelp(allocator, stdout);
-            return @intFromEnum(common.ExitCode.success);
-        }
-        if (std.mem.eql(u8, arg, "--version")) {
-            printVersion(stdout);
-            return @intFromEnum(common.ExitCode.success);
-        }
-    }
-
-    const config = parseArgs(allocator, args, stderr) catch {
-        return @intFromEnum(common.ExitCode.general_error);
+    const config = parseArgs(allocator, args, stderr) catch |err| {
+        return runFind_afterParseErr(allocator, stdout, err);
     };
     assert(config.start_paths.len > 0);
 
@@ -9321,4 +9306,442 @@ test "find: exprContainsDelete: -delete behind -o still forces depth-first" {
 
     const victim_stat = tmp.dir.statFile(testing.io, "orvictim", .{});
     try testing.expect(victim_stat == error.FileNotFound);
+}
+
+// Issue #159: `--` is the POSIX end-of-options delimiter for the
+// leading -H/-L/-P options. Pinned against GNU findutils 4.9.0
+// (`/usr/bin/find`, LC_ALL=C). Current vibeutils treats `--` as an
+// unknown predicate. A dash-named start path must be written
+// `./-name`: GNU find still classifies a bare `-name` as an expression.
+
+test "find #159: -- before path lists the tree" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", dir_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #159: -- after -P lists the tree" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "after.txt", .{});
+    f1.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "-P", "--", dir_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "after.txt") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #159: doubled -- is an unknown predicate" {
+    // GNU findutils 4.9: the first `--` ends -H/-L/-P option parsing;
+    // a second `--` is an expression token and is rejected. Pin that
+    // so a naive "skip every --" fix does not treat `--` as a path.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", "--" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "--") != null);
+}
+
+test "find #159: -- then ./dash-dir lists the dash-named tree" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "-dashdir", .default_dir);
+    var dash = try tmp.dir.openDir(testing.io, "-dashdir", .{});
+    const inner = try dash.createFile(testing.io, "inside.txt", .{});
+    inner.close(testing.io);
+    dash.close(testing.io);
+
+    const dash_path = try tmp.dir.realPathFileAlloc(testing.io, "-dashdir", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", dash_path },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "inside.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-dashdir") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #159: -- path -name matches a dash-named file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "-dashfile", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f2.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ "--", dir_path, "-name", "-dashfile" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-dashfile") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") == null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "find #177: path then -- is an unknown predicate" {
+    // GNU findutils 4.9: `--` is a delimiter only in the leading
+    // -H/-L/-P prefix, before any start path. `find . --` therefore
+    // treats `--` as an expression. Current code still skips `--`
+    // after a path has been collected.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "--" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, err, "--") != null);
+}
+
+test "find #178: path then -- --help is unknown predicate" {
+    // GNU findutils 4.9: `find . -- --help` does not print help.
+    // `--` after a path is an unknown predicate; `--help` is never
+    // reached. Current runFind scans all argv for --help first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "--", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, err, "--") != null);
+}
+
+// GNU findutils 4.9: `--` is a -name pattern, then `--help` prints help.
+test "find #179: -name -- --help prints help" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "--", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), "Usage"));
+}
+
+// GNU findutils 4.9: `--` after -true is an unknown predicate.
+test "find #179: -true -- --help is unknown predicate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-true", "--", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, err, "--") != null);
+}
+
+// GNU findutils 4.9: `--help` before an invalid `-maxdepth` still
+// prints help. Sequential parse must not pre-validate later globals.
+test "find #180: --help before invalid -maxdepth prints help" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "--help", "-maxdepth", "foo" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), "Usage"));
+}
+
+// GNU findutils 4.9: invalid `-maxdepth` before `--help` stays an
+// error; `--help` is never reached.
+test "find #180: invalid -maxdepth before --help is not help" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-maxdepth", "foo", "--help" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err, "-maxdepth") != null);
+    try testing.expect(std.mem.find(u8, err, "foo") != null);
+}
+
+// GNU findutils 4.9: `--help` as a `-name` pattern is not a help
+// option. The later `-maxdepth 1` still applies, so a file named
+// `--help` under `sub/deep` is not listed.
+test "find #181: -name --help -maxdepth 1 stays at depth 1" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root_help = try tmp.dir.createFile(testing.io, "--help", .{});
+    root_help.close(testing.io);
+    try tmp.dir.createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    try sub.createDir(testing.io, "deep", .default_dir);
+    var deep = try sub.openDir(testing.io, "deep", .{});
+    const deep_help = try deep.createFile(testing.io, "--help", .{});
+    deep_help.close(testing.io);
+    deep.close(testing.io);
+    sub.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-name", "--help", "-maxdepth", "1" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "--help") != null);
+    try testing.expect(std.mem.find(u8, out, "deep") == null);
+}
+
+// GNU findutils 4.9: `-depth` inside `-exec` argv is a command
+// argument, not the global. `find DIR -exec true -depth \; -print`
+// stays pre-order (root first). Current prescan sets depth_first.
+test "find #182: -exec true -depth stays pre-order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "a", .default_dir);
+    var a = try tmp.dir.openDir(testing.io, "a", .{});
+    try a.createDir(testing.io, "b", .default_dir);
+    var b = try a.openDir(testing.io, "b", .{});
+    const nested_file = try b.createFile(testing.io, "file.txt", .{});
+    nested_file.close(testing.io);
+    b.close(testing.io);
+    a.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const nested = try std.fmt.allocPrint(allocator, "{s}/a/b/file.txt", .{dir_path});
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(
+        allocator,
+        testing.io,
+        &[_][]const u8{ dir_path, "-exec", "true", "-depth", ";", "-print" },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
+    const dir_pos = std.mem.indexOf(u8, out, dir_path);
+    const file_pos = std.mem.indexOf(u8, out, nested);
+    try testing.expect(dir_pos != null);
+    try testing.expect(file_pos != null);
+    try testing.expect(dir_pos.? < file_pos.?);
 }

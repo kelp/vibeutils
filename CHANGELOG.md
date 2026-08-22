@@ -119,6 +119,27 @@
 
 ### Fixed
 
+- **`find`, `printf`, `dd`, and `date` honor `--` as the end of
+  options.** All four hand-rolled parsers treated `--` as an operand
+  or unknown flag: `printf -- 'x\n'` printed `--`, `find -- .`
+  reported an unknown predicate, `dd -- if=f` was an unrecognized
+  operand, and `date -- +%Y` was an unrecognized option. They now
+  match GNU: `--` stops option parsing, a leading `--` with nothing
+  after it is a missing operand for printf, a second `--` is still a
+  predicate for find and an unrecognized operand for dd, and date
+  treats a following dash-token as a date string. `--` is a delimiter
+  for find only before any start path (`find . --` is an unknown
+  predicate). After `dd --`, `--help`/`--version` are unrecognized
+  operands, and the first invalid token — including an unknown
+  `key=value` or an empty `''` — is the one named. Date collects
+  positionals: a second operand is extra (quoted), a single non-`+`
+  token is a date string. A leftover non-`+` positional after `--date`
+  or `-r` is GNU "lacks a leading '+'". After a find start path, `--`
+  is an unknown predicate (`find . -- --help`); `--help` in predicate
+  position still prints help (`find . -name -- --help`). Walker
+  globals `-depth`/`-d`/`-xdev`/`-mount`/`-follow` are captured
+  only as sequential primaries, so a token that is a primary
+  argument (`find DIR -exec true -depth \;`) does not flip them (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not
