@@ -305,6 +305,16 @@ test-host-path:
 test-run-integration: build
     @bash tests/tools/run-integration_test.sh
 
+# Coverage oracle for the fd-mode fixture table (TODO ### 1). Needs
+# tests/lib/fd_modes.sh (implementer) and, once that exists, zig-out/bin
+# for the echo/true four-mode contracts — the oracle runs `just build`
+# if those binaries are missing. Lives in tests/tools/, which
+# test_runner.sh does not glob. Not hooked into `just it`; that hook
+# is the implementer's.
+# Coverage oracle for fd-mode fixtures (not hooked into just it)
+test-fd-modes:
+    @bash tests/tools/fd_modes_test.sh
+
 # Stage-1 audit pre-pass over every unit in build/utils.zig. A finding
 # already recorded in scripts/audit-baseline.tsv is BASELINED; anything
 # else is NEW and fails. Plain sh + awk, so it needs no Zig toolchain.

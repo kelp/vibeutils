@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const glob = common.glob;
 const testing = std.testing;
 const builtin = @import("builtin");
@@ -3073,14 +3074,14 @@ test "runGrep --version returns success" {
 /// Helper to run grep in tests with arena allocator (grep is designed for arena usage)
 fn testRunGrep(file_content: []const u8, grep_args: []const []const u8) !u8 {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, file_content);
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     // Use arena for runGrep since it relies on arena-style allocation
@@ -3185,14 +3186,14 @@ fn testRunGrepOutput(
     grep_args: []const []const u8,
 ) !struct { exit_code: u8, output: []const u8, arena: std.heap.ArenaAllocator } {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, file_content);
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3309,14 +3310,14 @@ test "parseArgs --null sets null_data" {
 
 test "runGrep -lZ uses NUL byte after filename" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, "hello world\n");
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3344,14 +3345,14 @@ test "runGrep -lZ uses NUL byte after filename" {
 
 test "runGrep -l without -Z uses newline after filename" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, "hello world\n");
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3547,18 +3548,18 @@ test "parseArgs -d read is default (no change)" {
 
 test "runGrep -d skip silently skips directories" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with matching content
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, "hello world\n");
     file.close(io);
 
     // Create a subdirectory
-    try tmp_dir.dir.createDir(io, "subdir", .default_dir);
+    try tmp_dir.dir().createDir(io, "subdir", .default_dir);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    const tmp_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_path);
 
     const file_path = try std.fs.path.join(testing.allocator, &.{ tmp_path, "test.txt" });
@@ -3606,15 +3607,15 @@ test "parseArgs --null-data sets null_line_sep" {
 
 test "runGrep -z splits on NUL and terminates with NUL" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Create a file with NUL-separated records
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, "hello world\x00foo bar\x00hello again\x00");
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3649,14 +3650,14 @@ test "parseArgs --label=LABEL sets stdin_label" {
 
 test "runGrep -HZ uses NUL after filename in normal output" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, "hello world\n");
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3681,14 +3682,14 @@ test "runGrep -HZ uses NUL after filename in normal output" {
 
 test "runGrep -cZ uses NUL after filename in count output" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "test.txt", .{});
     try file.writeStreamingAll(io, "hello world\nhello again\n");
     file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
+    const tmp_path = try tmp_dir.getPath("test.txt");
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3763,27 +3764,23 @@ test "processFile reads file with many lines and matches selectively" {
 test "runGrep -f pattern file does not leak file contents buffer" {
     const io = testing.io;
     // Create a temp dir with a pattern file and a data file
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Write pattern file containing one pattern per line
-    const pattern_file = try tmp_dir.dir.createFile(io, "patterns.txt", .{});
+    const pattern_file = try tmp_dir.dir().createFile(io, "patterns.txt", .{});
     try pattern_file.writeStreamingAll(io, "hello\nworld\n");
     pattern_file.close(io);
 
     // Write data file to search
-    const data_file = try tmp_dir.dir.createFile(io, "data.txt", .{});
+    const data_file = try tmp_dir.dir().createFile(io, "data.txt", .{});
     try data_file.writeStreamingAll(io, "hello there\ngoodbye now\nworld peace\n");
     data_file.close(io);
 
-    const pattern_path = try tmp_dir.dir.realPathFileAlloc(
-        testing.io,
-        "patterns.txt",
-        testing.allocator,
-    );
+    const pattern_path = try tmp_dir.getPath("patterns.txt");
     defer testing.allocator.free(pattern_path);
 
-    const data_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "data.txt", testing.allocator);
+    const data_path = try tmp_dir.getPath("data.txt");
     defer testing.allocator.free(data_path);
 
     // Use testing.allocator directly (not arena) so leaks are detected
@@ -4310,14 +4307,14 @@ const RecursiveResult = struct {
 };
 
 fn runGrepRecursive(
-    tmp_dir: *testing.TmpDir,
+    tmp_dir: *TestDir,
     extra_args: []const []const u8,
     capture_stderr: bool,
 ) !RecursiveResult {
     const io = testing.io;
 
     // searchDirectory opens via cwd(), so an absolute operand is required.
-    const root_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const root_path = try tmp_dir.getBasePath();
     defer testing.allocator.free(root_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4359,8 +4356,8 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
 
 test "walker-migration: -r descends into every level and searches all regular files" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Build a multi-level tree:
     //   top.txt            (match)
@@ -4368,7 +4365,7 @@ test "walker-migration: -r descends into every level and searches all regular fi
     //   a/b/deep.txt       (match)
     //   a/b/c/deepest.txt  (match)
     //   a/nomatch.txt      (no match)
-    try tmp_dir.dir.createDirPath(io, "a/b/c");
+    try tmp_dir.dir().createDirPath(io, "a/b/c");
     const write = struct {
         fn f(d: std.Io.Dir, name: []const u8, content: []const u8) !void {
             const file = try d.createFile(testing.io, name, .{});
@@ -4376,11 +4373,11 @@ test "walker-migration: -r descends into every level and searches all regular fi
             file.close(testing.io);
         }
     }.f;
-    try write(tmp_dir.dir, "top.txt", "needle at top\n");
-    try write(tmp_dir.dir, "a/mid.txt", "needle in mid\n");
-    try write(tmp_dir.dir, "a/b/deep.txt", "needle in deep\n");
-    try write(tmp_dir.dir, "a/b/c/deepest.txt", "needle in deepest\n");
-    try write(tmp_dir.dir, "a/nomatch.txt", "nothing here\n");
+    try write(tmp_dir.dir(), "top.txt", "needle at top\n");
+    try write(tmp_dir.dir(), "a/mid.txt", "needle in mid\n");
+    try write(tmp_dir.dir(), "a/b/deep.txt", "needle in deep\n");
+    try write(tmp_dir.dir(), "a/b/c/deepest.txt", "needle in deepest\n");
+    try write(tmp_dir.dir(), "a/nomatch.txt", "nothing here\n");
 
     var result = try runGrepRecursive(&tmp_dir, &.{"needle"}, false);
     defer result.arena.deinit();
@@ -4399,14 +4396,14 @@ test "walker-migration: -r descends into every level and searches all regular fi
 
 test "walker-migration: --exclude-dir prunes the entire matching subtree" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // keep/keep.txt          -> searched
     // skipme/inside.txt      -> pruned (basename "skipme" matches glob)
     // skipme/deeper/x.txt    -> pruned (whole subtree gone)
-    try tmp_dir.dir.createDirPath(io, "keep");
-    try tmp_dir.dir.createDirPath(io, "skipme/deeper");
+    try tmp_dir.dir().createDirPath(io, "keep");
+    try tmp_dir.dir().createDirPath(io, "skipme/deeper");
     const write = struct {
         fn f(d: std.Io.Dir, name: []const u8, content: []const u8) !void {
             const file = try d.createFile(testing.io, name, .{});
@@ -4414,9 +4411,9 @@ test "walker-migration: --exclude-dir prunes the entire matching subtree" {
             file.close(testing.io);
         }
     }.f;
-    try write(tmp_dir.dir, "keep/keep.txt", "needle kept\n");
-    try write(tmp_dir.dir, "skipme/inside.txt", "needle pruned shallow\n");
-    try write(tmp_dir.dir, "skipme/deeper/x.txt", "needle pruned deep\n");
+    try write(tmp_dir.dir(), "keep/keep.txt", "needle kept\n");
+    try write(tmp_dir.dir(), "skipme/inside.txt", "needle pruned shallow\n");
+    try write(tmp_dir.dir(), "skipme/deeper/x.txt", "needle pruned deep\n");
 
     var result = try runGrepRecursive(&tmp_dir, &.{ "--exclude-dir=skipme", "needle" }, false);
     defer result.arena.deinit();
@@ -4435,22 +4432,22 @@ test "walker-migration: -r does NOT follow a symlink to a file" {
     // The symlink TARGET lives in a separate tmp dir, OUTSIDE the walked
     // tree, so the only way grep could read its content is by following
     // the symlink. Under -r it must not.
-    var outside_dir = testing.tmpDir(.{});
-    defer outside_dir.cleanup();
+    var outside_dir = TestDir.init(testing.allocator);
+    defer outside_dir.deinit();
     {
-        const file = try outside_dir.dir.createFile(io, "secret.txt", .{});
+        const file = try outside_dir.dir().createFile(io, "secret.txt", .{});
         try file.writeStreamingAll(io, "SYMFILE forbidden\n");
         file.close(io);
     }
-    const target_abs = try outside_dir.dir.realPathFileAlloc(io, "secret.txt", testing.allocator);
+    const target_abs = try outside_dir.getPath("secret.txt");
     defer testing.allocator.free(target_abs);
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.symLink(io, target_abs, "link.txt", .{});
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.dir().symLink(io, target_abs, "link.txt", .{});
     // A real matching file proves the walk actually ran.
     {
-        const file = try tmp_dir.dir.createFile(io, "real.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "real.txt", .{});
         try file.writeStreamingAll(io, "SYMFILE real\n");
         file.close(io);
     }
@@ -4469,22 +4466,22 @@ test "walker-migration: -r does NOT descend through a symlink to a directory" {
 
     // The TARGET directory lives outside the walked tree. Under -r the
     // directory symlink must not be descended, so its file is never found.
-    var outside_dir = testing.tmpDir(.{});
-    defer outside_dir.cleanup();
+    var outside_dir = TestDir.init(testing.allocator);
+    defer outside_dir.deinit();
     {
-        const file = try outside_dir.dir.createFile(io, "unique.txt", .{});
+        const file = try outside_dir.dir().createFile(io, "unique.txt", .{});
         try file.writeStreamingAll(io, "SYMDIR forbidden\n");
         file.close(io);
     }
-    const target_abs = try outside_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const target_abs = try outside_dir.getBasePath();
     defer testing.allocator.free(target_abs);
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.symLink(io, target_abs, "dirlink", .{});
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
+    try tmp_dir.dir().symLink(io, target_abs, "dirlink", .{});
     // A real matching file proves the walk actually ran.
     {
-        const file = try tmp_dir.dir.createFile(io, "real.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "real.txt", .{});
         try file.writeStreamingAll(io, "SYMDIR real\n");
         file.close(io);
     }
@@ -4500,21 +4497,21 @@ test "walker-migration: -r does NOT descend through a symlink to a directory" {
 
 test "walker-migration: -R follows a symlink to a file and searches it" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // The target lives OUTSIDE the walked tree so the only way to reach
     // its content is by dereferencing the symlink.
-    try tmp_dir.dir.createDirPath(io, "outside");
+    try tmp_dir.dir().createDirPath(io, "outside");
     {
-        const file = try tmp_dir.dir.createFile(io, "outside/target.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "outside/target.txt", .{});
         try file.writeStreamingAll(io, "DEREFFILE marker\n");
         file.close(io);
     }
-    try tmp_dir.dir.createDirPath(io, "walked");
-    try tmp_dir.dir.symLink(io, "../outside/target.txt", "walked/link.txt", .{});
+    try tmp_dir.dir().createDirPath(io, "walked");
+    try tmp_dir.dir().symLink(io, "../outside/target.txt", "walked/link.txt", .{});
 
-    const root_path = try tmp_dir.dir.realPathFileAlloc(io, "walked", testing.allocator);
+    const root_path = try tmp_dir.getPath("walked");
     defer testing.allocator.free(root_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4539,29 +4536,29 @@ test "walker-migration: -R follows a symlink to a file and searches it" {
 
 test "walker-migration: -R descends a symlink to a directory and finds the buried file" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // The target directory lives OUTSIDE the walked tree (a sibling) so the
     // only way to reach the buried file is by dereferencing the directory
     // symlink and descending into it -- exactly what -R must do.
-    try tmp_dir.dir.createDirPath(io, "outside");
+    try tmp_dir.dir().createDirPath(io, "outside");
     {
-        const file = try tmp_dir.dir.createFile(io, "outside/buried.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "outside/buried.txt", .{});
         try file.writeStreamingAll(io, "DEREFDIR buried\n");
         file.close(io);
     }
-    try tmp_dir.dir.createDirPath(io, "walked");
+    try tmp_dir.dir().createDirPath(io, "walked");
     // A real plain file inside the walked tree proves the walk actually ran.
     {
-        const file = try tmp_dir.dir.createFile(io, "walked/real.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "walked/real.txt", .{});
         try file.writeStreamingAll(io, "DEREFDIR real\n");
         file.close(io);
     }
     // The symlink points at the sibling directory, not a file.
-    try tmp_dir.dir.symLink(io, "../outside", "walked/dirlink", .{});
+    try tmp_dir.dir().symLink(io, "../outside", "walked/dirlink", .{});
 
-    const root_path = try tmp_dir.dir.realPathFileAlloc(io, "walked", testing.allocator);
+    const root_path = try tmp_dir.getPath("walked");
     defer testing.allocator.free(root_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4596,18 +4593,18 @@ test "walker-migration: -R descends a symlink to a directory and finds the burie
 
 test "walker-migration: directory operand is searched recursively under -r" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // A command-line directory operand (not "." default) must recurse.
-    try tmp_dir.dir.createDirPath(io, "operand/nested");
+    try tmp_dir.dir().createDirPath(io, "operand/nested");
     {
-        const file = try tmp_dir.dir.createFile(io, "operand/nested/found.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "operand/nested/found.txt", .{});
         try file.writeStreamingAll(io, "OPERANDMATCH here\n");
         file.close(io);
     }
 
-    const operand_path = try tmp_dir.dir.realPathFileAlloc(io, "operand", testing.allocator);
+    const operand_path = try tmp_dir.getPath("operand");
     defer testing.allocator.free(operand_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4631,26 +4628,26 @@ test "walker-migration: directory operand is searched recursively under -r" {
 
 test "walker-migration: -d skip silently skips a directory operand and keeps file operands" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // A directory operand with -d skip must be skipped without error,
     // while a sibling file operand is still searched.
-    try tmp_dir.dir.createDirPath(io, "adir");
+    try tmp_dir.dir().createDirPath(io, "adir");
     {
-        const file = try tmp_dir.dir.createFile(io, "adir/inside.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "adir/inside.txt", .{});
         try file.writeStreamingAll(io, "SKIPMATCH in dir\n");
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "afile.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "afile.txt", .{});
         try file.writeStreamingAll(io, "SKIPMATCH in file\n");
         file.close(io);
     }
 
-    const dir_operand = try tmp_dir.dir.realPathFileAlloc(io, "adir", testing.allocator);
+    const dir_operand = try tmp_dir.getPath("adir");
     defer testing.allocator.free(dir_operand);
-    const file_operand = try tmp_dir.dir.realPathFileAlloc(io, "afile.txt", testing.allocator);
+    const file_operand = try tmp_dir.getPath("afile.txt");
     defer testing.allocator.free(file_operand);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4681,8 +4678,8 @@ test "walker-migration: -d skip silently skips a directory operand and keeps fil
 }
 
 test "walker-migration: --include gates which regular files are searched" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // Only *.zig files should be searched; the *.txt file is skipped even
     // though it contains the pattern.
@@ -4693,8 +4690,8 @@ test "walker-migration: --include gates which regular files are searched" {
             file.close(testing.io);
         }
     }.f;
-    try write(tmp_dir.dir, "code.zig", "INCNEEDLE in zig\n");
-    try write(tmp_dir.dir, "notes.txt", "INCNEEDLE in txt\n");
+    try write(tmp_dir.dir(), "code.zig", "INCNEEDLE in zig\n");
+    try write(tmp_dir.dir(), "notes.txt", "INCNEEDLE in txt\n");
 
     var result = try runGrepRecursive(&tmp_dir, &.{ "--include=*.zig", "INCNEEDLE" }, false);
     defer result.arena.deinit();
@@ -4705,8 +4702,8 @@ test "walker-migration: --include gates which regular files are searched" {
 }
 
 test "walker-migration: --exclude skips matching regular files" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // *.log files are excluded; the other file is still searched.
     const write = struct {
@@ -4716,8 +4713,8 @@ test "walker-migration: --exclude skips matching regular files" {
             file.close(testing.io);
         }
     }.f;
-    try write(tmp_dir.dir, "keep.txt", "EXCNEEDLE keep\n");
-    try write(tmp_dir.dir, "drop.log", "EXCNEEDLE drop\n");
+    try write(tmp_dir.dir(), "keep.txt", "EXCNEEDLE keep\n");
+    try write(tmp_dir.dir(), "drop.log", "EXCNEEDLE drop\n");
 
     var result = try runGrepRecursive(&tmp_dir, &.{ "--exclude=*.log", "EXCNEEDLE" }, false);
     defer result.arena.deinit();
@@ -4735,25 +4732,25 @@ test "walker-migration: unreadable directory is reported to stderr and walk cont
     if (geteuid() == 0) return error.SkipZigTest;
 
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // good/good.txt is searchable; locked/ is chmod 000 (unreadable).
-    try tmp_dir.dir.createDirPath(io, "good");
-    try tmp_dir.dir.createDirPath(io, "locked");
+    try tmp_dir.dir().createDirPath(io, "good");
+    try tmp_dir.dir().createDirPath(io, "locked");
     {
-        const file = try tmp_dir.dir.createFile(io, "good/good.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "good/good.txt", .{});
         try file.writeStreamingAll(io, "CONTINUEMARKER found\n");
         file.close(io);
     }
     {
         // A file inside locked/ that we must NOT be able to reach.
-        const file = try tmp_dir.dir.createFile(io, "locked/hidden.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "locked/hidden.txt", .{});
         try file.writeStreamingAll(io, "CONTINUEMARKER hidden\n");
         file.close(io);
     }
 
-    const locked_abs = try tmp_dir.dir.realPathFileAlloc(io, "locked", testing.allocator);
+    const locked_abs = try tmp_dir.getPath("locked");
     defer testing.allocator.free(locked_abs);
     const locked_z = try testing.allocator.dupeZ(u8, locked_abs);
     defer testing.allocator.free(locked_z);
@@ -4799,22 +4796,22 @@ test "walker-migration: unreadable directory is reported to stderr and walk cont
 /// absolute path of the locked dir (owned by `testing.allocator`; the
 /// caller frees it) so the caller can restore its mode. On success the
 /// locked dir is already chmod 000.
-fn issue58BuildLockedTree(tmp_dir: *testing.TmpDir) ![:0]u8 {
+fn issue58BuildLockedTree(tmp_dir: *TestDir) ![:0]u8 {
     const io = testing.io;
-    try tmp_dir.dir.createDirPath(io, "ok");
-    try tmp_dir.dir.createDirPath(io, "locked");
+    try tmp_dir.dir().createDirPath(io, "ok");
+    try tmp_dir.dir().createDirPath(io, "locked");
     {
-        const file = try tmp_dir.dir.createFile(io, "ok/f.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "ok/f.txt", .{});
         try file.writeStreamingAll(io, "hay\n");
         file.close(io);
     }
     {
-        const file = try tmp_dir.dir.createFile(io, "locked/s.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "locked/s.txt", .{});
         try file.writeStreamingAll(io, "secret\n");
         file.close(io);
     }
 
-    const locked_abs = try tmp_dir.dir.realPathFileAlloc(io, "locked", testing.allocator);
+    const locked_abs = try tmp_dir.getPath("locked");
     defer testing.allocator.free(locked_abs);
     const locked_z = try testing.allocator.dupeZ(u8, locked_abs);
     errdefer testing.allocator.free(locked_z);
@@ -4828,8 +4825,8 @@ test "issue #58: grep -r no match over tree with unreadable subdir exits 2 with 
     if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
     if (geteuid() == 0) return error.SkipZigTest;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const locked_z = try issue58BuildLockedTree(&tmp_dir);
     defer testing.allocator.free(locked_z);
@@ -4850,8 +4847,8 @@ test "issue #58: grep -r match found over tree with unreadable subdir exits 2" {
     if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
     if (geteuid() == 0) return error.SkipZigTest;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const locked_z = try issue58BuildLockedTree(&tmp_dir);
     defer testing.allocator.free(locked_z);
@@ -4872,8 +4869,8 @@ test "issue #58: grep -q -r match found with unreadable subdir exits 0" {
     if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
     if (geteuid() == 0) return error.SkipZigTest;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const locked_z = try issue58BuildLockedTree(&tmp_dir);
     defer testing.allocator.free(locked_z);
@@ -4891,8 +4888,8 @@ test "issue #58: grep -q -r no match with unreadable subdir exits 2" {
     if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
     if (geteuid() == 0) return error.SkipZigTest;
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const locked_z = try issue58BuildLockedTree(&tmp_dir);
     defer testing.allocator.free(locked_z);
@@ -4911,12 +4908,12 @@ test "issue #58: grep -r over a fully readable tree exits 0 on match and 1 on no
     // No chmod here, so no root/fakeroot guard is needed: this guards that the
     // new error channel does not leak into clean walks.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "ok");
+    try tmp_dir.dir().createDirPath(io, "ok");
     {
-        const file = try tmp_dir.dir.createFile(io, "ok/f.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "ok/f.txt", .{});
         try file.writeStreamingAll(io, "hay\n");
         file.close(io);
     }
@@ -4935,8 +4932,8 @@ test "issue #58: grep -r over a fully readable tree exits 0 on match and 1 on no
 
 test "walker-migration: -R terminates on a symlink cycle and finds the file exactly once" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     // sub/real.txt holds a match; sub/loop -> .. points back at the walk
     // root, forming an ancestor cycle reachable through the symlink.
@@ -4952,13 +4949,13 @@ test "walker-migration: -R terminates on a symlink cycle and finds the file exac
     // grep's -R traversal with symlinks = .no_follow and cycle_mode = .none:
     // the cycle-forming symlink is simply never descended, so no cycle
     // detection is needed to guarantee termination.
-    try tmp_dir.dir.createDirPath(io, "sub");
+    try tmp_dir.dir().createDirPath(io, "sub");
     {
-        const file = try tmp_dir.dir.createFile(io, "sub/real.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "sub/real.txt", .{});
         try file.writeStreamingAll(io, "CYCLENEEDLE present\n");
         file.close(io);
     }
-    try tmp_dir.dir.symLink(io, "..", "sub/loop", .{});
+    try tmp_dir.dir().symLink(io, "..", "sub/loop", .{});
 
     var result = try runGrepRecursive(&tmp_dir, &.{ "-R", "CYCLENEEDLE" }, false);
     defer result.arena.deinit();
@@ -4988,38 +4985,25 @@ test "walker-migration: recursive search with no operands searches the current d
     //   * a top-level-only walk (no descent) misses deep/cwdfile.txt;
     //   * a double walk pushes the match count above one.
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "deep");
+    try tmp_dir.dir().createDirPath(io, "deep");
     {
-        const file = try tmp_dir.dir.createFile(io, "deep/cwdfile.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "deep/cwdfile.txt", .{});
         try file.writeStreamingAll(io, "CWDNEEDLE in cwd walk\n");
         file.close(io);
     }
     {
         // A non-matching top-level file: its absence from output proves the
         // walk searched contents rather than echoing names.
-        const file = try tmp_dir.dir.createFile(io, "noise.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "noise.txt", .{});
         try file.writeStreamingAll(io, "unrelated content\n");
         file.close(io);
     }
 
-    // Save the original cwd as an OPEN HANDLE so we can restore it with
-    // fchdir (via setCurrentDir) instead of getcwd. This keeps the test
-    // runnable in environments where getcwd is unavailable.
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
-
-    // realPathFileAlloc reads the fd's path (readlink), which works in the
-    // sandbox; it is unrelated to the failing getcwd above.
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
-    defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -5142,8 +5126,8 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     // IS the RED evidence, because control never comes back to check an assert.
     const io = testing.io;
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    var tmp = TestDir.init(testing.allocator);
+    defer tmp.deinit();
 
     // Ten flat files guarantee the pre-order walk (root dir + files) blows past
     // a max_entries=3 cap while entries remain, so the permanent cap re-fires.
@@ -5151,7 +5135,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
         "f01.txt", "f02.txt", "f03.txt", "f04.txt", "f05.txt",
         "f06.txt", "f07.txt", "f08.txt", "f09.txt", "f10.txt",
     }) |name| {
-        const f = try tmp.dir.createFile(io, name, .{});
+        const f = try tmp.dir().createFile(io, name, .{});
         try f.writeStreamingAll(io, "needle\n");
         f.close(io);
     }
@@ -5161,7 +5145,7 @@ test "searchTree halts once on EntryLimitExceeded instead of looping (issue #45)
     const allocator = arena.allocator();
 
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const root_len = try tmp.dir().realPath(io, &root_buf);
     const root = try allocator.dupe(u8, root_buf[0..root_len]);
 
     const patterns = [_]CompiledPattern{
