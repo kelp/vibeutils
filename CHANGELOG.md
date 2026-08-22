@@ -46,6 +46,15 @@
   BSD defines none (#93).
 
 ### Changed
+- **`grep` with no pattern prints GNU's Usage line.** Bare `grep` and
+  `grep --` wrote `grep: no pattern specified`; GNU prints
+  `Usage: grep [OPTION]... PATTERNS [FILE]...` and the Try-help line,
+  with no program-name prefix. Exit 2 is unchanged (#162).
+- **`grep` frees parsed options on argument errors.** `parseArgs`
+  signals those errors with `return null`, which does not run
+  `errdefer`, so `--include`/`-e`/`--exclude` buffers leaked on the
+  next unrecognized flag. Every `.fail` path now deinits before
+  returning null (#164).
 - **`ls -l` sizes mixed file-and-directory operands the way GNU does.**
   The file-operand lines were padded from the remaining files only,
   after directories had already been split out, so `ls -l file dir`

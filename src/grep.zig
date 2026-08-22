@@ -146,13 +146,13 @@ fn parseArgs(
             const flag = arg[2..];
             switch (try parseArgs_handleLong(allocator, io, &opts, flag, stderr_writer)) {
                 .ok => {},
-                .fail => return null,
+                .fail => return parseArgs_abort(&opts, allocator),
             }
         } else if (arg.len > 1 and arg[0] == '-') {
             // Short options
             switch (try parseArgs_handleShort(allocator, io, &opts, arg, args, &i, stderr_writer)) {
                 .ok => {},
-                .fail => return null,
+                .fail => return parseArgs_abort(&opts, allocator),
             }
         } else {
             // Operands are collected in order and the pattern slot is decided
@@ -163,6 +163,15 @@ fn parseArgs(
 
     try parseArgs_takePatternOperand(allocator, &opts);
     return opts;
+}
+
+/// Free opts and signal a reported argument error. `return null` does not
+/// run errdefer, so every `.fail` path has to deinit here (#164).
+fn parseArgs_abort(opts: *GrepOptions, allocator: Allocator) ?GrepOptions {
+    std.debug.assert(opts.files.items.len <= std.math.maxInt(u32));
+    std.debug.assert(opts.patterns.items.len <= std.math.maxInt(u32));
+    opts.deinit(allocator);
+    return null;
 }
 
 /// GNU takes the first operand as PATTERNS only when neither -e nor -f
@@ -2545,13 +2554,12 @@ fn runGrep_earlyExit(
         return @intFromEnum(common.ExitCode.success);
     }
     if (opts.patterns.items.len == 0 and !opts.pattern_source_given) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            prog_name,
-            "no pattern specified\nTry 'grep --help' for more information.",
-            .{},
-        );
+        // GNU's missing-operand shape is a Usage line, not `grep: msg`
+        // (#162). printErrorWithProgram would prefix the program name.
+        stderr_writer.writeAll(
+            "Usage: grep [OPTION]... PATTERNS [FILE]...\n" ++
+                "Try 'grep --help' for more information.\n",
+        ) catch {};
         return @intFromEnum(common.ExitCode.serious_error);
     }
     // An empty pattern set can never match, so GNU exits 1 without opening any
@@ -2944,6 +2952,63 @@ test "parseArgs invalid option returns null" {
     try testing.expect(result == null);
 }
 
+// Issue #164: parseArgs `return null` skips errdefer, so ArrayList buffers
+// allocated before the error are never freed. Empty lists may not allocate;
+// these tests append first (include/exclude/-e) then hit an error. The
+// testing allocator's leak report at end of test is the assertion. Do not
+// deinit a null result: that would hide the bug. Do not read stdin.
+
+test "issue #164: parseArgs leaks on unknown long option after --include" {
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--include=*.c", "--not-a-real-option" };
+    const result = try parseArgs(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stderr_aw.writer,
+    );
+    try testing.expect(result == null);
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, err, "unrecognized option") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "--not-a-real-option") != null);
+}
+
+test "issue #164: parseArgs leaks on invalid short option after -e" {
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "-e", "pat", "-Q" };
+    const result = try parseArgs(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stderr_aw.writer,
+    );
+    try testing.expect(result == null);
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, err, "invalid option") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "Q") != null);
+}
+
+test "issue #164: runGrep leaks on unknown long option after --exclude" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{ "--exclude=x", "--not-a-real-option" };
+    const exit_code = try runGrep(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, err, "unrecognized option") != null);
+}
+
 test "parseArgs --include and --exclude" {
     const args = [_][]const u8{ "--include=*.c", "--exclude=*.o", "--exclude-dir=.git", "pattern" };
     var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
@@ -3045,6 +3110,61 @@ test "runGrep no pattern returns exit code 2" {
         common.null_writer,
     );
     try testing.expectEqual(@as(u8, 2), exit_code);
+}
+
+/// GNU grep 3.x stderr when PATTERNS is missing (bare `grep` and `grep --`).
+/// No `grep: ` prefix; a genuine Usage line, then the Try-help line.
+const gnu_no_pattern_stderr =
+    "Usage: grep [OPTION]... PATTERNS [FILE]...\n" ++
+    "Try 'grep --help' for more information.\n";
+
+fn expectGnuNoPatternDiagnostic(stdout: []const u8, stderr: []const u8, exit_code: u8) !void {
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expectEqualStrings("", stdout);
+    try testing.expectEqualStrings(gnu_no_pattern_stderr, stderr);
+    try testing.expect(std.mem.indexOf(u8, stderr, "no pattern specified") == null);
+    try testing.expect(std.mem.indexOf(u8, stderr, "grep: ") == null);
+    try testing.expect(std.mem.startsWith(u8, stderr, "Usage: grep [OPTION]..."));
+}
+
+test "issue #162: runGrep empty argv prints GNU Usage on stderr" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{};
+    const exit_code = try runGrep(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try expectGnuNoPatternDiagnostic(
+        stdout_aw.writer.buffered(),
+        stderr_aw.writer.buffered(),
+        exit_code,
+    );
+}
+
+test "issue #162: runGrep -- prints GNU Usage on stderr" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    const args = [_][]const u8{"--"};
+    const exit_code = try runGrep(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try expectGnuNoPatternDiagnostic(
+        stdout_aw.writer.buffered(),
+        stderr_aw.writer.buffered(),
+        exit_code,
+    );
 }
 
 test "runGrep --help returns success" {
