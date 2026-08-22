@@ -33,6 +33,10 @@
   BSD defines none (#93).
 
 ### Changed
+- **`du` colors the size column relative to the largest printed
+  entry.** Green below 70% of that max, yellow below 90%, red at
+  or above 90%, matching `df` usage colors. Still gated on
+  `--color`, TTY, and `NO_COLOR`.
 - **`du` and `ls -l` print human-readable sizes by default**,
   matching `df`. Bare `du` uses 1024-based unit suffixes; `-k`,
   `-m`, `-g`, `-b`, and `--block-size` restore numeric counts

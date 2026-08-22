@@ -1305,7 +1305,7 @@ full design.
 ### 4. Color-Coded Numeric Output
 - [x] `df`: green/yellow/red by usage percentage
 - [x] `df`: optional inline usage bar
-- [ ] `du`: color size relative to largest entry
+- [x] `du`: color size relative to largest entry
 - [x] `du`: file-type icons before paths (`--icons=WHEN`)
 - [x] `wc`: semantic column colors (`--color=WHEN`)
 - [x] Icon coverage: 59 extensions, brand colors, dark-bg

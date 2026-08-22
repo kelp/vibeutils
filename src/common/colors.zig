@@ -61,14 +61,47 @@ pub fn applySizeColor(s: anytype, size_bytes: u64) !void {
 /// Tiers match `df`'s `applyUsageColor`: green below 70% of max, yellow
 /// below 90%, red at or above 90%. Percent is `@divFloor(size * 100, max)`
 /// on `u128`; `max == 0` is 0%.
-///
-/// This stub ignores `max_bytes` and forwards to `applySizeColor` so the
-/// guarding tests compile and fail on the absolute `>= 10M` swatch rather
-/// than a missing symbol. The implementer replaces the body.
 pub fn applyRelativeSizeColor(s: anytype, size_bytes: u64, max_bytes: u64) !void {
-    _ = max_bytes;
-    std.debug.assert(@TypeOf(size_bytes) == u64);
-    try applySizeColor(s, size_bytes);
+    const percent: u8 = if (max_bytes == 0) 0 else blk: {
+        const raw = @divFloor(@as(u128, size_bytes) * 100, @as(u128, max_bytes));
+        break :blk @intCast(@min(raw, 100));
+    };
+    if (max_bytes == 0) {
+        std.debug.assert(percent == 0);
+    } else {
+        std.debug.assert(percent <= 100);
+    }
+
+    switch (s.color_mode) {
+        .truecolor => {
+            if (percent < 70) {
+                try s.setRgb(115, 195, 120);
+            } else if (percent < 90) {
+                try s.setRgb(210, 185, 90);
+            } else {
+                try s.setRgb(210, 95, 90);
+            }
+        },
+        .extended => {
+            if (percent < 70) {
+                try s.set256(114);
+            } else if (percent < 90) {
+                try s.set256(220);
+            } else {
+                try s.set256(196);
+            }
+        },
+        .basic => {
+            if (percent < 70) {
+                try s.setColor(.green);
+            } else if (percent < 90) {
+                try s.setColor(.yellow);
+            } else {
+                try s.setColor(.red);
+            }
+        },
+        .none => {},
+    }
 }
 
 // ---------------------------------------------------------------------------
