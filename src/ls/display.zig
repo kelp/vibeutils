@@ -267,25 +267,33 @@ fn writeEntryNameColor(
     writer: anytype,
     style: anytype,
     options: LsOptions,
-) !void {
+) !bool {
     std.debug.assert(entry.name.len > 0);
     std.debug.assert(style.color_mode != .none);
     if (options.ls_colors) |table| {
         switch (sgrForEntry(table, entry)) {
             .sgr => |sgr| {
                 try common.ls_colors.writeWrapped(writer, table, sgr);
-                return;
+                return true;
             },
-            .uncolored => return,
+            .uncolored => return false,
             .missing => {},
         }
     }
     try style.setColor(getFileColor(entry));
+    return true;
 }
 
-fn writeEntryNameReset(writer: anytype, style: anytype, options: LsOptions) !void {
+fn writeEntryNameReset(
+    writer: anytype,
+    style: anytype,
+    options: LsOptions,
+    color_started: bool,
+) !void {
     std.debug.assert(style.color_mode != .none);
     std.debug.assert(@intFromEnum(style.color_mode) > 0);
+    // GNU prints ec/CSI-reset only after a start sequence was applied.
+    if (!color_started) return;
     if (options.ls_colors) |table| {
         try common.ls_colors.writeEnd(writer, table);
         return;
@@ -301,8 +309,9 @@ fn printEntryName_writeName(
     options: LsOptions,
 ) !void {
     std.debug.assert(entry.name.len > 0);
+    var color_started = false;
     if (style.color_mode != .none) {
-        try writeEntryNameColor(entry, writer, style, options);
+        color_started = try writeEntryNameColor(entry, writer, style, options);
     }
 
     // Apply -b: C-style escape sequences for non-printable characters
@@ -320,7 +329,7 @@ fn printEntryName_writeName(
     }
 
     if (style.color_mode != .none) {
-        try writeEntryNameReset(writer, style, options);
+        try writeEntryNameReset(writer, style, options, color_started);
     }
 }
 

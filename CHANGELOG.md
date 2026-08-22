@@ -109,6 +109,10 @@
 
 ### Fixed
 
+- **`ls` omits the `LS_COLORS` end sequence when a name is uncolored.**
+  Keys like `di=0` (and `ln=0`/`fi=0` on a long-format symlink
+  target) write no color start. GNU then skips `ec`/CSI-reset, so a
+  custom `ec` cannot leave the terminal in the wrong state.
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not

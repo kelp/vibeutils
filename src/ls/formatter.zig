@@ -662,16 +662,16 @@ fn writeSymlinkTargetColor(
     writer: anytype,
     target: []const u8,
     options: LsOptions,
-) !void {
+) !bool {
     std.debug.assert(target.len > 0);
     std.debug.assert(style.color_mode != .none);
     if (options.ls_colors) |table| {
         switch (overlayTargetHit(table, target)) {
             .sgr => |sgr| {
                 try common.ls_colors.writeWrapped(writer, table, sgr);
-                return;
+                return true;
             },
-            .uncolored => return,
+            .uncolored => return false,
             .missing => {},
         }
     }
@@ -684,6 +684,7 @@ fn writeSymlinkTargetColor(
     } else {
         try style.setColor(.red);
     }
+    return true;
 }
 
 /// Write " -> target" for a symlink, colored by the target's file type.
@@ -699,8 +700,10 @@ fn printLongFormatEntryAligned_symlinkTarget(
         try writer.print("{s}", .{target});
         return;
     }
-    try writeSymlinkTargetColor(style, writer, target, options);
+    const color_started = try writeSymlinkTargetColor(style, writer, target, options);
     try writer.print("{s}", .{target});
+    // GNU prints ec/CSI-reset only after a start sequence was applied.
+    if (!color_started) return;
     if (options.ls_colors) |table| {
         try common.ls_colors.writeEnd(writer, table);
         return;
