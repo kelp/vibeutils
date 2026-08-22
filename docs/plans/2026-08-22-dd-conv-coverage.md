@@ -42,6 +42,33 @@ unmodified production. Teeth come from uncommitted
 **production** sabotage, not compile-error RED and not
 inverted test expectations.
 
+## Round-2 review decisions
+
+Grok APPROVE. Fable APPROVE. Sol REQUEST CHANGES.
+
+1. **Predecessor #195 still open.** Sol asked to wait for
+   #195. Decision: **keep stacking off `github/main`.**
+   Recorded deviation; this environment cannot merge.
+   Grok and Fable already accepted this in round 1.
+2. **Spec-first for `files=` / `sparse`.** Sol repeated
+   the matrix objection. Decision: **unchanged.** Box 3
+   stays; matrix edit needs user approval and is a
+   different slice. 2/3 APPROVE.
+3. **Sabotage recipes that cannot RED.** Sol (blocking)
+   and Grok (non-blocking) agree: padding when
+   `bytes_read == ibs` is a no-op (`in_buf` is exactly
+   `ibs` bytes, pad length 0), and nulling
+   `findUnsupportedOperand` still exits 1 because
+   `parseConversions` returns `InvalidValue`. Decision:
+   replace those two rows with mutations that actually
+   change the asserted output (table below).
+4. **Local gates.** Sol asked for `just fmt-check`,
+   `just test`, and `just test-privileged-local`.
+   Decision: test-writer and implementer run
+   `just fmt-check` and `just it-util dd`. Skip
+   `just test` / privileged: this slice adds no Zig
+   in the happy path.
+
 ## Round-1 review decisions
 
 Grok APPROVE. Sol REQUEST CHANGES. Fable REQUEST
@@ -289,12 +316,12 @@ Characterization TDD, **not** compile-error RED.
    | Shape | Cases | Uncommitted production mutation | RED signal |
    |---|---|---|---|
    | short-block NUL pad hex | 1 | skip the `conv_sync` pad when `bytes_read < ibs` | hex is `4142`, not `41420000` |
-   | full-block exact hex+size | 2 | pad even when `bytes_read == ibs` (or always pad +4) | size ≠ 4 or hex ≠ `41424344` |
+   | full-block exact hex+size | 2 | after dispatch of a full `ibs` block, write one extra `0x00` to `ctx.output_file` | size 5, hex `4142434400` |
    | truncate size | 3 | force `conv_notrunc = true` after parse | size stays 20 |
    | fsync syscall on pipe | 4 | skip `runDd_finish_sync` (always success) | `PIPESTATUS[0]` is 0 |
    | osync tail pad hex+size | 5 | skip osync pad of a short final block | size 2, hex `4142` |
    | charset table hex | 6–8 | skip `applyConversions` | ascii hex ≠ `41` |
-   | rejection rc+needle | Box 3 | `findUnsupportedOperand` returns null | `conv=sparse` exits 0 |
+   | rejection rc+needle | Box 3 | two-site: drop the `sparse` arm in `findUnsupportedOperand` **and** treat `sparse` as a no-op in `parseConversions` (do not `InvalidValue`) | `conv=sparse` exits 0 |
 
 3. Implementer commit: check the three `TODO.md`
    boxes. Commit message cites
@@ -304,7 +331,10 @@ Characterization TDD, **not** compile-error RED.
    `dd conv=noerror,sync counts synthesized blocks as partial in`
    as the coverage for the `conv=noerror` line.
    Do not edit `dd_test.sh`. Do not edit
-   `docs/TESTING_STRATEGY.md`.
+   `docs/TESTING_STRATEGY.md`. Local gates for both
+   commits: `just fmt-check` and `just it-util dd`.
+   Do not run `just test` or privileged tests unless
+   a locked case forces a `src/dd.zig` fix.
 
 The integration runner already picks up
 `tests/utilities/dd_test.sh` via binary-name
