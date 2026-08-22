@@ -14,6 +14,8 @@ The
 .Nm
 utility reads files sequentially, writing their contents
 to the standard output.
+When standard error is a terminal, a permission-denied
+diagnostic may note that the file is not readable.
 The file operands are processed in command-line order.
 If
 .Ar file
