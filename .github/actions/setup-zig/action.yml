@@ -1,0 +1,41 @@
+name: Setup Zig
+description: >
+  Install the pinned Zig compiler via mlugg/setup-zig, after rewriting
+  that action's action.yml to declare Node 24.
+
+# WHY THIS EXISTS
+#
+# mlugg/setup-zig@v2.2.1 (and current upstream main) still declares
+# the Node 20 JS runtime. GitHub warns on that declaration even when
+# FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 runs the JS on Node 24. There is
+# no Node 24 release to pin, and bumping the remote SHA would fail
+# this repo's SHA-exact selected-actions allowlist.
+#
+# So: clone the already-allowlisted commit into the workspace, rewrite
+# action.yml to node24, then `uses: ./_setup-zig`. Same bypass as
+# .github/workflows/bsd.yml. Do not vendor node_modules.
+
+inputs:
+  version:
+    description: Zig compiler version to install.
+    required: false
+    default: "0.16.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Clone pinned setup-zig and declare Node 24
+      shell: bash
+      run: |
+        set -euo pipefail
+        dest="${GITHUB_WORKSPACE}/_setup-zig"
+        rm -rf "$dest"
+        git clone https://github.com/mlugg/setup-zig "$dest"
+        cd "$dest"
+        git checkout d1434d08867e3ee9daa34448df10607b98908d29
+        bash "${GITHUB_WORKSPACE}/scripts/ci-rewrite-action-node24.sh" \
+            "${dest}/action.yml"
+
+    - uses: ./_setup-zig
+      with:
+        version: ${{ inputs.version }}

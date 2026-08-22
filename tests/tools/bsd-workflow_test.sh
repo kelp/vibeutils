@@ -15,12 +15,17 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="$PROJECT_ROOT/.github/workflows/bsd.yml"
 FAILED=0
 
-# Locked last-node20 SHAs. Current v1 tags declare using: node24; the
-# workflow clones these commits and lets FORCE_JAVASCRIPT_ACTIONS_TO_NODE24
-# upgrade the runtime.
+# Locked SHAs (freebsd v1.4.2, openbsd/netbsd v1.3.6). Those commits
+# still declare using: node20; the workflow must rewrite action.yml to
+# node24 after checkout and before uses, so GitHub does not emit the
+# Node 20 deprecation warning. Do not bump these SHAs in this check.
 FREEBSD_SHA=c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e
 OPENBSD_SHA=9a8e4351a4a0dc6238e7c69276dcbf6c03bea576
 NETBSD_SHA=e04aec09540429f9cebb0e7941f7cd0c0fc3b44f
+
+# Command-shaped: a comment that mentions the helper name cannot match
+# unless it also looks like an invocation of the script.
+REWRITE_HELPER='ci-rewrite-action-node24.sh'
 
 # Remote-action prefix that GitHub rejects at parse time against this
 # repo's SHA-exact selected-actions allowlist. Asserted as a substring
@@ -81,6 +86,45 @@ require_job_text() {
     fi
 }
 
+# Rewrite must sit after `git checkout <sha>` and before
+# `uses: ./_vmactions/<repo>`. A helper mentioned only in a comment at
+# the top of the job, or only after uses, does not stop the runner from
+# loading a node20 action.yml.
+require_rewrite_between_checkout_and_uses() {
+    local job="$1"
+    local repo="$2"
+    local sha="$3"
+    local body
+    local checkout_line rewrite_line uses_line
+
+    body="$(job_body "$job")"
+    if [[ -z "$body" ]]; then
+        fail "job '$job' is missing"
+        return
+    fi
+
+    checkout_line="$(printf '%s\n' "$body" | grep -n "git checkout ${sha}" | head -n1 | cut -d: -f1)"
+    rewrite_line="$(printf '%s\n' "$body" | grep -n "${REWRITE_HELPER}" | head -n1 | cut -d: -f1)"
+    uses_line="$(printf '%s\n' "$body" | grep -n "uses: ./_vmactions/${repo}" | head -n1 | cut -d: -f1)"
+
+    if [[ -z "$rewrite_line" ]]; then
+        fail "${job} job does not run ${REWRITE_HELPER} on the cloned action.yml"
+        return
+    fi
+    if [[ -z "$checkout_line" || -z "$uses_line" ]]; then
+        fail "${job} job is missing checkout or local uses (cannot place rewrite)"
+        return
+    fi
+    if [[ "$rewrite_line" -le "$checkout_line" ]]; then
+        fail "${job} job runs ${REWRITE_HELPER} at or before git checkout ${sha}"
+        return
+    fi
+    if [[ "$rewrite_line" -ge "$uses_line" ]]; then
+        fail "${job} job runs ${REWRITE_HELPER} at or after uses: ./_vmactions/${repo}"
+        return
+    fi
+}
+
 require_guest_job() {
     local job="$1"
     local repo="$2"
@@ -95,6 +139,7 @@ require_guest_job() {
     require_job_text "$job" \
         "${job} job does not use the local action ./_vmactions/${repo}" \
         "uses: ./_vmactions/${repo}"
+    require_rewrite_between_checkout_and_uses "$job" "$repo" "$sha"
 }
 
 if [[ ! -f "$WORKFLOW" ]]; then

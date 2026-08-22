@@ -24,7 +24,7 @@ Pick the row that matches where you are.
 | **This repo's dev shell** | `.envrc` is `use gale`; `gale` installs the pinned Zig via `gale.toml` |
 | **Nix** | `nix develop` — `flake.nix` pins Zig through `mitchellh/zig-overlay` |
 | **macOS, by hand** | `brew install zig` (verify the version matches the pin), or a tarball from <https://ziglang.org/download/> |
-| **GitHub Actions** | `mlugg/setup-zig` — already wired into every workflow |
+| **GitHub Actions** | `.github/actions/setup-zig` — clones pinned `mlugg/setup-zig` and declares Node 24 |
 | **Docker images** | `docker/scripts/install-zig.sh <version>` |
 
 ## `scripts/bootstrap.sh`
@@ -255,9 +255,9 @@ just stress --concurrent 2 --iterations 20 mkdir
 ## For maintainers
 
 **CI does not use this script, on purpose.** All GitHub Actions workflows
-use `mlugg/setup-zig`, which caches the toolchain across runs and is
-strictly better on GitHub runners. Do not "unify" the workflows onto
-`scripts/bootstrap.sh`.
+load pinned `mlugg/setup-zig` through `.github/actions/setup-zig`, which
+rewrites that action's runtime to Node 24 and still caches the toolchain
+across runs. Do not "unify" the workflows onto `scripts/bootstrap.sh`.
 
 The pinned Zig version is repeated in several files. `build.zig.zon` is the
 authority; the rest must be updated together when it changes:
@@ -268,4 +268,4 @@ authority; the rest must be updated together when it changes:
 - `docker/test/Dockerfile.test` — `ARG ZIG_VERSION`
 - `docker/configs/env.conf`
 - `docker/docker-compose.test.yml`
-- `.github/workflows/{test,integration,docs,release}.yml` — `mlugg/setup-zig`
+- `.github/actions/setup-zig/action.yml` — clones pinned `mlugg/setup-zig`

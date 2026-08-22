@@ -7,9 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
-# JS-based actions to run on Node 24 regardless of their action.yml-declared
-# runtime.
+# Keep JS actions on Node 24 if an action.yml still names an older
+# runtime. This does not silence deprecation warnings; those go away
+# only when the loaded action.yml declares node24.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -21,10 +21,10 @@ concurrency:
 # Linux/macOS only and cannot run inside the BSD guest. Jobs are
 # independent (no matrix) so a red OS is a real workflow failure.
 #
-# Pin vmactions to the last node20 releases (freebsd v1.4.2,
-# openbsd/netbsd v1.3.6). Current v1 / v1.5.3 declare using: node24;
-# FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 still upgrades these node20
-# actions at runtime.
+# Pin vmactions to freebsd v1.4.2 / openbsd+netbsd v1.3.6. Those
+# commits still declare the Node 20 JS runtime. Rewrite action.yml to
+# node24 after checkout and before uses so GitHub does not warn.
+# Do not bump these SHAs here: newer tags change guest images and sync.
 #
 # Clone each locked SHA into ./_vmactions/<os>-vm and uses: that local
 # path. A same-repo local action is not matched against the SHA-exact
@@ -54,6 +54,7 @@ jobs:
           git clone https://github.com/vmactions/freebsd-vm ./_vmactions/freebsd-vm
           cd ./_vmactions/freebsd-vm
           git checkout c9f815bc7aa0d34c9fdd0619b034a32d6ca7b57e
+          bash "${GITHUB_WORKSPACE}/scripts/ci-rewrite-action-node24.sh" action.yml
       - uses: ./_vmactions/freebsd-vm
         with:
           usesh: true
@@ -122,6 +123,7 @@ jobs:
           git clone https://github.com/vmactions/openbsd-vm ./_vmactions/openbsd-vm
           cd ./_vmactions/openbsd-vm
           git checkout 9a8e4351a4a0dc6238e7c69276dcbf6c03bea576
+          bash "${GITHUB_WORKSPACE}/scripts/ci-rewrite-action-node24.sh" action.yml
       - uses: ./_vmactions/openbsd-vm
         with:
           usesh: true
@@ -150,6 +152,7 @@ jobs:
           git clone https://github.com/vmactions/netbsd-vm ./_vmactions/netbsd-vm
           cd ./_vmactions/netbsd-vm
           git checkout e04aec09540429f9cebb0e7941f7cd0c0fc3b44f
+          bash "${GITHUB_WORKSPACE}/scripts/ci-rewrite-action-node24.sh" action.yml
       - uses: ./_vmactions/netbsd-vm
         with:
           usesh: true

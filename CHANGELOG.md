@@ -769,6 +769,14 @@
 
 ### Infrastructure
 
+- **GitHub Actions Node 20 deprecation warnings are cleared.**
+  `mlugg/setup-zig@v2.2.1` and the pinned vmactions clones still
+  declare the Node 20 JS runtime. Workflows now clone those commits
+  into the workspace, rewrite `action.yml` to Node 24 with
+  `scripts/ci-rewrite-action-node24.sh`, and `uses:` the local copy.
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` stays as a fallback; it does
+  not silence the warning on its own.
+
 - **CI no longer fails when the `just` release download has a bad
   spell.** `extractions/setup-just` fetches a casey/just release on
   every job, and three `socket hang up` / `HTTP 503` failures landed
