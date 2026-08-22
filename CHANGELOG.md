@@ -52,6 +52,11 @@
   BSD defines none (#93).
 
 ### Changed
+- **Terminal size detection no longer reports a zero width or height.**
+  `COLUMNS=0`, an empty or non-numeric `COLUMNS`/`LINES` value, and an
+  ioctl window size of 0 all fall back to the 80×24 defaults now, so
+  `ls` column layout never sees a zero terminal width. Previously a
+  zero from the ioctl or from `COLUMNS`/`LINES` leaked through as-is.
 - **`df --total` accumulates byte sums in 128-bit integers.** Two
   large filesystems could wrap the Size/Used/Avail totals at 16 EiB
   (`u64max`), and `used + avail` for the percent column overflowed

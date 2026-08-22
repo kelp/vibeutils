@@ -80,6 +80,9 @@ pub const path = @import("path.zig");
 /// Shared octal and symbolic file mode parser used by chmod and mkdir.
 pub const mode = @import("mode.zig");
 
+/// Bounded parallel job execution using the configured I/O backend.
+pub const parallel = @import("parallel.zig");
+
 /// Bounded iterative directory walker (replaces per-utility recursive walk).
 pub const walker = @import("walker.zig");
 
@@ -737,6 +740,7 @@ test {
     _ = @import("icons.zig");
     _ = @import("main.zig");
     _ = @import("mode.zig");
+    _ = @import("parallel.zig");
     _ = @import("path.zig");
     _ = @import("privilege_test.zig");
     _ = @import("prompt.zig");
