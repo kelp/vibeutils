@@ -411,6 +411,29 @@ For each utility:
       behave as if -L had been specified". Correction to the original
       note: GNU coreutils 9.11 defaults to -P (non-conforming); BSD
       pwd and shell builtins conform.
+- [ ] Improve: `dd status=progress` repaints per input block, not per
+      wall-clock second. Slow or stalled input (<1 block/s) freezes
+      elapsed/rate until the next block; GNU uses SIGALRM-style
+      wall-clock cadence. Needs a timer thread or alarm; deferred from
+      v0.13.0 review as too invasive for the freeze.
+- [ ] Fix: dd stats clock starts after skip/seek, so rates exclude that
+      time and read high vs GNU on slow media.
+- [ ] Reconsider: mv cross-device fallback errdefer-deletes a
+      pre-existing destination on later copy failure, destroying data a
+      same-device rename failure leaves intact (GNU keeps a truncated
+      dest). Deliberate per comment at src/mv.zig:578; widen or narrow
+      deliberately.
+- [ ] Fix: du --color=always drops buffered rows silently on OOM while
+      buffering the listing (src/du.zig:863-881); non-color mode
+      streams everything. Flush partial buffer or fall back to
+      streaming.
+- [ ] Decide: tree -I alternation semantics for empty alternatives:
+      `-I 'foo|'` excludes only foo, `-I ''` appends an inert pattern;
+      regex-flavored expectations differ. Help text documents current
+      behavior.
+- [ ] Fix: tail -F with mixed operands including stdin (`tail -F f1 -
+      f2`) still drops the stdin slot; pure-stdin forms are fixed in
+      v0.13.0, mixed lists need an fd-backed follow slot.
 - [ ] Decide: uniform `-h`/`-V` short help/version flags vs GNU parity.
       The shared argparse accepts `-h` (help) and `-V` (version) on
       every utility; GNU defines those shorts only on some utilities,

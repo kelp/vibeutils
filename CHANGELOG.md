@@ -224,6 +224,23 @@
 
 ### Fixed
 
+- **`tail -f` follows standard input.** With no operand, or with the
+  `-` operand, tail now keeps reading after the initial dump and holds
+  past EOF until killed, as POSIX requires; previously it exited as if
+  `-f` had been ignored.
+- **Flag-pair orderings match their specifications.** `pwd -P -L`
+  prints logically and `pwd -L -P` physically (POSIX: the last one
+  applies); `tail -qv` shows headers and `tail -vq` hides them (GNU
+  last-flag-wins).
+- **LS_COLORS matches GNU's parser more closely.** Suffix keys match
+  case-insensitively (`*.JPG` colors `photo.jpg`), and a malformed SGR
+  value (`di=zz`) is rejected with the standard diagnostic, disabling
+  color for the invocation instead of emitting garbage escapes.
+- **`dd status=progress` output matches GNU's shape in more corners:**
+  sub-kilobyte transfers print `N bytes copied, T s, RATE` without the
+  doubled parenthetical, seconds drop trailing zeros, the final line
+  carries no trailing padding, and `conv=noerror` abort diagnostics
+  start on a fresh line instead of gluing onto a live transfer line.
 - **Arg parsing acts on the first `--help`/`--version` flag, matching
   GNU option order.** Utilities now stop scanning argv at the first
   help or version flag instead of validating the whole line first, so
