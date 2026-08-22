@@ -95,6 +95,8 @@ unless CI shows a BSD-tag mismatch that must `SkipZigTest`.
   `zig build test` only there)
 - macOS `vmactions` (macOS already has GitHub runners)
 - Weakening GNU tests to pass on BSD
+- Owner PUT of `selected-actions` (this token cannot)
+- Vendoring vmactions `node_modules` or adding submodules
 
 ## Spec impact
 
@@ -111,9 +113,12 @@ asserts:
 1. `.github/workflows/bsd.yml` exists.
 2. It does **not** contain `uses: vmactions/` (that string is
    the parse-time allowlist failure).
-3. Each guest job clones the matching vmactions repo and
-   checks out the locked SHA above (the SHA must appear in
-   the clone/checkout step, not only in a comment).
+3. Each guest job contains `git clone https://github.com/vmactions/<os>-vm`
+   and `git checkout <locked-sha>` for that OS (not a
+   file-wide SHA grep — those SHAs already sit on today's
+   remote `uses:` lines). Do not `git clone --depth 1`
+   without fetching the pin. Do not write the literal
+   `uses: vmactions/` in comments (assert 2 is a substring).
 4. Each guest job then has `uses: ./_vmactions/<os>-vm`
    (`freebsd-vm`, `openbsd-vm`, `netbsd-vm`).
 5. It installs Zig 0.16.0.
@@ -126,18 +131,24 @@ RED: update the pin-check first; current `bsd.yml` still has
 
 RED: the script fails until `bsd.yml` and the recipe exist.
 
-GitHub CI on this PR is the real GREEN for `zig build test` on
-FreeBSD. Iterate SkipZigTest only for the **BSD tags CI named**
-(`.freebsd`, `.openbsd`, `.netbsd`) — never `!= .linux` (that
-would skip macOS). Two asserts in any skip helper. Do not
-pre-emptively skip.
+GitHub CI on this PR is the real GREEN. All three guest jobs
+(FreeBSD, OpenBSD, NetBSD) must finish green. A red guest job
+is a real failure: diagnose and fix the portability bug. Do
+**not** add `SkipZigTest` to green CI. A skip is allowed only
+for a test that is documented as genuinely inapplicable on
+that OS or blocked by an upstream limitation, using the exact
+tag CI named (`.freebsd` / `.openbsd` / `.netbsd`) — never
+`!= .linux` (that would skip macOS). Two asserts in any skip
+helper. Do not pre-emptively skip.
 
 ## Risks
 
-- First FreeBSD `zig build test` may fail on Linux-only syscalls.
-  Skip only the failing `builtin.os.tag` values CI reported
+- First `zig build test` on a guest may fail on Linux-only
+  syscalls. Diagnose and fix. Skip only when the test is
+  genuinely inapplicable, using the exact tag CI named
   (`.freebsd` / `.openbsd` / `.netbsd`). Do **not** write
-  `!= .linux` — that would skip macOS. Two asserts in the helper.
+  `!= .linux` — that would skip macOS. Two asserts in any
+  helper. All three guest jobs are required green.
 - vmactions jobs are slow; 60-minute timeout. Do not add `just it`.
 - Fakeroot on OpenBSD is not the Linux binary; do not assume it.
 - Trust the OS: no extra path sandbox in the workflow.
