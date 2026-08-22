@@ -167,11 +167,28 @@ pub const ArgParser = struct {
                 // Positional argument
                 try positionals.append(allocator, arg);
             }
+
+            // GNU option semantics act on the first help/version flag
+            // encountered and never scan past it: `cat --help --bogus`
+            // prints help and exits 0. Stop as soon as either is set.
+            if (parse_hitEarlyExit(T, &result)) break;
         }
 
         try parse_assignPositionalsField(T, &result, &positionals, allocator);
 
         return result;
+    }
+
+    /// True when parsing has set the struct's help or version flag, so the
+    /// caller must stop scanning argv (GNU acts on the first occurrence).
+    fn parse_hitEarlyExit(comptime T: type, result: *T) bool {
+        if (comptime @hasField(T, "help")) {
+            if (result.help) return true;
+        }
+        if (comptime @hasField(T, "version")) {
+            if (result.version) return true;
+        }
+        return false;
     }
 
     /// Drain every remaining arg (from `start`) into `positionals`. The caller
@@ -975,8 +992,18 @@ test "parse boolean flags" {
         const args = [_][]const u8{ "-h", "-v" };
         const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
         try testing.expect(result.help == true);
-        try testing.expect(result.verbose == true);
+        // GNU order: parsing stops at the first help/version flag, so
+        // flags after -h are never scanned.
+        try testing.expect(result.verbose == false);
         try testing.expect(result.version == false);
+    }
+
+    // Short flags without an early-exit flag are all collected.
+    {
+        const args = [_][]const u8{"-v"};
+        const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
+        try testing.expect(result.verbose == true);
+        try testing.expect(result.help == false);
     }
 
     // Test long flags
@@ -984,7 +1011,8 @@ test "parse boolean flags" {
         const args = [_][]const u8{ "--help", "--version" };
         const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
         try testing.expect(result.help == true);
-        try testing.expect(result.version == true);
+        // Parsing stopped at --help; --version was never seen.
+        try testing.expect(result.version == false);
         try testing.expect(result.verbose == false);
     }
 
@@ -1004,7 +1032,7 @@ test "parse with positionals" {
         positionals: []const []const u8 = &.{},
     };
 
-    const args = [_][]const u8{ "-h", "file1", "file2" };
+    const args = [_][]const u8{ "file1", "file2", "-h" };
     const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
     defer testing.allocator.free(result.positionals);
 
@@ -1020,6 +1048,45 @@ test "unknown flag error" {
     };
 
     const args = [_][]const u8{"--unknown"};
+    const result = ArgParser.parse(TestArgs, testing.allocator, &args);
+    try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
+}
+
+test "parse acts on help before a later unknown flag (GNU order)" {
+    // GNU processes argv left-to-right and exits on the first --help /
+    // --version, so trailing garbage must never win over an earlier
+    // help flag.
+    const TestArgs = struct {
+        help: bool = false,
+        positionals: []const []const u8 = &.{},
+    };
+
+    const args = [_][]const u8{ "--help", "--bogus-later" };
+    const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
+    defer testing.allocator.free(result.positionals);
+
+    try testing.expect(result.help == true);
+}
+
+test "parse acts on version before a later unknown flag (GNU order)" {
+    const TestArgs = struct {
+        version: bool = false,
+        positionals: []const []const u8 = &.{},
+    };
+
+    const args = [_][]const u8{ "--version", "--bogus-later" };
+    const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
+    defer testing.allocator.free(result.positionals);
+
+    try testing.expect(result.version == true);
+}
+
+test "unknown flag before help still errors (GNU order)" {
+    const TestArgs = struct {
+        help: bool = false,
+    };
+
+    const args = [_][]const u8{ "--bogus-early", "--help" };
     const result = ArgParser.parse(TestArgs, testing.allocator, &args);
     try testing.expectError(ArgParser.ParseError.UnknownFlag, result);
 }
@@ -1192,7 +1259,7 @@ test "argv compatibility helpers" {
     };
 
     // Test with direct array (simulating parseArgv behavior)
-    const args = [_][]const u8{ "--help", "--output=test.txt", "file1" };
+    const args = [_][]const u8{ "--output=test.txt", "file1", "--help" };
     const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
     defer testing.allocator.free(result.positionals);
 
@@ -1316,7 +1383,7 @@ test "custom metadata" {
 
     // Test custom short flags
     {
-        const args = [_][]const u8{ "-?", "-n", "10", "-o=out.txt", "-m", "fast" };
+        const args = [_][]const u8{ "-n", "10", "-o=out.txt", "-m", "fast", "-?" };
         const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
         try testing.expect(result.help == true);
         try testing.expect(result.count != null);
@@ -1474,7 +1541,7 @@ const BasicArgs = struct {
 test "parseOrExit: success returns parsed struct" {
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    const args = [_][]const u8{ "--help", "file.txt" };
+    const args = [_][]const u8{ "file.txt", "--help" };
     const result = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", &w);
     defer testing.allocator.free(result.positionals);
     try testing.expect(result.help);
