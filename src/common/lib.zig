@@ -14,6 +14,11 @@ const build_options = @import("build_options");
 const force_import_lint = @import("force_import_lint.zig");
 const testdir_lint = @import("testdir_lint.zig");
 
+// Same shape as force_import_lint: the live-tree caller lives here so dropping
+// `_ = @import("main_io_lint.zig")` from the force-import block cannot take
+// the writer-setup scan down with the fixture tests.
+const main_io_lint = @import("main_io_lint.zig");
+
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
 
@@ -793,6 +798,7 @@ test {
     _ = @import("icons.zig");
     _ = @import("ls_colors.zig");
     _ = @import("main.zig");
+    _ = @import("main_io_lint.zig");
     _ = @import("mode.zig");
     _ = @import("parallel.zig");
     _ = @import("path.zig");
@@ -833,6 +839,26 @@ test "every src/common module with tests is force-imported (issue #95)" {
         std.debug.print("{s}", .{report.writer.buffered()});
         return err;
     };
+}
+
+// Lives in lib.zig, the test root, on purpose. If this test lived only in
+// main_io_lint.zig, dropping that module from the force-import block would
+// take the live-tree scan down with the fixtures.
+test "utilityMain writer-setup needles are present in production main.zig" {
+    var report: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer report.deinit();
+
+    try std.testing.expect(build_options.common_source_dir.len > 0);
+    main_io_lint.verifyMainZig(
+        std.testing.allocator,
+        std.testing.io,
+        build_options.common_source_dir,
+        &report.writer,
+    ) catch |err| {
+        std.debug.print("{s}", .{report.writer.buffered()});
+        return err;
+    };
+    try std.testing.expectEqual(@as(usize, 0), report.writer.buffered().len);
 }
 
 // Lives in lib.zig for the same hole-close as the #95 test: if testdir_lint.zig

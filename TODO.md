@@ -1382,9 +1382,9 @@ green, including `cp.zig:1181-1276` and `mv.zig:1033+`
 overwrite-hint tests.
 
 ### 5. main() Function Coverage
-- [ ] Test the writer setup code path in main(), not just
+- [x] Test the writer setup code path in main(), not just
       runUtil() with test-provided writers
-- [ ] Integration tests that exercise the compiled binary's
+- [x] Integration tests that exercise the compiled binary's
       actual I/O initialization
 
 ### 6. dd MUST-tier conv= Integration Coverage

@@ -207,6 +207,13 @@ test "file operations" {
 }
 ```
 
+### main() I/O init
+
+Unit tests of `runUtil` inject `Allocating` writers and never construct
+the 8KB `writerStreaming` buffers or flush them. `runWithStreamingFiles`
+in `src/common/main.zig` is the File-backed setup path; compiled-binary
+coverage lives in `tests/tools/main_io_test.sh`.
+
 ### Output Testing
 
 Capture and verify command output:
