@@ -79,6 +79,19 @@ revision is those holes only.
 | finish-before-diag tooth | Require `delay_ns = 0`, at least one successful `update` (`shown == true`), **then** a later write error. A dest that fails on the first write never shows, so `finish` is a no-op and cannot catch a wipe. |
 | dd diagnostics vs live line | `runDd_writeError` and the `conv=noerror` diagnostic path call `tracker.finish(now)` **before** `printErrorWithProgram`. Recoverable noerror may `update` again afterward (delay already elapsed, so the next update may emit on the following line). Test `runDd_writeError` with a shown `.gnu_xfer` tracker: the write-error text is present and not spaces. Parse-time errors (before the copy loop) need no finish. |
 
+## Plan revision (r4)
+
+r3: Fable **APPROVE**. Grok and Sol **REQUEST
+CHANGES** on the dd diagnostic assertion: `.gnu_xfer`
+`finish` writes `\n`, not spaces, so "text present"
+cannot go red if `finish` runs after the print.
+Route both copy-loop diagnostic paths through one
+helper; assert line break.
+
+| Item | Decision |
+|---|---|
+| dd diag ordering tooth | Extract `ddNote(ctx, fmt, args)` that `finish`es the tracker then `printErrorWithProgram`. `runDd_writeError` and the `conv=noerror` / `runDd_handleReadError` path both call it. Test `ddNote` (or each caller) with `delay_ns = 0`, one `update` so `shown == true`, then the diagnostic: captured stderr is `{progress-line}\n` then the error (the error is **not** glued to the `\r` transfer line; `\n` precedes `write error:` / `read error:`). Parse-time errors still skip the helper. |
+
 ## Classification
 
 KEEP auto-progress for `cp`/`mv` (no flag in
@@ -238,12 +251,13 @@ without changing GNU flag semantics.
    auto-progress default/`none`/`noxfer`.
    SIGUSR1/SIGINFO reprint is out of scope. Extract
    the update call so `runDd_copyLoop` stays ≤70.
-   Copy-loop diagnostics (`runDd_writeError`,
-   `conv=noerror` read-error messages) call
-   `finish` on the tracker before printing so a live
-   `\r` line cannot glue to or wipe the diagnostic.
-   After a recoverable noerror, later `update`s may
-   emit again.
+   Copy-loop diagnostics go through `ddNote`
+   (`runDd_writeError` and `conv=noerror` /
+   `runDd_handleReadError`): `finish` the tracker
+   then `printErrorWithProgram`, so a live `\r` line
+   cannot glue to or wipe the diagnostic. After a
+   recoverable noerror, later `update`s may emit
+   again.
 
 6. Check the four `TODO.md` boxes. CHANGELOG
    Unreleased: cp/mv TTY auto-progress after 2s; dd
@@ -482,6 +496,7 @@ commit the sabotage.
   paths emit under the overlay
 - dd `status=progress`: live GNU `\r` line after 1s,
   no TTY gate, final `printStats` unchanged; fast
-  copies have no live line
+  copies have no live line; copy-loop diagnostics
+  finish the live line first
 - No new flags, no `parallel.zig`, no PTY-only tests
 - Four `### 6` boxes checked
