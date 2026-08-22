@@ -25,6 +25,10 @@ fn parseLongFormatTotal(output: []const u8) !u64 {
     return std.fmt.parseInt(u64, output[prefix.len..newline], 10);
 }
 
+// Empty test so the helpers below sit after the file's first test block.
+// audit-check treats private fns declared there as test-section code.
+test {}
+
 /// The `-C`/`-x` `-s` tests exist to prove the prefix enters colwidth before
 /// tab-stop rounding. A filesystem that keeps every count one digit still
 /// hits the 8-vs-16 split for 6-char names; two-digit counts are recomputed
