@@ -4549,3 +4549,277 @@ test "du -x stays on one filesystem and fully traverses the single-device tree" 
     // root = 4 + 14 = 18 (whole single-device tree accounted for).
     try testing.expectEqual(@as(?u64, 18), extractSizeForExactPath(buf, root_path));
 }
+
+// Relative size color vs the largest printed entry. These go through runDu
+// so they fail until printEntry buffers color-on output and scores against
+// max. Cloud NO_COLOR/TERM=dumb is staged off via the test overlay; libc
+// unsetenv would compact environ and deadlock the runner (issue #95).
+const du_csi_rel_green = "\x1b[38;2;115;195;120m";
+const du_csi_rel_yellow = "\x1b[38;2;210;185;90m";
+const du_csi_rel_red = "\x1b[38;2;210;95;90m";
+const du_csi_abs_10m = "\x1b[38;2;210;115;100m";
+const du_rel_mib: u64 = 1024 * 1024;
+
+const RelColorEnv = struct {
+    saved: []const common.env.Override,
+    staged: [4]common.env.Override,
+
+    fn apply(self: *RelColorEnv) void {
+        std.debug.assert(self.staged.len == 4);
+        self.saved = common.env.test_overrides;
+        self.staged = .{
+            .{ .key = "NO_COLOR", .value = null },
+            .{ .key = "TERM", .value = "xterm" },
+            .{ .key = "COLORTERM", .value = "truecolor" },
+            .{ .key = "VIBEUTILS_STYLE", .value = null },
+        };
+        common.env.test_overrides = &self.staged;
+    }
+
+    fn restore(self: *const RelColorEnv) void {
+        std.debug.assert(self.staged.len == 4);
+        common.env.test_overrides = self.saved;
+    }
+};
+
+fn testCreateDuSparseFile(
+    io: std.Io,
+    tmp_dir: *testing.TmpDir,
+    name: []const u8,
+    size: u64,
+) ![]u8 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(size > 0);
+    const file = try tmp_dir.dir.createFile(io, name, .{});
+    try file.setLength(io, size);
+    file.close(io);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, name, &path_buf);
+    std.debug.assert(path_len > 0);
+    return testing.allocator.dupe(u8, path_buf[0..path_len]);
+}
+
+fn testLineForExactPath(output: []const u8, path: []const u8) ?[]const u8 {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(output.len < 1 << 20);
+    var it = std.mem.splitScalar(u8, output, '\n');
+    var n: u32 = 0;
+    const n_max: u32 = 4096;
+    while (n < n_max) : (n += 1) {
+        const line = it.next() orelse return null;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        if (std.mem.eql(u8, line[tab + 1 ..], path)) return line;
+    }
+    return null;
+}
+
+fn testRunDuStdout(io: std.Io, args: []const []const u8) ![]u8 {
+    std.debug.assert(args.len > 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runDu(
+        testing.allocator,
+        io,
+        args,
+        &stdout_aw.writer,
+        common.null_writer,
+    );
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 0);
+    return testing.allocator.dupe(u8, out);
+}
+
+test "du relative color: 10MiB is green and 20MiB is red not absolute >=10M" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", ten, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    const ten_line = testLineForExactPath(out, ten) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_rel_green) != null);
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_abs_10m) == null);
+}
+
+test "du relative color: 15MiB is yellow and 20MiB is red" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const mid = try testCreateDuSparseFile(io, &tmp_dir, "mid", 15 * du_rel_mib);
+    defer testing.allocator.free(mid);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", mid, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    const mid_line = testLineForExactPath(out, mid) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, mid_line, du_csi_rel_yellow) != null);
+    try testing.expect(std.mem.find(u8, mid_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_yellow) == null);
+}
+
+test "du --color=never prints plain size and path with no ANSI" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=never", "--apparent-size", "-b", "-a", ten, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    try testing.expect(std.mem.find(u8, out, "\x1b") == null);
+    try testing.expect(std.mem.find(u8, out, ten) != null);
+    try testing.expect(std.mem.find(u8, out, twenty) != null);
+    try testing.expect(std.mem.find(u8, out, "10485760") != null);
+    try testing.expect(std.mem.find(u8, out, "20971520") != null);
+}
+
+test "du relative color: equal sizes without -c are both 100% red" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const left = try testCreateDuSparseFile(io, &tmp_dir, "left", 10 * du_rel_mib);
+    defer testing.allocator.free(left);
+    const right = try testCreateDuSparseFile(io, &tmp_dir, "right", 10 * du_rel_mib);
+    defer testing.allocator.free(right);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", left, right,
+    });
+    defer testing.allocator.free(out);
+
+    const left_line = testLineForExactPath(out, left) orelse
+        return error.TestUnexpectedResult;
+    const right_line = testLineForExactPath(out, right) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, left_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, left_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, right_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, right_line, du_csi_abs_10m) == null);
+}
+
+test "du relative color: -c total participates in max and is red" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", "-c", ten, twenty,
+    });
+    defer testing.allocator.free(out);
+
+    const total_line = testLineForExactPath(out, "total") orelse
+        return error.TestUnexpectedResult;
+    const ten_line = testLineForExactPath(out, ten) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    // Sum 30 MiB is 100% red; 10 MiB and 20 MiB are 33%/66% of the sum, green.
+    try testing.expect(std.mem.find(u8, total_line, du_csi_rel_red) != null);
+    try testing.expect(std.mem.find(u8, total_line, du_csi_abs_10m) == null);
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_rel_green) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_green) != null);
+}
+
+test "du relative color: -t omitted larger entry does not set max" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
+    defer testing.allocator.free(ten);
+    const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
+    defer testing.allocator.free(twenty);
+    const huge = try testCreateDuSparseFile(io, &tmp_dir, "huge", 100 * du_rel_mib);
+    defer testing.allocator.free(huge);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a",
+        "-t",             "-20971520",       ten,  twenty,
+        huge,
+    });
+    defer testing.allocator.free(out);
+
+    try testing.expect(testLineForExactPath(out, huge) == null);
+    const ten_line = testLineForExactPath(out, ten) orelse
+        return error.TestUnexpectedResult;
+    const twenty_line = testLineForExactPath(out, twenty) orelse
+        return error.TestUnexpectedResult;
+    // Printed max is 20 MiB, so 10 MiB is 50% green and 20 MiB is 100% red.
+    // If 100 MiB leaked into max, 20 MiB would be 20% green, not red.
+    try testing.expect(std.mem.find(u8, ten_line, du_csi_rel_green) != null);
+    try testing.expect(std.mem.find(u8, twenty_line, du_csi_rel_red) != null);
+}
+
+test "du relative color: buffered paths remain distinct copies" {
+    const io = testing.io;
+    var color_env: RelColorEnv = .{ .saved = &.{}, .staged = undefined };
+    color_env.apply();
+    defer color_env.restore();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const alpha = try testCreateDuSparseFile(io, &tmp_dir, "alpha", 10 * du_rel_mib);
+    defer testing.allocator.free(alpha);
+    const beta = try testCreateDuSparseFile(io, &tmp_dir, "beta", 20 * du_rel_mib);
+    defer testing.allocator.free(beta);
+
+    const out = try testRunDuStdout(io, &.{
+        "--color=always", "--apparent-size", "-b", "-a", alpha, beta,
+    });
+    defer testing.allocator.free(out);
+
+    try testing.expect(std.mem.find(u8, out, alpha) != null);
+    try testing.expect(std.mem.find(u8, out, beta) != null);
+    try testing.expect(!std.mem.eql(u8, alpha, beta));
+    try testing.expect(testLineForExactPath(out, alpha) != null);
+    try testing.expect(testLineForExactPath(out, beta) != null);
+}
