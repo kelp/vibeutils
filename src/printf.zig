@@ -31,14 +31,7 @@ pub fn runPrintf(
     stderr_writer: *std.Io.Writer,
 ) !u8 {
     if (args.len == 0) {
-        common.printErrorWithProgram(
-            allocator,
-            stderr_writer,
-            "printf",
-            "missing operand\nTry 'printf --help' for more information.",
-            .{},
-        );
-        return @intFromEnum(common.ExitCode.general_error);
+        return printfMissingOperand(allocator, stderr_writer);
     }
 
     // Check for --help and --version before treating first arg as format
@@ -52,8 +45,11 @@ pub fn runPrintf(
         return @intFromEnum(common.ExitCode.success);
     }
 
-    const format = args[0];
-    const arguments = args[1..];
+    const fmt_idx = printfFormatIndex(args) orelse {
+        return printfMissingOperand(allocator, stderr_writer);
+    };
+    const format = args[fmt_idx];
+    const arguments = args[fmt_idx + 1 ..];
 
     var had_error = false;
     var arg_idx: usize = 0;
@@ -92,6 +88,26 @@ pub fn runPrintf(
         return @intFromEnum(common.ExitCode.general_error);
     }
     return @intFromEnum(common.ExitCode.success);
+}
+
+fn printfMissingOperand(allocator: Allocator, stderr_writer: *std.Io.Writer) u8 {
+    const msg = "missing operand\nTry 'printf --help' for more information.";
+    std.debug.assert(msg.len > 0);
+    common.printErrorWithProgram(allocator, stderr_writer, "printf", msg, .{});
+    const rc = @intFromEnum(common.ExitCode.general_error);
+    std.debug.assert(rc != 0);
+    return rc;
+}
+
+/// Index of FORMAT after a leading POSIX `--`. Null when `--` is the
+/// only argument (GNU: missing operand). `--help`/`--version` are
+/// already consumed by the caller.
+fn printfFormatIndex(args: []const []const u8) ?usize {
+    std.debug.assert(args.len > 0);
+    if (!std.mem.eql(u8, args[0], "--")) return 0;
+    if (args.len == 1) return null;
+    std.debug.assert(args.len > 1);
+    return 1;
 }
 
 /// Process one pass of the format string, consuming arguments as needed.
@@ -2866,4 +2882,130 @@ test "printf %G with NaN outputs NAN (uppercase)" {
     );
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("NAN", buffer_aw.writer.buffered());
+}
+
+// Issue #159: `--` is the POSIX end-of-options delimiter.
+// Pinned against GNU coreutils 9.4 (`/usr/bin/printf`, LC_ALL=C).
+// Current vibeutils treats `--` as FORMAT, so `printf -- 'x\n'`
+// prints `--` and exits 0 — an exit-only check would pass.
+
+test "printf #159: -- before format prints the format" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "x\\n" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("x\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "printf #159: -- after no extra options still prints format" {
+    // printf's only options are --help/--version. After a consumed `--`,
+    // the next argv entry is FORMAT even when it looks like an option.
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "%s\\n", "ok" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("ok\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "printf #159: -- alone is a missing-operand error" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{"--"};
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings(
+        "printf: missing operand\nTry 'printf --help' for more information.\n",
+        stderr_aw.writer.buffered(),
+    );
+}
+
+test "printf #159: doubled -- prints the second -- as FORMAT" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "--" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("--", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "printf #159: -- then dash operand prints the dash operand" {
+    // The reason `--` exists: `printf -- -n` must print `-n`, not treat
+    // `-n` as an option and not treat `--` as FORMAT.
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "-n" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
+}
+
+test "printf #159: -- %s then --help prints --help as an argument" {
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "--", "%s", "--help" };
+    const result = try runPrintf(
+        testing.allocator,
+        testing.io,
+        &args,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("--help", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }

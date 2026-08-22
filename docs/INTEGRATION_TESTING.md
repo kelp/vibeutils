@@ -1,494 +1,182 @@
-# Integration Testing Framework
+# Integration Testing
 
-## Overview
+Shell suites that run the compiled binaries under `zig-out/bin`. Unit
+tests live next to the Zig they cover (`src/<util>.zig`); this document
+is only the bash side.
 
-The vibeutils project includes a comprehensive shell-based integration testing framework designed to test the actual compiled binaries of our GNU coreutils implementation. This framework addresses critical challenges with testing filter utilities (like `tee`, `cat`, `sort`) that read from stdin and would otherwise block in unit tests.
+There is no `tests/integration/` tree. An earlier draft of this file
+described `tests/integration/{lib,utils}/`, `init_framework`, and
+`exec_utility`. Those paths and helpers were never merged. Follow the
+layout below, not that sketch.
 
-## Motivation
-
-### Why Integration Tests?
-
-1. **Filter Utility Testing**: Many utilities block on stdin in unit tests, causing test hangs
-2. **Binary Behavior**: Tests the actual compiled binary, not just Zig functions
-3. **Signal Handling**: Can properly test signal handling (SIGINT, SIGPIPE)
-4. **Binary Data**: Tests with real binary files and large inputs
-5. **Platform Differences**: Handles macOS/Linux command variations
-6. **Permission Testing**: Can test permission errors and edge cases
-
-## Architecture
-
-### Directory Structure
+## Layout
 
 ```
 tests/
-├── integration/
-│   ├── lib/                    # Framework core modules
-│   │   ├── lib.sh              # Main framework entry point
-│   │   ├── assertions.sh       # Assertion functions
-│   │   ├── colors.sh           # Terminal output and colors
-│   │   ├── platform.sh         # Platform detection
-│   │   └── test_runner.sh      # Test execution engine
-│   ├── utils/                  # Per-utility test scripts
-│   │   └── tee_test.sh         # Example: tee integration tests
-│   ├── run.sh                  # Master test runner
-│   └── .tmp/                   # Temporary test files (gitignored)
-├── fixtures/                   # Test data files
-│   ├── binary.bin              # Binary test data
-│   ├── utf8.txt                # UTF-8 with emoji
-│   ├── multiline.txt           # Multi-line content
-│   ├── large.txt               # Large file for performance
-│   └── empty.txt               # Empty file
+├── integration.sh              # Suite driver (not the entry point)
+├── lib/
+│   ├── common.sh               # Assertions, temp dirs, host-tool isolation
+│   ├── test_runner.sh          # Per-utility dispatch
+│   └── flag_parser.sh          # Automatic --help flag probes
+├── utilities/
+│   ├── echo_test.sh            # One file per utility: test_<util>()
+│   ├── tee_test.sh
+│   └── …
+├── tools/                      # Tests for repo shell tooling, not utilities
+│   ├── audit-check_test.sh
+│   ├── tiger-check_test.sh
+│   ├── run-integration_test.sh
+│   └── host_path_test.sh
+├── fixtures/                   # Shared data (utf8, binary, audit trees)
+├── privilege_integration/      # Zig tests for privileged file-ops flows
+└── fuzz/                       # Linux-only corpora (`just fuzz <name>`)
 ```
 
-## Framework Components
+`tests/utilities/<util>_test.sh` is sourced by `test_runner.sh`, which
+already loaded `common.sh`. Do not source a fictional `lib/lib.sh`.
+The entry function is `test_<util>` (`test_bracket` for `[`).
 
-### Core Library (`lib/lib.sh`)
+## Entry point
 
-The main framework provides:
-- Test initialization and cleanup
-- Utility execution helpers
-- File and directory management
-- Cross-platform compatibility
+**Never run `bash tests/integration.sh` directly.** It is the suite.
+It prepends `zig-out/bin` to `PATH` and does no privilege dropping.
+As uid 0, roughly two dozen "permission denied" operations succeed,
+so the assertions fail for a reason that has nothing to do with the
+code — root bypasses DAC — and look like product bugs.
 
-Key functions:
-- `init_framework()` - Initialize test environment
-- `exec_utility()` - Execute a utility with input
-- `cleanup_test_files()` - Clean up temporary files
-- `has_utility()` - Check if utility is built
+Always go through the wrapper:
 
-### Assertions (`lib/assertions.sh`)
-
-Comprehensive assertion library with 30+ assertion types:
-
-```bash
-# Basic assertions
-assert_equals "expected" "$actual" "Values should match"
-assert_contains "$output" "substring" "Should contain text"
-
-# File assertions
-assert_file_exists "$file" "File should exist"
-assert_file_contents "$file" "expected content"
-
-# Exit code assertions
-assert_exit_code 0 $? "Should succeed"
-assert_success "Command should succeed"
-
-# Output assertions
-assert_output_contains "$output" "pattern"
-assert_output_matches "$output" "regex.*pattern"
+```
+just it                      # all utilities
+just it-util tee             # one utility
+scripts/run-integration.sh tee
 ```
 
-### Platform Detection (`lib/platform.sh`)
+`scripts/run-integration.sh`:
 
-Handles cross-platform compatibility:
-- Detects Linux, macOS, BSD, Windows WSL
-- Identifies GNU vs BSD coreutils
-- Adapts commands for platform differences
-- Checks for tool availability
+1. Drops to `VIBEUTILS_TEST_USER` (default `vibedev`) when the caller
+   is root and `setpriv` exists. `VIBEUTILS_NO_DEMOTE=1` skips this.
+2. Runs the suite from a private working directory (#125), so two
+   concurrent `just it` invocations cannot share relative fixtures.
+3. Then runs `tests/integration.sh` with the same arguments. The
+   wrapper does not `exec`: replacing the process would skip the
+   throwaway-cwd cleanup.
 
-### Test Runner (`lib/test_runner.sh`)
+CI and `just it` both use the wrapper. Workflow prompts must use that
+wrapper rather than `bash tests/integration.sh`.
 
-Manages test execution:
-- Parallel test execution support
-- Timeout handling for each test
-- Test filtering and exclusion
-- Progress tracking and reporting
-- Signal handling and cleanup
+On Cursor Cloud the image exports `NO_COLOR=1`. vibeutils honors that
+even over `--color=always`, so color-sensitive cases fail unless the
+variable is scrubbed: `env -u NO_COLOR just it`.
 
-### Color Output (`lib/colors.sh`)
-
-Professional test output:
-- Respects `NO_COLOR` environment variable
-- Terminal capability detection
-- Colored pass/fail indicators
-- Progress bars and spinners
-
-## Writing Integration Tests
-
-### Basic Test Structure
+## What a utility test looks like
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
+# tests/utilities/tee_test.sh — sourced; common.sh is already loaded
 
-# Source the framework
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/lib.sh"
+test_tee() {
+    local util="tee"
+    local binary="$BIN_DIR/$util"
 
-# Test function
-test_utility_basic() {
-    # Setup
-    local temp_file="${TEST_TEMP_DIR}/output.txt"
-    
-    # Execute utility
-    local output=$(echo "input" | exec_utility "utility" "-flag")
-    local exit_code=$?
-    
-    # Assertions
-    assert_exit_code 0 $exit_code "Should succeed"
-    assert_output_contains "$output" "expected"
-    
-    # Cleanup
-    cleanup_test_files "$temp_file"
-}
+    test_binary_exists "$util" || return 1
+    test_basic_flags "$util"
 
-# Main test execution
-main() {
-    init_framework
-    
-    # Check utility exists
-    if ! has_utility "utility"; then
-        print_error "Utility not found. Run 'make build' first"
-        return 1
-    fi
-    
-    start_suite "Utility Integration Tests"
-    
-    # Define tests
-    local -a test_specs=(
-        $(make_test_spec "Basic Test" "test_utility_basic" "10")
-        $(make_test_spec "Advanced Test" "test_utility_advanced" "30")
-    )
-    
-    # Run tests
-    init_test_runner --jobs 2 --timeout 10
-    run_test_suite "${test_specs[@]}"
-    
-    end_suite
-    print_final_summary
-}
-
-# Run if executed directly
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
-```
-
-### Testing Filter Utilities
-
-For utilities that read from stdin:
-
-```bash
-test_filter_stdin() {
-    # Provide input via pipe
-    local output=$(echo "test data" | exec_utility "filter")
-    assert_output_equals "$output" "test data"
-    
-    # Or from file
-    local output=$(exec_utility "filter" < "${FIXTURES_DIR}/input.txt")
-    assert_output_contains "$output" "expected"
-    
-    # Multiple inputs
-    local output=$(cat file1.txt file2.txt | exec_utility "filter" "-n")
-    assert_line_count "$output" 10
+    test_command_output "tee no files (stdout only)" "simple_data" \
+        bash -c "echo 'simple_data' | '$binary'"
 }
 ```
 
-### Testing Signal Handling
+Helpers in `tests/lib/common.sh` (not `assert_equals` / `exec_utility`):
 
-```bash
-test_signal_handling() {
-    # Start utility in background
-    (sleep 0.1; echo "data") | exec_utility "utility" "-i" &
-    local pid=$!
-    
-    # Send signal
-    sleep 0.05
-    kill -INT $pid 2>/dev/null || true
-    
-    # Wait and check it continued
-    wait $pid
-    local exit_code=$?
-    
-    assert_exit_code 0 $exit_code "Should ignore SIGINT with -i flag"
-}
+| Helper | Role |
+| --- | --- |
+| `test_binary_exists` | Fail the suite if `zig-out/bin/<util>` is missing |
+| `test_basic_flags` | `--help` / `--version` smoke |
+| `test_command_output` | Exact stdout match |
+| `test_command_output_exact` | Exact stdout, including no trailing newline |
+| `test_command_output_pattern` | Regex on stdout |
+| `test_command_exit_code` | Exit status |
+| `test_command_succeeds` / `test_command_fails` | Zero / nonzero |
+| `print_test_result` | Manual PASS/FAIL/SKIP with a name |
+| `run_with_limit SECONDS CMD …` | Bounded run; **never** `timeout(1)` — macOS CI has no GNU timeout |
+| `run_with_stderr_tty` | Capture stderr from a PTY (isatty-gated prompts) |
+| `create_temp_file` / `create_temp_dir` | Under the session `TEMP_DIR` |
+| `host` / `host_resolve` | Host coreutils, not vibeutils, for fixture setup (#167) |
+
+`BIN_DIR` is set by `tests/integration.sh` and exported. PATH is pinned
+to `zig-out/bin` so a forgotten `$binary` still tests this build, not
+the system one. Fixture setup that needs Darwin `chmod +a` must go
+through `host` so it cannot see `zig-out/bin`. Do not call host
+`timeout(1)` — macOS CI has none; use `run_with_limit`.
+
+## PATH and the binary under test
+
+A test that resolves the system `ls` / `grep` / `chmod` passes for the
+wrong implementation. Use `"$binary"` or an unqualified name only after
+the suite prepend. For anything that is *not* the unit under test, use
+`host`.
+
+## Filter utilities
+
+`tee`, `cat`, `sort`, `uniq`, and friends block forever on stdin in
+Zig unit tests. Integration tests are the place to feed them a pipe.
+Keep the pipe finite; `run_with_limit` is the watchdog if a hang is
+possible. See `docs/TESTING_STRATEGY.md`, "Filter Utilities and
+Stdin-Dependent Testing".
+
+## Tooling tests
+
+Scripts that test the repo's own shell live in `tests/tools/`.
+`audit-check`, `tiger-check`, and `host_path` run from GitHub
+workflows; `run-integration_test.sh` is `just test-run-integration`.
+None of them run from `just it`.
+
+## Running
+
+```
+just build
+just it                     # wrapper → all utilities
+just it-util cat            # wrapper → one utility
+just it-list                # lists tests/utilities/*_test.sh
+just stress --concurrent 2 --iterations 20 mkdir
 ```
 
-### Testing Binary Data
+`just it-list` calls `tests/integration.sh --list` only to print names;
+it does not run the suite. `just test-run-integration` is the contract
+suite for the wrapper itself (`tests/tools/run-integration_test.sh`).
 
-```bash
-test_binary_data() {
-    # Generate binary data
-    dd if=/dev/urandom of="${TEST_TEMP_DIR}/binary.bin" bs=1024 count=1 2>/dev/null
-    
-    # Process through utility
-    exec_utility "utility" < "${TEST_TEMP_DIR}/binary.bin" > "${TEST_TEMP_DIR}/output.bin"
-    
-    # Compare files
-    cmp -s "${TEST_TEMP_DIR}/binary.bin" "${TEST_TEMP_DIR}/output.bin"
-    assert_exit_code 0 $? "Binary data should be preserved"
-}
+There is no `make test-integration`, no `./tests/integration/run.sh`,
+and no `INTEGRATION_JOBS` / `INTEGRATION_TIMEOUT` driver. Parallelism
+is `just stress --concurrent`, not a job flag on the suite.
+
+## Coverage expectations
+
+Each utility's `tests/utilities/<util>_test.sh` should cover:
+
+1. Primary use, stdin/stdout, and the flags in `docs/specs/<util>-flags.md`
+   that are MUST/SHOULD/KEEP (not WONT)
+2. Empty input, binary data, and Unicode where the utility handles them
+3. Error exits — argument errors are 1 in this tree (not GNU's 2) unless
+   that utility's `ExitCode` documents otherwise
+4. `--help` / `--version`
+
+Permission-denied cases only have teeth when the wrapper has demoted
+away from root.
+
+## Debugging
+
+```
+just it-util tee            # one utility, full log
 ```
 
-## Running Tests
-
-### Make Targets
-
-```bash
-# Run all integration tests
-make test-integration
-
-# Run tests for specific utility
-make test-integration-util UTIL=tee
-
-# Validate framework setup
-make test-integration-validate
-
-# List available test utilities
-make test-integration-list
-```
-
-### Direct Execution
-
-```bash
-# Run all tests
-./tests/integration/run.sh
-
-# Run specific utility tests
-./tests/integration/run.sh tee
-
-# Run with options
-./tests/integration/run.sh --verbose --jobs 4 --timeout 60
-
-# Run filtered tests
-./tests/integration/run.sh --filter "basic" --exclude "slow"
-
-# Dry run to see what would execute
-./tests/integration/run.sh --dry-run
-```
-
-### Environment Variables
-
-```bash
-# Enable verbose output
-INTEGRATION_VERBOSE=1 make test-integration
-
-# Disable colors
-NO_COLOR=1 make test-integration
-
-# Set parallel jobs
-INTEGRATION_JOBS=8 make test-integration
-
-# Set default timeout
-INTEGRATION_TIMEOUT=60 make test-integration
-```
-
-## Test Coverage Guidelines
-
-Each utility should have integration tests covering:
-
-### Required Coverage
-
-1. **Basic Functionality**
-   - Primary use case
-   - Reading from stdin
-   - Writing to stdout
-   - Basic flag combinations
-
-2. **All Flags**
-   - Each flag individually
-   - Short and long forms
-   - Flag combinations
-   - Conflicting flags
-
-3. **Edge Cases**
-   - Empty input
-   - Very large input
-   - Binary data
-   - Special characters
-   - Unicode/UTF-8
-
-4. **Error Conditions**
-   - Invalid flags (exit code 2)
-   - Permission errors (exit code 1)
-   - Missing files
-   - Write errors
-
-5. **Help/Version**
-   - `--help` output
-   - `--version` output
-   - `-h` short form
-
-### Optional Coverage
-
-- Signal handling (if applicable)
-- Performance with large files
-- Concurrent access
-- Symbolic links
-- Special file types
-
-## Platform Compatibility
-
-The framework handles platform differences automatically:
-
-### macOS vs Linux
-
-```bash
-# Framework detects platform
-if is_macos; then
-    # Use BSD commands
-    local size=$(stat -f%z "$file")
-else
-    # Use GNU commands
-    local size=$(stat -c%s "$file")
-fi
-
-# Or use helper functions
-local size=$(get_file_size "$file")  # Platform-agnostic
-```
-
-### Command Variations
-
-The framework provides platform-agnostic helpers:
-- `get_stat_cmd()` - Returns appropriate stat command
-- `get_date_cmd()` - Returns appropriate date command
-- `get_timeout_cmd()` - Returns timeout command if available
-- `get_realpath_cmd()` - Returns realpath or fallback
-
-## Debugging Tests
-
-### Verbose Mode
-
-```bash
-# Enable verbose output
-INTEGRATION_VERBOSE=1 ./tests/integration/run.sh tee
-
-# Or use --verbose flag
-./tests/integration/run.sh --verbose tee
-```
-
-### Debug Single Test
-
-```bash
-# Source framework and run single test
-cd tests/integration
-bash -x utils/tee_test.sh  # -x for trace output
-```
-
-### Check Test Output
-
-```bash
-# Test outputs are saved temporarily
-ls -la tests/integration/.tmp/
-
-# View specific test output
-cat tests/integration/.tmp/TestName_*.out
-```
-
-## Best Practices
-
-### 1. Test Independence
-
-Each test should be completely independent:
-- Create own temp files
-- Clean up after completion
-- Don't rely on test order
-
-### 2. Meaningful Assertions
-
-```bash
-# Bad: Generic message
-assert_equals "$expected" "$actual" "Test failed"
-
-# Good: Descriptive message
-assert_equals "$expected" "$actual" "Append mode should preserve existing content"
-```
-
-### 3. Proper Cleanup
-
-```bash
-test_with_cleanup() {
-    local temp_file="${TEST_TEMP_DIR}/test.txt"
-    
-    # Test logic here
-    
-    # Always cleanup, even on failure
-    cleanup_test_files "$temp_file"
-}
-```
-
-### 4. Timeout Management
-
-```bash
-# Set appropriate timeouts for slow operations
-$(make_test_spec "Large File Test" "test_large_file" "60")  # 60 second timeout
-
-# Default is 10 seconds
-$(make_test_spec "Quick Test" "test_quick")  # Uses default timeout
-```
-
-### 5. Cross-Platform Testing
-
-Always test on multiple platforms:
-- Linux (Ubuntu, Debian, Arch)
-- macOS
-- Windows WSL (if supported)
-
-Use platform detection for platform-specific tests:
-
-```bash
-test_platform_specific() {
-    if is_linux; then
-        # Linux-specific test
-    elif is_macos; then
-        # macOS-specific test
-    else
-        skip_test "Platform not supported"
-    fi
-}
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Test Hangs**
-   - Check for stdin blocking
-   - Verify timeout is set
-   - Use `exec_utility` helper instead of direct execution
-
-2. **Command Not Found**
-   - Run `make build` first
-   - Check `has_utility()` before testing
-   - Verify TEST_BIN_DIR is correct
-
-3. **Permission Errors**
-   - Some tests may need special permissions
-   - Use skip_test for privileged operations
-   - Consider using Docker/container for isolation
-
-4. **Platform Differences**
-   - Use platform detection functions
-   - Provide platform-specific implementations
-   - Skip tests that don't apply to platform
-
-## Contributing
-
-When adding a new utility:
-
-1. Create test file: `tests/integration/utils/<utility>_test.sh`
-2. Follow the template structure
-3. Cover all required test categories
-4. Run locally on multiple platforms
-5. Ensure tests pass in CI
-
-When modifying the framework:
-
-1. Update affected test utilities
-2. Run full integration suite
-3. Update this documentation
-4. Consider backward compatibility
-
-## Future Enhancements
-
-Planned improvements to the framework:
-
-- [ ] Test report generation (JSON/XML)
-- [ ] Coverage tracking integration
-- [ ] Benchmark/performance tests
-- [ ] Compatibility tests vs GNU coreutils
-- [ ] Fuzzing integration
-- [ ] Docker-based testing for multiple distros
-- [ ] GitHub Actions integration
-- [ ] Test result caching
-- [ ] Visual test result dashboard
+Do not run `bash -x tests/utilities/tee_test.sh` by itself: the file is
+sourced and expects `common.sh` plus `BIN_DIR`. The wrapper sources it.
+Failed commands print as `Failed command:` next to the assertion. Temp
+files live in the session `TEMP_DIR` inside the wrapper's throwaway cwd
+and are removed when the run exits.
+
+## See also
+
+- `docs/TOOLCHAIN.md` — demotion, `VIBEUTILS_TEST_USER`, Cloud caveats
+- `docs/TESTING_STRATEGY.md` — unit vs integration vs privileged
+- `scripts/run-integration.sh` — the actual entry point
