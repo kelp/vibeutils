@@ -2565,8 +2565,10 @@ test "rm: -r leftover non-empty directory does not suggest -r" {
         testing.allocator,
     );
     defer testing.allocator.free(dir_path);
-    if (std.c.chmod(dir_path.ptr, 0o555) != 0) return error.SkipZigTest;
-    defer _ = std.c.chmod(dir_path.ptr, 0o755);
+    const dir_path_z = try testing.allocator.dupeZ(u8, dir_path);
+    defer testing.allocator.free(dir_path_z);
+    if (std.c.chmod(dir_path_z, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(dir_path_z, 0o755);
 
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stderr_aw.deinit();
