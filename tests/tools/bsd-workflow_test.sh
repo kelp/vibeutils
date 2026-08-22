@@ -205,6 +205,12 @@ require_job_text freebsd \
 require_job_text freebsd \
     "freebsd job guest run does not escalate hung privileged tests with kill -KILL" \
     "kill -KILL"
+# FreeBSD base has no perl. The setpgrp wrapper execs perl; prepare
+# must install perl5 on the same pkg line as curl/fakeroot so a comment
+# cannot satisfy the needle.
+require_job_text freebsd \
+    "freebsd job prepare does not pkg install perl5 with curl and fakeroot" \
+    "pkg install -y curl fakeroot perl5"
 
 if [[ "$FAILED" -ne 0 ]]; then
     exit "$FAILED"
