@@ -104,6 +104,11 @@ pub const Tracker = struct {
         assert(pos <= line_buf.len);
         assert(pos >= 1 + counters.len);
 
+        // A shorter refresh must overwrite the previous glyphs; GNU
+        // pads to the prior width so leftover label/counter text dies.
+        const padded = padToLastWidth(line_buf[1..], pos - 1, self.last_width);
+        pos = 1 + padded;
+
         // Progress must never fail the copy: swallow write errors, and
         // flush so a buffered stderr shows the line immediately.
         self.writer.writeAll(line_buf[0..pos]) catch {};
@@ -136,15 +141,30 @@ pub const Tracker = struct {
 
         var body_buf: [line_bytes_max]u8 = undefined;
         const body = formatGnuTransfer(&body_buf, self.bytes_done, now_ns - self.start_ns);
+        const padded = padToLastWidth(body_buf[0..], body.len, self.last_width);
         self.writer.writeAll("\r") catch {};
-        self.writer.writeAll(body) catch {};
+        self.writer.writeAll(body_buf[0..padded]) catch {};
         if (final) self.writer.writeAll("\n") catch {};
         self.writer.flush() catch {};
         self.shown = true;
         self.last_emit_ns = now_ns;
-        self.last_width = @intCast(body.len);
+        self.last_width = @intCast(padded);
     }
 };
+
+/// Pad a freshly rendered status body out to `last_width` with spaces.
+/// `\r` redraws do not erase leftover glyphs; GNU dd pads for this.
+fn padToLastWidth(buf: []u8, content_len: usize, last_width: u32) usize {
+    assert(content_len <= buf.len);
+    const prev: usize = @min(last_width, buf.len);
+    const padded = if (content_len >= prev) content_len else blk: {
+        @memset(buf[content_len..prev], ' ');
+        break :blk prev;
+    };
+    assert(padded >= content_len);
+    assert(padded <= buf.len);
+    return padded;
+}
 
 /// Copy as much of src as fits into dst and return the bytes copied.
 /// Bounded truncation is the point: callers budget the 256-byte line.
@@ -526,6 +546,87 @@ test "gnu transfer waits one second and finishes with newline" {
     try std.testing.expect(std.mem.find(u8, output.writer.buffered(), "copied") != null);
     tracker.finish(tracker.start_ns + 2 * ns_per_s);
     try std.testing.expect(std.mem.endsWith(u8, output.writer.buffered(), "\n"));
+}
+
+test "copy line refresh pads a shorter update to the prior width" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var tracker = testTracker(
+        &output.writer,
+        .copy_line,
+        "UNIQUE-LONG-LABEL-MARKER.bin",
+        100 * 1024 * 1024,
+    );
+    tracker.delay_ns = 0;
+    tracker.interval_ns = 0;
+
+    tracker.update(tracker.start_ns + 1, 50 * 1024 * 1024);
+    const first_width = tracker.last_width;
+    const first_out = output.writer.buffered();
+    try std.testing.expect(first_width > 0);
+    try std.testing.expect(std.mem.find(u8, first_out, "UNIQUE-LONG-LABEL-MARKER") != null);
+
+    tracker.label = "x";
+    tracker.total = 1;
+    tracker.update(tracker.start_ns + 2, 1);
+    const rendered = output.writer.buffered();
+    const last_cr = std.mem.lastIndexOfScalar(u8, rendered, '\r').?;
+    const last_line = rendered[last_cr + 1 ..];
+
+    try std.testing.expectEqual(@as(usize, first_width), last_line.len);
+    try std.testing.expectEqual(first_width, tracker.last_width);
+    try std.testing.expect(std.mem.startsWith(u8, last_line, "cp: copying x"));
+    try std.testing.expect(std.mem.find(u8, last_line, "UNIQUE-LONG-LABEL-MARKER") == null);
+    try std.testing.expect(std.mem.find(u8, last_line, "100%") != null);
+    const pct_end = std.mem.indexOf(u8, last_line, "100%").? + "100%".len;
+    try std.testing.expect(pct_end < last_line.len);
+    for (last_line[pct_end..]) |byte| {
+        try std.testing.expectEqual(@as(u8, ' '), byte);
+    }
+
+    tracker.finish(tracker.start_ns + 3);
+    const after_finish = output.writer.buffered();
+    const before_last = after_finish[0 .. after_finish.len - 1];
+    const clear_start = std.mem.lastIndexOfScalar(u8, before_last, '\r').? + 1;
+    try std.testing.expectEqual(@as(usize, first_width), before_last.len - clear_start);
+}
+
+test "gnu transfer refresh pads a shorter update to the prior width" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var tracker = testTracker(&output.writer, .gnu_xfer, "", null);
+    tracker.delay_ns = 0;
+    tracker.interval_ns = 0;
+
+    tracker.update(tracker.start_ns + ns_per_s, 1_000_000_000);
+    const first_width = tracker.last_width;
+    try std.testing.expect(first_width > 0);
+    try std.testing.expect(std.mem.find(u8, output.writer.buffered(), "1000000000") != null);
+
+    tracker.update(tracker.start_ns + ns_per_s + 1, 0);
+    const rendered = output.writer.buffered();
+    const last_cr = std.mem.lastIndexOfScalar(u8, rendered, '\r').?;
+    const last_line = rendered[last_cr + 1 ..];
+
+    try std.testing.expectEqual(@as(usize, first_width), last_line.len);
+    try std.testing.expectEqual(first_width, tracker.last_width);
+    try std.testing.expect(std.mem.startsWith(u8, last_line, "0 bytes"));
+    try std.testing.expect(std.mem.find(u8, last_line, "1000000000") == null);
+    var content_end = last_line.len;
+    while (content_end > 0 and last_line[content_end - 1] == ' ') content_end -= 1;
+    try std.testing.expect(content_end < first_width);
+    for (last_line[content_end..]) |byte| {
+        try std.testing.expectEqual(@as(u8, ' '), byte);
+    }
+
+    tracker.finish(tracker.start_ns + 2 * ns_per_s);
+    const after_finish = output.writer.buffered();
+    try std.testing.expect(std.mem.endsWith(u8, after_finish, "\n"));
+    const finish_body = after_finish[0 .. after_finish.len - 1];
+    const finish_cr = std.mem.lastIndexOfScalar(u8, finish_body, '\r').?;
+    const finish_line = after_finish[finish_cr + 1 .. after_finish.len - 1];
+    try std.testing.expectEqual(@as(usize, first_width), finish_line.len);
+    try std.testing.expect(std.mem.find(u8, finish_line, "1000000000") == null);
 }
 
 test "progress writes only to the configured writer" {
