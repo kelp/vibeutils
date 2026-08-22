@@ -265,4 +265,55 @@ test_date() {
         print_test_result "date -Iseconds includes time" "FAIL" \
             "Expected ISO 8601 datetime, got '$isos_out'"
     fi
+
+    echo -e "${CYAN}Testing issue #159: -- end-of-options...${NC}"
+
+    # Pinned against GNU coreutils 9.4 (`/usr/bin/date`, LC_ALL=C).
+    local dopt_cmd dopt_out dopt_err dopt_exit
+    local dopt="env LC_ALL=C '$binary'"
+
+    run_command dopt_cmd dopt_out dopt_err dopt_exit \
+        bash -c "$dopt -- +%Y"
+    if [[ $dopt_exit -eq 0 && "$dopt_out" =~ ^[0-9]{4}$ && -z "$dopt_err" ]]; then
+        print_test_result "date -- before format" "PASS"
+    else
+        print_test_result "date -- before format" "FAIL" \
+            "exit=$dopt_exit out='$dopt_out' err='$dopt_err'"
+    fi
+
+    run_command dopt_cmd dopt_out dopt_err dopt_exit \
+        bash -c "$dopt -u -d @0 -- +%Y-%m-%d"
+    if [[ $dopt_exit -eq 0 && "$dopt_out" == "1970-01-01" && -z "$dopt_err" ]]; then
+        print_test_result "date -- after options then format" "PASS"
+    else
+        print_test_result "date -- after options then format" "FAIL" \
+            "exit=$dopt_exit out='$dopt_out' err='$dopt_err'"
+    fi
+
+    run_command dopt_cmd dopt_out dopt_err dopt_exit \
+        bash -c "$dopt --"
+    if [[ $dopt_exit -eq 0 && -n "$dopt_out" && -z "$dopt_err" ]]; then
+        print_test_result "date -- alone prints current date" "PASS"
+    else
+        print_test_result "date -- alone prints current date" "FAIL" \
+            "exit=$dopt_exit out='$dopt_out' err='$dopt_err'"
+    fi
+
+    run_command dopt_cmd dopt_out dopt_err dopt_exit \
+        bash -c "$dopt -- --"
+    if [[ $dopt_exit -eq 1 && -z "$dopt_out" && "$dopt_err" == *"invalid date"* && "$dopt_err" == *"--"* ]]; then
+        print_test_result "date doubled -- is invalid date" "PASS"
+    else
+        print_test_result "date doubled -- is invalid date" "FAIL" \
+            "exit=$dopt_exit out='$dopt_out' err='$dopt_err'"
+    fi
+
+    run_command dopt_cmd dopt_out dopt_err dopt_exit \
+        bash -c "$dopt -- -1"
+    if [[ $dopt_exit -eq 1 && -z "$dopt_out" && "$dopt_err" == *"invalid date"* && "$dopt_err" == *"-1"* ]]; then
+        print_test_result "date -- dash operand is invalid date" "PASS"
+    else
+        print_test_result "date -- dash operand is invalid date" "FAIL" \
+            "exit=$dopt_exit out='$dopt_out' err='$dopt_err'"
+    fi
 }

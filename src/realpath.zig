@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const TestDir = common.test_dir.TestDir;
 const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -813,13 +814,13 @@ test "realpath: resolveLogical .. past root" {
 
 test "realpath: existing path with symlink resolution" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const file = try tmp_dir.dir.createFile(io, "real_file.txt", .{});
+    const file = try tmp_dir.dir().createFile(io, "real_file.txt", .{});
     file.close(io);
 
-    tmp_dir.dir.symLink(io, "real_file.txt", "link_to_file.txt", .{}) catch |err| {
+    tmp_dir.dir().symLink(io, "real_file.txt", "link_to_file.txt", .{}) catch |err| {
         if (err == error.AccessDenied) return;
         return err;
     };
@@ -827,8 +828,8 @@ test "realpath: existing path with symlink resolution" {
     // Both paths resolve to the same absolute path
     var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const link_len = try tmp_dir.dir.realPathFile(io, "link_to_file.txt", &path_buf1);
-    const real_len = try tmp_dir.dir.realPathFile(io, "real_file.txt", &path_buf2);
+    const link_len = try tmp_dir.dir().realPathFile(io, "link_to_file.txt", &path_buf1);
+    const real_len = try tmp_dir.dir().realPathFile(io, "real_file.txt", &path_buf2);
 
     try testing.expectEqualStrings(path_buf2[0..real_len], path_buf1[0..link_len]);
 }
@@ -1188,21 +1189,16 @@ test "realpath: empty --relative-base= errors instead of panicking" {
 // not depend on the repo cwd; the cwd handle is restored via fchdir on exit.
 test "realpath: relative --relative-to=. resolves against cwd (issue #46)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "sub");
+    try tmp_dir.dir().createDirPath(io, "sub");
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     // Absolute target under the resolved base; expected relative form is "sub".
     const target = try std.fmt.allocPrint(testing.allocator, "{s}/sub", .{tmp_abs});
@@ -1231,21 +1227,16 @@ test "realpath: relative --relative-to=. resolves against cwd (issue #46)" {
 // target is under it, prints the relative form ("child").
 test "realpath: relative --relative-base=sub resolves against cwd (issue #46)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "sub/child");
+    try tmp_dir.dir().createDirPath(io, "sub/child");
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const target = try std.fmt.allocPrint(testing.allocator, "{s}/sub/child", .{tmp_abs});
     defer testing.allocator.free(target);
@@ -1299,24 +1290,19 @@ test "realpath: -e with empty operand errors instead of panicking (issue #46)" {
 // isAbsolute assert. GNU prints the absolute resolved path and exits 0.
 test "realpath: -e resolves a relative existing file to an absolute path (issue #46)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     {
-        const file = try tmp_dir.dir.createFile(io, "existing.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "existing.txt", .{});
         file.close(io);
     }
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/existing.txt\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1353,24 +1339,19 @@ test "realpath: -e resolves a relative existing file to an absolute path (issue 
 // aborts with ENOENT; GNU prints the absolute path and exits 0.
 test "realpath: -s relative existing path resolves via cwd (issue #51)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     {
-        const file = try tmp_dir.dir.createFile(io, "motd", .{});
+        const file = try tmp_dir.dir().createFile(io, "motd", .{});
         file.close(io);
     }
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/motd\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1398,21 +1379,16 @@ test "realpath: -s relative existing path resolves via cwd (issue #51)" {
 // clean to <cwd>/sub.
 test "realpath: -s relative path with dot components resolves via cwd (issue #51)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "sub");
+    try tmp_dir.dir().createDirPath(io, "sub");
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/sub\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1440,19 +1416,14 @@ test "realpath: -s relative path with dot components resolves via cwd (issue #51
 // cwd().realPath and aborts with ENOENT; GNU prints <cwd>/nosuch/dir, exit 0.
 test "realpath: -m relative path with missing tail resolves via cwd (issue #51)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/dir\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1479,21 +1450,16 @@ test "realpath: -m relative path with missing tail resolves via cwd (issue #51)"
 // canonical absolute path via the cwd.
 test "realpath: -m relative path with existing components resolves via cwd (issue #51)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "sub");
+    try tmp_dir.dir().createDirPath(io, "sub");
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/sub\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1626,12 +1592,12 @@ test "realpath: -m empty --relative-base= errors (issue #51)" {
 
 test "realpath: default mode resolves canonical path when last component missing" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     const dir_path = blk: {
         var _rp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const _rp_len = try tmp_dir.dir.realPathFile(io, ".", &_rp_buf);
+        const _rp_len = try tmp_dir.dir().realPathFile(io, ".", &_rp_buf);
         break :blk try testing.allocator.dupe(u8, _rp_buf[0.._rp_len]);
     };
     defer testing.allocator.free(dir_path);
@@ -1746,19 +1712,14 @@ test "realpath: -m dotdot past root is clamped" {
 // the primary red for the textual-pop bug.
 test "realpath: -s pop of dotdot past missing component errors ENOENT (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1785,24 +1746,19 @@ test "realpath: -s pop of dotdot past missing component errors ENOENT (issue #62
 // so GNU errors "Not a directory" rc=1 instead of printing <cwd>/x rc=0.
 test "realpath: -s pop of dotdot past non-directory errors ENOTDIR (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     {
-        const file = try tmp_dir.dir.createFile(io, "file.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "file.txt", .{});
         file.close(io);
     }
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
@@ -1829,10 +1785,10 @@ test "realpath: -s pop of dotdot past non-directory errors ENOTDIR (issue #62)" 
 // the same way, proving the check applies to the isAbsolute branch too.
 test "realpath: -s absolute dotdot past missing component errors ENOENT (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
 
     const path = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch/../x", .{tmp_abs});
@@ -1864,19 +1820,14 @@ test "realpath: -s absolute dotdot past missing component errors ENOENT (issue #
 // Guards against a fix that applies the check unconditionally under `-m -s`.
 test "realpath: -m -s pop of dotdot past missing component succeeds (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/x\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1905,21 +1856,16 @@ test "realpath: -m -s pop of dotdot past missing component succeeds (issue #62)"
 // fix that over-rejects the valid case or that checks the final component.
 test "realpath: -s pop past existing dir with missing final component succeeds (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "sub");
+    try tmp_dir.dir().createDirPath(io, "sub");
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nosuch_final\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1947,29 +1893,24 @@ test "realpath: -s pop past existing dir with missing final component succeeds (
 // (logical mode never substitutes the target). Result <cwd>/file.txt rc=0.
 test "realpath: -s pop past symlink-to-directory succeeds (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
-    try tmp_dir.dir.createDirPath(io, "sub");
+    try tmp_dir.dir().createDirPath(io, "sub");
     {
-        const file = try tmp_dir.dir.createFile(io, "file.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "file.txt", .{});
         file.close(io);
     }
-    tmp_dir.dir.symLink(io, "sub", "slink", .{}) catch |err| {
+    tmp_dir.dir().symLink(io, "sub", "slink", .{}) catch |err| {
         if (err == error.AccessDenied) return;
         return err;
     };
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}/file.txt\n", .{tmp_abs});
     defer testing.allocator.free(expected);
@@ -1998,28 +1939,23 @@ test "realpath: -s pop past symlink-to-directory succeeds (issue #62)" {
 // current textual pop. Guards that the fix uses a following stat.
 test "realpath: -s pop past symlink-to-file errors ENOTDIR (issue #62)" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
 
     {
-        const file = try tmp_dir.dir.createFile(io, "file.txt", .{});
+        const file = try tmp_dir.dir().createFile(io, "file.txt", .{});
         file.close(io);
     }
-    tmp_dir.dir.symLink(io, "file.txt", "flink", .{}) catch |err| {
+    tmp_dir.dir().symLink(io, "file.txt", "flink", .{}) catch |err| {
         if (err == error.AccessDenied) return;
         return err;
     };
 
-    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
-        saved_cwd_dir.close(io);
-    }
+    var saved_cwd = try tmp_dir.chdirToBase();
+    defer TestDir.restoreCwd(&saved_cwd);
 
-    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    const tmp_abs = try tmp_dir.getBasePath();
     defer testing.allocator.free(tmp_abs);
-
-    try std.Io.Threaded.chdir(tmp_abs);
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

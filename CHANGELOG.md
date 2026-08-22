@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Documentation
+- **Rewrite `docs/INTEGRATION_TESTING.md` to match the tree.** The
+  old page described `tests/integration/{lib,utils}/`, `init_framework`,
+  and `exec_utility`, none of which exist. The real layout is
+  `tests/integration.sh` plus `tests/utilities/` and `tests/lib/`,
+  entered only through `scripts/run-integration.sh`. The wave2-walker
+  workflow now tells agents to use that wrapper rather than
+  `bash tests/integration.sh` as root (#152).
 - **Add the `land-todo-slice` agent skill.** Operating procedure
   for landing one `TODO.md` heading as one draft PR: choose the
   slice, write a plan, review it with three models, implement
@@ -10,6 +17,12 @@
   green.
 
 ### Added
+- **`free` colors the used column and can draw a usage bar.**
+  `--color=WHEN` (always/auto/never) wraps the Mem and Swap used
+  fields green below 70%, yellow below 90%, and red otherwise.
+  `--bar=WHEN` appends df's 10-cell usage-bar widget.
+  `NO_COLOR` and `TERM=dumb` still kill color, including with
+  `--color=always`. Default WHEN is `auto`.
 - **`stat` gained the BSD display modes `-l`, `-r`, `-s`, `-x` and
   `-F`.** `-r` prints the raw numeric stat fields on one line, `-s`
   prints them as `st_name=value` shell assignments (so
@@ -42,6 +55,19 @@
   `errdefer`, so `--include`/`-e`/`--exclude` buffers leaked on the
   next unrecognized flag. Every `.fail` path now deinits before
   returning null (#164).
+- **`ls -l` sizes mixed file-and-directory operands the way GNU does.**
+  The file-operand lines were padded from the remaining files only,
+  after directories had already been split out, so `ls -l file dir`
+  under-padded nlink, owner, group and size whenever a directory
+  operand was wider. Those columns now measure every command-line
+  operand together; each directory listing still sizes itself from
+  its own contents (#166).
+- **`tiger-check.sh --staged` scans the index, not the worktree.**
+  The pre-commit hook computes added lines from `git diff --cached`
+  but used to awk the on-disk file, so staging a violation and then
+  reverting the worktree made the hook report clean. Staged bytes
+  now come from `git show :path`; the reported path is unchanged
+  (#149).
 - **Argument and usage errors now exit 1, not 2, across 38
   utilities.** This is a user-visible behavior change: any script
   that tests for exit status 2 from a bad flag, a missing operand,
@@ -115,6 +141,27 @@
 
 ### Fixed
 
+- **`find`, `printf`, `dd`, and `date` honor `--` as the end of
+  options.** All four hand-rolled parsers treated `--` as an operand
+  or unknown flag: `printf -- 'x\n'` printed `--`, `find -- .`
+  reported an unknown predicate, `dd -- if=f` was an unrecognized
+  operand, and `date -- +%Y` was an unrecognized option. They now
+  match GNU: `--` stops option parsing, a leading `--` with nothing
+  after it is a missing operand for printf, a second `--` is still a
+  predicate for find and an unrecognized operand for dd, and date
+  treats a following dash-token as a date string. `--` is a delimiter
+  for find only before any start path (`find . --` is an unknown
+  predicate). After `dd --`, `--help`/`--version` are unrecognized
+  operands, and the first invalid token — including an unknown
+  `key=value` or an empty `''` — is the one named. Date collects
+  positionals: a second operand is extra (quoted), a single non-`+`
+  token is a date string. A leftover non-`+` positional after `--date`
+  or `-r` is GNU "lacks a leading '+'". After a find start path, `--`
+  is an unknown predicate (`find . -- --help`); `--help` in predicate
+  position still prints help (`find . -name -- --help`). Walker
+  globals `-depth`/`-d`/`-xdev`/`-mount`/`-follow` are captured
+  only as sequential primaries, so a token that is a primary
+  argument (`find DIR -exec true -depth \;`) does not flip them (#159).
 - **`grep --` no longer swallows the pattern.** `grep -- -v FILE`
   reported "no pattern specified" and exited 2, which made a pattern
   that looks like an option impossible to search for. `--` did not
