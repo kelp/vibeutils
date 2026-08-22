@@ -297,6 +297,11 @@ fn parseArgs_bsdMode(opts: *StatOptions, mode: BsdMode) void {
 // Low-level stat wrapper
 // ============================================================================
 
+const Timespec = struct {
+    sec: i64,
+    nsec: i64,
+};
+
 /// Cross-platform stat result. Populated from linux.statx on Linux,
 /// or c.Stat via fstatat on macOS/BSD.
 const StatResult = struct {
@@ -310,10 +315,10 @@ const StatResult = struct {
     size: i64,
     blksize: i64,
     blocks: i64,
-    atim: struct { sec: i64, nsec: i64 },
-    mtim: struct { sec: i64, nsec: i64 },
-    ctim: struct { sec: i64, nsec: i64 },
-    btim: struct { sec: i64, nsec: i64 }, // birth time; sec == 0 is a LEGAL value
+    atim: Timespec,
+    mtim: Timespec,
+    ctim: Timespec,
+    btim: Timespec, // birth time; sec == 0 is a LEGAL value
     // Whether `btim` is actually available, per statx's STATX_BTIME mask bit
     // (Linux) or the unconditional guarantee of fstatat's birthtimespec
     // (macOS/BSD). NEVER derive this from `btim.sec == 0` -- a file born at
@@ -438,36 +443,74 @@ fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
             else => return error.SystemResources,
         };
     }
-    // macOS devfs reports st_dev as a signed i32 with the high bit set, so
-    // @intCast to u64 traps on it (commit 6b97443, the `ls /` panic).
-    // Reinterpret the bits as unsigned before widening.
-    const dev_bits: u32 = @bitCast(@as(i32, stat_buf.dev));
-    const rdev_bits: u32 = @bitCast(@as(i32, stat_buf.rdev));
+    // Darwin/OpenBSD `dev_t` is a signed i32; FreeBSD/NetBSD use u64.
+    // Reinterpret the bits and zero-extend (commit 6b97443, the `ls /` panic).
+    const btim = timespecField(stat_buf, "birthtimespec", "birthtim");
     return StatResult{
-        .dev = dev_bits,
+        .dev = widenDev(stat_buf.dev),
         .ino = @intCast(stat_buf.ino),
         .mode = @intCast(stat_buf.mode),
         .nlink = @intCast(stat_buf.nlink),
         .uid = @intCast(stat_buf.uid),
         .gid = @intCast(stat_buf.gid),
-        .rdev = rdev_bits,
+        .rdev = widenDev(stat_buf.rdev),
         .size = @intCast(stat_buf.size),
         .blksize = @intCast(stat_buf.blksize),
         .blocks = @intCast(stat_buf.blocks),
-        .atim = .{ .sec = stat_buf.atimespec.sec, .nsec = stat_buf.atimespec.nsec },
-        .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
-        .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
-        .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
+        .atim = timespecField(stat_buf, "atimespec", "atim"),
+        .mtim = timespecField(stat_buf, "mtimespec", "mtim"),
+        .ctim = timespecField(stat_buf, "ctimespec", "ctim"),
+        .btim = btim,
         // Linux has an explicit STATX_BTIME mask bit; BSD has none, so GNU
         // infers unavailability from the value itself. gnulib's
         // get_stat_birthtime treats a zero tv_sec, or an out-of-range tv_nsec,
         // as unavailable -- which is how `gstat -c %w /dev/null` prints "-"
         // for a devfs node. The asymmetry between the platforms is GNU's, not
         // ours (issue #102).
-        .btim_valid = stat_buf.birthtimespec.sec != 0 and
-            stat_buf.birthtimespec.nsec >= 0 and
-            stat_buf.birthtimespec.nsec < 1_000_000_000,
+        .btim_valid = btim.sec != 0 and
+            btim.nsec >= 0 and
+            btim.nsec < 1_000_000_000,
     };
+}
+
+/// Widen a platform `st_dev`/`st_rdev` into `StatResult`'s u64 fields.
+///
+/// Darwin/OpenBSD `dev_t` is a signed i32; FreeBSD/NetBSD use u64.
+/// `@bitCast` into a u32 is a compile error on the 64-bit type. Reinterpret
+/// the bits and zero-extend.
+fn widenDev(dev: anytype) u64 {
+    const T = @TypeOf(dev);
+    const bits = @bitSizeOf(T);
+    std.debug.assert(bits == 32 or bits == 64);
+    std.debug.assert(@typeInfo(T) == .int);
+    const unsigned: @Int(.unsigned, bits) = @bitCast(dev);
+    return @as(u64, unsigned);
+}
+
+/// Read a timespec by Darwin name (`atimespec`) or POSIX name (`atim`).
+/// Missing both names (birth time on some BSDs) yields zeros.
+fn timespecField(
+    stat_buf: anytype,
+    comptime darwin_name: []const u8,
+    comptime posix_name: []const u8,
+) Timespec {
+    std.debug.assert(darwin_name.len > 0);
+    std.debug.assert(posix_name.len > 0);
+    std.debug.assert(!std.mem.eql(u8, darwin_name, posix_name));
+    const T = @TypeOf(stat_buf);
+    const has_darwin = @hasField(T, darwin_name);
+    const has_posix = @hasField(T, posix_name);
+    const both_names = has_darwin and has_posix;
+    std.debug.assert(!both_names);
+    if (has_darwin) {
+        const ts = @field(stat_buf, darwin_name);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+    if (has_posix) {
+        const ts = @field(stat_buf, posix_name);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+    return .{ .sec = 0, .nsec = 0 };
 }
 
 // ============================================================================
