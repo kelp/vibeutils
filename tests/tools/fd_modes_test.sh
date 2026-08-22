@@ -14,7 +14,7 @@
 # This file is not that matrix. It is the gate that the matrix is
 # complete and that its four modes mean what the plan says:
 #
-#   1. Every build/utils.zig utilities[].name (48 today, including `[`)
+#   1. Every build/utils.zig utilities[].name (49 today, including `[`)
 #      has an explicit fixture. A missing row is FAIL, not a skip.
 #   2. echo (known payload `fd-mode\n`) and true (empty stdout) satisfy
 #      the four fd-mode contracts once the harness exists.
@@ -96,7 +96,7 @@ set +e
 FD_MODES_LIB="$PROJECT_ROOT/tests/lib/fd_modes.sh"
 UTILS_ZIG="$PROJECT_ROOT/build/utils.zig"
 SEED=$'EXISTING\n'
-EXPECTED_NAME_COUNT=48
+EXPECTED_NAME_COUNT=49
 
 FD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vibeutils_fd_modes.XXXXXX")"
 fd_cleanup() {
@@ -114,7 +114,7 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 FAILED_TESTS=()
 
-# Parser + `[` + fixture-per-name (48) + echo/true × five mode
+# Parser + `[` + fixture-per-name (49) + echo/true × five mode
 # observations. Below this the suite refuses a green tally.
 MIN_ASSERTIONS=58
 

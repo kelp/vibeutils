@@ -90,7 +90,7 @@ set +e
 POSIX_IO_LIB="$PROJECT_ROOT/tests/lib/posix_io.sh"
 UTILS_ZIG="$PROJECT_ROOT/build/utils.zig"
 SEED=$'EXISTING\n'
-EXPECTED_NAME_COUNT=48
+EXPECTED_NAME_COUNT=49
 
 # Own scratch. Do not reuse TEMP_DIR (its name contains "test", a
 # utility). Dest names below also avoid every utilities[].name.
@@ -110,10 +110,10 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 FAILED_TESTS=()
 
-# Parser + two wait-tests + source + `[` + fixture-per-name (48) +
+# Parser + two wait-tests + source + `[` + fixture-per-name (49) +
 # negative fixture + clobber + hang + run-defined + echo/true append +
-# yes closed-pipe + exit-defined + true/false plain + help×48 +
-# unknown×48. Below this the suite refuses a green tally — an empty
+# yes closed-pipe + exit-defined + true/false plain + help×49 +
+# unknown×49. Below this the suite refuses a green tally — an empty
 # harness cannot get here with this many PASSes, and dropping either
 # wait-test drops below the floor.
 MIN_ASSERTIONS=158

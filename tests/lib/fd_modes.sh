@@ -29,7 +29,7 @@ fd_modes_has_fixture() {
             test | '[' | yes | head | tail | tac | tee | wc | date | seq | \
             whoami | realpath | id | mktemp | printf | env | timeout | stat | \
             sort | tr | nl | uniq | readlink | cut | free | du | df | dd | \
-            find | grep)
+            find | grep | tree)
             return 0
             ;;
         *)

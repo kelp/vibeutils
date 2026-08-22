@@ -15,7 +15,7 @@ posix_io_has_fixture() {
         mktemp | printf | env | timeout | stat | sort | tr | nl | uniq | readlink)
             return 0
             ;;
-        cut | free | du | df | dd | find | grep)
+        cut | free | du | df | dd | find | grep | tree)
             return 0
             ;;
         *)

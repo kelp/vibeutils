@@ -1827,18 +1827,16 @@ const TestDuSizeKind = enum {
 // production paths that decayed into test-only use.
 test {}
 
-fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *std.testing.TmpDir) ![]u8 {
-    const file = try tmp_dir.dir.createFile(io, "allocated.bin", .{});
+fn testCreateDuAllocatedFile(io: std.Io, tmp_dir: *TestDir) ![]u8 {
+    const file = try tmp_dir.dir().createFile(io, "allocated.bin", .{});
     defer file.close(io);
     const data = [_]u8{'x'} ** 2048;
     try file.writeStreamingAll(io, &data);
 
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, "allocated.bin", &path_buf);
-    const path = path_buf[0..path_len];
+    const path = try tmp_dir.getPath("allocated.bin");
     std.debug.assert(path.len > 0);
     std.debug.assert(std.fs.path.isAbsolute(path));
-    return testing.allocator.dupe(u8, path);
+    return path;
 }
 
 fn testRunDuSizeField(
@@ -1892,8 +1890,8 @@ fn testExpectDuSizeKind(
 
 test "du defaults allocated file output to binary human-readable size" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
 
@@ -1902,8 +1900,8 @@ test "du defaults allocated file output to binary human-readable size" {
 
 test "du explicit size overrides keep output numeric" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
 
@@ -1923,8 +1921,8 @@ test "du explicit size overrides keep output numeric" {
 
 test "du --si prints an allocated file with a decimal suffix" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
 
@@ -1933,8 +1931,8 @@ test "du --si prints an allocated file with a decimal suffix" {
 
 test "du size modes use argv last-wins order and stop at double dash" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
 
@@ -1955,8 +1953,8 @@ test "du size modes use argv last-wins order and stop at double dash" {
 
 test "du size-mode scan ignores block size threshold and ignore option values" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const path = try testCreateDuAllocatedFile(io, &tmp_dir);
     defer testing.allocator.free(path);
 
@@ -4771,19 +4769,18 @@ const RelColorEnv = struct {
 
 fn testCreateDuSparseFile(
     io: std.Io,
-    tmp_dir: *testing.TmpDir,
+    tmp_dir: *TestDir,
     name: []const u8,
     size: u64,
 ) ![]u8 {
     std.debug.assert(name.len > 0);
     std.debug.assert(size > 0);
-    const file = try tmp_dir.dir.createFile(io, name, .{});
+    const file = try tmp_dir.dir().createFile(io, name, .{});
     try file.setLength(io, size);
     file.close(io);
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp_dir.dir.realPathFile(io, name, &path_buf);
-    std.debug.assert(path_len > 0);
-    return testing.allocator.dupe(u8, path_buf[0..path_len]);
+    const path = try tmp_dir.getPath(name);
+    std.debug.assert(path.len > 0);
+    return path;
 }
 
 fn testLineForExactPath(output: []const u8, path: []const u8) ?[]const u8 {
@@ -4823,8 +4820,8 @@ test "du relative color: 10MiB is green and 20MiB is red not absolute >=10M" {
     color_env.apply();
     defer color_env.restore();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
     defer testing.allocator.free(ten);
     const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
@@ -4851,8 +4848,8 @@ test "du relative color: 15MiB is yellow and 20MiB is red" {
     color_env.apply();
     defer color_env.restore();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const mid = try testCreateDuSparseFile(io, &tmp_dir, "mid", 15 * du_rel_mib);
     defer testing.allocator.free(mid);
     const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
@@ -4875,8 +4872,8 @@ test "du relative color: 15MiB is yellow and 20MiB is red" {
 
 test "du --color=never prints plain size and path with no ANSI" {
     const io = testing.io;
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
     defer testing.allocator.free(ten);
     const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
@@ -4900,8 +4897,8 @@ test "du relative color: equal sizes without -c are both 100% red" {
     color_env.apply();
     defer color_env.restore();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const left = try testCreateDuSparseFile(io, &tmp_dir, "left", 10 * du_rel_mib);
     defer testing.allocator.free(left);
     const right = try testCreateDuSparseFile(io, &tmp_dir, "right", 10 * du_rel_mib);
@@ -4928,8 +4925,8 @@ test "du relative color: -c total participates in max and is red" {
     color_env.apply();
     defer color_env.restore();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
     defer testing.allocator.free(ten);
     const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
@@ -4959,8 +4956,8 @@ test "du relative color: -t omitted larger entry does not set max" {
     color_env.apply();
     defer color_env.restore();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     const ten = try testCreateDuSparseFile(io, &tmp_dir, "ten", 10 * du_rel_mib);
     defer testing.allocator.free(ten);
     const twenty = try testCreateDuSparseFile(io, &tmp_dir, "twenty", 20 * du_rel_mib);
@@ -4992,16 +4989,16 @@ test "du relative color: buffered paths remain distinct copies" {
     color_env.apply();
     defer color_env.restore();
 
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    var tmp_dir = TestDir.init(testing.allocator);
+    defer tmp_dir.deinit();
     // Two children under one directory operand so print goes through
     // handleLeafEntry and the walker's reused entry.path buffer, not argv.
     const alpha = try testCreateDuSparseFile(io, &tmp_dir, "alpha", 10 * du_rel_mib);
     defer testing.allocator.free(alpha);
     const beta = try testCreateDuSparseFile(io, &tmp_dir, "beta", 20 * du_rel_mib);
     defer testing.allocator.free(beta);
-    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_path = dir_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &dir_buf))];
+    const dir_path = try tmp_dir.getPath(".");
+    defer testing.allocator.free(dir_path);
 
     const out = try testRunDuStdout(io, &.{
         "--color=always", "--apparent-size", "-b", "-a", dir_path,
