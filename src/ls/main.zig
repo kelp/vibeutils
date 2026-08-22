@@ -137,7 +137,10 @@ const LsArgs = struct {
         },
         .hide_backups = .{ .short = 'B', .desc = "Do not list entries ending with ~" },
         .dired = .{ .short = 'D', .desc = "Generate output suitable for Emacs dired mode" },
-        .show_acls = .{ .short = 'e', .desc = "Display ACL information in long format" },
+        .show_acls = .{
+            .short = 'e',
+            .desc = "Display ACL information after each long-format line",
+        },
         .colorize = .{ .short = 'G', .desc = "Enable colorized output" },
         .ignore_pattern = .{
             .short = 'I',
@@ -418,7 +421,8 @@ fn lsMain_buildOptions(
     return LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
-        .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
+        .long_format = args.long_format or args.omit_owner or args.omit_group or
+            args.numeric_ids or args.show_acls,
         .human_readable = args.human_readable,
         .kilobytes = args.kilobytes,
         .one_per_line = args.one_per_line,
@@ -459,6 +463,7 @@ fn lsMain_buildOptions(
         .sort_by_extension = args.sort_by_extension,
         .thousands_grouping = args.thousands_grouping,
         .terminal_width = args.output_width,
+        .show_acls = args.show_acls,
     };
 }
 
@@ -519,9 +524,15 @@ fn lsMain_listOperandGroups(
     std.debug.assert(paths.len > 1);
 
     var files: std.ArrayList(Entry) = .empty;
-    defer files.deinit(allocator);
+    defer {
+        for (files.items) |*entry| entry.freeAclDump(allocator);
+        files.deinit(allocator);
+    }
     var dirs: std.ArrayList(Entry) = .empty;
-    defer dirs.deinit(allocator);
+    defer {
+        for (dirs.items) |*entry| entry.freeAclDump(allocator);
+        dirs.deinit(allocator);
+    }
     var failed: std.ArrayList([]const u8) = .empty;
     defer failed.deinit(allocator);
 
@@ -729,11 +740,19 @@ fn lsMain_partitionOperands(
                 common.file.hasExtendedAcl(path, stat.kind, true),
         };
         // -d lists a directory operand as an ordinary entry, so it sorts and
-        // prints with the files and never gets a "dir:" header.
+        // prints with the files and never gets a "dir:" header. Only that
+        // file group is a long-format row, so only it needs the dump.
         if (stat.kind == .directory and !options.directory) {
             try dirs.append(allocator, entry);
         } else {
             try files.append(allocator, entry);
+            core.entryAttachAclDump(
+                allocator,
+                &files.items[files.items.len - 1],
+                path,
+                true,
+                options,
+            );
         }
     }
 
@@ -758,7 +777,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --color=WHEN           when to use colors (valid: always, auto, never)
         \\  -,                         format file sizes with thousands grouping
         \\  -D                         generate output for Emacs dired mode (no-op)
-        \\  -e                         display ACL information (no-op)
+        \\  -e                         display ACL information after each long-format line
         \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
         \\  -f, --no-sort              do not sort; list in directory order (implies -a)
@@ -977,6 +996,8 @@ fn listSingleFileEntry(
         .has_acl = options.long_format and
             common.file.hasExtendedAcl(path, stat.kind, true),
     }};
+    defer entries[0].freeAclDump(allocator);
+    core.entryAttachAclDump(allocator, &entries[0], path, true, options);
 
     lsMain_resolveOperandGitStatus(io, &entries, options, git_context);
     try formatter.printOperandSection(allocator, &entries, writer, options, style, &entries);
@@ -2261,6 +2282,191 @@ test "ls #147: an ACL entry the section does not list cannot widen it" {
 }
 
 // ============================================================
+// Issue #147 leftover: BSD/macOS `ls -e` ACL dump.
+//
+// The GNU `+` marker on `ls -l` is already implemented above. What
+// remains is `-e`: Darwin's man page says "Print the Access Control
+// List (ACL) associated with the file, if present, in long (-l)
+// output." After each long-format line, numbered ACE lines follow.
+// `show_acls` is parsed from `-e` and never read, so these tests are
+// expected RED until the dump exists. Do not mark the flag WONT.
+//
+// Linux has no NFSv4 ACE list; the dump is the POSIX ACL already
+// stored as `system.posix_acl_access` (the same xattr the `+` marker
+// probes). Fixtures are created here and `setfacl`'d -- never a
+// system path. Missing setfacl, or a filesystem that stores no ACL,
+// skips rather than asserting against a file that never had one.
+// =====================================================}
+
+/// Grant a named-user ACE on `rel_path` via setfacl(1). Skips when the
+/// tool is absent, the call fails, or the kernel kept no xattr.
+fn testSetfacl(rel_path: [:0]const u8) !void {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    std.debug.assert(rel_path.len > 0);
+    const allocator = testing.allocator;
+    const result = std.process.run(allocator, testing.io, .{
+        .argv = &.{ "setfacl", "-m", "u:1000:rw", rel_path },
+    }) catch return error.SkipZigTest;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.SkipZigTest,
+        else => return error.SkipZigTest,
+    }
+    // A noacl mount can accept setfacl and still store nothing; the
+    // size-0 lgetxattr probe is the same check the marker tests use.
+    var probe: [1]u8 = undefined;
+    const get_rc: isize = @bitCast(std.os.linux.lgetxattr(
+        rel_path.ptr,
+        acl_access_xattr.ptr,
+        &probe,
+        0,
+    ));
+    if (get_rc <= 0) return error.SkipZigTest;
+    std.debug.assert(get_rc > 0);
+}
+
+/// Bytes after the first output line containing `name`. Empty when that
+/// line is the last thing printed (the current -e no-op on a lone file).
+fn testAfterNamedLine(output: []const u8, name: []const u8) ![]const u8 {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len >= name.len);
+    const line_max: u32 = 256;
+    var seen: u32 = 0;
+    var start: u32 = 0;
+    while (seen < line_max) : (seen += 1) {
+        if (start >= output.len) break;
+        const rest = output[start..];
+        const nl_off = std.mem.indexOfScalar(u8, rest, '\n');
+        const line_len: u32 = if (nl_off) |off| @intCast(off) else @intCast(rest.len);
+        const line = rest[0..line_len];
+        const step: u32 = if (nl_off != null) 1 else 0;
+        const after_start: u32 = start + line_len + step;
+        if (std.mem.find(u8, line, name) != null) {
+            if (after_start >= output.len) return output[output.len..];
+            return output[after_start..];
+        }
+        start = after_start;
+    }
+    std.debug.print("no line containing '{s}' in:\n{s}\n", .{ name, output });
+    return error.LineNotFound;
+}
+
+/// Fail with AclDumpMissing when `-e` printed only the long line.
+fn testExpectAclDump(output: []const u8, name: []const u8) !void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len > 0);
+    const extra = try testAfterNamedLine(output, name);
+    const extra_trim = std.mem.trim(u8, extra, " \t\n");
+    if (extra_trim.len == 0) {
+        std.debug.print(
+            "ACL dump is missing after the long line for '{s}':\n{s}\n",
+            .{ name, output },
+        );
+        return error.AclDumpMissing;
+    }
+    // POSIX getfacl writes "user::rw-" / "user:name:rw-"; a BSD-style
+    // numbered dump still carries a "user:" token for the named ACE.
+    if (std.mem.find(u8, extra, "user:") == null) {
+        std.debug.print(
+            "ACL dump after '{s}' is missing POSIX ACL text (user:):\n{s}\n",
+            .{ name, extra },
+        );
+        return error.AclDumpMissing;
+    }
+}
+
+/// A file with no ACL must not grow a fake dump after its long line.
+fn testExpectNoAclDump(output: []const u8, name: []const u8) !void {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(output.len > 0);
+    const extra = try testAfterNamedLine(output, name);
+    const extra_trim = std.mem.trim(u8, extra, " \t\n");
+    if (extra_trim.len != 0) {
+        std.debug.print(
+            "unexpected ACL dump for '{s}' which has no ACL:\n{s}\n",
+            .{ name, extra },
+        );
+        return error.UnexpectedAclDump;
+    }
+}
+
+test "ls #147: -le dumps BSD ACL text after the long line" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try testSetfacl("acl.txt");
+
+    const exit_code = try fx.run(&.{ "-le", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testExpectAclDump(fx.stdout(), "acl.txt");
+}
+
+test "ls #147: -e is not a silent no-op; an ACL file produces extra output vs -l" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try testSetfacl("acl.txt");
+
+    const l_code = try fx.run(&.{ "-l", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), l_code);
+    const l_out = try testing.allocator.dupe(u8, fx.stdout());
+    defer testing.allocator.free(l_out);
+
+    const le_code = try fx.run(&.{ "-le", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), le_code);
+    const le_out = fx.stdout();
+
+    if (le_out.len <= l_out.len) {
+        std.debug.print(
+            "ACL dump is missing: ls -le is a silent no-op vs ls -l\n-l:\n{s}\n-le:\n{s}\n",
+            .{ l_out, le_out },
+        );
+        return error.AclDumpMissing;
+    }
+    try testExpectAclDump(le_out, "acl.txt");
+}
+
+test "ls #147: -le on a file without an ACL prints no dump" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("plain.txt", 0o644);
+
+    const l_code = try fx.run(&.{ "-l", "plain.txt" });
+    try testing.expectEqual(@as(u8, 0), l_code);
+    const l_out = try testing.allocator.dupe(u8, fx.stdout());
+    defer testing.allocator.free(l_out);
+
+    const le_code = try fx.run(&.{ "-le", "plain.txt" });
+    try testing.expectEqual(@as(u8, 0), le_code);
+
+    try testing.expectEqualStrings(l_out, fx.stdout());
+    try testExpectNoAclDump(fx.stdout(), "plain.txt");
+}
+
+test "ls #147: -e FILE implies long format and dumps the ACL" {
+    var fx = try AclFixture.init();
+    defer fx.deinit();
+    try fx.addFile("acl.txt", 0o644);
+    try testSetfacl("acl.txt");
+
+    const exit_code = try fx.run(&.{ "-e", "acl.txt" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Darwin's man page documents -e as a long-format dump. `-g`/`-n`/`-o`
+    // already imply -l here; -e does the same so a bare `-e FILE` is not
+    // a name-only listing (the current silent no-op).
+    const line = try testLineWith(fx.stdout(), "acl.txt");
+    if (line.len < 10 or line[0] != '-') {
+        std.debug.print(
+            "ACL dump is missing: -e did not imply long format\n{s}\n",
+            .{fx.stdout()},
+        );
+        return error.AclDumpMissing;
+    }
+    try testExpectAclDump(fx.stdout(), "acl.txt");
+}
+
 // Issue #166: `ls -l` sizes the file-operand section after
 // partitioning directories out. GNU measures every operand first
 // (gobble_file), then extract_dirs_from_files removes directories
