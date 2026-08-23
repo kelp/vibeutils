@@ -3114,8 +3114,10 @@ test "ls #166: -ln sizes the file-operand section from every operand, including 
         const rc = std.c.fchmodat(tmp_dir.dir().handle, "d_wide", 0o755, 0);
         std.debug.assert(rc == 0);
     }
-    // Eight children → nlink 10 (2 + 8). An empty directory's nlink is
-    // 2, still one digit, and would not catch a nlink-width miss.
+    // Eight children → nlink 10 (2 + 8) on filesystems that grow a
+    // directory's st_nlink per subdirectory (ext4, APFS native). Some
+    // mounts do not: OrbStack's virtiofs share and btrfs keep single
+    // digits regardless of children.
     const subdirs = [_][]const u8{
         "d_wide/s0", "d_wide/s1", "d_wide/s2", "d_wide/s3",
         "d_wide/s4", "d_wide/s5", "d_wide/s6", "d_wide/s7",
@@ -3152,7 +3154,13 @@ test "ls #166: -ln sizes the file-operand section from every operand, including 
     );
     // The fixture must actually widen nlink and size versus a file-only
     // measurement, or the prefix below would match today's (wrong) output.
-    try testing.expect(nlink_width > testDecimalDigits(file_info.nlink));
+    // Size always widens: the file is 0 bytes and any directory reports
+    // more. Nlink widens only where st_nlink semantics allow it (see
+    // above), so demand it only when lstat shows a wider directory value;
+    // equal digit widths produce identical columns either way.
+    if (testDecimalDigits(dir_info.nlink) > testDecimalDigits(file_info.nlink)) {
+        try testing.expect(nlink_width > testDecimalDigits(file_info.nlink));
+    }
     try testing.expect(size_width > testDecimalDigits(file_info.size));
 
     var nlink_buf: [20]u8 = undefined;
