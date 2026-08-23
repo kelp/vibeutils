@@ -10,11 +10,12 @@
   entered only through `scripts/run-integration.sh`. The wave2-walker
   workflow now tells agents to use that wrapper rather than
   `bash tests/integration.sh` as root (#152).
-- **Add the `land-todo-slice` agent skill.** Operating procedure
-  for landing one `TODO.md` heading as one draft PR: choose the
-  slice, write a plan, review it with three models, implement
-  with red-green TDD, and drain review comments until CI is
-  green.
+- **Land `TODO.md` slices via `next-todo@agent-plugins`.**
+  Operating procedure for landing one heading as one
+  draft PR: choose the slice, write a plan, review it
+  with three models, implement with red-green TDD, and
+  drain review comments until CI is green. Binding
+  values live in `CLAUDE.md`.
 
 ### Added
 - **`cp` and `mv` show an auto-progress line for slow copies.** When

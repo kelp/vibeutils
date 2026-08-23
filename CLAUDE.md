@@ -264,15 +264,8 @@ implementation files.
 ## Where to Look
 
 - Landing one `TODO.md` heading → the
-  `land-todo-slice` skill (plan, three-model
-  review, TDD, draft PR, comment drain). One
-  heading is one pull request. Plan and patch
-  review use a one-page brief and split axes
-  (Grok: scope/process; Sol: CLAUDE/TDD;
-  Opus 5: test teeth). Send Sol and Opus the
-  real plan or `git show` diff, not the full
-  tree. Resume only the objector on nits. The
-  parent watches CI. Stay at three reviewers.
+  `next-todo@agent-plugins` skill. One heading is one
+  pull request.
 - Implementing a new utility → the `new-util` skill
   (classification, TDD phases, template).
 - Writing Zig → the `zig-patterns` skill;
@@ -286,3 +279,29 @@ implementation files.
 - Zig language reference → `docs/zig-0.16.0-docs.md`,
   `docs/zig-0.16.0-release-notes.md`. Grep them rather
   than reading straight through.
+
+## Next TODO binding
+
+The `next-todo@agent-plugins` plugin reads these values. Where this
+section conflicts with the rest of this file, follow the
+rest of this file.
+
+1. **Backlog** — `TODO.md` from the start of the current
+   milestone. Take the first unchecked **PR slice** in
+   listed order. One heading is one pull request. Nested
+   checkboxes under that heading belong to the slice.
+2. **Plan** — `docs/plans/YYYY-MM-DD-<slice-slug>.md`.
+3. **Spec** — `docs/specs/<util>-flags.md`. User approval
+   before Zig against a new spec or design note.
+4. **Gates** — `just fmt-check` before each commit, and
+   `just test` when Zig files changed. For a utility
+   behavior change, also `just it-util <name>` (with
+   `env -u NO_COLOR` when color is involved).
+5. **CI** — **Test**, **Integration Tests**,
+   **Changelog**, **Audit Pre-Pass**, **Tiger Style**,
+   and required bot reviews on the PR.
+6. **Review axes** — plugin defaults (Grok, Sol, Opus 5).
+7. **Rules** — this file and `AGENTS.md`. Load
+   `zig-patterns` and `tdd` before writing a fix or
+   feature. Run `/tiger-style:tiger-patterns` before
+   Zig, and `/tiger-style:tiger-check` after.
