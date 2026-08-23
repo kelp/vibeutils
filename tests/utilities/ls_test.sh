@@ -661,6 +661,24 @@ test_ls() {
             "Expected '.' then '..', got '$f50_first' then '$f50_second'"
     fi
 
+    echo -e "${CYAN}Testing SIGPIPE behavior...${NC}"
+
+    # GNU dies silently by SIGPIPE when the reader closes early:
+    # exit 141, nothing on stderr. We used to report WriteFailed with
+    # exit 1, which broke `util | head` under set -e / pipefail.
+    local many_dir="$TEMP_DIR/ls_sigpipe_many"
+    mkdir -p "$many_dir"
+    for i in $(seq 1 3000); do touch "$many_dir/sigpipe-filler-name-$i"; done
+    local sig_out sig_rc=0
+    sig_out=$(bash -c "'$binary' '$many_dir' 2>&1 | head -1 >/dev/null; echo \${PIPESTATUS[0]}") || sig_rc=$?
+    if [[ "$sig_out" == "141" ]]; then
+        print_test_result "ls dies by SIGPIPE (141) on closed pipe" "PASS"
+    else
+        print_test_result "ls dies by SIGPIPE (141) on closed pipe" "FAIL" \
+            "PIPESTATUS=$sig_out"
+    fi
+    rm -rf "$many_dir"
+
     # -a on empty directory should still show . and ..
     local f50_empty
     f50_empty=$(create_temp_dir)

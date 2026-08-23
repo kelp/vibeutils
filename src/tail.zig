@@ -87,6 +87,40 @@ const TailOptions = struct {
     }
 };
 
+/// GNU's header mode is last-flag-wins (-qv shows headers, -vq hides
+/// them). The shared parser records presence, not order, so recover
+/// order with a pre-scan over the same argv (stop at "--"; clusters
+/// apply left to right).
+fn applyLastQuietVerbose(quiet: *bool, verbose: *bool, argv: []const []const u8) void {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return;
+        if (!std.mem.startsWith(u8, arg, "-") or std.mem.eql(u8, arg, "-")) continue;
+        if (std.mem.startsWith(u8, arg, "--")) {
+            if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "--silent")) {
+                quiet.* = true;
+                verbose.* = false;
+            } else if (std.mem.eql(u8, arg, "--verbose")) {
+                quiet.* = false;
+                verbose.* = true;
+            }
+            continue;
+        }
+        for (arg[1..]) |c| {
+            switch (c) {
+                'q' => {
+                    quiet.* = true;
+                    verbose.* = false;
+                },
+                'v' => {
+                    quiet.* = false;
+                    verbose.* = true;
+                },
+                else => {},
+            }
+        }
+    }
+}
+
 /// Formats a GNU follow switch header into `buf`.
 fn formatFollowSwitchHeader(buf: []u8, path: []const u8) []const u8 {
     assert(buf.len >= 16);
@@ -263,6 +297,11 @@ pub fn runTail(
     defer allocator.free(parsed_args.positionals);
     assert(parsed_args.positionals.len <= expanded_args.len);
 
+    // GNU last-flag-wins for the header mode; recover ordering that the
+    // presence-only parser cannot keep.
+    var opts = parsed_args;
+    applyLastQuietVerbose(&opts.quiet, &opts.verbose, expanded_args);
+
     // Handle --help / --version, which short-circuit normal processing.
     if (try runTail_handleHelpVersion(allocator, parsed_args, stdout_writer)) |exit_code| {
         return exit_code;
@@ -270,12 +309,12 @@ pub fn runTail(
 
     // Parse numeric arguments
     var options = TailOptions{
-        .quiet = parsed_args.quiet,
-        .verbose = parsed_args.verbose,
-        .zero_terminated = parsed_args.zero_terminated,
-        .reverse = parsed_args.reverse,
-        .follow = parsed_args.follow or parsed_args.follow_retry,
-        .follow_retry = parsed_args.follow_retry,
+        .quiet = opts.quiet,
+        .verbose = opts.verbose,
+        .zero_terminated = opts.zero_terminated,
+        .reverse = opts.reverse,
+        .follow = opts.follow or opts.follow_retry,
+        .follow_retry = opts.follow_retry,
     };
 
     // Assemble count/byte/block options from the parsed args; this also
@@ -284,9 +323,22 @@ pub fn runTail(
         return exit_code;
     }
 
-    if (parsed_args.positionals.len == 0) {
-        try processStdin(allocator, io, stdout_writer, options);
-        return @intFromEnum(common.ExitCode.success);
+    // "-" operands name standard input. When every operand is stdin
+    // (or there are no operands at all), the file-follow machinery has
+    // nothing to open; GNU follows stdin instead.
+    const stdin_only = blk: {
+        if (opts.positionals.len == 0) break :blk true;
+        for (opts.positionals) |p| {
+            if (!std.mem.eql(u8, p, "-")) break :blk false;
+        }
+        break :blk true;
+    };
+    if (stdin_only) {
+        if (!options.follow) {
+            try processStdin(allocator, io, stdout_writer, options);
+            return @intFromEnum(common.ExitCode.success);
+        }
+        return runTail_followStdin(allocator, io, stdout_writer, &options);
     }
 
     return runTail_runWithPositionals(
@@ -814,8 +866,19 @@ fn processStdin(
 ) !void {
     var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-    const stdin = &stdin_reader.interface;
+    try dumpTailFromReader(allocator, io, &stdin_reader.interface, stdout_writer, options);
+}
 
+/// Dump the requested tail from an arbitrary stream. Shared by the
+/// plain stdin path and the stdin follow path so their selection logic
+/// cannot drift.
+fn dumpTailFromReader(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stdin: *std.Io.Reader,
+    stdout_writer: *std.Io.Writer,
+    options: TailOptions,
+) !void {
     if (options.byte_count) |byte_count| {
         try processInputByBytes(
             allocator,
@@ -836,6 +899,43 @@ fn processStdin(
             options.from_beginning,
             options.reverse,
         );
+    }
+}
+
+/// Follow standard input after the initial dump (GNU: `tail -f` with no
+/// operand, or with `-`). POSIX says tail shall not terminate when -f
+/// reaches end of input, so this loop runs until killed: pipes block
+/// inside read(), appends to redirected regular-file stdin arrive on
+/// the next poll cycle.
+///
+/// Known simplification vs GNU: truncation of a regular-file stdin is
+/// not detected here (reads sit at EOF until the file grows past the
+/// old offset again).
+fn runTail_followStdin(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    options: *const TailOptions,
+) !u8 {
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
+    const stdin = &stdin_reader.interface;
+
+    try dumpTailFromReader(allocator, io, stdin, stdout_writer, options.*);
+    // The follow loop may be killed at any moment; get the initial dump
+    // out of the writer's buffer now or a SIGTERM loses it.
+    try stdout_writer.flush();
+
+    const fd = std.Io.File.stdin().handle;
+    var buf: [8192]u8 = undefined;
+    // POSIX: with -f, tail shall not terminate at end of input; this
+    // loop runs until the process is killed.
+    while (true) { // tiger:allow:unbounded-loop
+        if (!followSet_poll(fd, 1000)) continue;
+        const n = stdin.readSliceShort(&buf) catch continue;
+        if (n == 0) continue;
+        try stdout_writer.writeAll(buf[0..n]);
+        try stdout_writer.flush();
     }
 }
 
@@ -1449,7 +1549,8 @@ fn followFile_checkTruncation(
 
     const new_end = try file.length(io);
     if (new_end < last_pos.*) {
-        // GNU prints this operand unquoted; keep parity.
+        // Verified against GNU coreutils 9.11: the operand is unquoted
+        // ("tail: FILE: file truncated"), not quotef-wrapped.
         common.printErrorWithProgram(
             allocator,
             stderr_writer,
@@ -3214,4 +3315,26 @@ fn testTailFile(
             options.reverse,
         );
     }
+}
+
+test "applyLastQuietVerbose honors GNU last-flag-wins" {
+    var quiet: bool = false;
+    var verbose: bool = false;
+
+    applyLastQuietVerbose(&quiet, &verbose, &.{"-q"});
+    try std.testing.expect(quiet and !verbose);
+
+    applyLastQuietVerbose(&quiet, &verbose, &.{ "-q", "-v" });
+    try std.testing.expect(verbose and !quiet);
+
+    applyLastQuietVerbose(&quiet, &verbose, &.{"-vq"});
+    try std.testing.expect(quiet and !verbose);
+
+    // Long forms, including --silent as a -q alias.
+    applyLastQuietVerbose(&quiet, &verbose, &.{"--silent"});
+    try std.testing.expect(quiet and !verbose);
+
+    // "--" ends option scanning.
+    applyLastQuietVerbose(&quiet, &verbose, &.{ "--", "-v" });
+    try std.testing.expect(quiet and !verbose);
 }

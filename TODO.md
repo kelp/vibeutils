@@ -404,6 +404,49 @@ For each utility:
 - [x] Implement: Proper error handling with common library
 - [x] Implement: GNU/POSIX compliant flag handling
 - [x] Man page: Write concise man page with examples
+- [x] Fix: Default to logical mode (-L), honoring `$PWD` when it
+      names the current directory; fall back to physical resolution
+      only when `$PWD` is invalid. Fixed for v0.13.0: POSIX Issue 7
+      says "if neither -L nor -P is specified, the pwd utility shall
+      behave as if -L had been specified". Correction to the original
+      note: GNU coreutils 9.11 defaults to -P (non-conforming); BSD
+      pwd and shell builtins conform.
+- [ ] Improve: `dd status=progress` repaints per input block, not per
+      wall-clock second. Slow or stalled input (<1 block/s) freezes
+      elapsed/rate until the next block; GNU uses SIGALRM-style
+      wall-clock cadence. Needs a timer thread or alarm; deferred from
+      v0.13.0 review as too invasive for the freeze.
+- [ ] Fix: dd stats clock starts after skip/seek, so rates exclude that
+      time and read high vs GNU on slow media.
+- [ ] Reconsider: mv cross-device fallback errdefer-deletes a
+      pre-existing destination on later copy failure, destroying data a
+      same-device rename failure leaves intact (GNU keeps a truncated
+      dest). Deliberate per comment at src/mv.zig:578; widen or narrow
+      deliberately.
+- [ ] Fix: du --color=always drops buffered rows silently on OOM while
+      buffering the listing (src/du.zig:863-881); non-color mode
+      streams everything. Flush partial buffer or fall back to
+      streaming.
+- [ ] Decide: tree -I alternation semantics for empty alternatives:
+      `-I 'foo|'` excludes only foo, `-I ''` appends an inert pattern;
+      regex-flavored expectations differ. Help text documents current
+      behavior.
+- [ ] Fix: tail -F with mixed operands including stdin (`tail -F f1 -
+      f2`) still drops the stdin slot; pure-stdin forms are fixed in
+      v0.13.0, mixed lists need an fd-backed follow slot.
+- [ ] Decide: uniform `-h`/`-V` short help/version flags vs GNU parity.
+      The shared argparse accepts `-h` (help) and `-V` (version) on
+      every utility; GNU defines those shorts only on some utilities,
+      and rejects them elsewhere (`gcat -h` exits 1). Found by the
+      differential fuzz sweep (scripts/diff-vs-gnu.sh, VU_FUZZ=1).
+      Removing them tree-wide would break our own `-h` tests and the
+      OpenBSD-style ergonomics goal, so it needs a design decision.
+      Related nuance: GNU acts on help mid-cluster (`cat -hx` helps
+      before seeing x); we still reject the cluster.
+- [ ] Fix: honor POSIX "the last one shall apply" when both -L and
+      -P are given (`pwd -P -L` should print logically). `-P`
+      currently wins regardless of order; the shared argparse gives
+      no per-flag ordering.
 
 #### 11. chmod ✓
 - [x] Test: Basic permission changes (numeric: 755, 644)
@@ -865,6 +908,19 @@ For each utility:
 - [x] Implement: Space calculation
 - [x] Implement: Filesystem filtering
 - [x] Man page: Write concise man page with examples
+- [x] Investigate: APFS usage accounting on macOS root differs from
+      `/bin/df`: we report ~86% used for `/`, system df reports 8%.
+      RESOLVED for v0.13.0: not a bug. `statfs("/")` reports
+      APFS container-wide blocks; GNU df 9.11 passes those through
+      (~86% used) and we match GNU on `/`,
+      `/System/Volumes/Data`, and `/System/Volumes/VM`. Apple's
+      `/bin/df` shows ~9% because it applies its own sealed-system-
+      snapshot accounting that the statfs interface does not expose;
+      matching it would diverge from both the kernel numbers and
+      GNU. Bonus: for firmlinked paths like `/tmp` we attribute the
+      correct volume (Data) where GNU df's string-prefix mount walk
+      attributes the root snapshot. Originally found in the v0.13.0
+      pre-release smoke test.
 
 ### Phase 4: Advanced Utilities
 

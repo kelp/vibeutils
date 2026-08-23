@@ -50,7 +50,7 @@ test_pwd() {
 
     echo -e "${CYAN}Testing core functionality...${NC}"
 
-    # Default behavior (physical mode - resolves symlinks)
+    # Default behavior (logical mode - honors valid $PWD per POSIX)
     local default_output
     default_output=$("$binary" 2>/dev/null)
     local temp_default_file="$TEMP_DIR/pwd_default_test"
@@ -85,6 +85,89 @@ test_pwd() {
 
     # Test --logical long option
     test_command_output_pattern "pwd --logical long option" "^/.*" "$binary" --logical
+
+    # POSIX: with neither -L nor -P, pwd shall behave as if -L were given:
+    # honor $PWD when it is an absolute pathname of the current directory.
+    echo -e "${CYAN}Testing PWD honoring (POSIX -L default)...${NC}"
+
+    local lg_real="$TEMP_DIR/pwd_lg_real"
+    local lg_link="$TEMP_DIR/pwd_lg_link"
+    mkdir -p "$lg_real"
+    ln -sfn "$lg_real" "$lg_link"
+
+    # Inside the subshell, cd sets PWD to the logical path while the kernel
+    # cwd resolves physically; an external pwd sees both worlds.
+    local lg_default
+    lg_default=$(cd "$lg_link" && "$binary" 2>/dev/null)
+    if [[ "$lg_default" == "$lg_link" ]]; then
+        print_test_result "pwd default honors valid PWD (POSIX -L)" "PASS"
+    else
+        print_test_result "pwd default honors valid PWD (POSIX -L)" "FAIL" \
+            "expected '$lg_link', got '$lg_default'"
+    fi
+
+    local lg_lflag
+    lg_lflag=$(cd "$lg_link" && "$binary" -L 2>/dev/null)
+    if [[ "$lg_lflag" == "$lg_link" ]]; then
+        print_test_result "pwd -L honors valid PWD" "PASS"
+    else
+        print_test_result "pwd -L honors valid PWD" "FAIL" \
+            "expected '$lg_link', got '$lg_lflag'"
+    fi
+
+    local lg_physical_expected
+    lg_physical_expected=$(cd "$lg_link" && /bin/pwd -P 2>/dev/null)
+
+    local lg_pflag
+    lg_pflag=$(cd "$lg_link" && "$binary" -P 2>/dev/null)
+    if [[ "$lg_pflag" == "$lg_physical_expected" ]]; then
+        print_test_result "pwd -P resolves symlinks" "PASS"
+    else
+        print_test_result "pwd -P resolves symlinks" "FAIL" \
+            "expected '$lg_physical_expected', got '$lg_pflag'"
+    fi
+
+    # Invalid PWD (dangling absolute path) must fall back to physical.
+    local lg_invalid
+    lg_invalid=$(cd "$lg_link" && PWD=/nonexistent/vibeutils-pwd "$binary" 2>/dev/null)
+    if [[ "$lg_invalid" == "$lg_physical_expected" ]]; then
+        print_test_result "pwd falls back to physical on invalid PWD" "PASS"
+    else
+        print_test_result "pwd falls back to physical on invalid PWD" "FAIL" \
+            "expected '$lg_physical_expected', got '$lg_invalid'"
+    fi
+
+    # Relative PWD must never be trusted.
+    local lg_relative
+    lg_relative=$(cd "$lg_link" && PWD=relative/path "$binary" 2>/dev/null)
+    if [[ "$lg_relative" == "$lg_physical_expected" ]]; then
+        print_test_result "pwd ignores relative PWD" "PASS"
+    else
+        print_test_result "pwd ignores relative PWD" "FAIL" \
+            "expected '$lg_physical_expected', got '$lg_relative'"
+    fi
+
+    # POSIX: when both -L and -P are given, the last one applies.
+    local lg_p_l
+    lg_p_l=$(cd "$lg_link" && "$binary" -P -L 2>/dev/null)
+    if [[ "$lg_p_l" == "$lg_link" ]]; then
+        print_test_result "pwd -P -L applies last flag (logical)" "PASS"
+    else
+        print_test_result "pwd -P -L applies last flag (logical)" "FAIL" \
+            "expected '$lg_link', got '$lg_p_l'"
+    fi
+
+    local lg_l_p
+    lg_l_p=$(cd "$lg_link" && "$binary" -L -P 2>/dev/null)
+    if [[ "$lg_l_p" == "$lg_physical_expected" ]]; then
+        print_test_result "pwd -L -P applies last flag (physical)" "PASS"
+    else
+        print_test_result "pwd -L -P applies last flag (physical)" "FAIL" \
+            "expected '$lg_physical_expected', got '$lg_l_p'"
+    fi
+
+    rm -f "$lg_link"
+    rm -rf "$lg_real"
 
     echo -e "${CYAN}Testing flag behavior...${NC}"
 
@@ -308,15 +391,15 @@ test_pwd() {
     test_command_exit_code "pwd POSIX success" 0 "$binary"
     test_command_exit_code "pwd POSIX failure (invalid flag)" 1 "$binary" --invalid 2>/dev/null
 
-    # POSIX behavior: default is physical mode
+    # POSIX: with neither -L nor -P, pwd behaves as if -L were specified
     local posix_default
-    local posix_physical
+    local posix_logical
     posix_default=$("$binary" 2>/dev/null)
-    posix_physical=$("$binary" -P 2>/dev/null)
-    if [[ "$posix_default" == "$posix_physical" ]]; then
-        print_test_result "pwd POSIX default is physical" "PASS"
+    posix_logical=$("$binary" -L 2>/dev/null)
+    if [[ "$posix_default" == "$posix_logical" ]]; then
+        print_test_result "pwd POSIX default is logical" "PASS"
     else
-        print_test_result "pwd POSIX default is physical" "FAIL" "Default behavior should equal -P"
+        print_test_result "pwd POSIX default is logical" "FAIL" "Default behavior should equal -L"
     fi
 
     # POSIX output format: absolute pathname followed by newline

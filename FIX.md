@@ -203,3 +203,82 @@ suite still passed. Findings that could not be demonstrated were
 dropped. That gate, not the volume of review, is what makes this
 list trustworthy — see `docs/AUDIT_SWEEP.md` for the cost
 evidence.
+
+## v0.13.0 pre-release bug hunt (2026-08-22)
+
+Comprehensive hunt before tagging v0.13.0: 308-commit delta since
+v0.12.0, two adversarial reviews, a committed GNU differential
+harness (`scripts/diff-vs-gnu.sh`, 109 cases + seeded fuzz), signal
+and PTY probes, and the known-bug queue from the smoke test.
+
+### Fixed
+
+- ✅ `pwd` honors `$PWD` by default (POSIX -L default). The smoke
+  test's premise was half-wrong: GNU coreutils 9.11 defaults to
+  `-P` and is itself non-conforming; BSD pwd and shell builtins
+  conform. POSIX Issue 7 mandates -L, so we match the spec.
+- ✅ Shared argparse acts on the first `--help`/`--version`.
+  GNU scans argv left-to-right; we validated whole lines first,
+  so `cat --help --bogus` failed where GNU prints help.
+- ✅ SIGPIPE parity: every utility now dies by signal (exit 141,
+  silent) when stdout's reader closes early, instead of reporting
+  WriteFailed with exit 1. Zig's start code ignores SIGPIPE;
+  `utilityMain` restores the kernel default. `tee -p` re-ignores
+  it per POSIX.
+- ✅ `tail -f` follows stdin (`tail -f`, `tail -f -`) and holds
+  past EOF per POSIX; previously `-f` was silently ignored.
+- ✅ Flag-pair ordering: `pwd -L/-P` last-one-applies (POSIX),
+  `tail -q/-v` last-flag-wins (GNU).
+- ✅ LS_COLORS: suffix keys match case-insensitively like GNU
+  (`*.JPG` colors `photo.jpg`); malformed SGR values (`di=zz`)
+  reject with the standard diagnostic + color-off instead of
+  emitting garbage escapes.
+- ✅ dd/progress format: sub-kB transfer lines drop GNU's absent
+  parenthetical ("51 bytes copied", not "51 bytes (51 bytes)
+  copied"), seconds trim trailing zeros, final summary unpadded,
+  conv=noerror abort diagnostics finish the live line first.
+- ✅ cp overwrite-hint uses the shared stderrHintsEnabled seam;
+  tree print-stack bound named and tied to walker max_depth.
+
+### Resolved, not a bug
+
+- ❌ df APFS root "86% vs /bin/df 8%": statfs reports container-
+  wide blocks; we match GNU df byte-for-byte on `/`,
+  `/System/Volumes/Data`, `/System/Volumes/VM`. Apple's df applies
+  sealed-snapshot accounting statfs does not expose. Bonus finding:
+  for firmlinked paths like `/tmp` we attribute the Data volume
+  correctly where GNU's string-prefix mount walk picks root.
+- ❌ FIX.md df items from earlier rounds re-verified: all fixed or
+  ruled intentional; one ⏸ cosmetic ({d}B-blocks label) stays routed.
+
+### Routed to TODO.md
+
+dd wall-clock repaint cadence · dd stats clock excludes skip/seek ·
+dd stats-on-SIGINT summary · mv cross-device errdefer scope ·
+du --color OOM drops buffered rows · tree -I empty alternation ·
+tail mixed file+stdin follow slots · uniform `-h`/`-V` shorts vs
+GNU parity decision · mid-cluster early-exit nuance (`cat -hx`).
+
+### Harness notes
+
+Fuzz residual divergence class is documented in the harness header:
+uniform `-h`/`-V` acceptance vs GNU's per-utility shorts. Default
+runs stay green; `VU_FUZZ=1` surfaces that class for triage.
+
+### Found by verification after the fixes
+
+- ✅ SIGPIPE parity itself broke the POSIX I/O oracle on every CI
+  platform: the `yes closed-pipe` probe anticipated status 141 but
+  called `posix_io_run` bare under the harness's `set -e`, killing the
+  test script before its own case could accept 141. Errexit-safe
+  capture fixed; latent harness bug, exposed not caused by the change.
+- ✅ The new zizmor workflow startup-failed on every trigger: the repo
+  pins Actions to a SHA-pinned allowlist (`allowed_actions: selected`)
+  and `zizmorcore/zizmor-action` was not on it. Added to the allowlist
+  following the existing pin pattern; bisected to that exact cause via
+  a scratch branch. Lesson: workflow-file review must include the
+  repository's Actions policy, which no linter sees.
+
+Final state at abd76a2: all seven CI workflows green (Test,
+Integration Tests, BSD matrix, Tiger Style, Audit Pre-Pass,
+Changelog, zizmor), local gates green, diff-vs-gnu 109/109 match.

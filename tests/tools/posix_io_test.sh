@@ -606,8 +606,13 @@ test_append_and_closed_pipe() {
     fi
 
     rm -f "$pipef"
-    posix_io_run closed-pipe yes "$pipef"
-    rc=$?
+    # Errexit-safe capture: the whole point of this probe is that the
+    # utility may terminate by SIGPIPE (141), and a bare call under the
+    # harness's `set -e` would kill this script before the case below
+    # could accept that status.
+    local pipe_rc=0
+    posix_io_run closed-pipe yes "$pipef" || pipe_rc=$?
+    rc="$pipe_rc"
     # PASS: signaled SIGPIPE (141) or exited 0/1 after BrokenPipe.
     # FAIL: hang (124) or any other signal / status.
     case "$rc" in

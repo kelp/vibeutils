@@ -104,7 +104,11 @@ pub const Table = struct {
         var i: u32 = 0;
         while (i < self.suffixes.len) : (i += 1) {
             const entry = self.suffixes[i];
-            if (!std.mem.endsWith(u8, name, entry.suffix)) continue;
+            // GNU matches extensions case-insensitively (c_strncasecmp),
+            // so *.JPG colors photo.jpg and vice versa.
+            if (entry.suffix.len > name.len) continue;
+            const tail = name[name.len - entry.suffix.len ..];
+            if (!std.ascii.eqlIgnoreCase(tail, entry.suffix)) continue;
             if (!isColoredSgr(entry.sgr)) return .uncolored;
             return .{ .sgr = entry.sgr };
         }
@@ -218,6 +222,13 @@ fn measureOnePair(seg: []const u8, measure: *Measure, report: *ParseReport) Pars
     const eq = std.mem.indexOfScalar(u8, seg, '=') orelse return error.Unparsable;
     const key = seg[0..eq];
     const value = seg[eq + 1 ..];
+    // GNU validates SGR values as digit/semicolon runs; a malformed
+    // value ("di=zz") rejects the whole variable, producing the standard
+    // diagnostic and disabling color for this invocation. Empty values
+    // stay valid (the key is simply uncolored).
+    for (value) |c| {
+        if (!(c == ';' or (c >= '0' and c <= '9'))) return error.Unparsable;
+    }
     if (key.len > 0 and key[0] == '*') {
         measure.suffix_count += 1;
         measure.byte_count += @intCast(key.len - 1 + value.len);
@@ -471,6 +482,16 @@ test "LS_COLORS last listed matching suffix wins in both orders" {
     try testing.expect(
         !std.mem.eql(u8, shorter_last.lookupSuffix("foo.tar.gz") orelse "", "01;32"),
     );
+}
+
+test "LS_COLORS suffix match is case-insensitive like GNU" {
+    var t = try parse(testing.allocator, "*.jpg=01;35");
+    defer t.deinit(testing.allocator);
+    try testing.expectEqualStrings("01;35", t.lookupSuffix("photo.JPG") orelse "");
+}
+
+test "LS_COLORS rejects malformed SGR values like GNU" {
+    try testing.expectError(error.Unparsable, parse(testing.allocator, "di=zz"));
 }
 
 test "LS_COLORS rejects an unrecognized prefix" {

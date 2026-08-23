@@ -143,14 +143,20 @@ pub const Tracker = struct {
 
         var body_buf: [line_bytes_max]u8 = undefined;
         const body = formatGnuTransfer(&body_buf, self.bytes_done, now_ns - self.start_ns);
-        const padded = padToLastWidth(body_buf[0..], body.len, self.last_width);
+        // The live line pads to erase stale characters from a longer
+        // predecessor; GNU's final summary is unpadded, so captured logs
+        // get no trailing spaces.
+        const painted = if (final)
+            body.len
+        else
+            padToLastWidth(body_buf[0..], body.len, self.last_width);
         self.writer.writeAll("\r") catch {};
-        self.writer.writeAll(body_buf[0..padded]) catch {};
+        self.writer.writeAll(body_buf[0..painted]) catch {};
         if (final) self.writer.writeAll("\n") catch {};
         self.writer.flush() catch {};
         self.shown = true;
         self.last_emit_ns = now_ns;
-        self.last_width = @intCast(padded);
+        self.last_width = @intCast(painted);
     }
 };
 
@@ -207,6 +213,9 @@ fn formatCopyCounters(buf: []u8, done: u64, total: ?u64) []const u8 {
 /// RATE". Shared by dd's printStats and the .gnu_xfer live line so the
 /// two renderings can never drift apart. Elapsed time is clamped to
 /// >= 0.0001 s (clock skew) so the rate division cannot divide by zero.
+/// Below 1 kB GNU omits the parenthetical SI/IEC breakdown, and seconds
+/// are trimmed of trailing zeros ("1 s", "0.5 s"), matching %g-style
+/// output rather than a fixed decimal width.
 pub fn formatGnuTransfer(buf: []u8, bytes_copied: u64, elapsed_ns: i128) []const u8 {
     assert(buf.len >= line_bytes_max);
 
@@ -214,17 +223,40 @@ pub fn formatGnuTransfer(buf: []u8, bytes_copied: u64, elapsed_ns: i128) []const
     const elapsed_display = if (elapsed_s < 0.0001) 0.0001 else elapsed_s;
     assert(elapsed_display > 0.0);
 
+    var secs_buf: [32]u8 = undefined;
+    const secs_str = formatGnuSeconds(&secs_buf, elapsed_display);
+
+    var rate_buf: [64]u8 = undefined;
+    const fb: f64 = @floatFromInt(bytes_copied);
+    const rate_str = formatGnuRate(&rate_buf, fb / elapsed_display);
+
+    if (bytes_copied < 1000) {
+        return std.fmt.bufPrint(buf, "{d} bytes copied, {s} s, {s}", .{
+            bytes_copied,
+            secs_str,
+            rate_str,
+        }) catch "?";
+    }
+
     var size_buf: [128]u8 = undefined;
     const size_str = formatGnuBytes(&size_buf, bytes_copied);
-    const fb: f64 = @floatFromInt(bytes_copied);
-    var rate_buf: [64]u8 = undefined;
-    const rate_str = formatGnuRate(&rate_buf, fb / elapsed_display);
-    return std.fmt.bufPrint(buf, "{d} bytes ({s}) copied, {d:.4} s, {s}", .{
+    return std.fmt.bufPrint(buf, "{d} bytes ({s}) copied, {s} s, {s}", .{
         bytes_copied,
         size_str,
-        elapsed_display,
+        secs_str,
         rate_str,
     }) catch "?";
+}
+
+/// Format seconds the way GNU dd's stats do: fixed four decimals with
+/// trailing zeros and a trailing point trimmed ("1", "0.5", "0.0002").
+fn formatGnuSeconds(buf: []u8, seconds: f64) []const u8 {
+    assert(buf.len >= 32);
+    const fixed = std.fmt.bufPrint(buf, "{d:.4}", .{seconds}) catch return "?";
+    var end = fixed.len;
+    while (end > 1 and fixed[end - 1] == '0') end -= 1;
+    if (end > 1 and fixed[end - 1] == '.') end -= 1;
+    return fixed[0..end];
 }
 
 /// Format a byte count the way GNU dd's stats do: "1.5 MB, 1.4 MiB",
@@ -533,6 +565,32 @@ test "copy line sanitizes control characters in labels" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, rendered, "\r"));
 }
 
+test "gnu transfer sub-kilobyte line matches GNU shape" {
+    // GNU omits the parenthetical SI/IEC breakdown below 1 kB and trims
+    // seconds: "27 bytes copied, 0.0002 s, 127 bytes/s".
+    var buf: [line_bytes_max]u8 = undefined;
+    const line = formatGnuTransfer(&buf, 51, std.time.ns_per_s);
+    try std.testing.expectEqualStrings("51 bytes copied, 1 s, 51 bytes/s", line);
+}
+
+test "gnu transfer kilobyte line keeps parenthetical" {
+    var buf: [line_bytes_max]u8 = undefined;
+    const line = formatGnuTransfer(&buf, 1500, std.time.ns_per_s);
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        line,
+        "1500 bytes (1.5 kB, 1.5 KiB) copied, 1 s,",
+    ));
+}
+
+test "gnu seconds trim trailing zeros" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("1", formatGnuSeconds(&buf, 1.0));
+    try std.testing.expectEqualStrings("0.5", formatGnuSeconds(&buf, 0.5));
+    try std.testing.expectEqualStrings("0.0002", formatGnuSeconds(&buf, 0.0002));
+    try std.testing.expectEqualStrings("12.25", formatGnuSeconds(&buf, 12.25));
+}
+
 test "gnu transfer waits one second and finishes with newline" {
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
@@ -548,6 +606,10 @@ test "gnu transfer waits one second and finishes with newline" {
     try std.testing.expect(std.mem.find(u8, output.writer.buffered(), "copied") != null);
     tracker.finish(tracker.start_ns + 2 * ns_per_s);
     try std.testing.expect(std.mem.endsWith(u8, output.writer.buffered(), "\n"));
+    // The final summary is GNU-unpadded: no trailing spaces before \n.
+    const all = output.writer.buffered();
+    try std.testing.expect(std.mem.lastIndexOfScalar(u8, all, '\n').? >= 1);
+    try std.testing.expect(all[std.mem.lastIndexOfScalar(u8, all, '\n').? - 1] != ' ');
 }
 
 test "gnu transfer finish a second time is a no-op" {
@@ -658,10 +720,12 @@ test "gnu transfer refresh pads a shorter update to the prior width" {
     tracker.finish(tracker.start_ns + 2 * ns_per_s);
     const after_finish = output.writer.buffered();
     try std.testing.expect(std.mem.endsWith(u8, after_finish, "\n"));
+    // The final summary is GNU-unpadded: shorter than the live width is
+    // fine because the trailing newline ends the line.
     const finish_body = after_finish[0 .. after_finish.len - 1];
     const finish_cr = std.mem.lastIndexOfScalar(u8, finish_body, '\r').?;
-    const finish_line = after_finish[finish_cr + 1 .. after_finish.len - 1];
-    try std.testing.expectEqual(@as(usize, first_width), finish_line.len);
+    const finish_line = finish_body[finish_cr + 1 ..];
+    try std.testing.expect(finish_line.len < first_width);
     try std.testing.expect(std.mem.find(u8, finish_line, "1000000000") == null);
 }
 

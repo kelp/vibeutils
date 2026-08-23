@@ -69,6 +69,13 @@ pub fn runTee(
         setupSignalIgnoring();
     }
 
+    // -p must not die on EPIPE: utilityMain restored the kernel's
+    // default SIGPIPE disposition for GNU parity, but POSIX says -p
+    // diagnoses write failures instead of dying to the signal.
+    if (parsed_args.diagnose_errors) {
+        setupSigpipeIgnoring();
+    }
+
     var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
 
@@ -506,7 +513,7 @@ fn printVersion(writer: *std.Io.Writer) !void {
 
 /// Set up signal handling to ignore interrupts when -i flag is used
 fn setupSignalIgnoring() void {
-    // On POSIX systems, ignore SIGINT when -i is specified
+    // On POSIX systems, ignore SIGINT (Ctrl+C) when -i is specified
     if (builtin.os.tag != .windows) {
         const os = std.posix;
         const SIG = os.SIG;
@@ -514,7 +521,6 @@ fn setupSignalIgnoring() void {
         // Properly initialize signal mask to empty set
         const empty_mask = os.sigemptyset();
 
-        // Ignore SIGINT (Ctrl+C)
         const ignore_action = os.Sigaction{
             .handler = .{ .handler = SIG.IGN },
             .mask = empty_mask,
@@ -522,6 +528,21 @@ fn setupSignalIgnoring() void {
         };
 
         _ = os.sigaction(SIG.INT, &ignore_action, null);
+    }
+}
+
+/// Ignore SIGPIPE when -p is given, so write failures surface as
+/// catchable errors that get diagnosed (POSIX tee -p).
+fn setupSigpipeIgnoring() void {
+    if (builtin.os.tag != .windows) {
+        const os = std.posix;
+        const empty_mask = os.sigemptyset();
+        const ignore_action = os.Sigaction{
+            .handler = .{ .handler = os.SIG.IGN },
+            .mask = empty_mask,
+            .flags = 0,
+        };
+        _ = os.sigaction(os.SIG.PIPE, &ignore_action, null);
     }
 }
 

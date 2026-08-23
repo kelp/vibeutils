@@ -1,0 +1,12 @@
+# Registered deliberate divergences from GNU coreutils.
+#
+# Format:  utility|case_id|reason
+# A case_id of "*" registers every case for that utility.
+#
+# Every entry needs a reason that cites the design decision. Never add an
+# entry without evidence from a run; never silence a real bug here.
+
+# v0.13.0 design change: bare du prints human-readable sizes by default
+# (CHANGELOG v0.13.0, Changed). Scripts that parse raw numbers pass -k,
+# which this harness compares exactly.
+du|bare_default|v0.13.0 design: bare du defaults to human-readable sizes

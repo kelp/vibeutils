@@ -14,6 +14,21 @@ const std = @import("std");
 const testing = std.testing;
 const lib = @import("lib.zig");
 
+/// Restore the kernel's default SIGPIPE disposition. Zig's start code
+/// installs an ignore handler so EPIPE surfaces as a writer error; GNU
+/// utilities die silently by signal instead, which is what scripts
+/// expect from `util | head` ($? == 141, no stderr noise).
+fn installDefaultSigpipe() void {
+    if (@import("builtin").os.tag == .windows) return;
+    const posix = std.posix;
+    const action = posix.Sigaction{
+        .handler = .{ .handler = posix.SIG.DFL },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    _ = posix.sigaction(posix.SIG.PIPE, &action, null);
+}
+
 /// Composite wrapper for utility main functions.
 ///
 /// Parses process arguments, then delegates 8KB `writerStreaming` setup and
@@ -37,6 +52,12 @@ pub fn utilityMain(
 ) noreturn {
     const io = init.io;
     const allocator = init.arena.allocator();
+
+    // GNU parity: die by SIGPIPE like a default-disposition process when
+    // stdout's reader closes early (`util | head` exits 141, silently).
+    // Zig installs an ignore handler at startup; undo it. Utilities that
+    // need to survive EPIPE (tee -p) re-ignore it after parsing.
+    installDefaultSigpipe();
 
     // Parse process arguments
     const args = init.minimal.args.toSlice(allocator) catch |err| {

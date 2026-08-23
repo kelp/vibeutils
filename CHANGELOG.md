@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.13.0 — 2026-08-22
+
 ### Documentation
 - **Rewrite `docs/INTEGRATION_TESTING.md` to match the tree.** The
   old page described `tests/integration/{lib,utils}/`, `init_framework`,
@@ -17,6 +19,19 @@
   green.
 
 ### Added
+
+- **`scripts/diff-vs-gnu.sh`: a GNU differential test harness.** Runs
+  each utility and its GNU twin over shared fixtures with pinned
+  locale, timezone, umask, seed, and a per-invocation watchdog, then
+  compares exit codes and stdout bytes (read-only cases), or exit
+  codes and full tree fingerprints — type, mode, size, checksum,
+  symlink targets — across twin sandboxes (mutating cases). Deliberate
+  divergences from GNU are registered in
+  `scripts/diff-vs-gnu-exceptions.txt` with reasons, so new
+  regressions stand out from known design decisions. `just diff-gnu
+  [utility]` runs it; `VU_FUZZ=1` adds the seeded flag sweep;
+  `just test-diff-vs-gnu` contract-tests the harness itself against
+  sabotaged binaries.
 - **`cp` and `mv` show an auto-progress line for slow copies.** When
   stderr is a TTY and a single regular-file copy runs longer than 2
   seconds, a `cp: copying NAME  DONE/TOTAL  PCT%` status line appears
@@ -209,6 +224,43 @@
 
 ### Fixed
 
+- **Utilities die by SIGPIPE like GNU when stdout's reader closes
+  early.** `util | head` now exits 141 silently instead of reporting a
+  write error with exit 1, so pipelines under `set -e` / `pipefail`
+  behave as scripts expect. `tee -p` keeps its POSIX semantics and
+  diagnoses write failures instead of dying to the signal.
+- **`tail -f` follows standard input.** With no operand, or with the
+  `-` operand, tail now keeps reading after the initial dump and holds
+  past EOF until killed, as POSIX requires; previously it exited as if
+  `-f` had been ignored.
+- **Flag-pair orderings match their specifications.** `pwd -P -L`
+  prints logically and `pwd -L -P` physically (POSIX: the last one
+  applies); `tail -qv` shows headers and `tail -vq` hides them (GNU
+  last-flag-wins).
+- **LS_COLORS matches GNU's parser more closely.** Suffix keys match
+  case-insensitively (`*.JPG` colors `photo.jpg`), and a malformed SGR
+  value (`di=zz`) is rejected with the standard diagnostic, disabling
+  color for the invocation instead of emitting garbage escapes.
+- **`dd status=progress` output matches GNU's shape in more corners:**
+  sub-kilobyte transfers print `N bytes copied, T s, RATE` without the
+  doubled parenthetical, seconds drop trailing zeros, the final line
+  carries no trailing padding, and `conv=noerror` abort diagnostics
+  start on a fresh line instead of gluing onto a live transfer line.
+- **Arg parsing acts on the first `--help`/`--version` flag, matching
+  GNU option order.** Utilities now stop scanning argv at the first
+  help or version flag instead of validating the whole line first, so
+  `cat --help --bogus` prints help and exits 0 like GNU rather than
+  failing on the later unknown flag. An unknown flag placed *before*
+  the help flag still errors, also matching GNU.
+- **`pwd` honors `$PWD` by default (POSIX `-L` default).** With neither
+  `-L` nor `-P`, pwd now prints `$PWD` when it is an absolute pathname
+  of the current directory, falling back to physical resolution when it
+  is invalid, relative, or names a different directory. Previously the
+  physical path was always printed, so on macOS symlinked paths (`/tmp`,
+  `/var`, `/etc`) pwd printed `/private/var/...` where `/bin/pwd` and
+  shell builtins print `/var/...`. POSIX Issue 7 requires the logical
+  default; GNU coreutils is itself non-conforming here (it defaults to
+  `-P`). When both flags are given, `-P` still takes precedence.
 - **`realpath`, `readlink`, and `ln -r` work on OpenBSD and NetBSD.**
   Zig 0.16 `Dir.realPath` / `realPathFile` is
   `error.OperationUnsupported` there (fd-to-path is only implemented
