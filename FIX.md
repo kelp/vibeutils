@@ -264,3 +264,21 @@ GNU parity decision · mid-cluster early-exit nuance (`cat -hx`).
 Fuzz residual divergence class is documented in the harness header:
 uniform `-h`/`-V` acceptance vs GNU's per-utility shorts. Default
 runs stay green; `VU_FUZZ=1` surfaces that class for triage.
+
+### Found by verification after the fixes
+
+- ✅ SIGPIPE parity itself broke the POSIX I/O oracle on every CI
+  platform: the `yes closed-pipe` probe anticipated status 141 but
+  called `posix_io_run` bare under the harness's `set -e`, killing the
+  test script before its own case could accept 141. Errexit-safe
+  capture fixed; latent harness bug, exposed not caused by the change.
+- ✅ The new zizmor workflow startup-failed on every trigger: the repo
+  pins Actions to a SHA-pinned allowlist (`allowed_actions: selected`)
+  and `zizmorcore/zizmor-action` was not on it. Added to the allowlist
+  following the existing pin pattern; bisected to that exact cause via
+  a scratch branch. Lesson: workflow-file review must include the
+  repository's Actions policy, which no linter sees.
+
+Final state at abd76a2: all seven CI workflows green (Test,
+Integration Tests, BSD matrix, Tiger Style, Audit Pre-Pass,
+Changelog, zizmor), local gates green, diff-vs-gnu 109/109 match.
