@@ -121,10 +121,14 @@ fn parseVersionFromContent(allocator: std.mem.Allocator, zon_content: []const u8
 }
 
 /// Parse version from build.zig.zon safely
+/// `dir` should be the build root directory (`b.build_root.handle`), not the
+/// process's current working directory: when this package is consumed as a
+/// dependency, the build runner's cwd is the top-level project's build root,
+/// not this package's root.
 /// Returns a string that must be freed by the caller using the same allocator
 /// Caller owns the returned memory
-pub fn parseVersion(io: std.Io, allocator: std.mem.Allocator) ![]const u8 {
-    const zon_content = std.Io.Dir.cwd().readFileAlloc(io, "build.zig.zon", allocator, .limited(4096)) catch |err| switch (err) {
+pub fn parseVersion(dir: std.Io.Dir, io: std.Io, allocator: std.mem.Allocator) ![]const u8 {
+    const zon_content = dir.readFileAlloc(io, "build.zig.zon", allocator, .limited(4096)) catch |err| switch (err) {
         error.FileNotFound => return error.BuildZonFileNotFound,
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.BuildZonReadFailed,
@@ -135,11 +139,13 @@ pub fn parseVersion(io: std.Io, allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// Validate that all utility source files exist and are accessible
+/// `dir` should be the build root directory (`b.build_root.handle`); see
+/// `parseVersion` for why the process cwd is not safe to use here.
 /// Returns an error if any utility source file is missing or inaccessible
-pub fn validateUtilities(io: std.Io) !void {
+pub fn validateUtilities(dir: std.Io.Dir, io: std.Io) !void {
     for (utilities) |util| {
         const path = util.path;
-        std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        dir.access(io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.err("Utility source file not found: {s}", .{path});
                 return error.UtilitySourceNotFound;
@@ -207,7 +213,7 @@ test "parseVersion - empty content" {
 test "validateUtilities - all utilities exist" {
     // This test assumes the utilities exist in the actual project structure
     // In a real project, this would pass when run from the project root
-    const result = validateUtilities(std.testing.io);
+    const result = validateUtilities(std.Io.Dir.cwd(), std.testing.io);
 
     // The test might fail if run from a different directory, but that's expected
     // This test is more for ensuring the function doesn't crash
@@ -221,7 +227,7 @@ test "validateUtilities - handles missing files gracefully" {
 
     // We can't easily test this without changing directories, so we'll just
     // ensure the function can be called without crashing
-    const result = validateUtilities(std.testing.io);
+    const result = validateUtilities(std.Io.Dir.cwd(), std.testing.io);
 
     // If we're in the project directory, it should succeed
     // If not, it should fail with UtilitySourceNotFound

@@ -18,10 +18,12 @@ pub fn addInstall(b: *std.Build) void {
         const src_path = b.fmt("man/man1/{s}.1", .{util.name});
         const dest_path = b.fmt("share/man/man1/{s}.1", .{util.name});
 
-        // The build runner's cwd is the build root at configure time
-        // (utils.zig relies on the same invariant), so a relative
-        // access() check here sees exactly what installFile will copy.
-        std.Io.Dir.cwd().access(b.graph.io, src_path, .{}) catch {
+        // Use the build root directory, not the process cwd: when this
+        // package is consumed as a dependency, the build runner's cwd is
+        // the top-level project's build root, not this package's root.
+        // installFile() resolves src_path relative to the build root too,
+        // so this access() check sees exactly what installFile will copy.
+        b.build_root.handle.access(b.graph.io, src_path, .{}) catch {
             std.log.err("man page not found: {s} (required by utility '{s}')", .{
                 src_path, util.name,
             });
