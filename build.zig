@@ -17,8 +17,11 @@ pub fn build(b: *std.Build) void {
     // common library, exactly as before.
     const test_util = b.option([]const u8, "test-util", "Run unit tests for only this utility (by name)");
 
-    // Validate utilities exist before building
-    utils.validateUtilities(b.graph.io) catch |err| {
+    // Validate utilities exist before building. Use the build root
+    // directory rather than the process cwd: when this package is
+    // consumed as a dependency, the build runner's cwd is the
+    // top-level project's build root, not this package's root.
+    utils.validateUtilities(b.build_root.handle, b.graph.io) catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
         return; // Abort build configuration
     };
@@ -26,7 +29,7 @@ pub fn build(b: *std.Build) void {
     // Build options with version from build.zig.zon using safe parser
     const build_options = b.addOptions();
 
-    const version = utils.parseVersion(b.graph.io, b.allocator) catch |err| {
+    const version = utils.parseVersion(b.build_root.handle, b.graph.io, b.allocator) catch |err| {
         std.log.err("Failed to parse version from build.zig.zon: {}", .{err});
         std.log.err("Ensure build.zig.zon exists and contains a valid .version field", .{});
         return; // Abort build configuration
